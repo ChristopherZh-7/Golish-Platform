@@ -218,17 +218,24 @@ export async function openProject(
 }
 
 export async function clearConversation(sessionId: string): Promise<void> {
-  useStore.getState().clearTimeline(sessionId);
-
   try {
     const { clearAiConversationSession, clearAiConversation } = await import("@/lib/ai");
     try {
       await clearAiConversationSession(sessionId);
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const commandUnavailable =
+        /(?:unknown|unrecognized) command/i.test(message) ||
+        /command\s+['"`]?clear_ai_conversation_session['"`]?\s+(?:was\s+)?not found/i.test(message);
+      if (!commandUnavailable) throw error;
       await clearAiConversation(sessionId);
     }
+    // Keep local and backend history atomic: a busy/error response must leave
+    // the visible timeline intact.
+    useStore.getState().clearTimeline(sessionId);
   } catch (error) {
     logger.warn("Failed to clear backend conversation history:", error);
+    throw error;
   }
 }
 

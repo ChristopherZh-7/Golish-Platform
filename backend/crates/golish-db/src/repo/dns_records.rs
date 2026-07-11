@@ -37,7 +37,8 @@ fn build_dns_present_target_values_sql(apply_window: bool) -> String {
         "SELECT DISTINCT t.value FROM targets t \
            JOIN dns_records dr ON dr.target_id = t.id \
            WHERE t.scope::text = 'in' \
-             AND ($1 IS NULL OR t.organization_id = $1){window}"
+             AND ($1 IS NULL OR t.organization_id = $1) \
+             AND dr.project_path IS NOT DISTINCT FROM t.project_path{window}"
     )
 }
 
@@ -98,6 +99,7 @@ mod tests {
         assert!(sql.contains("t.scope::text = 'in'"));
         assert!(sql.contains("($1 IS NULL OR t.organization_id = $1)"));
         assert!(sql.contains("JOIN dns_records dr ON dr.target_id = t.id"));
+        assert!(sql.contains("dr.project_path IS NOT DISTINCT FROM t.project_path"));
     }
 
     #[test]

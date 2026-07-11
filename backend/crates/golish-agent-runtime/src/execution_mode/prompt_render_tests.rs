@@ -2,7 +2,7 @@ use super::*;
 use crate::execution_mode::policy::*;
 
 #[test]
-fn render_includes_js_collect_when_enabled() {
+fn render_includes_browser_js_tools_when_enabled() {
     let s = ToolSelection {
         static_groups: StaticGroupSelection::all_enabled(),
         bridge_tools: BridgeToolSelection::all_enabled(),
@@ -18,7 +18,7 @@ fn render_includes_js_collect_when_enabled() {
     };
     let table = render_tool_table_for_prompt(&s);
     assert!(table.contains("`browser_collect_js_api`"));
-    assert!(table.contains("`js_collect`"));
+    assert!(table.contains("`js_extract_apis`"));
     assert!(table.contains("`manage_targets`"));
     assert!(table.contains("`manage_organizations`"));
     assert!(table.contains("`recon_discover_subsidiaries`"));
@@ -44,7 +44,7 @@ fn render_omits_disabled_bridge_tools() {
     };
     let table = render_tool_table_for_prompt(&s);
     assert!(table.contains("`manage_targets`"));
-    assert!(!table.contains("`js_collect`"));
+    assert!(!table.contains("`js_extract_apis`"));
     assert!(!table.contains("`run_pipeline`"));
 }
 
@@ -76,7 +76,6 @@ fn selection_to_tool_names_matches_render() {
         deny_overrides: vec!["update_plan".into()],
     };
     let names = selection_to_tool_names(&s);
-    assert!(names.contains("js_collect"));
     assert!(names.contains("manage_targets"));
     assert!(names.contains("manage_organizations"));
     assert!(names.contains("recon_discover_subsidiaries"));
@@ -85,6 +84,7 @@ fn selection_to_tool_names_matches_render() {
     assert!(names.contains("recon_lookup_company"));
     assert!(names.contains("recon_list_providers"));
     assert!(names.contains("browser_collect_js_api"));
+    assert!(names.contains("js_extract_apis"));
     assert!(names.contains("read_file"));
     assert!(names.contains("ask_human"));
     assert!(!names.contains("update_plan"));

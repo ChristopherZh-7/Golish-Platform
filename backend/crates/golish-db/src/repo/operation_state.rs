@@ -23,6 +23,11 @@ fn build_clear_engagement_org_for_subtree_sql() -> String {
         .to_string()
 }
 
+const GET_OPERATION_EPOCH_SQL: &str = r#"SELECT operation_id, current_stage, stage_started_at,
+              superseded_by, engagement_org_id
+       FROM operation_state
+       WHERE operation_id = $1"#;
+
 /// `operation_state` 行映射 (`sqlx::FromRow`).
 #[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
 pub struct OperationStateRow {
@@ -39,6 +44,19 @@ pub struct OperationStateRow {
     /// scoping-confirmed root organization id this operation is bound to. Fan-out
     /// / in-scope reads confine to its subtree (root + subsidiaries). `None` = not
     /// yet bound (legacy whole-DB axis).
+    pub engagement_org_id: Option<Uuid>,
+}
+
+/// Lightweight operation epoch used by hot-path validity checks.
+///
+/// This intentionally excludes `state_blob` and cursor payload columns so a
+/// stage guard does not deserialize the potentially large resume document.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct OperationEpochRow {
+    pub operation_id: Uuid,
+    pub current_stage: String,
+    pub stage_started_at: DateTime<Utc>,
+    pub superseded_by: Option<Uuid>,
     pub engagement_org_id: Option<Uuid>,
 }
 
@@ -74,6 +92,15 @@ pub async fn get(pool: &PgPool, operation_id: Uuid) -> Result<Option<OperationSt
     .bind(operation_id)
     .fetch_optional(pool)
     .await?;
+    Ok(row)
+}
+
+/// Read only the operation epoch fields required by stage-validity guards.
+pub async fn get_epoch(pool: &PgPool, operation_id: Uuid) -> Result<Option<OperationEpochRow>> {
+    let row = sqlx::query_as::<_, OperationEpochRow>(GET_OPERATION_EPOCH_SQL)
+        .bind(operation_id)
+        .fetch_optional(pool)
+        .await?;
     Ok(row)
 }
 
@@ -210,6 +237,42 @@ mod tests {
         assert_eq!(row.operation_id, back.operation_id);
         assert_eq!(row.current_stage, back.current_stage);
         assert_eq!(row.state_blob, back.state_blob);
+    }
+
+    #[test]
+    fn operation_epoch_query_excludes_large_state_blob_and_keeps_epoch_contract() {
+        assert!(GET_OPERATION_EPOCH_SQL.contains("operation_id"));
+        assert!(GET_OPERATION_EPOCH_SQL.contains("current_stage"));
+        assert!(GET_OPERATION_EPOCH_SQL.contains("stage_started_at"));
+        assert!(GET_OPERATION_EPOCH_SQL.contains("superseded_by"));
+        assert!(GET_OPERATION_EPOCH_SQL.contains("engagement_org_id"));
+        assert!(!GET_OPERATION_EPOCH_SQL.contains("state_blob"));
+        assert!(!GET_OPERATION_EPOCH_SQL.contains("profile"));
+        assert!(!GET_OPERATION_EPOCH_SQL.contains("last_evidence_audit_id"));
+        assert!(!GET_OPERATION_EPOCH_SQL.contains("last_classification_id"));
+        assert!(!GET_OPERATION_EPOCH_SQL.contains("last_scope_version"));
+    }
+
+    #[test]
+    fn operation_epoch_row_serde_roundtrip() {
+        let row = OperationEpochRow {
+            operation_id: Uuid::new_v4(),
+            current_stage: "enumeration".to_string(),
+            stage_started_at: Utc::now(),
+            superseded_by: Some(Uuid::new_v4()),
+            engagement_org_id: Some(Uuid::new_v4()),
+        };
+
+        let json = serde_json::to_value(&row).expect("serialize epoch row");
+        let back: OperationEpochRow =
+            serde_json::from_value(json.clone()).expect("deserialize epoch row");
+
+        assert_eq!(row.operation_id, back.operation_id);
+        assert_eq!(row.current_stage, back.current_stage);
+        assert_eq!(row.stage_started_at, back.stage_started_at);
+        assert_eq!(row.superseded_by, back.superseded_by);
+        assert_eq!(row.engagement_org_id, back.engagement_org_id);
+        assert!(json.get("state_blob").is_none());
     }
 
     #[test]

@@ -233,6 +233,19 @@ const CAPABILITIES: &[StageCapabilitySpec] = &[
         runner: CapabilityRunnerKind::BackendWrapper,
     },
     StageCapabilitySpec {
+        id: "eas.fingerprint_web_stack",
+        label: "Fingerprint web stack",
+        stage: StageKind::ExternalAttackSurface,
+        techniques: &["GOLISH-EAS-WEB-FINGERPRINT"],
+        tool_names: &["eas_fingerprint_web_stack"],
+        allowed_tool_types: &["recon/http"],
+        risk: CapabilityRisk::Active,
+        batchable: true,
+        max_batch: 100,
+        writes: &["fingerprints", "web_origins", "technique_outcomes"],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
         id: "eas.capture_web_screenshot",
         label: "Capture web screenshot",
         stage: StageKind::ExternalAttackSurface,
@@ -315,8 +328,8 @@ const CAPABILITIES: &[StageCapabilitySpec] = &[
         runner: CapabilityRunnerKind::BackendWrapper,
     },
     StageCapabilitySpec {
-        id: "enum.record_terminal_gap",
-        label: "Record terminal enumeration gap",
+        id: "enum.preflight_web_origins",
+        label: "Preflight Enumeration web origins",
         stage: StageKind::Enumeration,
         techniques: &[
             "GOLISH-ENUM-JS",
@@ -324,13 +337,13 @@ const CAPABILITIES: &[StageCapabilitySpec] = &[
             "GOLISH-ENUM-PARAM",
             "GOLISH-ENUM-JSAPI",
         ],
-        tool_names: &[],
-        allowed_tool_types: &[],
+        tool_names: &["enum_preflight_web_origins"],
+        allowed_tool_types: &["enum_preflight_web_origins"],
         risk: CapabilityRisk::Active,
         batchable: true,
         max_batch: 50,
-        writes: &["coverage_terminal_cell"],
-        runner: CapabilityRunnerKind::MetadataOnly,
+        writes: &["audit_log", "technique_outcomes"],
+        runner: CapabilityRunnerKind::ExistingDirectTool,
     },
     StageCapabilitySpec {
         id: "vuln.run_formulaic_sweep",
@@ -472,6 +485,7 @@ mod tests {
                     "GOLISH-EAS-LIVENESS",
                     "GOLISH-EAS-PORT",
                     "GOLISH-EAS-SERVICE-FINGERPRINT",
+                    "GOLISH-EAS-WEB-FINGERPRINT",
                 ],
             ),
             (
@@ -576,5 +590,39 @@ mod tests {
             ),
             vec!["eas_fingerprint_services".to_string()]
         );
+    }
+
+    #[test]
+    fn eas_web_stack_fingerprint_closes_web_fingerprint_not_generic_service_gap() {
+        let capability = capability_by_id("eas.fingerprint_web_stack").unwrap();
+        assert_eq!(capability.runner, CapabilityRunnerKind::BackendWrapper);
+        assert_eq!(capability.tool_names, &["eas_fingerprint_web_stack"]);
+        assert_eq!(capability.techniques, &["GOLISH-EAS-WEB-FINGERPRINT"]);
+        assert!(capabilities_for_stage(StageKind::ExternalAttackSurface).contains(&capability));
+        assert_eq!(
+            suggested_tools_for_technique(
+                StageKind::ExternalAttackSurface,
+                "GOLISH-EAS-WEB-FINGERPRINT",
+            ),
+            vec!["eas_fingerprint_web_stack".to_string()]
+        );
+        assert!(!suggested_tools_for_technique(
+            StageKind::ExternalAttackSurface,
+            "GOLISH-EAS-SERVICE-FINGERPRINT",
+        )
+        .contains(&"eas_fingerprint_web_stack".to_string()));
+    }
+
+    #[test]
+    fn eas_web_fingerprint_and_enumeration_preflight_keep_distinct_allowlist_metadata() {
+        let eas = capability_by_id("eas.fingerprint_web_stack").unwrap();
+        let preflight = capability_by_id("enum.preflight_web_origins").unwrap();
+
+        assert_eq!(eas.allowed_tool_types, &["recon/http"]);
+        assert_eq!(
+            preflight.allowed_tool_types,
+            &["enum_preflight_web_origins"]
+        );
+        assert_ne!(eas.allowed_tool_types, preflight.allowed_tool_types);
     }
 }

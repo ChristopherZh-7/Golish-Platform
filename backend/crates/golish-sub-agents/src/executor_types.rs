@@ -17,6 +17,41 @@ use golish_tools::ToolRegistry;
 /// returns the structured result to the parent agent (PentAGI barrier pattern).
 pub const BARRIER_TOOL_NAME: &str = "submit_result";
 
+const MODEL_RECOVERY_ACTION_SAMPLE_LIMIT: usize = 20;
+const MODEL_RECOVERY_INSTRUCTION_MAX_BYTES: usize = 32 * 1024;
+const MODEL_RECOVERY_BLOCK_PAYLOAD_MAX_BYTES: usize = 64 * 1024;
+const MODEL_RECOVERY_PROJECTION_MARKER: &str = "Recovery actions: total=";
+const MODEL_RECOVERY_TRUNCATION_SUFFIX: &str =
+    "\n[Recovery instruction truncated. Use stage_worklist_next for bounded DB-backed pages.]";
+
+/// Durable sub-agent chain failures that callers must distinguish from ordinary
+/// model/tool failures. An explicit resume must never silently degrade to a
+/// different or fresh worker, and a failed finalize must never advertise a
+/// resumable chain marker.
+#[derive(Debug, thiserror::Error)]
+pub enum SubAgentChainError {
+    #[error("exact sub-agent chain {chain_id} is unavailable: {reason}")]
+    ExactResumeUnavailable {
+        chain_id: uuid::Uuid,
+        reason: String,
+    },
+    #[error("latest sub-agent chain for '{agent_id}' is unavailable: {reason}")]
+    LatestResumeUnavailable { agent_id: String, reason: String },
+    #[error("failed to create fresh sub-agent chain for '{agent_id}': {reason}")]
+    CreateFreshFailed { agent_id: String, reason: String },
+    #[error("failed to finalize sub-agent chain {chain_id}: {reason}")]
+    FinalizeFailed {
+        chain_id: uuid::Uuid,
+        checkpointed_chain_id: Option<uuid::Uuid>,
+        reason: String,
+    },
+    #[error("provider context limit exceeded for sub-agent chain {chain_id:?}: {reason}")]
+    ProviderContextLimitExceeded {
+        chain_id: Option<uuid::Uuid>,
+        reason: String,
+    },
+}
+
 /// Trait for providing tool definitions to the sub-agent executor.
 /// This allows the executor to be decoupled from the tool definition source.
 #[async_trait::async_trait]
@@ -104,13 +139,15 @@ pub trait SubAgentChainPersistence: Send + Sync {
         Ok(None)
     }
 
-    /// Load a SPECIFIC persisted chain by its id, so a `resume` delegation can
-    /// continue an exact prior sub-agent conversation. The id is handed back to
-    /// the orchestrator when the sub-agent finishes, so it can name precisely
-    /// which worker to resume. Default impl: not found.
+    /// Load a SPECIFIC persisted chain by its id, scoped to the current DB
+    /// session and agent. The scope check is part of the authorization contract:
+    /// `resume` is model-visible, so possession of another chain UUID alone must
+    /// not grant cross-session/cross-agent access. Default impl: not found.
     async fn chain_load_by_id(
         &self,
         _chain_id: uuid::Uuid,
+        _session_id: uuid::Uuid,
+        _agent_type: &str,
     ) -> anyhow::Result<Option<serde_json::Value>> {
         Ok(None)
     }
@@ -321,6 +358,7 @@ impl SubmitRepairMode {
                 "eas_probe_http_liveness",
                 "eas_discover_ports",
                 "eas_fingerprint_services",
+                "eas_fingerprint_web_stack",
                 "vuln_run_formulaic_sweep",
                 "list_recent_evidence",
                 "check_stage_asset_coverage",
@@ -377,10 +415,7 @@ impl SubmitRepairMode {
     }
 
     pub fn model_instruction(&self) -> String {
-        let mut message = self
-            .directive_message
-            .clone()
-            .unwrap_or_else(|| match self.kind {
+        let mut message = self.directive_message.clone().unwrap_or_else(|| match self.kind {
                 SubmitRepairKind::EvidenceRefs => {
                     "submit_stage_deliverable returned needs_fix for evidence/submit fields, so \
                  repair-only mode is active. Do NOT start fresh discovery or launch new scans. \
@@ -425,13 +460,16 @@ impl SubmitRepairMode {
             message.push_str(&format!(
                 " Also include these required_checks_done entries if the cited evidence backs \
                  them: [{}].",
-                self.missing_required_checks.join(", ")
+                bounded_model_list(&self.missing_required_checks, 32, 128).join(", ")
             ));
         }
-        if self.kind == SubmitRepairKind::CoverageGap && !self.coverage_gap_actions.is_empty() {
+        if self.kind == SubmitRepairKind::CoverageGap
+            && !self.coverage_gap_actions.is_empty()
+            && !message.contains(MODEL_RECOVERY_PROJECTION_MARKER)
+        {
             message.push_str(&coverage_gap_action_instruction(&self.coverage_gap_actions));
         }
-        message
+        cap_recovery_model_text(message)
     }
 
     pub fn block_result(&self, tool_name: &str) -> Option<serde_json::Value> {
@@ -530,46 +568,59 @@ impl SubmitRepairMode {
             "error": self.model_instruction(),
             "blocked_by_submit_repair": true,
             "repair_kind": self.kind_str(),
-            "blocked_tool": tool_name,
-            "allowed_tools": self.effective_allowed_tools(),
-            "last_needs_fix_reason": self.reason,
+            "blocked_tool": bounded_model_field(tool_name, 256),
+            "allowed_tools": bounded_model_list(&self.effective_allowed_tools(), 64, 128),
+            "last_needs_fix_reason": bounded_model_field(&self.reason, 2_048),
         });
         if let Some(reason) = blocked_reason {
-            value["blocked_reason"] = serde_json::Value::String(reason);
+            value["blocked_reason"] =
+                serde_json::Value::String(bounded_model_field(&reason, 2_048));
         }
         if !self.coverage_gap_actions.is_empty() {
             value["coverage_gap_actions"] =
-                serde_json::to_value(&self.coverage_gap_actions).unwrap_or_default();
+                bounded_coverage_gap_projection(&self.coverage_gap_actions);
         }
         if !self.forbidden_tools.is_empty() {
             value["forbidden_tools"] =
-                serde_json::to_value(&self.forbidden_tools).unwrap_or_default();
+                serde_json::to_value(bounded_model_list(&self.forbidden_tools, 64, 128))
+                    .unwrap_or_default();
         }
-        value
+        cap_recovery_block_payload(value)
     }
 }
 
-fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> String {
+pub(crate) fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> String {
     let mut lines = vec![format!(
-        " Exact coverage_gap_actions from the gate: run ONLY these {} target/technique pairs. \
-         Do not run a target or technique that is absent from this list. EAS gaps must use \
-         eas_probe_http_liveness / eas_discover_ports / eas_fingerprint_services instead of raw \
+        "\n{MODEL_RECOVERY_PROJECTION_MARKER}{} stable_hash={} sample_count={}. \
+         Only this bounded sample is shown; the complete ordered action set remains enforced \
+         internally. Call stage_worklist_next for bounded DB-backed pages; do not infer \
+         authorization from this sample. Exact coverage_gap_actions projection from the gate: \
+         run ONLY target/technique pairs authorized by the complete guard data. EAS gaps must use \
+         eas_probe_http_liveness / eas_discover_ports / eas_fingerprint_services / \
+         eas_fingerprint_web_stack instead of raw \
          pentest_run. Vuln-triage gaps must use vuln_run_formulaic_sweep with explicit targets[] \
          and techniques[] from this list, not raw pentest_run. Direct enumeration tools \
-         (browser_collect_js_api/js_collect/js_extract_apis/route_probe_paths/enum_crawl_same_origin_urls) may be called by \
+         (browser_collect_js_api/js_extract_apis/route_probe_paths/enum_crawl_same_origin_urls) may be called by \
          name when suggested here; directory discovery must use route_probe_paths, not external \
          ffuf/gobuster/feroxbuster. Bounded crawler URL supplements must use \
          enum_crawl_same_origin_urls, not raw katana or pentest_run.",
-        actions.len()
+        actions.len(),
+        stable_action_hash(actions),
+        actions.len().min(MODEL_RECOVERY_ACTION_SAMPLE_LIMIT)
     )];
-    for (idx, action) in actions.iter().enumerate() {
+    for (idx, action) in actions
+        .iter()
+        .take(MODEL_RECOVERY_ACTION_SAMPLE_LIMIT)
+        .enumerate()
+    {
         let capabilities = if action.suggested_capabilities.is_empty() {
             String::new()
         } else {
             let ids = action
                 .suggested_capabilities
                 .iter()
-                .map(|capability| capability.id.as_str())
+                .take(5)
+                .map(|capability| bounded_model_field(&capability.id, 128))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("; suggested_capabilities={ids}")
@@ -577,22 +628,185 @@ fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> String {
         let tools = if action.suggested_tools.is_empty() {
             String::new()
         } else {
-            format!("; suggested_tools={}", action.suggested_tools.join(", "))
+            format!(
+                "; suggested_tools={}",
+                bounded_model_list(&action.suggested_tools, 5, 128).join(", ")
+            )
         };
         lines.push(format!(
             "{}. asset={} technique={} reason={}{}{}",
             idx + 1,
-            action.asset,
-            action.technique,
-            action.reason,
+            bounded_model_field(&action.asset, 512),
+            bounded_model_field(&action.technique, 256),
+            bounded_model_field(&action.reason, 512),
             capabilities,
             tools
         ));
     }
-    format!("\n{}", lines.join("\n"))
+    cap_recovery_model_text(lines.join("\n"))
+}
+
+fn bounded_coverage_gap_projection(actions: &[CoverageGapAction]) -> serde_json::Value {
+    let sample = actions
+        .iter()
+        .take(MODEL_RECOVERY_ACTION_SAMPLE_LIMIT)
+        .map(|action| {
+            serde_json::json!({
+                "asset": bounded_model_field(&action.asset, 256),
+                "technique": bounded_model_field(&action.technique, 128),
+                "reason": bounded_model_field(&action.reason, 256),
+                "suggested_capability_ids": action
+                    .suggested_capabilities
+                    .iter()
+                    .take(3)
+                    .map(|capability| bounded_model_field(&capability.id, 96))
+                    .collect::<Vec<_>>(),
+                "suggested_tools": bounded_model_list(&action.suggested_tools, 3, 96),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "total": actions.len(),
+        "stable_hash": stable_action_hash(actions),
+        "sample_count": sample.len(),
+        "sample": sample,
+        "omitted": actions.len().saturating_sub(MODEL_RECOVERY_ACTION_SAMPLE_LIMIT),
+        "next_page_tool": "stage_worklist_next",
+        "authorization_note": "The full ordered action set remains enforced internally; this sample is not the authorization source.",
+    })
+}
+
+fn stable_action_hash<T: Serialize + ?Sized>(value: &T) -> String {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in serde_json::to_vec(value).unwrap_or_default() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
+fn bounded_model_list(values: &[String], limit: usize, field_max_bytes: usize) -> Vec<String> {
+    let mut sample = values
+        .iter()
+        .take(limit)
+        .map(|value| bounded_model_field(value, field_max_bytes))
+        .collect::<Vec<_>>();
+    if values.len() > sample.len() {
+        sample.push(format!("... +{} more", values.len() - sample.len()));
+    }
+    sample
+}
+
+fn bounded_model_field(value: &str, max_bytes: usize) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>();
+    if sanitized.len() <= max_bytes {
+        return sanitized;
+    }
+    const SUFFIX: &str = "...[truncated]";
+    let prefix_budget = max_bytes.saturating_sub(SUFFIX.len());
+    let end = utf8_boundary_at_or_before(&sanitized, prefix_budget);
+    format!("{}{}", &sanitized[..end], SUFFIX)
+}
+
+fn cap_recovery_model_text(mut value: String) -> String {
+    if value.len() <= MODEL_RECOVERY_INSTRUCTION_MAX_BYTES {
+        return value;
+    }
+    let prefix_budget =
+        MODEL_RECOVERY_INSTRUCTION_MAX_BYTES.saturating_sub(MODEL_RECOVERY_TRUNCATION_SUFFIX.len());
+    let end = utf8_boundary_at_or_before(&value, prefix_budget);
+    value.truncate(end);
+    value.push_str(MODEL_RECOVERY_TRUNCATION_SUFFIX);
+    value
+}
+
+fn cap_recovery_block_payload(mut value: serde_json::Value) -> serde_json::Value {
+    if encoded_json_len(&value) <= MODEL_RECOVERY_BLOCK_PAYLOAD_MAX_BYTES {
+        return value;
+    }
+
+    if let Some(projection) = value
+        .get_mut("coverage_gap_actions")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        truncate_projection_sample(projection, 5);
+    }
+    let bounded_error = value
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .map(|error| bounded_model_field(error, 16 * 1024));
+    if let Some(error) = bounded_error {
+        value["error"] = serde_json::Value::String(error);
+    }
+    if encoded_json_len(&value) <= MODEL_RECOVERY_BLOCK_PAYLOAD_MAX_BYTES {
+        return value;
+    }
+
+    if let Some(projection) = value
+        .get_mut("coverage_gap_actions")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        truncate_projection_sample(projection, 0);
+    }
+    value["error"] = serde_json::Value::String(
+        "Submit repair blocked this tool. Use stage_worklist_next for bounded DB-backed recovery pages."
+            .to_string(),
+    );
+    if let Some(object) = value.as_object_mut() {
+        object.remove("last_needs_fix_reason");
+        object.remove("blocked_reason");
+        object.remove("allowed_tools");
+        object.remove("forbidden_tools");
+    }
+    value
+}
+
+fn truncate_projection_sample(
+    projection: &mut serde_json::Map<String, serde_json::Value>,
+    limit: usize,
+) {
+    let total = projection
+        .get("total")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default() as usize;
+    let sample_len = projection
+        .get_mut("sample")
+        .and_then(serde_json::Value::as_array_mut)
+        .map(|sample| {
+            sample.truncate(limit);
+            sample.len()
+        });
+    if let Some(sample_len) = sample_len {
+        projection.insert("sample_count".to_string(), serde_json::json!(sample_len));
+        projection.insert(
+            "omitted".to_string(),
+            serde_json::json!(total.saturating_sub(sample_len)),
+        );
+    }
+}
+
+fn encoded_json_len(value: &serde_json::Value) -> usize {
+    serde_json::to_vec(value).map_or(0, |encoded| encoded.len())
+}
+
+fn utf8_boundary_at_or_before(value: &str, max_bytes: usize) -> usize {
+    let mut end = max_bytes.min(value.len());
+    while !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    end
 }
 
 fn append_direct_enumeration_repair_tools(tools: &mut Vec<String>, actions: &[CoverageGapAction]) {
+    if has_enumeration_gap_actions(actions) {
+        push_unique_tool(tools, "enum_preflight_web_origins");
+    }
     for action in actions {
         for suggested in &action.suggested_tools {
             let suggested = suggested
@@ -611,7 +825,6 @@ fn append_direct_enumeration_repair_tools(tools: &mut Vec<String>, actions: &[Co
         match action.technique.as_str() {
             "GOLISH-ENUM-JSAPI" => {
                 push_unique_tool(tools, "browser_collect_js_api");
-                push_unique_tool(tools, "js_collect");
                 push_unique_tool(tools, "js_extract_apis");
                 push_unique_tool(tools, "enum_crawl_same_origin_urls");
             }
@@ -638,11 +851,15 @@ fn append_direct_eas_repair_tools(tools: &mut Vec<String>, actions: &[CoverageGa
             if is_direct_eas_repair_tool(&suggested) {
                 push_unique_tool(tools, &suggested);
             }
+            if suggested == "whatweb" {
+                push_unique_tool(tools, "eas_fingerprint_web_stack");
+            }
         }
         match action.technique.as_str() {
             "GOLISH-EAS-LIVENESS" => push_unique_tool(tools, "eas_probe_http_liveness"),
             "GOLISH-EAS-PORT" => push_unique_tool(tools, "eas_discover_ports"),
             "GOLISH-EAS-SERVICE-FINGERPRINT" => push_unique_tool(tools, "eas_fingerprint_services"),
+            "GOLISH-EAS-WEB-FINGERPRINT" => push_unique_tool(tools, "eas_fingerprint_web_stack"),
             _ => {}
         }
     }
@@ -673,17 +890,20 @@ fn is_direct_enumeration_repair_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
         "browser_collect_js_api"
-            | "js_collect"
             | "js_extract_apis"
             | "route_probe_paths"
             | "enum_crawl_same_origin_urls"
+            | "enum_preflight_web_origins"
     )
 }
 
 fn is_direct_eas_repair_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "eas_probe_http_liveness" | "eas_discover_ports" | "eas_fingerprint_services"
+        "eas_probe_http_liveness"
+            | "eas_discover_ports"
+            | "eas_fingerprint_services"
+            | "eas_fingerprint_web_stack"
     )
 }
 
@@ -718,7 +938,12 @@ fn coverage_gap_eas_wrapper_target_block_reason(
         return None;
     }
     let mut targets = Vec::new();
-    if let Some(batch) = tool_args.get("targets").and_then(|v| v.as_array()) {
+    let batch_key = if tool_name == "eas_fingerprint_web_stack" {
+        "target_urls"
+    } else {
+        "targets"
+    };
+    if let Some(batch) = tool_args.get(batch_key).and_then(|v| v.as_array()) {
         for item in batch {
             if let Some(candidate) = item.as_str().map(str::trim).filter(|s| !s.is_empty()) {
                 targets.push(candidate.to_string());
@@ -727,7 +952,7 @@ fn coverage_gap_eas_wrapper_target_block_reason(
     }
     if targets.is_empty() {
         return Some(format!(
-            "coverage-gap repair requires {tool_name} targets[] so they can be checked against coverage_gap_actions"
+            "coverage-gap repair requires {tool_name} {batch_key}[] so they can be checked against coverage_gap_actions"
         ));
     }
     let allowed = actions
@@ -867,10 +1092,9 @@ fn coverage_gap_direct_tool_target_block_reason(
     // base_url / targets[].base_url; the JS tools use target_url / target_urls[].
     let (single_key, batch_key) = match tool_name {
         "route_probe_paths" => ("base_url", "targets"),
-        "browser_collect_js_api" | "js_collect" | "js_extract_apis" => {
-            ("target_url", "target_urls")
-        }
+        "browser_collect_js_api" | "js_extract_apis" => ("target_url", "target_urls"),
         "enum_crawl_same_origin_urls" => ("target_url", "target_urls"),
+        "enum_preflight_web_origins" => ("", "origins"),
         _ => return None,
     };
     let mut targets: Vec<String> = Vec::new();
@@ -1173,6 +1397,11 @@ pub struct SubAgentExecutorContext<'a> {
     pub model_name: &'a str,
     /// Session ID for Langfuse tracing (propagated from parent agent)
     pub session_id: Option<&'a str>,
+    /// Stable database session primary key used by message-chain persistence.
+    /// This is deliberately separate from `session_id`: event/transcript keys
+    /// such as `stage-run-<uuid>` are valid trace identities but are not UUID
+    /// foreign keys into the `sessions` table.
+    pub persistence_session_id: Option<uuid::Uuid>,
     /// Base directory for transcript files (e.g., `~/.golish/transcripts`)
     /// If set, sub-agent internal events will be written to separate transcript files.
     pub transcript_base_dir: Option<&'a std::path::Path>,
@@ -1216,6 +1445,11 @@ pub struct SubAgentExecutorContext<'a> {
     /// as an internal hidden arg; non-injectable tools may fall back to the
     /// side-channel above. `None` preserves the parent/global binding.
     pub active_org_id_override: Option<uuid::Uuid>,
+    /// Trusted harness operation/stage-attempt identity inherited from the
+    /// parent runtime. It is copied into each sub-agent
+    /// [`golish_core::AgentToolContext`] and is never sourced from model-visible
+    /// tool arguments.
+    pub operation_id: Option<uuid::Uuid>,
     /// Optional post-processing hook for regular tool results. This keeps the
     /// executor generic while allowing the agent runtime to attach harness
     /// evidence/source logging to sub-agent tool calls.
@@ -1240,4 +1474,75 @@ pub struct SubAgentExecutorContext<'a> {
     /// preventing the retry spin the call-time guard alone can't stop. `None` =
     /// no filtering (legacy behaviour).
     pub hide_tool_in_stage: Option<StageToolHider>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn many_coverage_gap_actions(count: usize) -> Vec<CoverageGapAction> {
+        (0..count)
+            .map(|idx| CoverageGapAction {
+                asset: format!("https://asset-{idx:04}.example.test:443"),
+                technique: "GOLISH-ENUM-DIR".to_string(),
+                reason: format!("missing-terminal-gap-{idx:04}"),
+                suggested_capabilities: Vec::new(),
+                suggested_tools: vec!["route_probe_paths".to_string()],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn recovery_projection_bounds_1176_actions_and_block_payload() {
+        let mode = SubmitRepairMode {
+            kind: SubmitRepairKind::CoverageGap,
+            reason: "enumeration coverage has pending cells".to_string(),
+            missing_required_checks: Vec::new(),
+            coverage_gap_actions: many_coverage_gap_actions(1_176),
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
+        };
+
+        assert_eq!(mode.coverage_gap_actions.len(), 1_176);
+        let first = mode.model_instruction();
+        assert_eq!(first, mode.model_instruction(), "projection is byte-stable");
+        assert!(first.contains("total=1176"));
+        assert!(first.contains("stable_hash="));
+        assert!(first.contains("stage_worklist_next"));
+        assert!(first.contains("asset-0000.example.test"));
+        assert!(first.contains("asset-0019.example.test"));
+        assert!(!first.contains("asset-0020.example.test"));
+        assert!(!first.contains("asset-1175.example.test"));
+        assert!(first.len() <= 32 * 1024, "{} bytes", first.len());
+
+        let blocked = mode
+            .block_result("list_in_scope_targets")
+            .expect("repair lock blocks rediscovery");
+        let projection = blocked
+            .get("coverage_gap_actions")
+            .and_then(serde_json::Value::as_object)
+            .expect("blocked payload uses a bounded projection object");
+        assert_eq!(projection.get("total"), Some(&serde_json::json!(1_176)));
+        assert!(projection
+            .get("stable_hash")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|hash| !hash.is_empty()));
+        assert_eq!(
+            projection
+                .get("sample")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(20)
+        );
+        assert_eq!(projection.get("omitted"), Some(&serde_json::json!(1_156)));
+        let encoded = serde_json::to_string(&blocked).expect("blocked payload serializes");
+        assert!(encoded.contains("asset-0000.example.test"));
+        assert!(encoded.contains("asset-0019.example.test"));
+        assert!(!encoded.contains("asset-0020.example.test"));
+        assert!(!encoded.contains("asset-1175.example.test"));
+        assert!(encoded.len() <= 64 * 1024, "{} bytes", encoded.len());
+        assert!(blocked["error"].as_str().unwrap().len() <= 32 * 1024);
+        assert_eq!(blocked, mode.block_result("list_in_scope_targets").unwrap());
+    }
 }

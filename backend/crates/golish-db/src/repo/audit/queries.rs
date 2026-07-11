@@ -47,16 +47,24 @@ pub async fn list_by_category(
     Ok(rows)
 }
 
+pub(super) fn build_list_by_target_current_owner_sql() -> &'static str {
+    r#"SELECT al.*
+       FROM audit_log al
+       JOIN targets t ON t.id = al.target_id
+       WHERE al.target_id = $1
+         AND t.scope::text = 'in'
+         AND t.project_path IS NOT NULL
+         AND al.project_path = t.project_path
+       ORDER BY al.created_at DESC
+       LIMIT $2"#
+}
+
 pub async fn list_by_target(pool: &PgPool, target_id: Uuid, limit: i64) -> Result<Vec<AuditEntry>> {
-    let rows = sqlx::query_as::<_, AuditEntry>(
-        r#"SELECT * FROM audit_log
-           WHERE target_id = $1
-           ORDER BY created_at DESC LIMIT $2"#,
-    )
-    .bind(target_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    let rows = sqlx::query_as::<_, AuditEntry>(build_list_by_target_current_owner_sql())
+        .bind(target_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 

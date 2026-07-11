@@ -24,7 +24,7 @@ use golish_app_core::ports::vuln::{
 };
 
 mod convert;
-mod evidence;
+pub(crate) mod evidence;
 mod orchestration;
 mod recon;
 mod tasks;
@@ -322,9 +322,18 @@ impl DbRepoProvider for GolishDbRepoProvider {
         stage: &str,
         session_id: Option<&str>,
         stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
     ) -> anyhow::Result<serde_json::Value> {
-        self.stage_asset_coverage_impl(organization_id, stage, session_id, stage_started_at)
-            .await
+        self.stage_asset_coverage_impl(
+            organization_id,
+            stage,
+            session_id,
+            stage_started_at,
+            current_wave_target_ids,
+            current_wave_asset_values,
+        )
+        .await
     }
 
     async fn in_scope_target_types(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
@@ -347,6 +356,14 @@ impl DbRepoProvider for GolishDbRepoProvider {
         org_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<String>> {
         self.enumeration_web_capable_assets_impl(org_id).await
+    }
+
+    async fn eas_web_capable_assets(
+        &self,
+        org_id: Option<Uuid>,
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<Vec<String>> {
+        self.eas_web_capable_assets_impl(org_id, run_start).await
     }
 
     async fn eas_service_not_applicable_assets(
@@ -782,11 +799,21 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.evidence_facts_for_session_impl(session_id).await
     }
 
+    async fn eas_evidence_facts_for_session_org_fresh(
+        &self,
+        session_id: &str,
+        organization_id: Uuid,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<(String, String, String, i64)>> {
+        self.eas_evidence_facts_for_session_org_fresh_impl(session_id, organization_id, since)
+            .await
+    }
+
     async fn technique_outcome_facts(
         &self,
         organization_id: Uuid,
         run_id: &str,
-    ) -> Vec<(String, String, String, i64)> {
+    ) -> Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact> {
         self.technique_outcome_facts_impl(organization_id, run_id)
             .await
     }
@@ -796,7 +823,7 @@ impl DbRepoProvider for GolishDbRepoProvider {
         organization_id: Uuid,
         run_id: &str,
         since: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Vec<(String, String, String, i64)> {
+    ) -> Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact> {
         // 护栏 4 (2026-07-02-gate-capability-ledger Phase 1)：stage 关闭 gate 投影套
         // freshness cutoff（execute.rs 传入 run_start），避免同 session 旧 stage-run
         // 的 technique_outcomes 泄漏进本 stage-run 的 coverage 判定。

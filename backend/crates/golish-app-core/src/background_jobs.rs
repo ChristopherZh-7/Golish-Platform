@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -44,6 +45,10 @@ const COMPLETION_CHANNEL_CAP: usize = 256;
 /// Capacity of the live stdout/stderr broadcast channel. These chunks are best
 /// effort UI telemetry; the retained job buffers remain the durable source.
 const OUTPUT_CHANNEL_CAP: usize = 1024;
+/// A direct child may exit while a grandchild still holds an inherited output
+/// pipe open. Do not wait forever: bounded drain failure is terminal and must
+/// never be exposed as a clean exit with incomplete output.
+const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// High-level lifecycle state of a background job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +132,19 @@ pub struct JobCompletion {
     /// Size-capped tail of stderr (see [`COMPLETION_TAIL_BYTES`]).
     pub stderr_tail: String,
     pub duration_ms: u64,
+    /// All broadcast clones share this claim. Listener-generation handoff may
+    /// intentionally overlap subscriptions so no completion falls into a gap;
+    /// exactly one generation is allowed to perform evidence/DB side effects.
+    #[doc(hidden)]
+    pub processing_claim: Arc<AtomicBool>,
+}
+
+impl JobCompletion {
+    pub fn try_claim_processing(&self) -> bool {
+        self.processing_claim
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
 }
 
 /// Broadcast payload emitted as stdout/stderr bytes arrive for an attributed
@@ -141,6 +159,16 @@ pub struct JobOutputChunk {
     pub source: golish_core::events::ToolSource,
     pub stream: &'static str,
     pub chunk: String,
+    #[doc(hidden)]
+    pub processing_claim: Arc<AtomicBool>,
+}
+
+impl JobOutputChunk {
+    pub fn try_claim_processing(&self) -> bool {
+        self.processing_claim
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
 }
 
 /// Keep the trailing `max` bytes of `s` on a char boundary (the *end* of a
@@ -185,19 +213,40 @@ fn append_capped(buf: &mut String, chunk: &str) {
     *buf = buf[cut..].to_string();
 }
 
+fn terminal_completion(job_id: String, state: &JobState) -> JobCompletion {
+    let end = state.finished_at.unwrap_or_else(Instant::now);
+    JobCompletion {
+        job_id,
+        session_id: state.session_id.clone(),
+        organization_id: state
+            .tool_context
+            .as_ref()
+            .and_then(|context| context.organization_id),
+        command: state.command.clone(),
+        status: state.status,
+        exit_code: state.exit_code,
+        stdout_tail: tail_capped(&state.stdout, COMPLETION_TAIL_BYTES),
+        stderr_tail: tail_capped(&state.stderr, COMPLETION_TAIL_BYTES),
+        duration_ms: end.duration_since(state.started_at).as_millis() as u64,
+        processing_claim: Arc::new(AtomicBool::new(false)),
+    }
+}
+
 async fn pump<R>(
     mut reader: R,
     state: Arc<Mutex<JobState>>,
     outputs: broadcast::Sender<JobOutputChunk>,
     job_id: String,
     is_stderr: bool,
-) where
+) -> std::io::Result<()>
+where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut buf = [0u8; 8192];
     loop {
         match reader.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
+            Ok(0) => return Ok(()),
+            Err(error) => return Err(error),
             Ok(n) => {
                 let chunk = String::from_utf8_lossy(&buf[..n]);
                 let stream = if is_stderr { "stderr" } else { "stdout" };
@@ -216,6 +265,7 @@ async fn pump<R>(
                         source: ctx.source.clone(),
                         stream,
                         chunk: chunk.to_string(),
+                        processing_claim: Arc::new(AtomicBool::new(false)),
                     })
                 };
                 if let Some(event) = output_event {
@@ -224,6 +274,39 @@ async fn pump<R>(
             }
         }
     }
+}
+
+async fn drain_output_pump(
+    stream: &'static str,
+    handle: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+) -> Option<String> {
+    let Some(mut handle) = handle else {
+        return Some(format!("{stream} output pipe was unavailable"));
+    };
+    match tokio::time::timeout(OUTPUT_DRAIN_TIMEOUT, &mut handle).await {
+        Ok(Ok(Ok(()))) => None,
+        Ok(Ok(Err(error))) => Some(format!("{stream} output read failed: {error}")),
+        Ok(Err(error)) => Some(format!("{stream} output pump failed: {error}")),
+        Err(_) => {
+            handle.abort();
+            let _ = handle.await;
+            Some(format!(
+                "{stream} output drain exceeded {}ms",
+                OUTPUT_DRAIN_TIMEOUT.as_millis()
+            ))
+        }
+    }
+}
+
+async fn drain_output_pumps(
+    stdout: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+    stderr: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+) -> Vec<String> {
+    let (stdout_error, stderr_error) = tokio::join!(
+        drain_output_pump("stdout", stdout),
+        drain_output_pump("stderr", stderr)
+    );
+    stdout_error.into_iter().chain(stderr_error).collect()
 }
 
 impl BackgroundJobManager {
@@ -309,24 +392,24 @@ impl BackgroundJobManager {
 
         match cmd.spawn() {
             Ok(mut child) => {
-                if let Some(out) = child.stdout.take() {
+                let stdout_pump = child.stdout.take().map(|out| {
                     tokio::spawn(pump(
                         out,
                         state.clone(),
                         self.outputs.clone(),
                         id.clone(),
                         false,
-                    ));
-                }
-                if let Some(err) = child.stderr.take() {
+                    ))
+                });
+                let stderr_pump = child.stderr.take().map(|err| {
                     tokio::spawn(pump(
                         err,
                         state.clone(),
                         self.outputs.clone(),
                         id.clone(),
                         true,
-                    ));
-                }
+                    ))
+                });
 
                 let st = state.clone();
                 let completions = self.completions.clone();
@@ -341,60 +424,88 @@ impl BackgroundJobManager {
                         _ = tokio::time::sleep(hard_limit) => Outcome::Stopped,
                         _ = kill.notified() => Outcome::Stopped,
                     };
-                    match outcome {
-                        Outcome::Exited(Ok(status)) => {
-                            let mut s = st.lock();
-                            s.exit_code = status.code();
-                            s.status = if status.success() {
+                    let (mut status, mut exit_code, mut diagnostics) = match outcome {
+                        Outcome::Exited(Ok(status)) => (
+                            if status.success() {
                                 JobStatus::Done
                             } else {
                                 JobStatus::Failed
-                            };
-                            s.finished_at = Some(Instant::now());
-                        }
-                        Outcome::Exited(Err(_)) => {
-                            let mut s = st.lock();
-                            s.status = JobStatus::Failed;
-                            s.finished_at = Some(Instant::now());
+                            },
+                            status.code(),
+                            Vec::new(),
+                        ),
+                        Outcome::Exited(Err(error)) => {
+                            let _ = child.start_kill();
+                            let reap_error = child.wait().await.err();
+                            (
+                                JobStatus::Failed,
+                                Some(1),
+                                std::iter::once(format!("child wait failed: {error}"))
+                                    .chain(
+                                        reap_error
+                                            .map(|error| format!("child reap failed: {error}")),
+                                    )
+                                    .collect(),
+                            )
                         }
                         Outcome::Stopped => {
                             let _ = child.start_kill();
-                            let _ = child.wait().await; // reap; no lock held
-                            let mut s = st.lock();
-                            s.status = JobStatus::Killed;
-                            s.exit_code = Some(124);
-                            s.finished_at = Some(Instant::now());
+                            let wait_error = child.wait().await.err(); // reap; no lock held
+                            (
+                                JobStatus::Killed,
+                                Some(124),
+                                wait_error
+                                    .map(|error| format!("child reap failed: {error}"))
+                                    .into_iter()
+                                    .collect(),
+                            )
                         }
+                    };
+
+                    // `child.wait()` only proves the process exited. Pipe pump
+                    // tasks may still be draining kernel buffers, so terminal
+                    // state and completion broadcast must wait for both EOFs.
+                    diagnostics.extend(drain_output_pumps(stdout_pump, stderr_pump).await);
+                    if !diagnostics.is_empty() {
+                        if status == JobStatus::Done {
+                            status = JobStatus::Failed;
+                        }
+                        if exit_code.unwrap_or(0) == 0 {
+                            exit_code = Some(1);
+                        }
+                    }
+
+                    {
+                        let mut s = st.lock();
+                        for diagnostic in diagnostics {
+                            append_capped(
+                                &mut s.stderr,
+                                &format!("\n[golish] output drain incomplete: {diagnostic}"),
+                            );
+                        }
+                        s.status = status;
+                        s.exit_code = exit_code;
+                        s.finished_at = Some(Instant::now());
                     }
                     // Broadcast the terminal state to per-session listeners.
                     // Send errors (no subscribers) are expected and ignored.
                     let completion = {
                         let s = st.lock();
-                        let end = s.finished_at.unwrap_or_else(Instant::now);
-                        JobCompletion {
-                            job_id,
-                            session_id: s.session_id.clone(),
-                            organization_id: s
-                                .tool_context
-                                .as_ref()
-                                .and_then(|ctx| ctx.organization_id),
-                            command: s.command.clone(),
-                            status: s.status,
-                            exit_code: s.exit_code,
-                            stdout_tail: tail_capped(&s.stdout, COMPLETION_TAIL_BYTES),
-                            stderr_tail: tail_capped(&s.stderr, COMPLETION_TAIL_BYTES),
-                            duration_ms: end.duration_since(s.started_at).as_millis() as u64,
-                        }
+                        terminal_completion(job_id, &s)
                     };
                     let _ = completions.send(completion);
                 });
             }
             Err(e) => {
-                let mut s = state.lock();
-                s.status = JobStatus::Failed;
-                s.stderr = format!("Failed to spawn command: {e}");
-                s.exit_code = Some(1);
-                s.finished_at = Some(Instant::now());
+                let completion = {
+                    let mut s = state.lock();
+                    s.status = JobStatus::Failed;
+                    s.stderr = format!("Failed to spawn command: {e}");
+                    s.exit_code = Some(1);
+                    s.finished_at = Some(Instant::now());
+                    terminal_completion(id.clone(), &s)
+                };
+                let _ = self.completions.send(completion);
             }
         }
 
@@ -529,6 +640,48 @@ mod tests {
             snap.stdout.contains("hello-bg"),
             "stdout was: {:?}",
             snap.stdout
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_snapshot_waits_for_large_stdout_and_stderr_pumps() {
+        const BYTES_PER_STREAM: usize = 128 * 1024;
+
+        // Repeat to catch the scheduler race where child.wait wins before one
+        // of the pipe pumps gets its final turns.
+        for _ in 0..3 {
+            let mgr = BackgroundJobManager::new();
+            let command = format!(
+                "python3 -c 'import sys; sys.stdout.write(\"A\"*{BYTES_PER_STREAM}); sys.stderr.write(\"B\"*{BYTES_PER_STREAM})'"
+            );
+            let id = mgr.spawn(&command, &ws(), Duration::from_secs(10));
+            let snap = wait_terminal(&mgr, &id, Duration::from_secs(5)).await;
+
+            assert_eq!(snap.status, JobStatus::Done, "stderr={:?}", snap.stderr);
+            assert_eq!(snap.exit_code, Some(0));
+            assert_eq!(snap.stdout.len(), BYTES_PER_STREAM);
+            assert_eq!(snap.stderr.len(), BYTES_PER_STREAM);
+            assert!(snap.stdout.bytes().all(|byte| byte == b'A'));
+            assert!(snap.stderr.bytes().all(|byte| byte == b'B'));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inherited_pipe_that_cannot_drain_fails_closed() {
+        let mgr = BackgroundJobManager::new();
+        // The direct child exits, but the detached grandchild retains both
+        // inherited pipes beyond OUTPUT_DRAIN_TIMEOUT.
+        let id = mgr.spawn("sh -c 'sleep 3 &'", &ws(), Duration::from_secs(10));
+        let snap = wait_terminal(&mgr, &id, Duration::from_secs(5)).await;
+
+        assert_eq!(snap.status, JobStatus::Failed);
+        assert_ne!(snap.exit_code, Some(0));
+        assert!(
+            snap.stderr.contains("output drain incomplete"),
+            "stderr={:?}",
+            snap.stderr
         );
     }
 
@@ -699,6 +852,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn overlapping_handoff_subscribers_receive_without_duplicate_processing() {
+        let mgr = BackgroundJobManager::new();
+        let mut old_generation = mgr.subscribe_completions();
+        let mut prepared_generation = mgr.subscribe_completions();
+        mgr.spawn_for_session(
+            "echo handoff-complete",
+            &ws(),
+            Duration::from_secs(10),
+            Some("sess-handoff".to_string()),
+        );
+
+        let old = tokio::time::timeout(Duration::from_secs(5), old_generation.recv())
+            .await
+            .expect("old subscriber receives")
+            .expect("old completion");
+        let prepared = tokio::time::timeout(Duration::from_secs(5), prepared_generation.recv())
+            .await
+            .expect("prepared subscriber receives")
+            .expect("prepared completion");
+
+        assert_eq!(old.job_id, prepared.job_id);
+        assert_ne!(
+            old.try_claim_processing(),
+            prepared.try_claim_processing(),
+            "overlapping generations share one exactly-once processing claim"
+        );
+    }
+
+    #[tokio::test]
+    async fn controlled_handoff_drains_pre_subscription_event_and_claims_overlap_once() {
+        fn completion(job_id: &str) -> JobCompletion {
+            JobCompletion {
+                job_id: job_id.to_string(),
+                session_id: Some("sess-handoff".to_string()),
+                organization_id: None,
+                command: "echo handoff".to_string(),
+                status: JobStatus::Done,
+                exit_code: Some(0),
+                stdout_tail: String::new(),
+                stderr_tail: String::new(),
+                duration_ms: 1,
+                processing_claim: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
+        let (tx, _) = broadcast::channel(8);
+        let mut old_generation = tx.subscribe();
+        tx.send(completion("before-subscribe")).unwrap();
+        let mut prepared_generation = tx.subscribe();
+
+        // Retirement drain owns the only copy of a completion that predates
+        // candidate subscription, so it must consume it rather than exit first.
+        let before = old_generation.try_recv().expect("old queue retains event");
+        assert!(before.try_claim_processing());
+
+        tx.send(completion("overlap")).unwrap();
+        let overlap_old = old_generation.recv().await.unwrap();
+        let overlap_new = prepared_generation.recv().await.unwrap();
+        let overlap_claims = usize::from(overlap_old.try_claim_processing())
+            + usize::from(overlap_new.try_claim_processing());
+        assert_eq!(overlap_claims, 1);
+    }
+
+    #[tokio::test]
     async fn output_chunk_is_broadcast_with_tool_context() {
         let mgr = BackgroundJobManager::new();
         let mut rx = mgr.subscribe_output_chunks();
@@ -706,6 +923,7 @@ mod tests {
             request_id: "req-live".to_string(),
             tool_name: "pentest_run".to_string(),
             source: golish_core::events::ToolSource::Main,
+            operation_id: None,
             organization_id: None,
         };
         let id = mgr.spawn_for_session_and_tool(
@@ -752,6 +970,31 @@ mod tests {
         assert_eq!(completion.exit_code, Some(7));
         // Unattributed spawn → no session routing.
         assert_eq!(completion.session_id, None);
+    }
+
+    #[tokio::test]
+    async fn spawn_failure_still_broadcasts_one_terminal_completion() {
+        let mgr = BackgroundJobManager::new();
+        let mut rx = mgr.subscribe_completions();
+        let missing_workspace =
+            std::env::temp_dir().join(format!("golish-missing-workspace-{}", uuid::Uuid::new_v4()));
+        let job_id = mgr.spawn_for_session(
+            "echo never-starts",
+            &missing_workspace,
+            Duration::from_secs(10),
+            Some("spawn-failed-session".to_string()),
+        );
+
+        let completion = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("spawn failure completion arrives")
+            .expect("completion channel open");
+        assert_eq!(completion.job_id, job_id);
+        assert_eq!(completion.status, JobStatus::Failed);
+        assert_eq!(completion.exit_code, Some(1));
+        assert!(completion.stderr_tail.contains("Failed to spawn command"));
+        assert!(completion.try_claim_processing());
+        assert!(!completion.try_claim_processing());
     }
 
     #[test]

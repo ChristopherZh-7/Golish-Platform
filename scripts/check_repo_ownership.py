@@ -168,7 +168,7 @@ ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
         # service port (golish-app-core/ports/agent, S1-2e); the recon
         # passive_scans read moved to the recon port (S1-2b5). All removed.
         # NB: pentest's recon-table reads/writes — pentest_bridge (auth_probe /
-        # record_finding / js_collect{sitemap,tool_impl} / js_extract_apis,
+        # record_finding / browser_collect_js_api / js_extract_apis,
         # targets+sitemap_store+js_analysis) + pipeline/storage.rs
         # (targets+sitemap_store+directory_entries) — now route through the recon
         # service ports (golish-app-core/ports/recon, S1-2b3/b4), so their
@@ -208,7 +208,6 @@ RAW_SQL_ALLOWLIST: frozenset[str] = frozenset(
         # (crate-per-service M3); keys are crate-prefixed (see SOURCE_ROOTS).
         "golish-pentest-app/evidence.rs",
         "golish-pentest-app/pentest_bridge/auth_probe.rs",
-        "golish-pentest-app/pentest_bridge/js_collect/sitemap.rs",
         "golish-pentest-app/pentest_bridge/record_finding.rs",
         "golish-pentest-app/pentest_bridge/run_pipeline.rs",
         "golish-pentest-app/pentest_bridge/vault_ops.rs",

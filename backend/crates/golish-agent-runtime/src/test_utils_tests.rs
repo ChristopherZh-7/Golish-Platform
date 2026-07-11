@@ -2260,6 +2260,38 @@ struct MockToolProvider {
     allowed_tools: Vec<String>,
 }
 
+struct ObserveTrustedOperationTool {
+    observed: Arc<std::sync::Mutex<Option<uuid::Uuid>>>,
+}
+
+#[async_trait::async_trait]
+impl golish_core::Tool for ObserveTrustedOperationTool {
+    fn name(&self) -> &'static str {
+        "observe_trusted_operation"
+    }
+
+    fn description(&self) -> &'static str {
+        "Record the task-local trusted operation id for a propagation test"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{}})
+    }
+
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _workspace: &std::path::Path,
+    ) -> anyhow::Result<serde_json::Value> {
+        let operation_id =
+            golish_core::current_agent_tool_context().and_then(|context| context.operation_id);
+        *self.observed.lock().expect("operation observer lock") = operation_id;
+        Ok(serde_json::json!({
+            "operation_id": operation_id.map(|id| id.to_string())
+        }))
+    }
+}
+
 impl MockToolProvider {
     fn new() -> Self {
         Self {
@@ -2356,6 +2388,83 @@ fn test_sub_agent_definition_for_executor(id: &str) -> SubAgentDefinition {
 }
 
 #[tokio::test]
+async fn sub_agent_registry_tool_receives_trusted_operation_id() {
+    let test_ctx = TestContextBuilder::new().build().await;
+    let workspace = test_ctx.workspace_path().await;
+    let operation_id = uuid::Uuid::new_v4();
+    let observed = Arc::new(std::sync::Mutex::new(None));
+
+    let mut registry = ToolRegistry::new(workspace.clone()).await;
+    registry.register_tool(Arc::new(ObserveTrustedOperationTool {
+        observed: observed.clone(),
+    }));
+    let registry = Arc::new(RwLock::new(registry));
+    let workspace = Arc::new(RwLock::new(workspace));
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let model = MockCompletionModel::new(vec![
+        MockResponse::tool_call("observe_trusted_operation", serde_json::json!({})),
+        MockResponse::text("operation observed"),
+    ]);
+    let agent_def = SubAgentDefinition::new(
+        "operation_observer",
+        "Operation Observer",
+        "Tests trusted operation propagation",
+        "Call observe_trusted_operation once, then finish.",
+    )
+    .with_tools(vec!["observe_trusted_operation".to_string()])
+    .with_max_iterations(2);
+    let tool_provider =
+        MockToolProvider::with_allowed_tools(vec!["observe_trusted_operation".to_string()]);
+    let sub_ctx = SubAgentExecutorContext {
+        event_tx: &event_tx,
+        tool_registry: &registry,
+        workspace: &workspace,
+        provider_name: "mock",
+        model_name: "mock-model",
+        resume: None,
+        sub_tool_router: None,
+        active_org_id_source: None,
+        active_org_id_override: None,
+        operation_id: Some(operation_id),
+        session_id: Some("operation-propagation-test"),
+        persistence_session_id: None,
+        transcript_base_dir: None,
+        api_request_stats: None,
+        cancelled: None,
+        briefing: None,
+        temperature_override: None,
+        max_tokens_override: None,
+        top_p_override: None,
+        chain_persistence: None,
+        sub_agent_registry: None,
+        post_shell_hook: None,
+        post_tool_result_hook: None,
+        tool_observer: None,
+        initial_submit_repair_mode: None,
+        stage_tool_guard: None,
+        hide_tool_in_stage: None,
+    };
+
+    let result = execute_sub_agent(
+        &agent_def,
+        &serde_json::json!({"task": "observe operation"}),
+        &test_sub_agent_context(),
+        &model,
+        sub_ctx,
+        &tool_provider,
+        "operation-propagation-parent",
+    )
+    .await
+    .expect("sub-agent execution");
+
+    assert!(result.success);
+    assert_eq!(
+        *observed.lock().expect("operation observer lock"),
+        Some(operation_id)
+    );
+}
+
+#[tokio::test]
 async fn test_sub_agent_context_inheritance() {
     // Verify sub-agent inherits parent context correctly
     let test_ctx = TestContextBuilder::new().build().await;
@@ -2393,7 +2502,9 @@ async fn test_sub_agent_context_inheritance() {
         sub_tool_router: None,
         active_org_id_source: None,
         active_org_id_override: None,
+        operation_id: None,
         session_id: None,
+        persistence_session_id: None,
         transcript_base_dir: None,
         api_request_stats: None,
         cancelled: None,
@@ -2509,7 +2620,9 @@ async fn test_sub_agent_result_propagation() {
         sub_tool_router: None,
         active_org_id_source: None,
         active_org_id_override: None,
+        operation_id: None,
         session_id: None,
+        persistence_session_id: None,
         transcript_base_dir: None,
         api_request_stats: None,
         cancelled: None,
@@ -2587,7 +2700,9 @@ async fn test_sub_agent_events_emitted() {
         sub_tool_router: None,
         active_org_id_source: None,
         active_org_id_override: None,
+        operation_id: None,
         session_id: None,
+        persistence_session_id: None,
         transcript_base_dir: None,
         api_request_stats: None,
         cancelled: None,
@@ -2703,7 +2818,9 @@ async fn test_sub_agent_error_handling() {
         sub_tool_router: None,
         active_org_id_source: None,
         active_org_id_override: None,
+        operation_id: None,
         session_id: None,
+        persistence_session_id: None,
         transcript_base_dir: None,
         api_request_stats: None,
         cancelled: None,
@@ -2798,7 +2915,9 @@ async fn test_sub_agent_tool_restrictions() {
         sub_tool_router: None,
         active_org_id_source: None,
         active_org_id_override: None,
+        operation_id: None,
         session_id: None,
+        persistence_session_id: None,
         transcript_base_dir: None,
         api_request_stats: None,
         cancelled: None,
@@ -2901,7 +3020,9 @@ async fn test_sub_agent_timeout_behavior() {
         sub_tool_router: None,
         active_org_id_source: None,
         active_org_id_override: None,
+        operation_id: None,
         session_id: None,
+        persistence_session_id: None,
         transcript_base_dir: None,
         api_request_stats: None,
         cancelled: None,

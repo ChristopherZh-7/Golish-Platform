@@ -133,6 +133,14 @@ impl AgentBridge {
         self.services.sidecar_state = Some(sidecar_state);
     }
 
+    /// Clone the exact per-bridge capture backend used by future agent turns.
+    /// Session restore must use this handle rather than the application-global
+    /// legacy `SidecarState`, otherwise restored context is invisible here and
+    /// different tabs can clobber one another.
+    pub fn session_capture_backend(&self) -> Option<Arc<dyn SessionCaptureBackend>> {
+        self.services.sidecar_state.clone()
+    }
+
     /// Set the graph knowledge base backend (decoupled from golish-graphiti).
     pub fn set_graph_backend(
         &mut self,

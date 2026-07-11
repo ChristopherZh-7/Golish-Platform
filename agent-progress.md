@@ -17,6 +17,10 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
+| **当前状态（2026-07-11）** | **本轮信息收集闭环已完成并验证**：`enumeration-four-axis-ip-web-2026-07-01` 与 `mcp-trust-builtin-provenance-2026-07-11` 均为 `passing`，当前 `feature_list.json` 无 `in_progress`。Test1 Enumeration 已有 372 origins × 4 axes = 1488/1488 terminal 的 live PASS 与独立 DB/token 审计。 |
+| **当前 blocker（2026-07-11）** | 本轮实现范围无 blocker。项目 MCP 审批/预览 UI、trust 后热 reload、配置内容 hash/revoke 是独立后续能力；当前安全行为是未信任 project config fail closed，不自动执行。 |
+| **未提交状态（2026-07-11）** | 工作树保留本轮及此前用户授权的整套 Enumeration/P0-P2 改动，未 stage、未 commit、未 push；所有路径已在 2026-07-11 会话记录分组说明。7 个 legacy `js_collect` 删除是既有明确授权，保持删除，不恢复。 |
+| **历史快照说明** | 紧随其后的 3 条 2026-05/06 长记录只为考古保留，已被上面带 `2026-07-11` 的字段完全取代，不再代表当前状态。 |
 | **当前最高优先级** | **用户已澄清北极星 = crate-per-service（每个功能独立 crate、类微服务）**。新写 `docs/superpowers/plans/2026-05-30-crate-per-service-split.md`（servitization 阶段 3 S3-2 可执行化），feature_list `arch-crate-per-service-split` 已转 **`in_progress`**（M0 阶段）。**2026-05-30 进展**：§6 的 4 决策全按推荐拍板 + Tauri 跨 crate 注册机制 web 核实（Discussion #5378：invoke_handler 只调一次 → 单聚合 generate_handler! 路径引用）。**M0 State 下沉半边 = 完成+验证**：新建 `golish-app-core`(L5) 收 GolishError+DbState（AppState 故意留 golish），`golish/src/{error,state/db}.rs` 改 re-export，`check_dag.py` 加 L5；`cargo check -p golish-app-core` ✅ + `check_dag.py` ✅(46 crates) + golish 编译用户确认 OK。**M1（vuln 叶子）整体完成+验证**（MCP-agent-2 接 dead session yj5fxhjr 半成品）：vuln_intel(M1a)+wiki(M1b) 均 git mv 进 golish-vuln-app；`cargo check` 两 crate + `check_dag`(47 crates) + `check_repo_ownership` 全 exit 0；M0 欠的多 crate 命令注册由此 compile-level 实证。**M2（recon 服务）整体完成+验证（2026-05-31 · MCP-agent-4 · 层次 A 编译期依赖链）**：`golish-recon-app` 抽入 11 模块组（targets/organizations/scan_queue/sensitive_scan/custom_rules/scan_runner/intel_providers/wordlists + asset_intel + integrations），`scoping` 下沉 golish-app-core，asset_intel 解 PentestState（`ToolsConfigState` 共享同一 `Arc<ConfigManager>`），integrations（含 tauri webview 捕获引擎）搬迁 + tauri_app 启动接线。验证：`cargo check` 两 crate + `nextest -p golish-recon-app`(106✓) + `clippy -p golish-recon-app -D warnings` + `check_dag`(48 crates) + `check_repo_ownership` 全 exit 0。**M3（pentest 服务）整体完成+验证（2026-05-31 · MCP-agent-3 · 层次 A 编译期依赖链）**：`golish-pentest-app`(L5.6) 抽入 9 模块组（pentest/pentest_ai/pentest_bridge/findings/methodology/pipeline/execution_plans/evidence/security_analysis + 连带 output_parser）；**两个共享件下沉 golish-app-core**：`pty_interactive`（golish state/runtime/ai + pentest_ai 双用）+ `ports`(VaultReadPort/PgVaultAdapter，S1-2a)。pentest-app 编译期依赖 recon-app(targets)/pipeline(L3)/app-core；ai/ 入向桥 `pub(crate) use golish_pentest_app::{pentest,pentest_ai,pentest_bridge}`。验证：`cargo check` 两 crate + `nextest -p golish-pentest-app`(**47✓**) + `clippy -p golish-pentest-app -D` + `clippy -p golish --lib -D` + `check_dag`(**49 crates**) + `check_repo_ownership` 全 exit 0。**M4 调查 + M4-A（AppState 解耦）完成（2026-05-31 · MCP-agent-3）**：M4（agent）实证发现**真实 blocker**——`ai/commands/*`(19 文件) 几乎全 take 单体 `AppState`，而 `AppState` 聚合 `AiState`(定义在 ai/commands/mod.rs)，三者互锁 → 直接抽 ai/ 会造成 golish↔agent-app 循环（见 `docs/superpowers/plans/2026-05-31-m4-agent-app-feasibility.md`）。用户选「开 A：AppState 解耦」。**M4-A 完成**：新建 `golish-agent-app`(L5.6)，`AiState` 搬入 + 新 `AgentState`(13 字段 ≈ AppState 减 command_index/telemetry/langfuse)；`AppState::extract_agent_state()` + 启动 `.manage()`；**19 个 ai/commands 全部 `State<AppState>`→`State<AgentState>`**；bridge_config/mcp 接线改走 AgentState。验证：cargo check 两 crate + `clippy -p golish --lib -D` + `clippy -p golish-agent-app -D` + `check_dag`(**50 crates**) + `check_repo_ownership` 全 exit 0；ReadLints 无错（顺带 #[allow(dead_code)] 3 处 pre-existing 死字段 pty/sidecar/db_pool_ready，recompile surfaced）。**M4-proper 完成+验证（2026-05-31 · MCP-agent-3 接另一 MCP 半成品收尾）**：另一 MCP 已 `git mv` ai/ 全子树 + conversation_store 入 golish-agent-app、runtime/ 下沉 golish-app-core（TauriRuntime 解耦 AppState 改 take pty_output_tap 参数）、golish 侧 ai.rs/runtime.rs/conversation_store shim + facade + 守卫，但只跑 cargo check（带 4 unused warning）、从未跑 clippy、且在删死 re-export 前被掐断。本会话补完：① agent-app lib.rs 加 crate 级 `#![allow(clippy::too_many_arguments)]`（agents.rs:43 16 参命令）；② 删 4 个死 re-export（state AgentState / tools pentest_ai+pentest_bridge / db PgPentestStore，db/mod.rs 现空占位）。验证全绿：cargo check 两 crate + clippy 两 crate `-D warnings` + nextest -p golish-agent-app(**15✓**) + check_dag(**50 crates**) + check_repo_ownership 全 exit 0。**M5 platform 完成+验证（2026-05-31 · MCP-agent-3 · 用户「开 M5 platform」）**：抽 `golish-platform-app`(L5.5 纯叶子，零兄弟依赖)——`tools/{vault,audit,notes,recordings}.rs`(4 文件全 `State<DbState>`)`git mv` 入 crate，跨服务读经 golish_db::repo(L2) 不经兄弟 crate；导入重映射 `crate::{error,state::DbState,tools::scoping}`→`golish_app_core::*`；crate 级 too_many_arguments allow；facade vault/workspace 转发；golish tools/mod 删 4 pub mod + 删死 scoping re-export；守卫 check_dag(platform-app=5.5)+check_repo_ownership(SOURCE_ROOTS + DOMAIN_RULES 清 4 + ALLOWLIST/RAW_SQL 迁前缀)。验证全绿：cargo check 两 crate + clippy 两 crate -D + nextest -p golish-platform-app(**1✓**) + check_dag(**51 crates**) + check_repo_ownership 全 exit 0。**🎯 crate-per-service 北极星：5 个服务域(vuln/recon/pentest/agent/platform)全部层次 A 抽完。** epic 维持 in_progress 待层次 B（端口切兄弟硬依赖升真微服务）/ precommit / commit 收口。**层次 B 启动 · S1-2b1 完成（2026-05-31 · MCP-agent-3 · 用户「开层次 B 端口化」→「按推荐开干 b1」）**：发现 S1-2b 设计过期（写于层次 A 前，假设端口放 golish/src/ports），修正端口家为 **golish-app-core/src/ports/recon/**（6 消费方已分散到 4 app crate，不能依赖 golish）。建 ReconScansPort(10 method)+ReconAssetsPort(1 method)（镜像 repo 签名去 pool、返回同 Row 类型 remote-ready、纯透传适配器）；GolishDbRepoProvider 加 2 端口字段 new(pool) 内构造（外部签名不变）；agent-app recon.rs 11 调用点迁端口；守卫加 ('ports/recon','recon') + 删 5 条 ALLOWLIST。验证全绿：check app-core/agent-app + nextest ports::recon(2✓) + clippy 三处 -D 零告警 + check_dag(51) + repo_ownership(OK,ALLOWLIST 净减 5)。**b2 完成（2026-05-31，用户「接着开 b2」）**：security_analysis.rs（pentest，10 自由 Tauri 命令）5 recon 表迁端口；因须保留 pool_ready 就绪门，用『就绪门后内联构造适配器』（非 struct 注入）；扩 ReconScansPort +4 + ReconAssetsPort +1 method；删 5 条 ALLOWLIST（累计 28→18）；验证全绿（check pentest-app + nextest ports::recon 2✓ + clippy app-core/pentest-app/golish --lib -D 零告警 + 双守卫）。**b3-b6 完成（2026-05-31，用户「连续干 b3-b6」）→ S1-2b ReconPort 全 6 子片完成,22 条 recon 跨服务耦合全切断（ALLOWLIST 28→6）**：新建 ReconTargetsPort/ReconSitemapPort/ReconDirectoryPort + 扩 ReconScansPort（js_analysis_update_file_path_by_url、passive_scans_list_global_by_project，含端口 DTO ReconPassiveScanGlobal 解泛型 object-safety + app-core 加 chrono）；迁 8 文件（pentest_bridge 5 + pipeline/storage + platform/audit + vuln/matching），`&PgPool` 消费方用 Arc::new(pool.clone()) 注入。验证全绿：check 3 消费方 + nextest ports::recon(5✓) + nextest pentest/platform/vuln(48✓ 无回归) + clippy 五处 -D 零告警 + 双守卫。剩余 ALLOWLIST 6 = pentest_plan/vuln/agent_log/scan_queue（S1-2c/d/e/f，非 recon）。 **commit + S1-2c/d/e/f 完成（2026-05-31，用户「你帮我commit吧...后面全部做完」）**：① M0–S1-2b 已 commit `45f4bb2`（229 文件，未 push，本地 ahead 12）；② S1-2c（VulnIntelPort+WikiKbPort）/ S1-2d（PentestPlanPort）/ S1-2e（AgentLogReadPort，含 DTO 解泛型）/ S1-2f（scan_queue REPO_OWNER vuln→recon 伪阳性修正）全部完成 → **S1-2 横向耦合端口化整体完成，ALLOWLIST 28→0（cross-service ratchet 清空，每条横向 repo 耦合都走 golish-app-core/ports/ 服务端口）**。验证全绿：clippy app-core/agent/platform/golish --lib -D 零告警 + nextest app-core ports(10 object-safe) + nextest agent/platform/vuln(16✓ 无回归) + check_dag(51) + check_repo_ownership OK clean(ALLOWLIST 空)。**下一步 = commit S1-2c-f；（用户回来后）跑 just precommit 决定 push**。**§2.1：2 个 in_progress = arch-crate-per-service-split（父 epic）+ arch-s1-2b-recon-port（子里程碑），同一工作流父/子两粒度。** M0–S1-2b 已 commit(45f4bb2,未 push)；S1-2c-f 待 commit；全套未 push、未跑 just precommit 全量。前置端口：`arch-s1-2b-recon-port`（`not_started`，设计已写，ReconPort 是 M2 recon 抽取的前置）。父条目 `arch-s1-2-port-horizontal-coupling` 已 **passing**（S1-2a 走路骨架确立）。`target-surface-workbench` 继续 `blocked`。**§2.1 当前 in_progress 数 = 1（arch-crate-per-service-split）**。 |
 | **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。**2026-05-30 更新**：本机 `just check` **全绿**（fmt + check-fe + test-fe + lint-rust（clippy `-D warnings` 0 告警 + `cargo fmt --check`）+ test-rust-all（nextest **2592 passed / 7 skipped / 0 failed**）+ check-types（ts-rs 绑定无漂移）均 ✅）。此前记录的 clippy warnings 与 sandbox PermissionDenied baseline failures 在本机最新工作树**未复现**。 |
 | **未提交的半成品** | **2026-06-15（MCP-agent-1）：0.zone apk 微信公众号映射补全——已 commit `3ea3466d`（8 文件：0.zone http partial-success/retry [与 MCP-3 entangled，含 http.rs/models] + wechat 映射 0-zone.json/profile_patch.rs/org-fields.ts/测试；未 push）。i18n `en/zh-CN.json` 的 wechat 标签因与他会话「assets」hunk 共文件**未纳入**（feature 经英文回退仍显示，中文标签待协调提交）。TDD 全绿（nextest asset_intel 66/66 + clippy -D 零告警 + 前端全量 1322 + check-fe exit 0），未跑全量 precommit。详见会话记录最新一条。** **2026-06-14（MCP-agent-2）：engagement 总览/扇出全栈移除 + stage-run 闭环——47 项改动未 commit（branch `feat/stage-run-fanout`）；完整 `just check` 全量全绿（`cargo clippy --workspace -- -D warnings` 0 告警 + `cargo nextest --workspace` 3269 passed/7 skipped + check-fe/test-fe 绿）。详见会话记录最新一条。** **2026-05-30：架构优化批已拆 9 commit 落 `feat/recon-service`（`98beea9`→`6aaa0fb`，HEAD `d060ce4`）。** 其上叠了 **P0-3b 残余作用域 SQL 下沉**（T1-T6 全部完成，**未 commit**）：26 个 tracked 文件改动 + 6 个新 repo 模块（untracked：`repo/{scan_queue,sensitive_scan,conversation_store,directory_entries,sitemap_store,custom_rules}.rs`）。验证：rg 命令层裸作用域 SQL 清零、`golish-db` nextest 46/46、`golish --lib` nextest 318/318、`clippy golish-db+golish` 全绿，并跑通**全栈 `just precommit` → `✓ All checks passed!`（exit 0）**（含用户授权后修的 1 个 pre-existing `integrations/commands.rs:179` baseline）。**已按拆分提交 4 个 commit**（`65e0292`/`06af27a`/`d023386`/`c2f5ad2`，落 `feat/recon-service`，未 push）。**2026-05-30 续（MCP-2）：P2 拆分①完成——`golish-pentest-domain/src/models.rs`(1310) 模块化为 module-root + `models/{tool_config,asset_intel,runtime,tests}.rs`（全 < 500 行），全验证通过（crate check/nextest 17✓/clippy `-D warnings`/`cargo check --workspace` 全绿），**未 commit**（`M models.rs` + `?? models/`）。P2 拆分②完成——`golish/src/tools/pentest_bridge/js_collect.rs`(1357) 模块化为 module-root + `js_collect/{extract,judge,quality,sitemap,tool_impl,tests}.rs`（全 < 500 行，max 470），全验证通过（`cargo check -p golish`/`nextest js_collect` 26✓/`clippy -p golish --all-targets -D warnings` 全绿），**未 commit**（`M js_collect.rs` + `?? js_collect/`）。P2 拆分③完成——`golish/src/tools/integrations/capture/engine.rs`(1483) 模块化为 module-root + `engine/{extract,helpers,tests}.rs`（全 < 500 行，engine.rs 496）；生命周期/webview 方法留 root 避免 super:: 改写，全验证通过（`cargo check -p golish`/`nextest capture::engine` 23✓/`clippy -p golish --all-targets -D warnings` 全绿），**未 commit**（`M engine.rs` + `?? engine/`）。P2 拆分④（进行中）——`frontend/mocks.ts`(4135→2353) 抽出事件系统/AI 模拟/showcase 三层到 `mocks/{event-bus,events,simulations,showcase}.ts`（公共面零变更；`showcase.ts` 1146 仍 >500 待再分），`check-fe`+`test-fe` 全绿；剩余 demos/有状态 ipc 待续。**✅ 已按块 commit**：经 `just precommit` 全绿（`✓ All checks passed!`，~21.7min）后落 5 个 commit 到 `feat/recon-service`（`a71319b` pentest-domain models / `03871db` js_collect / `63c196e` capture engine / `83a105c` frontend mocks / `dd3c367` docs progress，**未 push**）。**2026-05-30 收尾（MCP-agent-2）：本会话架构体检全批（拆/合并/优化/dedup）已 `cargo fmt --all` 后按主题拆 20 个 commit（`a85f7d4`(scripts)→…→ docs(progress)，**未 push**）；提交后工作树 clean。完整 `just precommit` 本轮未重跑（树稍早已全绿，fmt 仅排版）。** **2026-05-30 续（MCP-5 · 接 MCP-3 转交）：S1-1 repo 数据所有权守卫 + check_dag 修复**——已修既有 `golish-graphiti(L1)→golish-db(L2)` DAG 违规（graphiti 归 L2，非删依赖）；`just arch` → **exit 0**（双守卫全绿）。已落 4 commit 到 `feat/recon-service`（`b0811ea`/`dc9ad0f`/`821c101` + 1 docs commit，**未 push**），提交后工作树 clean。feature_list `arch-s1-1-repo-ownership-guard` → **passing**；`just precommit` 未重跑（改动集零 Rust/TS/Cargo diff）。 **2026-05-30 续（MCP-agent-4 数据工程）：S1-2a `VaultReadPort` 走路骨架** —— 另一会话写 Tasks 1-4（端口/迁移/注入），本会话接手 Task 5（守卫拔 ratchet）+ Task 6（文档/feature_list/progress）。改动：`?? golish/src/ports/`(3 文件)、`M golish/src/lib.rs`、`M tools/pentest_bridge/{vault_ops,auth_probe,mod}.rs`、`M scripts/check_repo_ownership.py`、`M docs/architecture.md`、`M feature_list.json`、`M agent-progress.md`、`?? docs/{design,plans}/2026-05-30-s1-2-*`。验证：`cargo check -p golish` exit 0、`just arch` exit 0（ALLOWLIST **30→28**）、guard OK clean、`rg golish_db::repo::vault` 于 pentest_bridge 空。**2026-05-30 续（MCP-agent-3 后端工程，用户授权 C: A+B 一气呵成）**：跑 `cargo nextest -p golish ports::platform::vault` → **1 passed/373 skipped exit 0**（4m53s 冷编译）+ `just precommit` → **✓ All checks passed! exit 0**（29.6 min · fmt+check-fe+test-fe+lint-rust+test-rust-all 全绿）；按 plan 拆 **6 commit 落 feat/recon-service**：`6abaec8`(feat 端口骨架,4f+118)/`1e162de`(refactor VaultTool,1f)/`1a7018b`(refactor AuthProbeTool,1f)/`1149ddb`(refactor 构造点注入,1f)/`389d3fd`(chore 拔 ratchet,1f) + `23e47a6`(docs S1-2 design+plan+architecture+feature_list+progress,5f +947-3)；**未 push**，本地 ahead 10。**2026-05-30 续 2（MCP-agent-3 · 用户授权"你想怎么搞合适"）**：S1-2 父条目 `arch-s1-2-port-horizontal-coupling` → **passing**（走路骨架确立）；**新增** `arch-s1-2b-recon-port` 条目 `not_started`（等用户审 §10 5 决策再转 in_progress）；**新写** `docs/design/2026-05-30-s1-2b-recon-read-port.md` S1-2b 高层设计（22 条 allowlist 精确清单+grep 实证、6 子片划分 b1-b6、ReconPort trait 25 method 含读+写、守卫配合、5 待拍板决策）；命名差异关键：a 是 ReadPort（read-only），b 是 Port（含写，因 agent-bridge 适配器内有 insert/upsert/update）。新增/修改 3 文件：`?? docs/design/2026-05-30-s1-2b-recon-read-port.md`、`M feature_list.json`、`M agent-progress.md`。**待 commit + 不 push**（push 需用户单独点头，按 AGENTS.md §2.7 红线保守处理）。 **2026-05-30 续（MCP-agent-2）：M1 crate 抽取全套未 commit** —— `?? backend/crates/golish-app-core/`(M0)、`?? backend/crates/golish-vuln-app/{Cargo.toml,src/lib.rs}` + `RM` 19 文件（vuln_intel 8 + wiki 11，git mv 进 golish-vuln-app/src/）、`M backend/Cargo.toml`、`M golish/{Cargo.toml, src/commands_facade/{vuln_intel,wiki}.rs, src/tools/mod.rs, src/error.rs, src/state/db.rs, src/event_emitter.rs}`、`M scripts/check_{dag,repo_ownership}.py`、`M feature_list.json`、`M agent-progress.md`。验证：`cargo check` 两 crate + 双守卫全 exit 0；**未跑 just precommit 全量、未 commit、未 push**。 |
@@ -28,6 +32,195 @@
 > 倒序排列,最新一轮在最上面。每轮一条。
 
 > 历史会话已归档：`docs/archive/agent-progress-archive-2026-06-28.md`。主文件只保留最近 20 条会话，避免旧日志干扰新判断；需要追溯旧验证证据时去 archive grep。
+
+### 2026-07-11 · 信息收集闭环、durable chain 与 MCP 安全收口
+
+- **本轮目标**：按用户“后面的事情你自己解决、P0/P1/P2 全部跑完、继续”的授权，复核现有信息收集逻辑，修完确定性正确性/恢复/性能与启动问题，在真实 Test1 上得到 Enumeration PASS，并完成全仓验证与交接。
+- **已完成**：
+  - Enumeration 的单一事实口径已收口到“每个 EAS-confirmed exact Web Origin × JS/DIR/PARAM/JSAPI 四轴”：origin、current run/stage cutoff、producer owner、evidence source、terminal outcome、submit preview、org gate、pass token 与前端 read model 使用同一合同；partial/error 不再伪装 terminal。
+  - producer 链已具备 bounded continuation：50 roots / 200 cells 的批次、transport preflight、browser/JS/route durable checkpoint、attempt generation、blocked exhaustion、wave/cascade 与 372-origin worklist 都能从 DB truth 恢复；legacy `js_collect` 的 7 个既有授权删除保持不变。
+  - durable chain 已从“过长文本历史”改成 DB-backed 可寻址恢复：初始 checkpoint 在任何 provider 请求前写入；assistant+完整 ToolResults 原子成批 checkpoint；只保留完整 newest unit 的连续后缀并受约 512 KiB provider budget 约束；structured `chain_id` 穿过 sub-agent result、outer timeout、runtime 与 stage_run，generic/finalize/context-limit error 也携带最后一个成功 checkpoint。hard kill 时不伪造半个 tool batch，而由 DB worklist/最后成功 checkpoint 恢复。
+  - 解释了此前耗时根因：历史 chain 曾膨胀到约 3.47 MB / provider 侧约 120 万 token，超过 DeepSeek 约 1M 上限；旧 compaction 会留下历史洞、checkpoint 时点不原子、generic retry 丢 chain identity，再叠加 1488 个 coverage cell 与错误续跑，表现为“很久没搞完”。这些不是单一模型慢，而是数据规模、上下文合同和恢复身份三个问题叠加。
+  - startup/recovery 修复包括：跨 stage worker graph/chain ownership reaper、合法 durable operation 不再被误判 abandoned、exact resume CLI、`just dev <workspace>` 双 `--` 分隔符；一次磁盘不足通过清理可重建 Cargo 产物释放约 190 GB，没有删除业务数据。
+  - Test1 live Enumeration 已在同一个 durable run 中最终 PASS；之后审计又发现并修复独立 MCP P0/P1/P2：未信任 `.golish/mcp.json` 不再自动进入 GUI/CLI manager，project/user/builtin 来源按真实 precedence，builtin setup 不再接受 override path，`QBIT_WORKSPACE`/cwd 不能冒充 builtin，缺少 generated runtime 的 `js-reverse` fail closed。
+  - 新增 MCP 设计/计划与模块卡同步；`enumeration-four-axis-ip-web-2026-07-01`、`mcp-trust-builtin-provenance-2026-07-11` 均已转 `passing`，`feature_list.json` 当前 0 个 `in_progress`。
+- **运行过的验证**：
+  - Test1：`python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 stage-run-476558c3-c22a-4009-a82e-17e086a005de --full --db` → exit 0；同 run 的 `stage_run` 返回 `passed=true`、`gaps=[]`、`passed_orgs=1/1`。
+  - 只读 Postgres strict audit → origins 372、rows/terminal 1488/1488、nonterminal/unexpected/bad_source/bad_evidence/bad_origin/stale 均 0；每个 origin 恰好 4 轴；worklist 337 done + 35 evidence-backed blocked + 0 pending；completion token 独立重算一致。
+  - 浏览器/覆盖：`node --check scripts/browser_collect_js_api.mjs && node --test scripts/browser_collect_js_api.test.mjs` → 19/19；`pnpm exec vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → 26/26；`just check-fe` → exit 0。
+  - durable chain：selected sub-agent/runtime combined nextest → 495/495；最终 Enumeration 相关四 crate selection → 1520/1520，4 skipped；selected six-crate clippy `-D warnings` → exit 0。
+  - MCP TDD：旧 loader 的 untrusted project server 断言先失败；旧 resolver 的 QBIT workspace 断言先失败；source/setup helper 先编译失败；只有 `mcp.js`、缺 transitive runtime 的 source/build 两测先失败。修复后 `cargo nextest run -p golish-mcp -p golish -E 'package(golish-mcp) | test(mcp)'` → 57/57；`cargo clippy -p golish-mcp -p golish --all-targets -- -D warnings` → exit 0。
+  - 最新二进制：`just dev /Users/christopherzheng/golish-platform/Test1` 成功编译并运行；`curl http://127.0.0.1:1420` 成功；Postgres `SELECT 1, COUNT(*) FROM _sqlx_migrations` → `1|74`；06:29–06:30 启动窗口有 No MCP servers configured / migrations complete / frontend ready / pgvector ready，且无 js-reverse、ERR_MODULE_NOT_FOUND、connect failure、ERROR、panic。Ctrl-C 后 1420 与 dev processes 均 clear。
+  - 最终门禁：`CARGO_INCREMENTAL=0 ./init.sh` → exit 0（fmt/check-fe/test-fe/lint-rust/test-rust-all 105s/check-types 全绿）；`CARGO_INCREMENTAL=0 just precommit` → exit 0，最终输出 `✓ All checks passed!`。
+- **已记录证据**：
+  - live identity：org `0a431390-7726-48e5-b0a8-e692a9070e33`；operation/task `462b6c9f-2a0d-48af-8ff0-8b5c08416196`；DB session `a15c0b0f-23ff-42f9-b950-7dcaf25de860`；durable chain `552240a7-6050-460b-876b-bd51a4ccba5f`；stage attempt cutoff `2026-07-11T01:23:54.697594Z`。
+  - gate PASS token：`ab585f3b4e828ca92dacdb690715f8210f6d7b6b151cbfd7f70022753e0f1365`；DB completion row、latest gate_decision 与独立 token recomputation 三者一致。
+  - clean-state 条件核对：未新增 Tauri command、CRUD、手写 IPC/generated type 或事务内外部 I/O；未改 release/tag；没有业务 DB 手工写入；module cards/INDEX 已同步；`git diff --check` 与 JSON/状态审计在收尾后复跑。
+- **提交记录**：用户已于 2026-07-11 明确要求提交当前改动；本轮以单一 `feat(harness): close enumeration and harden durable execution` checkpoint commit 落库，未 push，也未创建/切换 branch。migration `20260710000001_technique_outcomes_org_scoped_unique.sql` 已在 Test1 嵌入式 PG 应用（migration 总数 74）：它是 row-preserving 的 owner identity 扩展与空 owner backfill，但约束名改变后旧 binary writer 不兼容，必须使用最新 binary。用户的“我去睡觉了，后面的事情你自己解决，要全部搞完”和连续“继续”被本轮视为完成 P0/P1/P2、live Test1 与必要 migration 的广泛明确授权；因为没有另一次只针对 migration 的窄确认，这一偏差在此显式留档。
+- **已知风险或未解决问题**：
+  - live PASS 由最终 P1 chain-addressability/MCP 审计补丁之前正在运行的 producer/gate binary 产出；后置补丁有独立红绿测试、全套 nextest/clippy/init/precommit 和最新 binary startup smoke，但不能把历史 transcript 说成“由最终源码逐字构建”产出。
+  - 进程在 provider/tool batch 正中间被 hard-kill 时只恢复到最后一个完整 checkpoint，并继续读取 DB worklist；这是刻意的 fail-safe，不会把未完成 batch 伪造为成功。
+  - MCP 项目审批/预览 UI、trust 后 hot reload、content hash/revoke 尚未实现；当前未信任项目配置安全地不可执行，批准后需下次 MCP 初始化（当前为重启）。startup reaper 的正确 SQL 在当前数据上约 2.5s，属于可观测性能后续，不是正确性 blocker。
+  - 本次 checkpoint 很大但已完全盘点：308 项 = 245 modified + 7 authorized deletes + 56 new files；未发现 target/log/capture/temp、密钥、数据库文件、缓存或二进制误入。
+  - **本次 checkpoint 涵盖：** `backend/**` 178 项（Enumeration/DB/evidence/gate/worker/runtime/CLI/MCP 与 1 个已应用 migration）；`frontend/**` 13 项（coverage/read-model/测试）；`resources/**` 8 项（stage/tool contracts）；`scripts/**` 7 项（browser helper/tests/run audit）；`docs/**` 99 项（design/plan/module cards）；根目录 `agent-progress.md`、`feature_list.json`、`justfile` 各 1 项。7 个删除全部是 `backend/crates/golish-pentest-app/src/pentest_bridge/js_collect{.rs,/**}`，按用户此前明确“删掉”保留。
+- **下一步最佳动作**：保持本地 checkpoint 不 push；若继续开发新功能，从 `feature_list.json` 重新选择一个最高优先级 `not_started` 项并设为唯一 `in_progress`。优先处理跨阶段 `stage_runs` 终态、Attack Candidate/Verification DB 权威闭环，不要把尚未实现的 MCP 审批 UI 混回已 passing 的 Enumeration。
+
+### 2026-07-08 · Enumeration base_url/root_url TDD 修复
+
+- **本轮目标**：回应用户“你确定吗？先写测试再修”，把最新 Test1 Enumeration 47 个 DIR error 的主要根因（错误 origin/默认端口、worklist 不给 base_url）先落成失败测试，再修到绿灯。
+- **先红灯确认（实跑）**：
+  - `cd backend && cargo test -p golish-pentest-app canonical_candidate_corrects_inferred_https_to_confirmed_http_non_default_port --lib` → fail；`best_web_service_candidate` 返回 `None`，不能把模型推导的 `https://package.moresec.cn/` 纠到 DB-confirmed `http://package.moresec.cn:8080/`。
+  - `cd backend && cargo test -p golish-agent-kit web_root_url_from_meta_prefers_confirmed_open_url_over_filtered_default_port --lib` → fail；当前 root 推导把 filtered `443/https` 拼成 `https://43.248.78.209/`，没有选 open `http://43.248.78.209:8080/`。
+  - `cd backend && cargo test -p golish-agent-kit enumeration_preflight_gap_examples_include_base_url --lib` → fail；`gap_examples[0].base_url` 为 `Null`。
+  - `cd backend && cargo test -p golish-agent-kit stage_worklist_next_includes_base_url_for_enumeration_items --lib` → fail；`items[0].base_url` 为 `Null`。
+- **已完成**：
+  - `target_resolver` 的 canonicalize 现在优先读取 `targets.ports[].url` confirmed-open HTTP(S) origin，并忽略 filtered/closed 端口；`target_assets` 仍作兜底。
+  - 保留显式端口保护：调用方显式带端口时不随便改；模型推导的默认 `https://host/` 可纠到 DB-confirmed 非默认 `http://host:8080/`。
+  - `web_root_url_from_meta` 优先使用 `ports[].url`，并只接受 open/空状态端口；filtered/closed 不再成为 Enumeration root。
+  - `stage_worklist_next.items` 与 `check_stage_asset_coverage.gap_examples` 在 Enumeration 下直接带 `root_url` / `base_url` / `scheme` / `port`，DIR gap 可直接喂给 `route_probe_paths`。
+  - 同步模块卡：`golish-agent-kit/tool_executors.md`、`golish-pentest-app/pentest_bridge.md`。
+- **修后验证（实跑）**：
+  - `cd backend && cargo fmt --package golish-agent-kit --package golish-pentest-app` → exit 0。
+  - `cd backend && cargo test -p golish-pentest-app pentest_bridge::target_resolver::tests:: --lib` → 12 passed / 163 filtered out。
+  - `cd backend && cargo test -p golish-agent-kit tool_executors::security::tests:: --lib` → 17 passed / 825 filtered out。
+  - `cd backend && cargo check -p golish-agent-kit -p golish-pentest-app` → exit 0。
+  - `git diff --check -- backend/crates/golish-agent-kit/Cargo.toml backend/crates/golish-agent-kit/src/tool_executors/security.rs backend/crates/golish-pentest-app/src/pentest_bridge/target_resolver.rs docs/modules/backend/golish-agent-kit/tool_executors.md docs/modules/backend/golish-pentest-app/pentest_bridge.md backend/Cargo.lock` → exit 0。
+- **未跑 / 风险**：未跑 `./init.sh` / full `just precommit`；未重启 app 做 fresh Test1 live Enumeration rerun。当前验证是针对本次根因的窄单测 + package check。工作树进入本轮前已有大量未提交改动，本轮没有回退或整理无关文件。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-agent-kit/Cargo.toml`、`backend/crates/golish-agent-kit/src/tool_executors/security.rs`、`backend/crates/golish-pentest-app/src/pentest_bridge/target_resolver.rs`、`docs/modules/backend/golish-agent-kit/tool_executors.md`、`docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`backend/Cargo.lock`、`agent-progress.md`。
+
+### 2026-07-08 · EAS confirmed-open 端口补扫与 empty outcome 防覆盖
+
+- **本轮目标**：回应用户“新跑一次怎么还是 retry 两次 / 你再核对一下 / 修”，修复最新 Test1 EAS run 中 confirmed-open 端口仍被漏扫、以及空 naabu batch 覆盖旧 open-port DB truth 的问题。
+- **诊断结论**：
+  - 最新 run `pentest-chat-1783439658234-1` 前两次 BLOCK 不是 9001 parser 同一个根因，而是 DB/read-model 不一致：`targets.ports[]` 仍保留 `222.186.129.58:82 state=open service="" source=naabu evidence_id=19880`，但后续 `nmap -sV` 只扫了 `22,80,8083`，没有扫 `82`。
+  - 同一 run 后续 naabu batch 对 `222.186.129.58` 没命中，于是旧逻辑写了 `GOLISH-EAS-PORT empty` / port-derived `GOLISH-EAS-LIVENESS empty`，但 `targets.ports[]` 里仍有 confirmed-open `82`，造成 technique_outcomes 与 DB truth 互相打架，repair/preflight 继续反复。
+- **已完成**：
+  - `coverage_truth.rs` 新增 `confirmed_open_service_ports_for_assets` 和 JSON 解析 helper，统一解析当前 in-scope `targets.ports[]` 的 open non-53 服务端口；弱服务名 `open/unknown/tcpwrapped` 仍算缺 service surface。
+  - `eas_fingerprint_services` 的 `ports` 从硬必填改为可选/可补：即使模型只传 `80,443` 或漏传，wrapper 也会从当前 workspace DB 自动合并同 IP 的 confirmed-open 端口，再跑 `nmap -sV`；结果回传 `effective_ports/db_open_ports/auto_added_ports`。
+  - 后台 `naabu` / `masscan` batch completion 写 PORT/LIVENESS empty 前会查当前 org 的 confirmed-open ports；如果 DB 仍有 open port，则跳过 empty outcome，避免 top-ports/分批扫描的空输出覆盖旧事实。
+  - `StageAssetCoverageCell` 增加 Rust-only `details`，SERVICE-FINGERPRINT pending/error 会带 `details.missing_open_ports` 和推荐 `eas_fingerprint_services` 参数；`check_stage_asset_coverage` compact `gap_examples` 透传 details。
+  - 同步模块卡：`golish-db/repo.md`、`golish-agent-app/ai.md`、`golish-agent-kit/tool_executors.md`、`golish-pentest-app/pentest_bridge.md`；`feature_list.json` 追加本轮 scoped evidence，状态仍保持 `in_progress`。
+- **运行过的验证（实跑）**：
+  - `git diff --check -- backend/crates/golish-db/src/repo/coverage_truth.rs backend/crates/golish-pentest-app/src/pentest_bridge/eas_capabilities.rs backend/crates/golish-agent-app/src/ai/commands/bridge_config.rs backend/crates/golish-agent-app/src/ai/commands/stage_coverage.rs backend/crates/golish-agent-kit/src/tool_executors/security.rs` → exit 0。
+  - `rustfmt --edition 2021 backend/crates/golish-db/src/repo/coverage_truth.rs backend/crates/golish-pentest-app/src/pentest_bridge/eas_capabilities.rs backend/crates/golish-agent-app/src/ai/commands/bridge_config.rs backend/crates/golish-agent-app/src/ai/commands/stage_coverage.rs backend/crates/golish-agent-kit/src/tool_executors/security.rs` → exit 0（第一次裸 `rustfmt` 因默认 Rust 2015 解析 async 失败，随后用 edition 2021 成功）。
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-codex-target cargo test -p golish-pentest-app service_ports --lib` → 5 passed / 166 filtered out。
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-codex-target cargo test -p golish-db confirmed_open_service_ports_json --lib` → 1 passed / 207 filtered out。
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-codex-target cargo test -p golish-db weak_service_names_are_missing_service_fingerprint_json --lib` → 1 passed / 207 filtered out。
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-codex-target cargo test -p golish-agent-kit coverage_preflight_preserves_gap_details --lib` → 1 passed / 838 filtered out。
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-codex-target cargo test -p golish-agent-app empty_port_outcome_is_skipped_when_db_still_has_open_ports --lib` → 1 passed / 167 filtered out。
+  - `cd backend && CARGO_TARGET_DIR=/tmp/golish-codex-target cargo test -p golish-agent-app eas_service_pending_exposes_missing_open_ports --lib` → 1 passed / 167 filtered out。
+  - `rm -rf /tmp/golish-codex-target` → exit 0，验证产生的临时编译产物已清理。
+  - `rm -rf backend/target` → exit 0，仓库内 Rust 编译产物已按用户要求清理；复查 `test ! -e backend/target` / `test ! -e /tmp/golish-codex-target` 均通过。
+- **未跑 / 风险**：未跑 `./init.sh` / full `just precommit`，因为用户刚要求清理编译产物且本轮只做 EAS 窄修；未重启 app 做 fresh Test1 live rerun，需后端重启后再跑一次 EAS 观察 retry 是否消失。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-db/src/repo/coverage_truth.rs`、`backend/crates/golish-pentest-app/src/pentest_bridge/eas_capabilities.rs`、`backend/crates/golish-agent-app/src/ai/commands/{bridge_config.rs,stage_coverage.rs}`、`backend/crates/golish-agent-kit/src/tool_executors/security.rs`、`docs/modules/backend/{golish-db/repo.md,golish-agent-app/ai.md,golish-agent-kit/tool_executors.md,golish-pentest-app/pentest_bridge.md}`、`feature_list.json`、`agent-progress.md`。
+
+### 2026-07-07 · EAS 9001 filtered 端口反复修复
+
+- **本轮目标**：回应用户“为什么 9001 有问题就反复跑，改吧”，修复 nmap 已看到 `filtered/closed` 但未落入 `targets.ports[].state` 导致 EAS SERVICE-FINGERPRINT 反复补洞的问题。
+- **已完成**：
+  - `resources/toolsconfig/nmap.json` 的真实输出 parser 从只匹配 `open` 改为匹配 `open/closed/filtered`，并把状态写入 `state` 字段。
+  - `output_parser` 增加真实 nmap toolsconfig 回归：`9001/tcp filtered tor-orport` 和 `3306/tcp closed mysql` 都能生成带 `state`、`service`、`host` 的 port record。
+  - `docs/modules/backend/golish-pentest/output_store.md` 同步说明：nmap terminal state 要覆盖旧裸端口，避免已 filtered/closed 的端口继续进入 EAS SERVICE 分母。
+  - 保持现有 output-store merge/gate 口径不变：同 port/proto 的新 JSON 会覆盖旧 JSON；`filtered/closed` 不是强服务指纹，也不会写成 informative fingerprint。
+- **运行过的验证（实跑）**：
+  - `python3 -m json.tool resources/toolsconfig/nmap.json >/dev/null` → exit 0。
+  - `cd backend && cargo fmt -p golish-pentest --check` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest nmap --status-level fail` → 6 passed / 165 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest output_store --status-level fail` → 35 passed / 136 skipped。
+  - `git diff --check -- resources/toolsconfig/nmap.json backend/crates/golish-pentest/src/output_parser.rs docs/modules/backend/golish-pentest/output_store.md` → exit 0。
+- **未跑 / 风险**：未跑 full `just precommit`；未重启 app 做 fresh Test1 live EAS smoke。当前修复是窄链路：让 nmap terminal port state 进 DB 真值，针对本次 9001 filtered 复发。
+- **本轮修改但未提交（本 scope）**：`resources/toolsconfig/nmap.json`、`backend/crates/golish-pentest/src/output_parser.rs`、`docs/modules/backend/golish-pentest/output_store.md`、`feature_list.json`、`agent-progress.md`。
+
+### 2026-07-07 · Target Surface 移除 Crawl tab
+
+- **本轮目标**：按用户确认删除 Web Origin detail 中旧 Katana/crawler 结果展示 tab，避免把 seed/observation 误读为 Enumeration 最终成果。
+- **已完成**：
+  - `WebOriginsTab` 移除 `Crawl` detail tab、`CrawlObservationList`、Web Origins 总表里的 `Crawl` 计数列，以及相关未使用 helper/import。
+  - 后端 `crawl_observations` / 前端 DTO 兼容数据不动；主展示继续走 Sitemap / APIs / JS / Params / Evidence。
+  - `docs/modules/frontend/components.md` 同步说明：`crawlObservations` 仍是兼容 observation 数据，但不再作为主 surface tab 展示。
+- **运行过的验证（实跑）**：
+  - `pnpm exec biome check frontend/components/TargetPanel/surface/tabs/WebOriginsTab.tsx docs/modules/frontend/components.md` → exit 0。
+  - `pnpm exec tsc --noEmit --pretty false` → exit 0。
+  - `pnpm exec vitest run frontend/components/TargetPanel/surface/backendSurfaceHierarchy.test.ts frontend/components/TargetPanel/surface/surfaceHierarchy.test.ts frontend/components/TargetPanel/surface/surfaceModel.test.ts` → 3 files passed / 41 tests passed。
+  - `git diff --check -- frontend/components/TargetPanel/surface/tabs/WebOriginsTab.tsx docs/modules/frontend/components.md` → exit 0。
+- **未跑 / 风险**：未跑 full `just precommit`；未启动 dev app 做视觉截图。当前为窄前端删除，已通过类型检查与相关 surface 单测。
+- **本轮修改但未提交（本 scope）**：`frontend/components/TargetPanel/surface/tabs/WebOriginsTab.tsx`、`docs/modules/frontend/components.md`、`agent-progress.md`。
+
+### 2026-07-07 · Katana seed 反哺 browser_collect_js_api
+
+- **本轮目标**：按用户要求实现“Katana 发现值得真实浏览器访问的入口 → 喂给 `browser_collect_js_api` → Playwright 真实打开触发更多 runtime JS/XHR/fetch”，并本地实测效果。
+- **已完成**：
+  - `enum_crawl_same_origin_urls` 仍固定包装 `katana -list {{input_file}} -jc -silent -d N`，但现在接受 worklist object（保留 `target_id`），并在结果里追加 `browser_seed`。
+  - `browser_seed.target_urls` 会按 root 分组输出 `{target_id,target_url,recipe:{routes,script_urls}}`：Katana stdout 中同源 page routes 进入 `recipe.routes`，JS URLs 进入 `recipe.script_urls`，API-ish/query URL 作为 `api_candidate_urls` 低置信提示保留，不当作最终 browser 观测。
+  - `browser_collect_js_api` batch 现在支持每个 target entry 自己携带 `recipe`，多 root 批量时不会把 A 站 Katana routes 喂给 B 站。
+  - Enumerator methodology / prompt 从旧的“browser → katana supplement”改成“katana seed discovery → browser_collect with `browser_seed.target_urls` → js_extract → route_probe”。
+  - 同步模块卡：`golish-pentest-app/pentest_bridge.md`、`golish-sub-agents.md`。
+- **实测结果（本地 fixture）**：
+  - fixture：`/` 只加载 `/assets/main.js`；`main.js` 暗藏 `/settings/billing`；只有打开 `/settings/billing` 才加载 `/assets/billing.chunk.js` 并发 `GET /api/billing/invoices?limit=10`。
+  - `katana -u http://127.0.0.1:63801/ -jc -silent -d 2` → 发现 `/settings/billing` 和 `/assets/billing.chunk.js`。
+  - baseline：`node scripts/browser_collect_js_api.mjs --url http://127.0.0.1:63801/ --workspace /tmp/golish-browser-direct.tGTZF4 --max-pages 1 --max-actions 0 --ai-assist false --hard-timeout-ms 30000 --timeout-ms 8000` → `scripts_saved=1`、`api_requests_total=0`、只访问首页。
+  - seeded：同参数但加 `--max-pages 3 --recipe-json '{"routes":["/settings/billing"],"script_urls":["/assets/billing.chunk.js"]}'` → `scripts_saved=2`、`api_requests_total=1`、`pages_visited` 包含 `/settings/billing`，捕获 `GET /api/billing/invoices?limit=10`。
+- **运行过的验证（实跑）**：
+  - `rustfmt --edition 2021 backend/crates/golish-pentest-app/src/pentest_bridge/enumeration_capabilities.rs backend/crates/golish-pentest-app/src/pentest_bridge/browser_collect_js_api.rs backend/crates/golish-sub-agents/src/defaults/prompts/execution_planning.rs backend/crates/golish-sub-agents/src/defaults/tests.rs backend/crates/golish-sub-agents/src/defaults/builder/mod.rs` → exit 0。
+  - `cd backend && cargo check -p golish-pentest-app -p golish-sub-agents` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest-app --status-level fail enumeration_capabilities browser_collect_js_api` → 23 passed / 144 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents --status-level fail defaults` → 25 passed / 99 skipped。
+  - `git diff --check -- <本轮触及路径>` → exit 0。
+- **未跑 / 风险**：未跑 full `just precommit`；本轮没有新增 `browser_visit_queue` DB 表或 migration，先用工具 payload 里的 per-target `recipe` 表达 visit queue，避免在实测前引入 schema 风险。真实 stage smoke 还需在 dev app / Test1 上跑完整 Enumeration 才能观察模型是否稳定采用 `browser_seed.target_urls`。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest-app/src/pentest_bridge/{enumeration_capabilities.rs,browser_collect_js_api.rs}`、`backend/crates/golish-sub-agents/src/defaults/{prompts/execution_planning.rs,tests.rs,builder/mod.rs}`、`resources/harness/stages/enumeration/methodology.md`、`docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`docs/modules/backend/golish-sub-agents.md`、`agent-progress.md`。
+
+### 2026-07-07 · 删除 js_collect 静态 JS 采集工具
+
+- **本轮目标**：按用户确认“删啊 js_collect 能有啥用”，移除旧 `js_collect` bridge 工具，只保留 `browser_collect_js_api` 采集 JS/API + `js_extract_apis` 静态分析路径。
+- **已完成**：
+  - 删除 `backend/crates/golish-pentest-app/src/pentest_bridge/js_collect.rs` 及 `js_collect/` 子模块，`create_pentest_bridge_tools` 不再注册 `JsCollectTool`，`golish-pentest-app` 去掉仅供该工具使用的 `golish-projects` 依赖。
+  - execution mode / prompt render / tool taxonomy / stage refiner / sub-agent 默认工具、prompt、response parsing 全部去掉 `js_collect` 正向暴露；UI 工具名映射和 pentest system prompt 改为 `browser_collect_js_api` → `js_extract_apis`。
+  - `js_extract_apis` 的描述和 no-captures 提示改为“先跑 `browser_collect_js_api`”；`browser_collect_js_api` 不再把 `js_collect` 描述为静态 fallback。
+  - 同步当前模块卡：`golish-pentest-app/pentest_bridge`、`golish-agent-kit/harness`、`golish-projects/file_storage`、`golish-sub-agents`；历史 archive/design/plan 旧记录未改。
+- **运行过的验证（实跑）**：
+  - `./init.sh` → pre-edit baseline 失败；失败点是既有 unrelated clippy：`golish-agent-runtime/src/agentic_loop/tool_execution/direct/mod.rs:1012-1014`、`golish-recon-app/src/asset_intel/agent_intel.rs:126-130` 的 `unnecessary_map_or`，未进入本轮修复 scope。
+  - `rg -n "js_collect|JsCollect" backend/crates frontend resources scripts docs/modules --glob '!target' --glob '!node_modules'` → 只剩 3 个负向测试断言字符串与 `kind: "js_collection"` evidence kind，无正向工具暴露。
+  - `rustfmt --edition 2021 <本轮触及 Rust 文件>` → exit 0。
+  - `pnpm exec biome check frontend/lib/tools.ts frontend/components/AIChatPanel/pentestSystemPrompt.ts` → exit 0。
+  - `python3 -m py_compile scripts/gen_pentest_completeness_template.py scripts/check_repo_ownership.py` → exit 0。
+  - `cd backend && cargo check -p golish-pentest-app -p golish-agent-runtime -p golish-agent-kit -p golish-sub-agents -p golish-prompts -p golish-pentest -p golish-db -p golish-app-core` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-runtime --status-level fail execution_mode` → 23 passed / 269 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit --status-level fail tool_taxonomy` → 20 passed / 818 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents --status-level fail defaults` → first run exposed 2 stale prompt assertions; after assertion update, 25 passed / 99 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents --status-level fail response_parsing` → 33 passed / 91 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest-app --status-level fail browser_collect_js_api` → 17 passed / 147 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest-app --status-level fail js_extract_apis` → 32 passed / 132 skipped。
+  - `python3 scripts/check_repo_ownership.py` → exit 1；当前全仓已有 133 ownership + 8 raw-sql violation(s)，输出已无被删除的 `js_collect` 路径，但该 guard 仍是全仓红灯。
+- **未跑 / 风险**：未跑 full `just precommit`；本轮 `./init.sh` baseline 已被 unrelated clippy 阻塞。未清理历史 docs/archive/design/plan 中的旧 `js_collect` 考古引用。
+- **本轮修改但未提交（本 scope）**：删除 `backend/crates/golish-pentest-app/src/pentest_bridge/js_collect*`；修改 `backend/Cargo.lock`、`backend/crates/golish-pentest-app/{Cargo.toml,src/pentest_bridge/{mod.rs,browser_collect_js_api.rs,js_extract_apis.rs},src/pentest_ai/list_tools.rs}`、`backend/crates/golish-agent-runtime/src/execution_mode/*`、`backend/crates/golish-agent-kit/src/{harness/tool_taxonomy.rs,task_orchestrator/stage_refiner.rs,tool_executors/security.rs}`、`backend/crates/golish-sub-agents/{prompts/*.tera,src/defaults/**,src/executor*,src/executor_types.rs}`、`backend/crates/golish-prompts/src/system_prompt/team_delegation.rs`、`frontend/{lib/tools.ts,components/AIChatPanel/pentestSystemPrompt.ts}`、`scripts/{check_repo_ownership.py,gen_pentest_completeness_template.py}`、相关模块卡与 `agent-progress.md`。
+
+### 2026-07-07 · browser_collect_js_api 默认 JS closure 限制取消
+
+- **本轮目标**：按用户要求取消 `browser_collect_js_api` 默认 JS closure 限制：`max_recursive_scripts=1000`、单 JS `max_script_bytes=5MB`、fetch/body timeout、整体 `hard_timeout_ms`。
+- **已完成**：
+  - `scripts/browser_collect_js_api.mjs` 默认改为 unlimited：`max_recursive_scripts` / `max_script_bytes` / fetch/body timeout / hard deadline 缺省均不封顶，结果 JSON 用 `null` 表示 unlimited，实时 stderr 显示 `unlimited`。
+  - Rust wrapper 默认用 `0` 表示 unlimited，并把 `max_script_bytes` 作为可选显式限流参数传给 helper；只有 `hard_timeout_ms > 0` 时 Rust 外层才启用 `hard_timeout_ms + 5s` kill fail-safe。
+  - 同步 `scripts/js_api_ai_recipe_probe.mjs` / `scripts/js_api_pipeline_test.mjs`，避免 probe/test 脚本继续塞旧 `1000/120000` 默认限制。
+  - `js_extract_apis` 默认取消 AI/HaE 分类侧截断：不再默认限制 AI 文件数、AI 源码字节数、每文件 network window 数、HaE route triage 候选数、返回的 `rule_matches` / `hae_route_candidates` 数；新增显式限流入参 `max_ai_files` / `max_ai_bytes` / `max_ai_chunks_per_file` / `max_hae_route_triage_candidates` / `max_hae_route_candidates_returned` / `max_rule_matches_returned`。
+  - 共用 `ai_oneshot::call_llm_json` 默认不再有 60s 工具层 timeout；`browser_collect_js_api` / `js_extract_apis` 新增显式 `ai_timeout_ms`，正数才限时，0/缺省为 unlimited。
+  - 更新模块卡 `docs/modules/backend/golish-pentest-app/pentest_bridge.md`，把旧“必须有硬截止”改为“默认 unlimited，显式正数才限流”。
+- **运行过的验证（实跑）**：
+  - `node --check scripts/browser_collect_js_api.mjs` → exit 0。
+  - `node --check scripts/js_api_ai_recipe_probe.mjs` → exit 0。
+  - `node --check scripts/js_api_pipeline_test.mjs` → exit 0。
+  - `cd backend && cargo fmt -p golish-pentest-app --check` → exit 0。
+  - `cd backend && cargo test -p golish-pentest-app browser_collect_js_api --lib` → 17 passed / 170 filtered out。
+  - `cd backend && cargo test -p golish-pentest-app js_extract_apis --lib` → 31 passed / 158 filtered out。
+  - `cd backend && cargo test -p golish-pentest-app ai_oneshot --lib` → 7 passed / 182 filtered out。
+  - `git diff --check -- scripts/browser_collect_js_api.mjs scripts/js_api_ai_recipe_probe.mjs scripts/js_api_pipeline_test.mjs backend/crates/golish-pentest-app/src/pentest_bridge/browser_collect_js_api.rs docs/modules/backend/golish-pentest-app/pentest_bridge.md agent-progress.md` → exit 0。
+  - `git diff --check -- backend/crates/golish-pentest-app/src/pentest_bridge/ai_oneshot.rs backend/crates/golish-pentest-app/src/pentest_bridge/browser_collect_js_api.rs backend/crates/golish-pentest-app/src/pentest_bridge/js_ai_extract.rs backend/crates/golish-pentest-app/src/pentest_bridge/js_extract_apis.rs docs/modules/backend/golish-pentest-app/pentest_bridge.md agent-progress.md` → exit 0。
+  - `node scripts/browser_collect_js_api.mjs --url 'data:text/html,<html><body>golish</body></html>' --workspace /tmp/golish-js-unlimited-smoke --max-pages 1 --max-actions 0 --ai-assist false` → exit 0；stderr 显示 `hard_timeout_ms=unlimited max_script_bytes=unlimited max_recursive_scripts=unlimited`，最终 JSON 中 `hard_timeout_ms/max_script_bytes/max_recursive_scripts=null`。
+  - 本地 1105 chunk synthetic 站点（不传 `hard_timeout_ms/max_script_bytes/max_recursive_scripts`）→ exit 0；`scripts_saved=1106`、`scripts_recursive_downloaded=1105`、`recursive_queue_remaining=0`、`closure_complete=true`、`recursive_limit_hit=false`。
+  - 同一 synthetic 站点显式 `--max-recursive-scripts 1000` 对照 → exit 0；`status=closure_partial`、`scripts_saved=1001`、`scripts_recursive_downloaded=1000`、`recursive_queue_remaining=105`、`recursive_limit_hit=true`，证明新默认已越过旧 1000 边界。
+  - 外站 smoke（均 `--max-pages 1 --max-actions 0 --ai-assist false`，不传 closure 限制，外层测试 harness 90s 兜底）：`https://vite.dev/` → ok / 10.2s / 20 JS / 3 API / closure_complete=true；`https://react.dev/` → ok / 13.9s / 35 JS / 7 API / 24 recursive / closure_complete=true；`https://docs.astro.build/en/getting-started/` → ok / 7.2s / 3 JS / 0 API / closure_complete=true；`https://angular.dev/overview` → 外层 90s timeout，stderr 仍在抓 recursive chunk（约 113 个），说明 unlimited 在巨大 chunk 图上会持续跑更久。
+  - 用户相关站点 smoke（同参数，外层 120s 兜底）：`https://dayu.moresec.cn/` → ok / 80.2s / 12 JS / 1 API (`/api/iam/v2/login/types`) / closure_complete=true；`https://yapi-dayu.moresec.cn:443/` → ok / 6.2s / 2 SSO JS / 0 API / closure_complete=true。
+- **未跑 / 风险**：遵用户要求未跑 `./init.sh`，也未跑 full `just precommit`。默认 unlimited 会更完整，但在异常站点上也可能让 browser collector 跑得更久；需要限流时显式传正数。
+- **本轮修改但未提交（本 scope）**：`scripts/browser_collect_js_api.mjs`、`scripts/js_api_ai_recipe_probe.mjs`、`scripts/js_api_pipeline_test.mjs`、`backend/crates/golish-pentest-app/src/pentest_bridge/{ai_oneshot.rs,browser_collect_js_api.rs,js_ai_extract.rs,js_extract_apis.rs}`、`docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`agent-progress.md`。
 
 ### 2026-07-05 · vuln_triage stage_run 扫描路由与 coverage worklist 修复
 
@@ -3241,3 +3434,333 @@
 - **提交记录**：未 commit。
 - **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest-app/src/pentest_bridge/{mod.rs,vuln_capabilities.rs}`、`backend/crates/golish-agent-app/src/ai/commands/{bridge_config.rs,stage_coverage.rs}`、`backend/crates/golish-agent-kit/src/harness/{stage_capability.rs,stage_spec.rs,tool_taxonomy.rs}`、`backend/crates/golish-agent-kit/src/task_orchestrator/stage_refiner.rs`、`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`、`backend/crates/golish-sub-agents/src/{defaults/builder/mod.rs,defaults/builder/registry.rs,defaults/prompts/execution_planning.rs,defaults/prompts/mod.rs,defaults/tests.rs,executor_types.rs,executor/response_parsing.rs}`、`resources/harness/stages/vuln_triage/spec.json`、`frontend/lib/{tools.ts,tools.test.ts}`、相关模块卡、`feature_list.json`、`agent-progress.md`。
 - **下一步建议**：重启 app/backend 后在 Test1 继续或重跑 `vuln_triage`；期望 transcript 中出现 `sub_agent_vuln_scanner` 调 `vuln_run_formulaic_sweep`，不再出现 vuln repair raw `pentest_run`/手写 nuclei/sqlmap；随后用 `scripts/run_tree.py --db` 验证 `technique_outcomes` 覆盖 WSTG/GOLISH cells，再跑允许范围内的 full `just precommit`。
+
+#### 2026-07-06 · EAS service/web fingerprint contract tighten
+
+- **本轮目标**：回应用户指出“所有扫描出来的新端口，只要能跑都要跑一次；同 IP 多域名怎么办”，把 EAS SERVICE 与 web stack fingerprint 拆清楚：SERVICE 必须覆盖每个 confirmed-open IP:port，WhatWeb 只按 confirmed web origin 做 Host/SNI-aware enrichment。
+- **已完成**：
+  - 新增并注册 `eas_fingerprint_web_stack` wrapper：封装 `whatweb -a <aggression> --input-file {{input_file}} --max-threads <n>`，只接受 absolute HTTP(S) URL，落地走现有 `pentest_run` / output-store / fingerprints / Target UI 链路。
+  - Prober 默认工具、repair allow-list、stage capability、taxonomy、前端工具标签同步暴露 WhatWeb wrapper；prompt/methodology 明确禁止 raw `whatweb` / raw `pentest_run`。
+  - 收紧 EAS SERVICE gate truth：`GOLISH-EAS-SERVICE-FINGERPRINT` 不再被任意 `fingerprints` 行、target-level found outcome 或 DNS-only shortcut 满足；必须基于 `targets.ports[]` 中每个 open port 的 service/version/product/banner/webserver/technologies 等 port-level surface，或同 target/port 的 nmap service fingerprint。
+  - WhatWeb 不再写 `GOLISH-EAS-SERVICE-FINGERPRINT` outcome，evidence fact mapping 也不再把 WhatWeb 映射到 SERVICE；它只做 web-origin/fingerprint enrichment，不替代 nmap IP:port service fingerprint。
+  - EAS worklist / refiner / charter / methodology 全部改成：端口发现扩展后，只对新增 confirmed-open ports 补跑 `eas_fingerprint_services`；同一个 IP:port 有多个 domain/vhost 时，nmap 对 IP:port 跑一次，WhatWeb 对每个 confirmed `scheme://host:port` web origin 分别跑一次。
+  - 同步模块卡：`golish-db/repo.md`、`golish-agent-app/ai.md`、`golish-agent-kit/harness.md`、`golish-pentest-app/pentest_bridge.md`、`golish-sub-agents/defaults.md`、`frontend/lib.md`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo nextest run -p golish-agent-kit evidence_facts tool_executors stage_refiner prompts org_gate --status-level fail` → 104 passed / 728 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-kit stage_capability tool_taxonomy --status-level fail` → 28 passed / 804 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-app stage_coverage bridge_config harness_submit_tool --status-level fail` → 115 passed / 45 skipped。
+  - `cd backend && cargo nextest run -p golish-sub-agents defaults executor_types response_parsing --status-level fail` → 57 passed / 66 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest-app eas_capabilities --status-level fail` → 首次遇到本地 test link cache 缺 `librig...rlib`，直接重跑后 3 passed / 174 skipped。
+  - `cd backend && cargo nextest run -p golish-db coverage_truth --status-level fail` → 32 passed / 171 skipped。
+  - 默安 Test1 DB 只读验证：`python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db` 确认 latest run/org；定制 SQL 复算 strict SERVICE truth，发现旧口径会让 `115.175.6.207` / `36.42.77.170` 的 target-level SERVICE found outcome 盖过 port gap；修正后 nmap port-specific fingerprints 可关闭 `115.175.6.207:8082/8083`，剩余真实 gap 只剩 `36.42.77.170:{888,1935,2002,5100,9001}`。
+  - `pnpm exec vitest run frontend/lib/tools.test.ts` → 22 passed。
+  - `cd backend && cargo fmt --all` / `cd backend && cargo fmt --all -- --check` → exit 0。
+  - `pnpm exec biome check frontend/lib/tools.ts frontend/lib/tools.test.ts` → exit 0。
+  - `git diff --check -- <本轮 touched files>` → exit 0。
+- **未跑**：`./init.sh` / `just precommit` / live Test1 rerun。本轮做 contract-level code fix + scoped verification；真实 run 需要重启 app/backend 后重新跑或续跑 EAS。
+- **提交记录**：未 commit。
+- **本轮修改但未提交（本 scope）**：`backend/crates/golish-pentest-app/src/pentest_bridge/{mod.rs,eas_capabilities.rs}`、`backend/crates/golish-agent-kit/src/harness/{stage_capability.rs,tool_taxonomy.rs,evidence_facts.rs,org_gate.rs}`、`backend/crates/golish-agent-kit/src/{db_traits/repo.rs,tool_executors/security.rs,task_orchestrator/prompts/mod.rs,task_orchestrator/stage_refiner.rs}`、`backend/crates/golish-db/src/repo/coverage_truth.rs`、`backend/crates/golish-agent-app/src/ai/commands/{bridge_config.rs,stage_coverage.rs}`、`backend/crates/golish-agent-app/src/ai/harness_submit_tool.rs`、`backend/crates/golish-sub-agents/src/{executor_types.rs,executor/response_parsing.rs,defaults/builder/mod.rs,defaults/builder/registry.rs,defaults/prompts/execution_planning.rs,defaults/tests.rs}`、`frontend/lib/{tools.ts,tools.test.ts}`、`resources/harness/stages/external_attack_surface/methodology.md`、相关模块卡、`agent-progress.md`。
+- **下一步建议**：重启 app/backend 后重跑授权 EAS smoke；用 `scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db` 看 Prober 是否对每个 confirmed-open IP:port 调 `eas_fingerprint_services`，对每个 confirmed web origin 调 `eas_fingerprint_web_stack`，并确认 WhatWeb 只增加 fingerprints/web-origin evidence，不再把 SERVICE gate 盖绿。
+
+#### 2026-07-06 · EAS IP-first live validation on Test1 / 默安
+
+- **本轮目标**：按用户要求用 Test1 中杭州默安科技有限公司的真实 DB/worklist 跑 EAS 阶段，确认当前逻辑是否已经变成“IP/CIDR 先端口发现，端口落库后按服务 / web origin 分别跑 nmap / WhatWeb”。
+- **已完成**：
+  - 实测旧/第一次新 run 仍有问题：`stage-run-ba720b94-26cd-4442-b357-f10773839639` 中 Prober 仍把 bare IP 混入 `eas_probe_http_liveness` / httpx，说明只改 prompt/gate 不够。
+  - 加强 wrapper 级硬拦：`eas_probe_http_liveness` 现在拒绝 bare IP、CIDR、bare `IP:port`；sub-agent prompt / builder / worklist 文案同步明确 concrete IP/CIDR 的 LIVENESS 必须先由 `eas_discover_ports` 关闭。
+  - 第二次真实 run `stage-run-b5f5a708-da14-4ffd-9aab-044ac77aa8bb` 已验证主路径：httpx 输入只有 domain；naabu 输入 concrete IP；naabu outcome 同时写 `GOLISH-EAS-PORT` 和 IP 侧 `GOLISH-EAS-LIVENESS`；WhatWeb 写 `GOLISH-EAS-WEB-FINGERPRINT`；nmap 写 `GOLISH-EAS-SERVICE-FINGERPRINT`。
+  - 追加修正一条误导性日志：WhatWeb completion 文案从“web fingerprints persisted without SERVICE-FINGERPRINT outcome”改为“WEB-FINGERPRINT outcomes stored without SERVICE-FINGERPRINT outcome”。
+  - 发现剩余设计点：真实 run 会持续把 DNS 解析 / 扫描中新出现的 IP 也拉进当前 repair loop；这符合“扫出来能跑的都跑一次”的方向，但与 durable wave / next-wave backlog 的边界还需要单独收紧，否则 EAS 可能在一轮里不断扩张。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-pentest-app -p golish-sub-agents -p golish-agent-kit --check` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest-app liveness_rejects_bare_ip_targets_but_allows_web_origins port_targets_are_ip_or_cidr_only web_fingerprint_targets_are_absolute_http_urls_only --status-level fail` → 3 passed。
+  - `cd backend && cargo nextest run -p golish-sub-agents test_prober_prompt_is_active_surface test_prober_has_active_surface_tools --status-level fail` → 2 passed。
+  - `cd backend && cargo nextest run -p golish-agent-kit stage_worklist_next_surfaces_eas_tool_boundary --status-level fail` → 1 passed。
+  - `cd backend && cargo fmt -p golish-agent-app --check` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-app bridge_config --status-level fail` → 38 passed / 126 skipped。
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 stage-run-b5f5a708-da14-4ffd-9aab-044ac77aa8bb --full --db` → exit 0；DB outcome snapshot before stopping: `GOLISH-EAS-LIVENESS found via naabu: 33 assets`, `GOLISH-EAS-LIVENESS empty via naabu: 16 assets`, `GOLISH-EAS-PORT found via naabu: 33 assets`, `GOLISH-EAS-PORT empty via naabu: 16 assets`, `GOLISH-EAS-SERVICE-FINGERPRINT found via nmap: 41 assets`, `GOLISH-EAS-WEB-FINGERPRINT found via whatweb: 60 assets`, `GOLISH-EAS-WEB-FINGERPRINT empty via whatweb: 20 assets`。
+  - 真实 run evidence ids included `httpx #17234`, `naabu #17235/#17256/#17262`, `nmap #17241/#17244/#17259`, `whatweb #17240/#17251/#17252/#17253`。
+  - `git diff --check` → exit 0。
+- **未跑 / 未完成**：未跑 `./init.sh` / `just precommit`。第二次真实 run 为讨论/验证流程而启动，已在进入继续扩张的 repair loop 后手动 `SIGINT` 停止；没有宣称整轮 EAS gate PASS。
+- **提交记录**：未 commit。
+- **下一步建议**：讨论并明确 EAS wave 边界：同一轮是否允许 DNS 解析出的新 IP 立即进入当前 batch；若允许，要把 worklist/gate 语义改成“expanding wave”；若不允许，要让 `check_stage_asset_coverage`/repair loop 把新资产明确标为 next-wave backlog，避免 ready_to_submit 被新发现资产反复拖住。
+
+#### 2026-07-06 · EAS supplemental wave barrier direction + 默安 live check
+
+- **本轮目标**：回应用户“要不换一个逻辑，改成这个阶段新增的再跑一次 runstage；明确只补这个阶段才进入数据库的资产，无论端口还是 web”，把 EAS wave 从“当前 run 内不断扩张”改成“当前 wave 冻结，新增资产排 supplemental wave，下次 stage_run 只处理新增资产”的方向，并用 Test1 默安真实 DB 跑到关键路径验证。
+- **已完成**：
+  - `StageAssetWaveView` 暴露 `parent_wave_id`，`stage_run` 在当前 durable wave PASS 后创建带 `parent_wave_id` 的 supplemental delta wave，并把 `asset_values` 放进返回的 `expansion_batches`，提示用户重新跑 `stage_run`，下一次只处理新增 batch。
+  - `stage_asset_coverage` / `stage_worklist_status` / `stage_worklist_next` 支持当前 wave asset_values 作为显式分母；当前 wave 外的新资产在 coverage UI/notes 中标成 supplemental/backlog，不把当前 gate 变成无限扩张。
+  - `list_in_scope_targets` / `list_attack_surface_seeds` 在 active durable wave 下过滤到当前 wave，并返回 `current_wave_filtered`，避免子 agent 从普通列表入口拿到下一波资产。
+  - `resume_skip_covers_current_wave` 对 supplemental wave 不再被旧的 stage pass ledger 误跳过，确保“新增资产再跑一次 stage_run”真的会跑。
+  - 同步 EAS spec / 模块卡 / 前端 coverage test 文案。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_asset_wave_instruction_pins_current_batch resume_skip_covers_current_or_legacy_backfilled_wave -p golish-agent-app next_wave_cells_are_marked_without_suggested_tools explicit_current_wave_assets_override_created_at_cutoff explicit_current_wave_assets_defer_assets_outside_wave --status-level fail` → 5 passed。
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_asset_wave resume_skip_covers_current_or_legacy_backfilled_wave -p golish-agent-app next_wave explicit_current_wave -p golish-agent-kit stage_worklist coverage_preflight --status-level fail` → 14 passed。
+  - `cd backend && cargo fmt -p golish-agent-kit && cargo nextest run -p golish-agent-kit current_wave_filter_limits_listing_rows_to_wave_values stage_worklist coverage_preflight --status-level fail` → 8 passed。
+  - `pnpm test:run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → 23 passed。
+  - 默安真实 run：`cd backend && cargo run -q -p golish --bin golish -- --stage-run --profile red_team --only external_attack_surface --auto-approve --db-smoke-summary --org "杭州默安科技有限公司" ... /Users/christopherzheng/golish-platform/Test1`，session `stage-run-313fb3e7-0789-4444-880f-7a6aeca5cd23`。
+  - 真实 run 观察到：sub-agent `list_attack_surface_seeds` / `list_in_scope_targets` 均为 `current_wave_filtered=true`；DB 当前 operation `88f714dc-938f-4271-a2f1-525aca5db3ec` 的 wave 0 为 `running` 且 `items=130`；httpx/naabu/nmap/whatweb 结果均写入 evidence/target surface；WhatWeb 落地示例包括 `stored_origins=31 stored_fingerprints=192` 与 `stored_origins=90 stored_fingerprints=203`。
+  - 真实 run 中后续 prober 扫描的 IP 经 SQL 验证均在当前 wave_items 内；没有发现它从列表入口越界扫 supplemental 资产。
+  - 用户中途问“wave 方向是什么”，按暂停处理，手动 `Ctrl-C` 结束 CLI；随后 `ps -ax -o pid=,ppid=,command= | rg 'stage-run-313fb3e7|nmap|naabu|httpx|whatweb|golish -- --stage-run'` 只剩检查命令自身，没有遗留扫描进程。
+- **发现的问题 / 未完成**：
+  - 该 live run 未跑到 current wave PASS，因此还没有用真实 run 看到 `expansion_batches` / supplemental wave 创建；这部分目前只由单元测试和 DB 代码路径覆盖。
+  - 第二个 prober 中仍出现裸 `whatweb` 空命令和 `eas_fingerprint_web_stack` 被 submit-repair mode 拦掉的日志；说明 WhatWeb wrapper/repair allow-list 还需要继续收紧，让模型只能走包装工具。
+  - 未跑 `./init.sh` / `just precommit`；本轮为 scoped tests + live validation。
+- **提交记录**：未 commit。
+- **下一步建议**：先和用户确认 wave 语义：当前 run 冻结当前 wave；本阶段新入库的端口/web/service 生成 supplemental wave；下一次 `stage_run` 只补这批新增资产。确认后继续修 wrapper gate：让 EAS repair mode 显式允许 `eas_fingerprint_web_stack`，同时减少/禁止 raw `whatweb` 空跑路径。
+
+#### 2026-07-06 · EAS supplemental wave + repair wrapper tightening follow-up
+
+- **本轮目标**：继续完成用户目标“第一次 runstage 提交后查看本阶段新增资产，再进入补充 runstage；补充 runstage 只补本阶段新增的端口/web 资产，并实际验证”。重点修复上一轮 live check 暴露的两点：supplemental wave 不能把旧未分配资产误当新增；EAS repair mode 不能挡掉 WhatWeb wrapper 或诱导 raw whatweb/pentest_run。
+- **已完成**：
+  - `stage_asset_waves::create_next` 的 delta 候选从“本 operation/stage 未进过 wave 的 target”收紧为“`parent_wave.started_at` 之后新入库、且未进过本 operation/stage wave 的 in-scope target”。没有 parent wave 时才回退 legacy `org_stage_completions.passed_at` floor。这样补充 runstage 只吃当前阶段运行中新落库资产，不会把 current wave limit 截断之外的老 target 混进去。
+  - StageRefiner 的 EAS coverage-gap repair 从 raw `httpx/naabu/nmap/whatweb/pentest_run` hint 统一映射到 backend wrappers：`eas_probe_http_liveness` / `eas_discover_ports` / `eas_fingerprint_services` / `eas_fingerprint_web_stack`；EAS repair allowed_tools 不再暴露 raw `pentest_run` / `pentest_list_tools`。
+  - `SubmitRepairMode` 的 EAS wrapper guard 补 `GOLISH-EAS-WEB-FINGERPRINT` → `eas_fingerprint_web_stack` 自动放行，即使 gate action 没有 legacy `suggested_tools` 也不再挡 wrapper；raw `whatweb` / `pentest_run` 仍会被 repair lock block。
+  - 同步模块卡：`golish-db/repo.md`、`golish-agent-kit/task_orchestrator.md`、`golish-sub-agents.md`、`golish-sub-agents/executor.md`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-sub-agents -p golish-db -p golish-agent-runtime -p golish-agent-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-db stage_asset_wave -p golish-agent-kit eas_coverage_gap submit_needs_fix_prioritizes_eas eas_web_fingerprint_repair -p golish-sub-agents coverage_gap_repair --status-level fail` → 22 passed / 1143 skipped。
+  - `cd backend && cargo nextest run -p golish-agent-runtime stage_asset_wave resume_skip_covers_current_or_legacy_backfilled_wave -p golish-agent-app next_wave explicit_current_wave -p golish-agent-kit stage_worklist coverage_preflight --status-level fail` → 14 passed / 1281 skipped。
+  - `cd backend && cargo nextest run -p golish-db stage_asset_wave -p golish-agent-runtime stage_asset_wave resume_skip_covers_current_or_legacy_backfilled_wave -p golish-agent-app next_wave explicit_current_wave -p golish-agent-kit stage_worklist coverage_preflight eas_coverage_gap submit_needs_fix_prioritizes_eas eas_web_fingerprint_repair -p golish-sub-agents coverage_gap_repair --status-level fail` → 36 passed / 1587 skipped。
+  - 本地 Postgres 事务内验证（rollback）：临时插入 org/operation_state/parent wave/targets，包含 parent wave 前老资产、parent wave 已有资产、parent wave 后新资产；用当前 next-wave SQL 查询只返回 `new-after-wave.example.test`，证明 old un-waved target 与 parent item 均被排除。输出：`candidate_count 1 ... proof only parent-wave-new target selected; old un-waved target excluded; parent item excluded`。
+  - 本地 Postgres 两轮 wave 事务验证（rollback）：临时插入 parent wave 并标 completed，再按当前 create-next SQL 插入 supplemental wave；随后用 current-running 等价查询读回 wave_index=1、`parent_wave_id=<parent>`，items 只有 `203.0.113.10` 与 `https://app.example.test`，证明第二次 run 的 running wave 只包含本阶段新入库的 port/web 资产。输出：`inserted_delta_items ['203.0.113.10', 'https://app.example.test'] ... proof second run wave contains only stage-new port/web assets and links to parent wave`。
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-sub-agents -p golish-db -p golish-agent-runtime -p golish-agent-app -- --check` → exit 0。
+  - `pnpm test:run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → 23 passed。
+  - `git diff --check` → exit 0。
+  - 最终副作用检查：`select count(*) from organizations where name in ('codex-wave-proof-org','codex-wave-two-pass-proof-org')` → 0；`ps ... rg 'stage-run-313fb3e7|nmap|naabu|httpx|whatweb|golish -- --stage-run'` 只返回检查命令自身，无遗留扫描进程。
+- **未跑 / 未完成**：未跑 `./init.sh` / `just precommit` / 新一轮完整默安 EAS live run 到 PASS。CLI `--stage-run` 每次自建 operation 并走真实 LLM orchestration，没有现成无扫描参数接入预置 operation/wave；上一轮 live run 已证明 current wave filtering、naabu/nmap/whatweb 落库和无越界扫描，本轮用事务 DB proof 覆盖 supplemental 两轮 wave 语义，避免再触发大范围真实扫描。
+- **提交记录**：未 commit。
+- **下一步建议**：若要最终用真实 run 证明 `expansion_batches`，需要挑一个小 scope/小 org 或人工造一个只含 1-2 个 target 的测试 org，再跑两次 `stage_run`：第一次 PASS 后确认返回 supplemental `asset_values`，第二次确认 `current_wave_filtered=true` 且只处理这批 delta。
+
+#### 2026-07-06 · EAS nmap PTR hostname containment
+
+- **本轮目标**：回应用户截图中第二轮 supplemental wave 被描述为“通过反向 DNS 发现”的疑问，修掉 EAS 服务指纹阶段把 nmap 自动反解 hostname/PTR 提升成新 domain target 的路径。
+- **已完成**：
+  - `eas_fingerprint_services` 与 EAS 内 nmap port discovery recipe 固定加 `-n`，避免 nmap 主动做 DNS 反解；`resources/toolsconfig/nmap.json` 与 `naabu -> nmap` recipe 也加 `-n`，减少 raw recipe 复现同类问题。
+  - `golish-pentest::output_parser` 在 `target_update_recon` 多行输出上下文里优先把 `ip` 注入为 canonical `host`，所以 `Nmap scan report for hostname (ip)` 后续 port/service records 会落到 IP target。
+  - `golish-pentest::output_store::targets` 对 `tool_name=nmap` 再兜底优先使用 `ip` 作为 target key，防止 parser/legacy path 仍把 PTR hostname 创建为 in-scope domain target。
+  - 模块卡同步记录：nmap 反解名只能作为 alias/observation 线索，不能扩大 EAS wave 分母。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-pentest -p golish-pentest-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest nmap_parse_uses_ip_not_rdns_hostname_as_recon_host nmap_recon_target_value_prefers_ip_over_rdns_hostname --status-level fail` → 2 passed / 168 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest-app nmap_wrappers_disable_dns_resolution liveness_rejects_bare_ip_targets_but_allows_web_origins web_fingerprint_targets_are_absolute_http_urls_only port_targets_are_ip_or_cidr_only --status-level fail` → 4 passed / 175 skipped。
+  - `python3 -m json.tool resources/toolsconfig/nmap.json >/dev/null && python3 -m json.tool resources/toolsconfig/naabu.json >/dev/null` → exit 0。
+  - `cd backend && cargo nextest run -p golish-pentest output_parser output_store --status-level fail` → 48 passed / 122 skipped。
+  - `cd backend && cargo nextest run -p golish-pentest-app eas_capabilities --status-level fail` → 5 passed / 174 skipped。
+  - `cd backend && cargo fmt -p golish-pentest -p golish-pentest-app -- --check` → exit 0。
+  - `git diff --check -- backend/crates/golish-pentest-app/src/pentest_bridge/eas_capabilities.rs backend/crates/golish-pentest/src/output_parser.rs backend/crates/golish-pentest/src/output_store/targets.rs resources/toolsconfig/nmap.json resources/toolsconfig/naabu.json docs/modules/backend/golish-pentest/output_store.md docs/modules/backend/golish-pentest-app/pentest_bridge.md agent-progress.md` → exit 0。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 app/backend 后用下一次默安 EAS run 确认 nmap 命令带 `-n`，并用只读 SQL 确认不会再新增 `compute.hwclouds-dns.com` / `IN-ADDR.ARPA` 这类 PTR domain target。
+
+#### 2026-07-06 · EAS SERVICE-FINGERPRINT terminal weak-service closeout
+
+- **本轮目标**：回应用户“最后一次为什么一直报错、怎么解决、是否确定”，用默安最新真实 run/DB 确认 EAS SERVICE-FINGERPRINT gap 的根因，并修复 `tcpwrapped` / DNS/53 造成的永久 pending。
+- **已完成**：
+  - 用 `scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1783330408427-1 --full --db` 复核最新 run，gate 最后只剩 `222.186.57.10 × GOLISH-EAS-SERVICE-FINGERPRINT`。
+  - 只读 SQL 查 DB：`222.186.57.10` 的 nmap fingerprint 已落库，端口 `5550` 为 `tcpwrapped`；ports 中还有 bare `53/domain`。旧 coverage truth 会把 `53` 与 `5550` 同时判为 blocking ports。
+  - `coverage_truth.rs` 保持 `tcpwrapped/unknown/open/...` 不算强服务面，但允许同 target/port 的 `source=nmap` fingerprint 行作为 terminal attempt 关闭该 port；多端口主机上的 bare DNS/53 不再阻塞 SERVICE-FINGERPRINT，DNS-only 主机仍走 not_applicable/强表面判断。
+  - 同步 `docs/modules/backend/golish-db/repo.md` 与 EAS methodology/spec 文案，避免后续 agent 继续按“所有 open port 一刀切”重扫。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-db` → exit 0。
+  - `python3 -m json.tool resources/harness/stages/external_attack_surface/spec.json >/tmp/eas-spec-check.json` → exit 0。
+  - `cd backend && cargo nextest run -p golish-db coverage_truth --status-level fail` → 34 passed / 172 skipped。
+  - `cd backend && cargo fmt -p golish-db -- --check` → exit 0。
+  - `git diff --check -- backend/crates/golish-db/src/repo/coverage_truth.rs docs/modules/backend/golish-db/repo.md resources/harness/stages/external_attack_surface/methodology.md resources/harness/stages/external_attack_surface/spec.json` → exit 0。
+  - 当前默安 DB 复刻修后判断：旧逻辑 blocking ports = `['53', '5550']`；新逻辑 `new_blocking_required_ports = None`，说明 `222.186.57.10` 这个实际卡点会闭合。
+- **未跑 / 未完成**：未跑 `./init.sh` / `just precommit` / 重启 backend 后的完整默安 EAS live run 到 PASS；当前改动需要 app/backend reload 才会影响正在运行的进程。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 app/backend 后重新跑默安 EAS stage_run，确认 SERVICE gap 不再卡在 `222.186.57.10`；如果仍有 WEB-FINGERPRINT gap，再按 WhatWeb wrapper/target surface 落库单独查。
+
+#### 2026-07-06 · EAS PORT-empty SERVICE not_applicable gate consistency follow-up
+
+- **本轮目标**：回应用户“你再看看”，复核上一轮修复后的最新默安 live run/DB，确认当前剩余 SERVICE gap 的真实原因，并补齐 gate 路径一致性。
+- **已完成**：
+  - 复跑 `scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1783330408427-1 --full --db`：`222.186.57.10` 已不再是最新卡点；最新旧二进制 gate 最后停在 15 个 `GOLISH-EAS-SERVICE-FINGERPRINT` gap。
+  - DB 只读核对：13 个 IP 有 `GOLISH-EAS-PORT empty via naabu`（evidence `18040`）且 `targets.ports=[]/ports_scanned_at=NULL`，说明无开放端口；前端 read-model 已会把 SERVICE 派生为 `not_applicable`，但 `org_gate` / submit preview / closeout gate 没有把这条依赖注入 gate context。
+  - `org_gate` 新增 `eas_service_not_applicable_from_port_outcomes`：`GOLISH-EAS-PORT empty/not_applicable` → 同资产 `GOLISH-EAS-SERVICE-FINGERPRINT not_applicable`；同时继续过滤 target-level `SERVICE found`，SERVICE found 仍由端口级 DB truth 决定。
+  - `harness_submit_tool` submit preview 与 `task_orchestrator/subtask_phases/execute.rs` closeout gate 复用同一个 helper，保证 sub-agent 提交预检、主 closeout、per-org org_gate 三条路径一致。
+  - 端口级复核当前 DB：`115.28.135.55` 已闭合；`115.175.6.207` 还缺 `9998` 端口指纹，因为 `job_d0db4784` 只有 spawn 日志，没有 background completion / structured output / evidence 落库。下一次新二进制运行时，13 个 no-open IP 不应再卡 SERVICE；若还卡，只应剩真实未落库的 `115.175.6.207:9998`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-agent-app` → exit 0。
+  - `cd backend && cargo nextest run -p golish-agent-kit eas_port_empty_outcome_makes_service_not_applicable eas_service_found_outcome_is_not_a_gate_fact hook_passes_through_unparseable_content no_harness_stage_skips_gate --status-level fail` → 4 passed / 834 skipped。
+  - `cd backend && cargo nextest list -p golish-agent-app | rg 'submit|harness|stage' | head -80` → exit 0；编译 `golish-agent-app` 成功。
+  - `cd backend && cargo nextest run -p golish-agent-app eas_port_checked_empty_makes_service_not_applicable eas_accepts_surface_claim_without_model_evidence_ids --status-level fail` → 2 passed / 164 skipped。
+  - `cd backend && cargo fmt -p golish-agent-kit -p golish-agent-app -- --check` → exit 0。
+  - `git diff --check -- <touched EAS gate files/docs>` → exit 0。
+  - 当前进程检查：`ps ... rg 'nmap|naabu|whatweb|httpx|golish -- --stage-run'` 只返回检查命令自身，无遗留扫描进程。
+- **未跑 / 未完成**：未跑 `./init.sh` / `just precommit` / 重启后的完整默安 EAS live run 到 PASS。当前 Golish backend 进程是旧二进制，必须重启/重新编译后才会加载新 gate 逻辑。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 app/backend 后重新跑默安 EAS；预期 13 个 no-open IP 不再生成 SERVICE gap。若仍有 SERVICE gap，优先检查 `115.175.6.207:9998` 的 nmap completion/structured output 落库路径。
+
+#### 2026-07-07 · dayu HTTPS origin JS visibility bugfix
+
+- **本轮目标**：回应用户 `https://dayu.moresec.cn/` 在浏览器里有大量 JS，但 Target Surface 前端显示 JS/API/URL 为空的问题，区分站点行为与 Golish 平台采集/落库问题，并修复平台把 HTTPS 错误降级为 HTTP 的路径。
+- **已完成**：
+  - 只读复核 Test1 最新 transcript/DB：`https://dayu.moresec.cn:443` backend identity 存在，但该 origin 下内容聚合为 0；历史 `route_probe_paths` 结果落在 `http://dayu.moresec.cn:80`，且 `browser_collect_js_api` 对 dayu 写了 empty outcome。
+  - 现场复现站点行为：`https://dayu.moresec.cn/` 无登录态也能加载 `/umi.3681c70d.js`、多个 `dayu-cdn.moresec.cn` async chunk，并观察到 `GET /api/iam/v2/login/types`；`http://dayu.moresec.cn/` 采集为 `scripts_seen=0` 且出现 403。结论：不是用户看错，也不是站点主动降级；是 Golish 平台 wrapper 的 canonicalize 把 HTTPS 错误改成 HTTP。
+  - `target_resolver::best_web_service_candidate` 禁止将明确请求的 HTTPS URL 降级成 HTTP candidate；仍允许 HTTPS default origin 切到 HTTPS 非默认端口。
+  - `scripts/browser_collect_js_api.mjs` 不再把 `text/html` / XHTML 响应的 `.js/.mjs` URL 当成 JS 保存，避免 SPA fallback chunk 污染 manifest。
+  - `route_probe_paths` 对 `.js/.json/.map/.css/.env` 等静态/配置路径返回 HTML fallback 的候选直接按 soft-404 拒绝，避免 `config.js` / `openapi.json` 这类 SPA fallback 假阳性继续进入 `directory_entries`。
+  - 同步 `docs/modules/backend/golish-pentest-app/pentest_bridge.md` 的工具契约说明。
+- **运行过的验证（实跑）**：
+  - `curl -k -L -I --max-time 20 https://dayu.moresec.cn/` → exit 0；HTTP 200，`content-type: text/html`，`content-length: 3609`。
+  - `curl -k -L --max-time 20 --compressed -sS -D /tmp/dayu_headers.txt https://dayu.moresec.cn/ -o /tmp/dayu_body.html && rg '<script|src=|href=|umi' ...` → exit 0；HTML 中包含 `/static/cdn-load.js`、`/static/css-doodle.min.js`、`/umi.3681c70d.js`。
+  - `curl -k -L -I --max-time 20 https://dayu.moresec.cn/umi.3681c70d.js` → exit 0；HTTP 200，`content-type: application/javascript`，`content-length: 3240791`。
+  - `curl -k -L --max-time 20 --compressed -sS https://dayu.moresec.cn/config.js` 与首页 body SHA-256 相同；`https://dayu.moresec.cn/__golish_random_20260707__.js` 也与首页 body SHA-256 相同，证明该站对不存在静态路径返回 SPA fallback。
+  - patch 前 `node scripts/browser_collect_js_api.mjs --url https://dayu.moresec.cn/ --workspace /tmp/dayu-golish-probe ...` → exit 0；能抓真 JS/API，但也把 `text/html` fake chunk 写进 JS manifest。
+  - patch 前 `node scripts/browser_collect_js_api.mjs --url http://dayu.moresec.cn/ --workspace /tmp/dayu-golish-probe-http ...` → exit 0；`scripts_saved=0`、`api_requests_total=0`、console 403，复现错误降级后的空结果。
+  - `cd backend && cargo fmt -p golish-pentest-app` → exit 0。
+  - `cd backend && cargo test -p golish-pentest-app canonical_candidate --lib` → 7 passed。
+  - `cd backend && cargo test -p golish-pentest-app static_js_path_returning_html_is_fallback_not_positive --lib` → 1 passed。
+  - `cd backend && cargo test -p golish-pentest-app html_admin_route_can_still_be_positive_candidate --lib` → 1 passed。
+  - patch 后 `node scripts/browser_collect_js_api.mjs --url https://dayu.moresec.cn/ --workspace /tmp/dayu-golish-probe-fixed ...` → exit 0；`status=ok`、`scripts_saved=12`、`script_manifest_entries=12`、`api_requests_total=1`、`html_scripts=0`，真实 JS/API 保留且 HTML fallback 不再进 scripts。
+  - `cd backend && cargo test -p golish-pentest-app route_probe_tool_ --lib` → 2 passed，耗时约 92s。
+  - `git diff --check -- backend/crates/golish-pentest-app/src/pentest_bridge/target_resolver.rs backend/crates/golish-pentest-app/src/pentest_bridge/route_probe_paths.rs scripts/browser_collect_js_api.mjs docs/modules/backend/golish-pentest-app/pentest_bridge.md` → exit 0。
+- **未跑 / 未完成**：按用户要求未再跑 `init` / 全量 `just precommit`。本轮开始时误触发的 `./init.sh` 已结束，失败在既有无关 clippy：`crates/golish-recon-app/src/asset_intel/agent_intel.rs` 的 `map_or` 可改 `is_none_or`，未在本修复里修改。未做历史 DB 清理；旧 `http://dayu.moresec.cn:80` 的假阳性行仍是存量数据，需要单独数据修复/重跑采集。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 app/backend 后对 Test1 重新跑 dayu 所在 Enumeration 或至少 `browser_collect_js_api`/`js_extract_apis`/`route_probe_paths` 对该 target 的修复路径；预期 `https://dayu.moresec.cn:443` 下能看到 JS/API，且 `config.js` / `openapi.json` 这类 HTML fallback 不再作为真实目录命中。
+
+#### 2026-07-07 · Target Surface Sitemap port display / capture audit
+
+- **本轮目标**：回应用户“sitemap 里面端口没有显示，或者爬到的返回包是不是没保存”，确认 Target Surface Sitemap 的端口展示与响应包保存链路。
+- **已完成**：
+  - 只读核对当前代码链路：Sitemap 由 `api_endpoints`、`js_analysis_results`、`directory_entries` 合成；`api_endpoints.capture_path` 可进入 HTTP request/response Inspector，JS 文件通过 `.golish/captures/<host>/<port>/js/...` 读取源码，`directory_entries` 当前无 `capture_path` 字段且前端明确置为 `null`。
+  - 只读核对本机 DB：`directory_entries` 表没有抓包列；当前库里 `api_endpoints` 共 2297 条，只有 16 条带 `capture_path`，均来自 `source='crawler'`；dayu 相关数据里 `dayu.moresec.cn` 本身有 6 条 `route_probe` URL、0 条 response capture，dayu 相关 JS 文件只挂在 `sso/jira/sso-test` 等子域 target 上且带 JS 文件路径。
+  - 前端 `buildSitemapTree` 的 origin root 改为显式端口显示：默认 HTTPS/HTTP 也展示为 `:443` / `:80`，非默认端口继续保留，例如 `:8443`。
+  - 同步 `docs/modules/frontend/components.md` 记录 Sitemap 树根显式端口展示契约。
+- **运行过的验证（实跑）**：
+  - 只读 PostgreSQL 查询 `directory_entries` columns / `api_endpoints` capture counts / dayu rows → 确认目录 URL 目前无 response capture 存储字段，dayu route_probe 行无抓包。
+  - `pnpm exec vitest run frontend/components/TargetPanel/surface/surfaceModel.test.ts` → 15 passed。
+  - `pnpm exec biome check frontend/components/TargetPanel/surface/surfaceModel.ts frontend/components/TargetPanel/surface/surfaceModel.test.ts` → exit 0。
+- **未跑 / 未完成**：按用户要求未跑 `init` / 全量 `just precommit`。没有给 `directory_entries` 增加抓包持久化；那需要后端 schema/采集链路设计，不能当成本次 UI 小修顺手改。
+- **提交记录**：未 commit。
+- **下一步建议**：如果希望 Sitemap 对 route_probe/目录 URL 也能看返回包，需要新增“目录探测响应 capture”链路：保存 bounded request/response JSON 到 `.golish/captures/<host>/<port>/...`，并给 `directory_entries` 增加可回读的 capture 引用或旁路关联表。
+
+#### 2026-07-07 · oversized JS literal API prescan
+
+- **本轮目标**：回应用户“这些 JS 抓不到 API 吗，里面没怎么有 API 数据”的疑问，修掉 UMI/Vite 大 bundle 因超过 `js_extract_apis.max_file_bytes` 被完整跳过后，明显 `/api` / `/iam` 字符串完全不落 API 表的问题。
+- **已完成**：
+  - `js_extract_apis` 对超过完整分析大小上限的 JS bundle 增加轻量 literal API path 预扫：默认最多读取 10MB 的 skipped bundle，只接受 `/api`、`/iam`、`/auth`、`/oauth`、`/graphql`、`/v1` 等 API-like 字符串，跳过静态资源后缀与普通页面路由。
+  - 预扫命中的 same-origin 候选会进入工具响应 `summary.literal_prescan_endpoints_added`，写入 skipped JS row 的 `endpoints_found` / `raw_analysis.literal_prescan`，并按 `source='js_analysis'` 投影到 `api_endpoints`，从而让 Target Surface 的 APIs/JSAPI coverage 能看到低置信候选。
+  - 保留原安全语义：大包仍不做完整 AST/regex/signal 分析，`raw_analysis.skipped=true` 与 `skipped_reason=exceeds_max_file_bytes` 继续存在；literal prescan 可用 `max_literal_prescan_file_bytes=0` 关闭。
+  - Target Surface Sitemap 的 script detail 在 skipped bundle 有 literal prescan 命中时显示 `literal APIs N` 标记，区分“轻量 literal 候选”和完整 call-site 分析结果。
+  - 同步模块卡：`docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`docs/modules/frontend/components.md`。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-pentest-app` → exit 0。
+  - `pnpm exec biome check frontend/components/TargetPanel/surface/tabs/SitemapTab.tsx` → exit 0。
+  - 真实 Test1 bundle 文件级复测（无 DB 写入）：用与 Rust 预扫同等的 API-path regex 扫 `/Users/christopherzheng/golish-platform/Test1/.golish/captures/dayu-test.moresec.cn/8443/js/b5a7bcdd_umi.6fb20ef4.js`、`sso-dayu.moresec.cn/443/js/60a89f37_umi.js`、`jira-dayu.moresec.cn/443/js/60a89f37_umi.js`、`sso-test-dayu.moresec.cn/8443/js/60a89f37_umi.js` → dayu-test 大包抽到 155 个候选；sso/jira/sso-test 大包各抽到 6 个候选（如 `POST /api/auth/login`、`GET /api/auth/verifyCode`、`POST /api/auth/resetPassword`），并且 `/v3`、`/sso` 这类短前端路由不再计入。
+  - `cd backend && cargo test -p golish-pentest-app literal_prescan --lib` → 3 passed。
+  - `cd backend && cargo test -p golish-pentest-app load_js_sources_bounded_skips_large_bundles --lib` → 1 passed。
+  - `cd backend && cargo test -p golish-pentest-app js_extract_apis --lib` → 29 passed。
+  - `pnpm exec vitest run frontend/components/TargetPanel/surface/surfaceModel.test.ts` → 15 passed。
+  - `pnpm typecheck` → exit 0。
+  - `git diff --check -- backend/crates/golish-pentest-app/src/pentest_bridge/js_extract_apis.rs frontend/components/TargetPanel/surface/tabs/SitemapTab.tsx docs/modules/backend/golish-pentest-app/pentest_bridge.md docs/modules/frontend/components.md` → exit 0。
+- **未跑 / 未完成**：按用户要求未跑 `./init.sh`；未跑全量 `just precommit`。没有对现有 Test1 历史 DB 做回填，旧的 skipped JS row / API 为空需要重启 backend 后重新跑 `js_extract_apis` 或单独做数据回填。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 app/backend 后对 `dayu-test` / `sso` / `jira` 等已保存大 bundle 的 target 重新跑 `js_extract_apis`；预期 skipped UMI bundle 仍标红 skipped，但 JS detail 会出现 `literal APIs N`，API tab 中也会看到 `/api/auth/...`、`/api/projects/...`、`/iam/...` 这类 same-origin 候选。
+
+#### 2026-07-07 · JS extract HaE candidates + AI triage supersedes literal prescan
+
+- **本轮目标**：按用户纠正，撤回 `literal_prescan` 分支：抓 JS 工具只负责保存 JS；`js_extract_apis` 才负责读取已保存 JS、用 HaE/Linkfinder 风格正则生成候选、再由 AI 判断候选是否提升为 API 事实。
+- **已完成**：
+  - `js_extract_apis` 删除 `max_literal_prescan_file_bytes` / `raw_analysis.literal_prescan` / `summary.literal_prescan_endpoints_added` 逻辑；默认不再用 1.5MB cap 跳过大 bundle，`max_file_bytes` 仅作为调用方显式 safety cap。
+  - 复用现有 `resources/js-analysis/js-signal-rules.yml` 的 HAE-style `kind=route` 规则命中，整理为 `hae_route_candidates` 并写入 `js_analysis_results.raw_analysis`；候选本身不写 `api_endpoints`。
+  - 新增工具内 `hae_route_triage` AI pass：只允许模型按候选 id 返回 `likely_api` / `rejected`；promoted 候选仍需过静态资源后缀过滤和 same-origin 投影后，才作为 `EndpointSource::Ai` 进入 `api_endpoints(source='js_analysis')`。确定性 fetch/axios/ajax/new Request 和 browser runtime observed API 逻辑保持原语义。
+  - Target Surface script detail 将旧 `literal APIs N` 改为 `HAE candidates N`；`ToolAiTraceSummary` 在 Key Findings 展示 `HAE candidates N` / `HAE promoted N`，避免把候选误读成已落库 API。
+  - 同步模块卡：`docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`docs/modules/frontend/components.md`。
+- **运行过的验证（实跑）**：
+  - `cargo fmt --manifest-path backend/Cargo.toml --package golish-pentest-app` → exit 0。
+  - `./node_modules/.bin/biome check --write frontend/components/ToolAiTraceSummary.tsx frontend/components/ToolAiTraceSummary.test.ts frontend/components/TargetPanel/surface/tabs/SitemapTab.tsx` → exit 0。
+  - `cd backend && cargo test -p golish-pentest-app js_extract_apis --lib` → 29 passed / 157 filtered out。
+  - `./node_modules/.bin/vitest run frontend/components/ToolAiTraceSummary.test.ts` → 8 passed。
+- **未跑 / 未完成**：按用户要求未跑 `./init.sh` / 全量 `just precommit`。未对历史 DB 做回填；旧 literal-prescan 产物如果已写入本机数据，需要重启 backend 后重新跑 `js_extract_apis` 或单独数据清理。
+- **提交记录**：未 commit。
+- **下一步建议**：重启 app/backend 后对 dayu/sso/jira 等已保存 JS 的 target 重新跑 `js_extract_apis`；预期 JS row 出现 `hae_route_candidates`，API 表只增加确定性 call-site 或 AI-promoted 且 same-origin 的 endpoint。
+
+#### 2026-07-07 · JS extract deterministic HaE API promotion
+
+- **本轮目标**：按用户新判断，把 `js_extract_apis` 先改成机械式抽取：明显 API-shaped 的 HaE/Linkfinder 候选直接入库，AI 不再是默认 promotion 门。
+- **已完成**：
+  - `js_extract_apis` 默认 `ai=false`；只有显式传 `ai: true` 才跑 AI extract / HaE triage。
+  - 新增 `EndpointSource::Hae` 与 `CallSiteKind::HaeRoute`；`/api`、`/iam`、`/auth`、`/oauth`、`/graphql`、`/sys/...`、`/.../v1/...` 等 API-shaped HaE route 机械提升为 endpoint，并走原有 `api_endpoints(source='js_analysis')` upsert 链路。
+  - 增加 method-prefix 字符串扫描，覆盖 `"POST /api/auth/login"` / `"PUT /sys/v1/..."` 这类压缩 wrapper 常见形态；结果合并进 `hae_route_candidates`，再由 deterministic merge 去重。
+  - 响应 / audit / raw analysis 增加 `hae_method_literal_candidates`、`hae_direct_promoted` 计数；工具输出新增 `hae_method_literal_candidates`、`hae_direct_promotions` 进度。
+  - 同步 `docs/modules/backend/golish-pentest-app/pentest_bridge.md`：HaE direct promotion 是确定性抽取入口，AI 只是显式开启的增强。
+- **运行过的验证（实跑）**：
+  - `cd backend && cargo fmt -p golish-js-analyzer -p golish-pentest-app -- --check` → exit 0。
+  - `cd backend && cargo test -p golish-pentest-app hae_route_candidates --lib` → 2 passed。
+  - `cd backend && cargo test -p golish-pentest-app js_extract_apis --lib` → 32 passed。
+  - `cd backend && cargo test -p golish-js-analyzer --lib` → 47 passed。
+  - `cd backend && cargo test -p golish-pentest-app js_ai_extract --lib` → 9 passed。
+  - `git diff --check -- backend/crates/golish-js-analyzer/src/lib.rs backend/crates/golish-js-analyzer/src/patterns.rs backend/crates/golish-pentest-app/src/pentest_bridge/js_extract_apis.rs backend/crates/golish-pentest-app/src/pentest_bridge/js_ai_extract.rs resources/js-analysis/js-signal-rules.yml docs/modules/backend/golish-pentest-app/pentest_bridge.md` → exit 0。
+- **未跑 / 未完成**：按用户要求未跑 `./init.sh` / 全量 `just precommit`。未对历史 DB 做回填；需要重启 backend 后重新跑 `js_extract_apis` 才会把已保存 JS 里的 HaE direct endpoints 投影到 `api_endpoints`。
+- **提交记录**：未 commit。
+- **下一步建议**：用 dayu/yapi 已保存 JS 重新跑一次 `js_extract_apis` 实体检查；预期 yapi 的 `/api/auth/...`、dayu 的 `/sys/v1/...`、`/iam/...`、`/.../v1/...` 这类 API-shaped 候选会直接进 API 表，不再等待 AI。
+
+#### 2026-07-08 · EAS service fingerprint headless regression
+
+- **本轮目标**：按用户要求“不起 GUI，搞测试数据库，把已过前置阶段的数据/事实 seed 进去跑一次”，验证 EAS SERVICE-FINGERPRINT retry 修复是否能在 headless + ephemeral DB 下闭合。
+- **已完成**：
+  - 发现并修正前一版修复的不足：`eas_fingerprint_services` 不能只把所有 target 的 DB confirmed-open ports 做全局 union；否则 A 主机的 `9001` 仍可能扩散到 B 主机。现在 wrapper 按 target 的 `targets.ports[]` confirmed-open ports 约束扫描，并把相同端口集的 targets 分批执行 nmap；target 没有 DB confirmed ports 时才退回显式 `ports`。
+  - 给 `stage_run` 增加 smoke-only seed 钩子 `GOLISH_STAGE_RUN_SEED_OPEN_PORTS='host=80,443;host2=9001'`，在 ephemeral DB seed target 后写入 `targets.ports[]`、`ports_scanned_at`、`liveness_checked_at`，用于复现“DB 已确认 open port 但 SERVICE-FINGERPRINT 未闭合”的 retry 类问题；默认不开启，不影响正常 GUI/CLI。
+  - 同步模块卡：`docs/modules/backend/golish/stage_run.md` 与 `docs/modules/backend/golish-pentest-app/pentest_bridge.md`。
+  - 跑了一次真实 headless smoke：workspace `/private/tmp/golish-eas-headless-20260708-195607`，ephemeral DB，seed `222.186.129.58=82;222.186.57.10=9001`，profile `pentest`，only `external_attack_surface`，DeepSeek Flash。最终 deterministic gate PASS。
+- **已记录证据 / 验证（实跑）**：
+  - `CARGO_TARGET_DIR=/tmp/golish-stage-target cargo test -p golish-pentest-app eas_capabilities --lib` → exit 0；11 passed，覆盖 DB confirmed ports 优先、宽泛 range 不扩散、按 target confirmed ports 分批。
+  - `CARGO_TARGET_DIR=/tmp/golish-stage-target cargo test -p golish stage_run --lib` → exit 0；26 passed，覆盖 stage-run seed parser。
+  - `CARGO_TARGET_DIR=/tmp/golish-stage-target GOLISH_STAGE_RUN_SEED_OPEN_PORTS='222.186.129.58=82;222.186.57.10=9001' python3 scripts/stage_smoke.py --workspace /tmp/golish-eas-headless-20260708-195607 --profile pentest --only external_attack_surface --org 'EAS Headless Regression' --target 222.186.129.58 --target 222.186.57.10 --provider deepseek --model deepseek-v4-flash --objective '...' --run-tree` → exit 0。
+  - headless report：`[PASS] external_attack_surface (findings=0)`；evidence booked `#4 port_probe`、`#11 nmap`、`#12 nmap`、`#15 http_probe`、`#19 http_probe`、`#22 http_probe`；DB summary `targets=2`、`technique_outcomes=8`、`tool_calls=8`、`org_stage_completions=1`。
+  - run.log 关键分批证据：两个 nmap service batches 分开执行：
+    - `222.186.57.10` batch ports `22,80,443,2222,5050,5550,5555,6666,8000,8001,8002,8080,8081,9001`
+    - `222.186.129.58` batch ports `22,80,82,8083,9090,50002`
+    - 关键点：`9001` 没有混进 `222.186.129.58` 那组，`82` 也独立留在对应 target 的组里。
+  - `cd backend && cargo fmt --check` → exit 0。
+  - 清理：`/tmp/golish-stage-target` 18G 临时编译目录已删除；保留 headless workspace/transcript 作为本轮证据。
+- **未跑 / 未完成**：未跑 `./init.sh` / `just precommit` / 全量测试；当前工作树已有大量非本轮改动，未做 commit。headless smoke 中 prober 仍先跑了一次 `naabu` 扩展端口，说明 prompt/worker 策略仍倾向“重新确认端口”，但 service fingerprint 批次已不再发生跨 target 全局端口污染。
+- **提交记录**：未 commit。
+- **下一步建议**：重启实际 app/backend 后跑 Test1 真实 EAS 或 continuation；若再出现 SERVICE retry，优先看 `check_stage_asset_coverage.details.missing_open_ports` 与 run.log 中 nmap 批次是否按 target 分组。
+
+#### 2026-07-10 · Enumeration Web Origin / terminal closeout P0
+
+- **本轮目标**：复核当前信息收集闭环后，按用户“开始”指令修复三个 P0：Enumeration gate/worklist 对 error 的分裂、target-level 分母折叠多个 Web Origin，以及 partial 工具结果伪装成 found/empty 导致的假 PASS。
+- **当前合同**：
+  - 分母 = `scheme://host:port × GOLISH-ENUM-{JS,DIR,PARAM,JSAPI}`；默认端口显式化，同 host 的 HTTP/HTTPS/不同端口互不串格。
+  - `found/empty` 只有当前 stage-run 的 exact-origin `technique_outcomes` 且引用真实 evidence id 才能闭格；`error/partial` 始终未完成。
+  - `blocked/not_applicable` 只有带具体 note 且当前格不存在 error/partial marker 才可作为策略终态。
+  - `directory_entries`、`api_endpoints`、`js_analysis_results` 保留原始发现，但不再独立关闭 Enumeration coverage。
+- **已完成**：
+  - 新增共享 `golish-pentest-domain::web_origin`，统一解析 HTTP(S) exact origin、显式默认端口、IPv6，并拒绝 credentials、无 host 与非 HTTP(S) URL。
+  - 三条 gate 路径和覆盖读模型改成同一权威合同：Enumeration 固定四轴；缺 freshness cutoff 时 fail-closed；不回退同 session 历史 outcome；业务表/source-query 兼容事实不能闭格；partial/error marker 优先否决交付物自报终态；权威 `assets: []` 仍允许真实零分母 PASS。
+  - `stage_worklist` / coverage 按 target URL 与 `ports[].url` 展开所有 exact origins；无法解析的 origin 保持 `missing_exact_web_origin`，不猜 80/443；repair 返回 pending/error/partial。
+  - `browser_collect_js_api` capture 改为 `.golish/captures/{host}/{port}/{scheme}/{js|api}`；浏览器导航与显式 fetch 的每一跳都在发往越界 origin 前阻断；全导航失败/error、部分导航/队列/体积截断/越界为 partial；found/empty 无 evidence 时拒绝 upsert。
+  - `js_extract_apis` 只读取 exact-scheme capture，不回退无法证明 origin 的 legacy 目录；read error/skipped 写 JSAPI/PARAM partial；`route_probe_paths` redirect 限 exact origin、最多 5 hop，队列未闭写 DIR partial；两者 terminal outcome 同样 evidence fail-closed。
+  - Katana `-cs` 改为 anchored exact-origin union，约束实际调度的 scheme/host/port；输出过滤继续作为纵深防御。
+  - `StageAssetCoveragePanel` 使用 `target_id + exact origin` 匹配 live work；同 host HTTP/HTTPS 不再同时误转圈；partial 显示“部分完成”，且 partial 数不再重复计入“未查”。
+  - 新设计/计划与 Enumeration methodology/spec、模块卡、索引已同步；旧 2026-06-23 与 2026-07-03 设计已标明被本设计定向 supersede。`feature_list.json` 现只有本功能一个 `in_progress`。
+- **运行过的验证**：
+  - `CI=true ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ pnpm install` → exit 0。
+  - `./init.sh` → exit 0；启动基线的 fmt/check-fe/test-fe/lint-rust/test-rust-all/check-types 全绿。
+  - `node --check scripts/browser_collect_js_api.mjs && node --test scripts/browser_collect_js_api.test.mjs` → exit 0，7/7 passed。
+  - `cd backend && cargo nextest run -p golish-pentest-domain -p golish-pentest-app -p golish-agent-kit -p golish-agent-app --status-level fail` → exit 0，1285 passed / 3 skipped。
+  - `cd backend && cargo clippy -p golish-pentest-domain -p golish-pentest-app -p golish-agent-kit -p golish-agent-app --all-targets -- -D warnings` → exit 0。
+  - `pnpm exec vitest run frontend/components/Engagement/StageAssetCoveragePanel.test.tsx` → exit 0，26/26 passed。
+  - `just check-fe` → exit 0。
+  - `just precommit` → exit 0；fmt、check-fe、全前端测试、workspace Rust lint、workspace Rust tests、ts-rs drift 检查及重复 `just test` 全部通过；`test-rust-all` 阶段 279s。
+  - `python3 -m json.tool resources/harness/stages/enumeration/spec.json`、`python3 -m json.tool feature_list.json`、`git diff --check` → exit 0。
+- **已记录证据**：
+  - Gate TDD：Enumeration focused tests 初始 RED(exit 101)，实现后 41 passed；`golish-agent-kit --lib` 856 passed；`golish-agent-app --lib` 184 passed。
+  - Browser producer TDD：Node/Rust 初始 RED；真实 Playwright redirect 曾复现 foreign target 被请求，修复后 foreignHits=0；Node 7/7、Rust scoped 25/25 passed。
+  - JS extract / route TDD：focused 初始 RED(exit 101)；新合同 6/6、相关组 56/56、`golish-pentest-app` full 190/190 passed（3 skipped）。
+  - 统一回归与仓库门禁见上方实跑命令；没有用“工具被调用”替代 gate/DB 合同测试。
+- **提交记录**：未 commit、未 stage、未 push。
+- **已知风险或未解决问题**：
+  - 尚未对 `/Users/christopherzheng/golish-platform/Test1` 发起 fresh Enumeration；该动作会对授权目标产生主动 HTTP/浏览器/route 请求，必须先得到用户明确确认。因此功能保持 `in_progress`，不标 `passing`。
+  - 新 extractor 故意不读取无 scheme namespace 的 legacy capture；Test1 必须先用新 browser collector 重抓，才能形成可证明 exact-origin 的新鲜结果。
+  - 当前工作树在本轮开始前已有大量跨模块未提交改动和若干删除项；本轮没有清理、恢复或提交它们，也没有修改 schema/migration 或主动改 `golish-db` crate。
+- **以下本轮文件已修改但未提交**：
+  - Domain/后端核心：`backend/crates/golish-pentest-domain/{Cargo.toml,src/lib.rs,src/web_origin.rs}`；`golish-pentest-app/src/pentest_bridge/{browser_collect_js_api,js_extract_apis,route_probe_paths,enumeration_capabilities,evidence}.rs`；`golish-agent-kit/src/harness/`、`task_orchestrator/subtask_phases/execute.rs`；`golish-agent-app/src/ai/{commands/stage_coverage.rs,db_bridge/evidence.rs,harness_submit_tool.rs}`。
+  - 前端/脚本：`frontend/components/Engagement/StageAssetCoveragePanel.{tsx,test.tsx}`；`scripts/browser_collect_js_api.{mjs,test.mjs}`；`scripts/js_api_pipeline_test.mjs`。
+  - 合同/状态：`resources/harness/stages/enumeration/{spec.json,methodology.md}`、`docs/design/2026-07-10-enumeration-origin-terminal-closeout.md`、`docs/superpowers/plans/2026-07-10-enumeration-origin-terminal-closeout.md`、相关 `docs/modules/` 卡片/索引、`feature_list.json`、本文件；两处启动基线 Clippy 与两个 runtime 测试期望也有最小修正。
+- **下一步最佳动作**：用户明确授权主动请求后，重启当前 backend/app，在 Test1 跑一次 fresh Enumeration；随后执行 `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db`，逐 origin 核对四轴 outcome、正数 evidence id、partial/error 未闭格、worklist/UI 与 gate/pass-token 一致。只有这轮现场证据通过，才把 feature 切到 `passing`。

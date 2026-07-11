@@ -17,13 +17,13 @@
   "$comment_findings_allowed": "Attack-surface mapping stage: the deliverable is liveness/port/service coverage, NOT vulnerabilities. submit_stage_deliverable drops any findings submitted here and tells the model to put discoveries in claims. Design 2026-06-15-recon-stage-findings-suppression.",
   "findings_allowed": false,
 
-  "$comment_host_aware": "Host-aware coverage 2b (design 2026-06-15-host-aware-coverage \u00a73.2, tightened 2026-07-02): EAS splits vhost liveness from host/IP mapping. Domain/URL assets keep GOLISH-EAS-LIVENESS only; GOLISH-EAS-PORT and GOLISH-EAS-SERVICE-FINGERPRINT apply only to concrete IP/CIDR host assets. If a domain has no registered IP target, PORT/SERVICE is a target_intel/DNS landing gap, not a domain port-scan obligation. Unknown class keeps all 3 (fail-safe).",
+  "$comment_host_aware": "Host-aware coverage 2b (design 2026-06-15-host-aware-coverage \u00a73.2, tightened 2026-07-06): EAS splits vhost liveness/web-origin fingerprinting from host/IP mapping. Concrete IP/CIDR host assets are driven by PORT first; fresh open-port or no-open-port evidence closes LIVENESS. GOLISH-EAS-PORT and GOLISH-EAS-SERVICE-FINGERPRINT apply only to concrete IP/CIDR host assets. GOLISH-EAS-WEB-FINGERPRINT applies only after the asset has a confirmed HTTP(S) surface (httpx/WhatWeb/nmap HTTP service surface). If a domain has no registered IP target, PORT/SERVICE is a target_intel/DNS landing gap, not a domain port-scan obligation. Unknown class keeps fail-safe coverage.",
   "host_aware_coverage": true,
 
-  "$comment_freshness_window": "Phase E activation (design 2026-06-22 Phase D): gray-switch ON. The EAS DB-truth back-fill (GOLISH-EAS-LIVENESS/PORT/SERVICE-FINGERPRINT) only counts data collected this stage-run (targets.liveness_checked_at/ports_scanned_at + fingerprints.detected_at >= stage start; migration 20260623000001). EAS coverage_complete now uses authoritative DB/ledger found facts, so self-reported found cells cannot fake active surface coverage. Default false = presence-only.",
+  "$comment_freshness_window": "Phase E activation (design 2026-06-22 Phase D): gray-switch ON. The EAS DB-truth back-fill (GOLISH-EAS-LIVENESS/PORT/SERVICE-FINGERPRINT/WEB-FINGERPRINT) only counts data collected this stage-run (targets.liveness_checked_at/ports_scanned_at + fingerprints.detected_at >= stage start; migration 20260623000001). EAS coverage_complete now uses authoritative DB/ledger found facts, so self-reported found cells cannot fake active surface coverage. Default false = presence-only.",
   "freshness_window": true,
 
-  "$comment_asset_wave_barrier": "Stage expansion wave barrier Phase 1 (design 2026-06-28): freeze the current EAS coverage denominator to assets that existed at operation_state.stage_started_at. Assets discovered during the wave are persisted and shown as new_assets / next-wave pending, but do not block the current wave's gate. Durable wave tables + automatic next-wave dispatch are deferred.",
+  "$comment_asset_wave_barrier": "Stage expansion wave barrier (updated 2026-07-06): freeze the current EAS coverage denominator to the active durable stage_asset_wave item list, falling back to operation_state.stage_started_at only when no durable wave exists. Assets discovered during the wave are persisted and shown as next_wave_pending, but do not block the current wave's gate. After all current org waves pass, stage_run queues supplemental durable waves for the newly DB-entered assets; the next stage_run call processes only those delta wave assets before the stage can close.",
   "asset_wave_barrier": true,
 
   "gate_rules": [
@@ -65,13 +65,13 @@
       "derive_from_evidence": true,
       "require_note_for_other": true,
       "authoritative_found": true,
-      "authoritative_techniques": ["GOLISH-EAS-LIVENESS", "GOLISH-EAS-PORT", "GOLISH-EAS-SERVICE-FINGERPRINT"],
-      "$comment_derive": "2026-06-25 EAS slim closeout: DB business-table truth补格 \u2014 GOLISH-EAS-LIVENESS\u2190targets(http_status/real_ip), -PORT\u2190targets.ports, -SERVICE-FINGERPRINT\u2190fingerprints, plus technique_outcomes provenance where available. 真跑工具落库后 coverage 格自动补 found; authoritative_found means a hand-written found cell no longer counts without DB/ledger truth. Negative/blocked terminal cells should use explicit checked_empty or blocked/not_applicable+note until active Empty facts are complete.",
+      "authoritative_techniques": ["GOLISH-EAS-LIVENESS", "GOLISH-EAS-PORT", "GOLISH-EAS-SERVICE-FINGERPRINT", "GOLISH-EAS-WEB-FINGERPRINT"],
+      "$comment_derive": "2026-07-06 EAS slim closeout: DB business-table truth补格 \u2014 GOLISH-EAS-LIVENESS\u2190targets(http_status/real_ip or fresh ports), -PORT\u2190targets.ports, -SERVICE-FINGERPRINT\u2190per-open-port service surface/nmap, -WEB-FINGERPRINT\u2190WhatWeb fingerprints/source outcomes, plus technique_outcomes provenance where available. 真跑工具落库后 coverage 格自动补 found; authoritative_found means a hand-written found cell no longer counts without DB/ledger truth. Negative/blocked terminal cells should use explicit checked_empty or blocked/not_applicable+note until active Empty facts are complete.",
       "on_fail": {
-        "reason": "external attack surface incomplete: some in-scope assets were not fully mapped (liveness / port / service-fingerprint)",
+        "reason": "external attack surface incomplete: some in-scope assets were not fully mapped (liveness / port / service-fingerprint / web-fingerprint)",
         "hints": [
-          "for EVERY in-scope asset, take each applicable EAS technique to a terminal coverage cell: found / checked_empty / blocked|not_applicable+note. Domain/URL assets require LIVENESS only; IP/CIDR host assets require LIVENESS + PORT + SERVICE-FINGERPRINT",
-          "intel-source data (FOFA/Shodan/...) is a lead, not proof \u2014 actively confirm each asset NOW; the gate auto-projects found cells from DB truth (httpx\u2192targets, naabu/masscan\u2192targets.ports, whatweb/nmap\u2192fingerprints) so running the real tools fills coverage; JS/API extraction happens in the NEXT stage (enumeration)"
+          "for EVERY in-scope asset, take each applicable EAS technique to a terminal coverage cell: found / checked_empty / blocked|not_applicable+note. Concrete IP/CIDR host assets should run PORT first; fresh port evidence closes LIVENESS, then every SERVICE-applicable confirmed open port needs SERVICE-FINGERPRINT. Domain/URL/web-origin assets need LIVENESS, and WEB-FINGERPRINT once HTTP(S) is confirmed",
+          "intel-source data (FOFA/Shodan/...) is a lead, not proof \u2014 actively confirm each asset NOW; the gate auto-projects found cells from DB truth (naabu/masscan\u2192targets.ports + LIVENESS, nmap\u2192service fingerprints, httpx\u2192web liveness, whatweb\u2192web fingerprints) so running the real tools fills coverage; JS/API extraction happens in the NEXT stage (enumeration)"
         ]
       }
     },
@@ -91,17 +91,17 @@
     }
   ],
 
-  "$comment_expected_techniques": "EAS = \u5b9a\u4e49\u653b\u51fb\u9762\uff08\u9636\u6bb5\u91cd\u6392 2026-06-09\uff1a\u7aef\u53e3/\u670d\u52a1\u524d\u79fb\u5230\u6b64\uff09\u3002coverage_complete \u5bf9\u6743\u5a01 in_scope_assets \u9010\u8d44\u4ea7\u6838 LIVENESS+PORT+SERVICE-FINGERPRINT \u7ec8\u6001\uff1b\u6f0f\u4e00\u4e2a = not_attempted = Block\u3002JS/API \u5df2\u79fb\u4ea4 enumeration\u3002",
-  "expected_techniques": ["GOLISH-EAS-LIVENESS", "GOLISH-EAS-PORT", "GOLISH-EAS-SERVICE-FINGERPRINT"],
+  "$comment_expected_techniques": "EAS = \u5b9a\u4e49\u653b\u51fb\u9762\uff08\u9636\u6bb5\u91cd\u6392 2026-06-09\uff1a\u7aef\u53e3/\u670d\u52a1\u524d\u79fb\u5230\u6b64\uff09\u3002coverage_complete \u5bf9\u6743\u5a01 in_scope_assets \u9010\u8d44\u4ea7\u6838 LIVENESS+PORT+SERVICE-FINGERPRINT+WEB-FINGERPRINT \u7ec8\u6001\uff1bWEB-FINGERPRINT \u7531 web-capable \u8bc1\u636e\u52a8\u6001\u9002\u7528\uff1b\u6f0f\u4e00\u4e2a = not_attempted = Block\u3002JS/API \u5df2\u79fb\u4ea4 enumeration\u3002",
+  "expected_techniques": ["GOLISH-EAS-LIVENESS", "GOLISH-EAS-PORT", "GOLISH-EAS-SERVICE-FINGERPRINT", "GOLISH-EAS-WEB-FINGERPRINT"],
 
-  "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout \u00a73.2): specialist = the per-org sub-agent the stage_run tool fans out (EAS \u2192 prober, the ACTIVE surface-mapper split from Pentester, mirroring recon for target_intel); coverage_axis = the human-readable technique columns StageRunView renders per org row (one per expected technique: liveness / port / service-fingerprint).",
+  "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout \u00a73.2): specialist = the per-org sub-agent the stage_run tool fans out (EAS \u2192 prober, the ACTIVE surface-mapper split from Pentester, mirroring recon for target_intel); coverage_axis = the human-readable technique columns StageRunView renders per org row (one per expected technique: liveness / port / service-fingerprint / web-fingerprint).",
   "specialist": "prober",
-  "coverage_axis": ["LIVENESS", "PORT", "SERVICE"],
+  "coverage_axis": ["LIVENESS", "PORT", "SERVICE", "WEB"],
 
   "$comment_min_invocations": "2026-06-25 EAS slim DB-truth closeout: no hard tool floor in the deliverable. Active work is proven by coverage_complete reading DB/ledger facts (targets liveness/ports, fingerprints, technique_outcomes). A required_checks_done/http_probe floor only reintroduces model hand-copying and blocks otherwise valid DB-truth runs.",
   "min_invocations": {},
 
-  "$comment_facts_from_db_truth": "2026-06-25: EAS now matches target_intel's slim deliverable pattern for found cells. The worker runs active tools and lets DB/ledger truth fill found LIVENESS/PORT/SERVICE-FINGERPRINT cells; submit only negative/blocked terminal cells the DB cannot derive.",
+  "$comment_facts_from_db_truth": "2026-07-06: EAS now matches target_intel's slim deliverable pattern for found cells. The worker runs active tools and lets DB/ledger truth fill found LIVENESS/PORT/SERVICE-FINGERPRINT/WEB-FINGERPRINT cells; submit only negative/blocked terminal cells the DB cannot derive.",
   "facts_from_db_truth": true,
 
   "max_other_skips": 2,

@@ -314,11 +314,20 @@ rules:
     confidence: 0.72
     ai_review: true
 
+  - name: HTTP Method Path Literal
+    group: Other
+    source_rule: HTTP Method Path Literal
+    kind: route
+    regex: '["''`]((?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(?:(?:/|\.\./|\./)[^"''`<>,;|*()\\\[\]]{2,}|(?:(?:https?:)?//)[^"''`]{3,}))["''`]'
+    case_sensitive: true
+    confidence: 0.66
+    ai_review: false
+
   - name: Linkfinder
     group: Other
     source_rule: Linkfinder
     kind: route
-    regex: '["''`]((?:(?:[a-zA-Z]{1,10}://|//)[^"''`/]{1,}\.[A-Za-z]{2,}[^"''`]{0,})|(?:(?:/|\.\./|\./)[^"''`<>,;|*()\\\[\]]{2,})|(?:[A-Za-z0-9_/-]{1,}/[A-Za-z0-9_/-]{3,}(?:[?#][^"''`]{0,})?))["''`]'
+    regex: '["''`]((?:(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+)?(?:(?:[a-zA-Z]{1,10}://|//)[^"''`/]{1,}\.[A-Za-z]{2,}[^"''`]{0,}|(?:(?:/|\.\./|\./)[^"''`<>,;|*()\\\[\]]{2,})|(?:[A-Za-z0-9_/-]{1,}/[A-Za-z0-9_/-]{3,}(?:[?#][^"''`]{0,})?)))["''`]'
     case_sensitive: true
     confidence: 0.50
     ai_review: false

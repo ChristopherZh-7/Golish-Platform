@@ -15,12 +15,13 @@ use std::collections::{HashMap, HashSet};
 
 use super::rule_engine::{EvidenceFact, GateContext, SourceQueryFact};
 
-/// 累加器式构造 [`GateContext`]。所有 setter 取所有权、可链式；空集合在
-/// [`GateContextBuilder::build`] 统一折成 `None`（与各入口此前手搓的
-/// `then_some` 行为逐字节一致）。
+/// 累加器式构造 [`GateContext`]。所有 setter 取所有权、可链式；普通空集合在
+/// [`GateContextBuilder::build`] 统一折成 `None`。唯一例外是调用方明确通过
+/// [`GateContextBuilder::authoritative_in_scope_assets`] 传入的 `Some([])`：它表示
+/// 权威查询成功且分母确实为空，必须保留。
 #[derive(Debug, Default, Clone)]
 pub struct GateContextBuilder {
-    in_scope_assets: Vec<String>,
+    in_scope_assets: Option<Vec<String>>,
     asset_types: HashMap<String, String>,
     web_capable_assets: HashSet<String>,
     not_applicable_coverage: HashSet<(String, String)>,
@@ -38,6 +39,14 @@ impl GateContextBuilder {
     /// 权威 in-scope 资产集。空 ⇒ `build()` 折成 `None`（gate 回退自报）。
     /// 幂等覆盖（非追加）。
     pub fn in_scope_assets(mut self, assets: Vec<String>) -> Self {
+        self.in_scope_assets = (!assets.is_empty()).then_some(assets);
+        self
+    }
+
+    /// Authoritative asset axis from a successful coverage snapshot. Unlike
+    /// [`Self::in_scope_assets`], `Some([])` is preserved: it means the DB proved
+    /// that this org has no denominator, not that the caller failed to load it.
+    pub fn authoritative_in_scope_assets(mut self, assets: Option<Vec<String>>) -> Self {
         self.in_scope_assets = assets;
         self
     }
@@ -101,10 +110,11 @@ impl GateContextBuilder {
         self
     }
 
-    /// 组装 [`GateContext`]：**唯一** `empty → None` 归一点。
+    /// 组装 [`GateContext`]：普通集合的**唯一** `empty → None` 归一点；权威资产轴
+    /// 已在 setter 中保留 `Some([])`。
     pub fn build(self) -> GateContext {
         GateContext {
-            in_scope_assets: (!self.in_scope_assets.is_empty()).then_some(self.in_scope_assets),
+            in_scope_assets: self.in_scope_assets,
             asset_types: (!self.asset_types.is_empty()).then_some(self.asset_types),
             web_capable_assets: (!self.web_capable_assets.is_empty())
                 .then_some(self.web_capable_assets),
@@ -142,6 +152,14 @@ mod tests {
         assert_eq!(ctx.expected_techniques, def.expected_techniques);
         assert!(ctx.evidence_facts.is_none() && def.evidence_facts.is_none());
         assert!(ctx.source_queries.is_none() && def.source_queries.is_none());
+    }
+
+    #[test]
+    fn authoritative_empty_in_scope_axis_is_preserved() {
+        let ctx = GateContextBuilder::new()
+            .authoritative_in_scope_assets(Some(Vec::new()))
+            .build();
+        assert_eq!(ctx.in_scope_assets, Some(Vec::new()));
     }
 
     #[test]

@@ -2,7 +2,9 @@
 //! text, tool calls in the order required by Anthropic + OpenAI Responses).
 
 use rig::completion::{AssistantContent, Message};
-use rig::message::{Reasoning, Text, ToolCall};
+use std::collections::BTreeSet;
+
+use rig::message::{Reasoning, Text, ToolCall, UserContent};
 
 /// Build assistant content for chat history with proper ordering.
 ///
@@ -60,28 +62,95 @@ pub fn build_assistant_content(
 }
 
 /// Serialize rig Message history to JSON for DB storage.
-pub(crate) fn serialize_chat_history(messages: &[Message]) -> serde_json::Value {
+pub(crate) fn serialize_chat_history(messages: &[Message]) -> anyhow::Result<serde_json::Value> {
     // Full-fidelity serialization (rig `Message` is `Serialize`): preserves tool
     // calls AND tool results — so a later `resume` delegation can replay the
     // exact conversation, including the evidence ids that live in tool results
-    // (the previous text-only encoding dropped them). Falls back to an empty
-    // array if serialization fails, so chain persistence never panics.
-    serde_json::to_value(messages).unwrap_or_else(|_| serde_json::json!([]))
+    // (the previous text-only encoding dropped them). A serialization failure is
+    // a durability failure: callers must not publish a resume marker for an empty
+    // replacement chain.
+    validate_chat_history_tool_pairs(messages)?;
+    Ok(serde_json::to_value(messages)?)
 }
 
 /// Inverse of [`serialize_chat_history`] for resumable sub-agent chains.
 ///
-/// Returns an empty history on any deserialization mismatch (e.g. a row written
-/// by the older, lossy text-only encoding), so `resume` degrades gracefully to
-/// a fresh conversation instead of failing the sub-agent.
-pub(crate) fn deserialize_chat_history(value: &serde_json::Value) -> Vec<Message> {
-    serde_json::from_value::<Vec<Message>>(value.clone()).unwrap_or_default()
+/// Deserialization mismatches are returned to the explicit-resume caller. A
+/// corrupt/legacy row must not masquerade as an empty fresh conversation while
+/// retaining the old chain id.
+pub(crate) fn deserialize_chat_history(value: &serde_json::Value) -> anyhow::Result<Vec<Message>> {
+    let messages = serde_json::from_value::<Vec<Message>>(value.clone())?;
+    validate_chat_history_tool_pairs(&messages)?;
+    Ok(messages)
+}
+
+/// Validate the provider-level invariant for resumable chat histories: every
+/// assistant tool call must be followed immediately by a user tool-result turn
+/// containing a result with the same provider call id.
+///
+/// A durable chain is replayed verbatim on resume. Persisting a dangling call
+/// therefore turns a local control-flow bug into a permanently unresumable
+/// chain (OpenAI-compatible providers reject it before generation). Keep this
+/// strict and fail closed; ordinary user text must never stand in for a tool
+/// result.
+pub(crate) fn validate_chat_history_tool_pairs(messages: &[Message]) -> anyhow::Result<()> {
+    for (index, message) in messages.iter().enumerate() {
+        let Message::Assistant { content, .. } = message else {
+            continue;
+        };
+        let tool_calls = content
+            .iter()
+            .filter_map(|item| match item {
+                AssistantContent::ToolCall(call) => Some((
+                    call.call_id.as_deref().unwrap_or(call.id.as_str()),
+                    call.function.name.as_str(),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if tool_calls.is_empty() {
+            continue;
+        }
+
+        let Some(Message::User { content: results }) = messages.get(index + 1) else {
+            let missing = tool_calls
+                .iter()
+                .map(|(id, name)| format!("{name}:{id}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "assistant message {index} has tool call(s) without an immediate tool-result turn: {missing}"
+            );
+        };
+        let result_ids = results
+            .iter()
+            .filter_map(|item| match item {
+                UserContent::ToolResult(result) => {
+                    Some(result.call_id.as_deref().unwrap_or(result.id.as_str()))
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let missing = tool_calls
+            .iter()
+            .filter(|(id, _)| !result_ids.contains(id))
+            .map(|(id, name)| format!("{name}:{id}"))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "assistant message {index} has tool call(s) without matching immediate results: {}",
+                missing.join(", ")
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::message::ToolFunction;
+    use rig::message::{ToolFunction, ToolResult, ToolResultContent, UserContent};
+    use rig::one_or_many::OneOrMany;
 
     fn tool_call(arguments: serde_json::Value) -> ToolCall {
         ToolCall {
@@ -138,5 +207,58 @@ mod tests {
             &[tool_call(serde_json::json!({"name": "10.0.0.5"}))],
         );
         assert_eq!(only_tool_call_args(&content)["name"], "10.0.0.5");
+    }
+
+    #[test]
+    fn persisted_history_rejects_assistant_tool_call_without_immediate_result() {
+        let call = tool_call(serde_json::json!({"name": "example"}));
+        let messages = vec![
+            Message::Assistant {
+                id: None,
+                content: OneOrMany::one(AssistantContent::ToolCall(call)),
+            },
+            Message::User {
+                content: OneOrMany::one(UserContent::Text(Text {
+                    text: "resume without the missing tool result".to_string(),
+                })),
+            },
+        ];
+
+        let error = validate_chat_history_tool_pairs(&messages)
+            .expect_err("dangling tool calls must fail before persistence or resume");
+        assert!(error.to_string().contains("t1"));
+    }
+
+    #[test]
+    fn persisted_history_accepts_all_results_for_a_multi_tool_turn() {
+        let first = tool_call(serde_json::json!({"name": "one"}));
+        let mut second = tool_call(serde_json::json!({"name": "two"}));
+        second.id = "t2".to_string();
+        second.call_id = Some("t2".to_string());
+        let result = |id: &str| {
+            UserContent::ToolResult(ToolResult {
+                id: id.to_string(),
+                call_id: Some(id.to_string()),
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: "{}".to_string(),
+                })),
+            })
+        };
+        let messages = vec![
+            Message::Assistant {
+                id: None,
+                content: OneOrMany::many(vec![
+                    AssistantContent::ToolCall(first),
+                    AssistantContent::ToolCall(second),
+                ])
+                .expect("two assistant content items"),
+            },
+            Message::User {
+                content: OneOrMany::many(vec![result("t1"), result("t2")])
+                    .expect("two tool results"),
+            },
+        ];
+
+        validate_chat_history_tool_pairs(&messages).expect("balanced tool history must be valid");
     }
 }

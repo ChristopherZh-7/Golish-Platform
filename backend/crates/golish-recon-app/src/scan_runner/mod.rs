@@ -27,25 +27,23 @@ impl runner::ScanStorage for MainScanStorage {
     async fn store_directory_entry(
         &self,
         pool: &sqlx::PgPool,
-        target_id: Option<Uuid>,
+        guard: &golish_db::repo::scoped::TargetWriteGuard,
         url: &str,
         status_code: Option<i32>,
         content_length: Option<i32>,
         lines: Option<i32>,
         words: Option<i32>,
         tool: &str,
-        project_path: Option<&str>,
     ) -> runner::ScanRunnerResult<()> {
-        crate::targets::db_directory_entry_add(
+        crate::targets::db_directory_entry_add_guarded(
             pool,
-            target_id,
+            guard,
             url,
             status_code,
             content_length,
             lines,
             words,
             tool,
-            project_path,
         )
         .await
         .map(|_| ())
@@ -70,16 +68,10 @@ pub async fn scan_whatweb(
 ) -> Result<ScanResult, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
+    let authorization =
+        runner::authorize_scan_target(pool, tid, project_path.as_deref(), &target_url).await?;
     let emitter = TauriEventEmitter::handle(app);
-    Ok(runner::run_whatweb(
-        pool,
-        Some(&emitter),
-        &target_url,
-        tid,
-        project_path.as_deref(),
-        options,
-    )
-    .await?)
+    Ok(runner::run_whatweb(pool, Some(&emitter), &authorization, options).await?)
 }
 
 #[tauri::command]
@@ -106,13 +98,13 @@ pub async fn scan_nuclei_targeted(
 ) -> Result<ScanResult, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
+    let authorization =
+        runner::authorize_scan_target(pool, tid, project_path.as_deref(), &target_url).await?;
     let emitter = TauriEventEmitter::handle(app);
     Ok(runner::run_nuclei_targeted(
         pool,
         Some(&emitter),
-        &target_url,
-        tid,
-        project_path.as_deref(),
+        &authorization,
         &template_ids,
         severity_filter.as_deref(),
         options,
@@ -132,14 +124,14 @@ pub async fn scan_feroxbuster(
 ) -> Result<ScanResult, GolishError> {
     let pool = state.pool_ready().await?;
     let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
+    let authorization =
+        runner::authorize_scan_target(pool, tid, project_path.as_deref(), &target_url).await?;
     let emitter = TauriEventEmitter::handle(app);
     Ok(runner::run_feroxbuster(
         pool,
         &MainScanStorage,
         Some(&emitter),
-        &target_url,
-        tid,
-        project_path.as_deref(),
+        &authorization,
         &base_paths,
         options,
     )

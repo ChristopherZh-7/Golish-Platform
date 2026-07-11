@@ -21,6 +21,7 @@ futures = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Utilities
 uuid = { workspace = true }

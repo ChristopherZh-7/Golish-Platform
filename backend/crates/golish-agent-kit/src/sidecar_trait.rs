@@ -23,6 +23,17 @@ pub trait SessionCaptureBackend: Send + Sync {
     /// `None` if no session was active.
     fn end_session(&self) -> anyhow::Result<Option<EndedSessionInfo>>;
 
+    /// Resume an existing capture session owned by this backend instance.
+    fn resume_session(&self, session_id: &str) -> anyhow::Result<()>;
+
+    /// Find a legacy capture session by workspace and approximate start time.
+    async fn find_matching_session(
+        &self,
+        workspace_path: &std::path::Path,
+        started_at: chrono::DateTime<chrono::Utc>,
+        tolerance_secs: Option<i64>,
+    ) -> anyhow::Result<Option<String>>;
+
     /// Capture a user prompt event for the given session.
     fn capture_user_prompt(&self, session_id: &str, text: &str);
 

@@ -9,7 +9,7 @@
   "requires_stages": ["external_attack_surface"],
   "allowed_next_stages": ["vuln_triage", "reporting"],
 
-  "allowed_tool_types": ["recon/crawler", "web/route-probe"],
+  "allowed_tool_types": ["enum_preflight_web_origins", "recon/crawler", "web/route-probe"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
@@ -17,14 +17,14 @@
   "$comment_findings_allowed": "Content-enumeration stage: the deliverable is js/api/dir/param coverage (testable units feeding vuln_triage), NOT vulnerabilities. submit_stage_deliverable drops any findings submitted here and tells the model to put discoveries in claims. Design 2026-06-15-recon-stage-findings-suppression.",
   "findings_allowed": false,
 
-  "$comment_host_aware": "Host-aware coverage 2b + 2026-07-01 IP-web: content enumeration (JS/DIR/PARAM/JSAPI) is web-level. Domain/URL assets are always content-enumeration targets; bare IP/CIDR targets are included only when EAS/httpx proved HTTP service via targets.http_status (enum_ip_web_coverage). Unknown class keeps all 4 (fail-safe).",
+  "$comment_host_aware": "2026-07-10 exact-origin contract: content enumeration (JS/DIR/PARAM/JSAPI) is keyed only by EAS-confirmed canonical scheme://host:port. A target URL, confirmed-open ports[].url, or explicit HTTP(S) service metadata can materialize an origin. Alive bare domain/IP, targets.http_status without scheme/port, unknown TCP service, closed/filtered port, and unknown/rootless class are excluded from the content denominator instead of becoming pending/not_applicable cells.",
   "host_aware_coverage": true,
   "enum_ip_web_coverage": true,
 
-  "$comment_skip_dead_assets": "Dead-asset denominator exclusion (design 2026-07-02-dead-asset-liveness-state \u00a75.2): drop assets EAS confirmed dead (targets.liveness_state='dead') from the enumeration denominator so a dead host no longer forces JS/DIR/PARAM/JSAPI probing or a checked_empty book. EAS itself must NOT set this (it is the liveness-judging stage). Guarded in org_gate so it never empties a non-empty axis; 'unreachable' is never dropped (may be transient).",
+  "$comment_skip_dead_assets": "Dead-asset denominator exclusion (design 2026-07-02-dead-asset-liveness-state \u00a75.2): drop assets EAS confirmed dead (targets.liveness_state='dead') before exact-origin materialization so a dead host no longer forces JS/DIR/PARAM/JSAPI probing. EAS itself must NOT set this (it is the liveness-judging stage). An all-dead or no-exact-origin set is an authoritative zero content denominator; 'unreachable' is never dropped by liveness state alone (may be transient).",
   "skip_dead_assets": true,
 
-  "$comment_freshness_window": "Phase E activation (design 2026-06-22 Phase D): gray-switch ON. The ENUM DB-truth back-fill (GOLISH-ENUM-DIR/PARAM/JSAPI) only counts content discovered this stage-run (directory_entries.created_at + api_endpoints.discovered_at >= stage start). enumeration coverage_complete is derive_from_evidence (NOT authoritative), so this makes the DB auto-fill fresh-only; self-reported cells still fall back. Default false = presence-only.",
+  "$comment_freshness_window": "Enumeration only projects exact-origin technique_outcomes collected at or after the current stage start. If the stage-start cutoff is unavailable, outcome projection is skipped rather than falling back to older rows from the same session. Business discovery tables remain raw findings and never close the four Enumeration axes.",
   "freshness_window": true,
 
   "gate_rules": [
@@ -43,12 +43,15 @@
     {
       "op": "coverage_complete",
       "derive_from_evidence": true,
-      "$comment_derive": "Phase 1 (2026-06-12-redteam-phase1) + 2026-06-26 enumeration deliverables/flow + 2026-06-29 internal DIR probe: DB business-table truth 补格 — GOLISH-ENUM-DIR←directory_entries(route_probe_paths), -PARAM←api_endpoints.params(browser/js_extract/crawler observed params), -JSAPI←api_endpoints.source IN (js_analysis,crawler). 真跑工具落库后 coverage 格自动补 found; 不开 authoritative (DIR/PARAM Empty 事实源未就绪), 自报 checked_empty/blocked/not_applicable 仍兜底.",
+      "authoritative_found": true,
+      "require_note_for_other": true,
+      "error_is_terminal": false,
+      "$comment_derive": "Enumeration is current-run evidence authoritative on the exact Web Origin × four-axis matrix. found/checked_empty ownership is unchanged and strict: JS=browser_collect_js_api, JSAPI/PARAM=js_extract_apis, DIR=route_probe_paths. blocked has a separate narrow producer matrix: enum_preflight_web_origins + enumeration_transport_blocked may close JS/DIR/PARAM/JSAPI; route_probe_paths + dir_probe_recovery_exhausted may close DIR only; browser_collect_js_api + enumeration_collection_recovery_exhausted may close JS/JSAPI/PARAM only. Every terminal projection requires fresh evidence bound to the current organization, authorized target, exact origin, technique, outcome, and evidence id. Browser runtime discovery otherwise leaves JSAPI/PARAM partial until same-set static extraction; ordinary error/partial stay non-terminal. Model-authored blocked/not_applicable cannot close a cell, and raw non-web hosts are excluded instead of being promoted to origin-level not_applicable.",
       "on_fail": {
         "reason": "content enumeration incomplete: some alive in-scope services were not fully enumerated (js/api / dir / param)",
         "hints": [
-          "for EVERY EAS-confirmed live web root, take GOLISH-ENUM-JSAPI (browser_collect_js_api -> js_extract_apis), GOLISH-ENUM-DIR (route_probe_paths once after JS/API landing with target_id + base_url, DB seeds, and its recursive local/built-in wordlist queue), and GOLISH-ENUM-PARAM (observed request/query/form parameters plus targeted js_extract_apis param_hints) to a terminal state",
-          "do NOT hand-write found cells already backed by DB truth; found is projected from directory_entries/api_endpoints after real tools land rows with target_id. Use submitted coverage only for checked_empty, blocked+note, or not_applicable+note states the DB cannot derive yet"
+          "for EVERY EAS-confirmed live web root, take GOLISH-ENUM-JSAPI (browser_collect_js_api -> mandatory same-set js_extract_apis), GOLISH-ENUM-DIR (route_probe_paths once after JS/API landing with target_id + base_url; omit wordlist_recursion_depth for the finite default that runs DB/observed/curated parent probes plus one local/built-in root wordlist pass; explicit 1..6 recursion is opt-in and any candidate-generation limit remains partial), and GOLISH-ENUM-PARAM (browser observations remain raw/partial until same-set js_extract_apis folds request/query/form parameters and static param_hints) to a terminal state",
+          "do NOT hand-write coverage cells: fresh exact-origin producer outcomes close found/checked_empty; trusted current-target evidence may close blocked only through enum_preflight_web_origins transport preflight, route_probe_paths DIR recovery exhaustion, or browser_collect_js_api JS/JSAPI/PARAM recovery exhaustion. A producer-reported persisted blocked/recovery_exhausted cell is terminal and must not be retried. Raw non-web/rootless hosts never enter the denominator; raw business rows and deliverable prose cannot close cells; submit coverage=[]"
         ]
       }
     }
@@ -63,7 +66,7 @@
   "specialist": "enumerator",
   "coverage_axis": ["JS", "DIR", "PARAM", "JSAPI"],
 
-  "$comment_min_invocations": "2026-06-26 enumeration deliverables/flow: no hard tool floor. HTTP probing and service fingerprinting belong to external_attack_surface; enumeration completeness is DIR/PARAM/JSAPI DB truth plus explicit non-found terminal coverage.",
+  "$comment_min_invocations": "No hard tool floor. HTTP probing and service fingerprinting belong to external_attack_surface; Enumeration completeness is the fresh exact-origin JS/DIR/PARAM/JSAPI technique_outcome matrix, with found/empty backed by real evidence and error/partial left unfinished.",
   "min_invocations": {},
 
   "max_other_skips": 2,

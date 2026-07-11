@@ -24,6 +24,7 @@ fn stage_baseline(stage: StageKind) -> Vec<&'static str> {
             "GOLISH-EAS-LIVENESS",
             "GOLISH-EAS-PORT",
             "GOLISH-EAS-SERVICE-FINGERPRINT",
+            "GOLISH-EAS-WEB-FINGERPRINT",
         ],
         StageKind::Enumeration => vec![
             "GOLISH-ENUM-JS",
@@ -83,12 +84,15 @@ pub fn technique_applies(stage: StageKind, class: AssetClass, tech: &str) -> boo
         // Host-aware coverage 2b (design 2026-06-15 §3.2): EAS splits vhost
         // liveness from host/IP mapping. Domain/URL assets can prove LIVENESS,
         // but PORT / SERVICE-FINGERPRINT only apply to concrete IP/CIDR host
-        // assets. If target_intel has not registered a concrete IP, EAS must not
-        // turn the domain string into a port-scan target.
+        // assets. WEB-FINGERPRINT is evidence-aware and only applies after this
+        // asset has a confirmed HTTP(S) surface; see `technique_applies_web_aware`.
+        // If target_intel has not registered a concrete IP, EAS must not turn
+        // the domain string into a port-scan target.
         StageKind::ExternalAttackSurface => match tech {
             "GOLISH-EAS-PORT" | "GOLISH-EAS-SERVICE-FINGERPRINT" => {
                 matches!(class, Ip | Cidr)
             }
+            "GOLISH-EAS-WEB-FINGERPRINT" => false,
             _ => true,
         },
         // Host-aware coverage 2b (design 2026-06-15 §3.3): content enumeration
@@ -142,8 +146,9 @@ pub fn technique_applies_to_value(
 }
 
 /// Evidence-aware extension of [`technique_applies_to_value`]. Only
-/// `Enumeration + Ip/Cidr` changes: if EAS/httpx has proven the IP target is a
-/// web service, it participates in the full content-enumeration axis.
+/// `Enumeration + Ip/Cidr` changes: an exact normalized HTTP(S) origin is
+/// intrinsically web-capable, while a bare IP/CIDR still requires EAS/httpx
+/// proof before it participates in the full content-enumeration axis.
 pub fn technique_applies_web_aware(
     stage: StageKind,
     class: AssetClass,
@@ -151,9 +156,28 @@ pub fn technique_applies_web_aware(
     tech: &str,
     web_capable: bool,
 ) -> bool {
+    if matches!(stage, StageKind::ExternalAttackSurface) && tech == "GOLISH-EAS-WEB-FINGERPRINT" {
+        return web_capable
+            && matches!(
+                class,
+                AssetClass::Domain
+                    | AssetClass::Url
+                    | AssetClass::Ip
+                    | AssetClass::Cidr
+                    | AssetClass::Other
+            );
+    }
     if matches!(stage, StageKind::Enumeration) && matches!(class, AssetClass::Ip | AssetClass::Cidr)
     {
-        return web_capable
+        // `AssetClass::classify` intentionally treats `https://1.2.3.4:443`
+        // as an IP asset even when the authoritative axis labels the row
+        // `url`. Enumeration's authoritative denominator is now exact Web
+        // Origins, so requiring the expanded origin string to also appear in
+        // the raw-IP `web_capable_assets` set would vacuously drop all four
+        // axes. A canonical origin already carries the missing web capability;
+        // only bare IP/CIDR values need the separate EAS proof bit.
+        let exact_web_origin = golish_pentest_domain::canonical_web_origin(value).is_some();
+        return (web_capable || exact_web_origin)
             && matches!(
                 tech,
                 "GOLISH-ENUM-JS" | "GOLISH-ENUM-DIR" | "GOLISH-ENUM-PARAM" | "GOLISH-ENUM-JSAPI"
@@ -224,6 +248,7 @@ mod tests {
         assert!(t.contains(&"GOLISH-EAS-LIVENESS".to_string()));
         assert!(t.contains(&"GOLISH-EAS-PORT".to_string()));
         assert!(t.contains(&"GOLISH-EAS-SERVICE-FINGERPRINT".to_string()));
+        assert!(t.contains(&"GOLISH-EAS-WEB-FINGERPRINT".to_string()));
     }
 
     #[test]
@@ -453,11 +478,45 @@ mod tests {
         // concrete IP/CIDR target registered by target_intel.
         let domain = techniques_for(Eas, AssetClass::Domain);
         assert_eq!(domain, vec!["GOLISH-EAS-LIVENESS".to_string()]);
-        // ip / cidr are host-level → keep all 3.
+        // ip / cidr are host-level → keep liveness/port/service. Web-fingerprint
+        // is evidence-aware and appears only after a web surface is confirmed.
         assert_eq!(techniques_for(Eas, AssetClass::Ip).len(), 3);
         assert_eq!(techniques_for(Eas, AssetClass::Cidr).len(), 3);
         // fail-safe: unknown keeps the full set.
-        assert_eq!(techniques_for(Eas, AssetClass::Other).len(), 3);
+        assert_eq!(techniques_for(Eas, AssetClass::Other).len(), 4);
+    }
+
+    #[test]
+    fn eas_web_fingerprint_only_applies_after_web_surface_is_confirmed() {
+        use StageKind::ExternalAttackSurface as Eas;
+        assert!(!technique_applies_web_aware(
+            Eas,
+            AssetClass::Domain,
+            "app.example.com",
+            "GOLISH-EAS-WEB-FINGERPRINT",
+            false
+        ));
+        assert!(technique_applies_web_aware(
+            Eas,
+            AssetClass::Domain,
+            "app.example.com",
+            "GOLISH-EAS-WEB-FINGERPRINT",
+            true
+        ));
+        assert!(technique_applies_web_aware(
+            Eas,
+            AssetClass::Ip,
+            "203.0.113.10",
+            "GOLISH-EAS-WEB-FINGERPRINT",
+            true
+        ));
+        assert!(!technique_applies_web_aware(
+            Eas,
+            AssetClass::Ip,
+            "203.0.113.10",
+            "GOLISH-EAS-WEB-FINGERPRINT",
+            false
+        ));
     }
 
     #[test]
@@ -494,6 +553,16 @@ mod tests {
             assert!(
                 technique_applies_web_aware(Enum, AssetClass::Domain, "a.com", tech, false),
                 "domain parity should not depend on web_capable"
+            );
+            assert!(
+                technique_applies_web_aware(
+                    Enum,
+                    AssetClass::Ip,
+                    "https://1.2.3.4:443",
+                    tech,
+                    false,
+                ),
+                "an exact IP Web Origin is intrinsically web-capable for {tech}"
             );
         }
         assert!(technique_applies_web_aware(

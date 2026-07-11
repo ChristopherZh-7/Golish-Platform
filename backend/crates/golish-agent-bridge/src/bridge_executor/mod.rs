@@ -16,7 +16,7 @@ use rig::one_or_many::OneOrMany;
 
 use golish_llm_providers::LlmClient;
 
-use crate::agent_bridge::AgentBridge;
+use crate::agent_bridge::{AgentBridge, TopLevelRequestLease};
 
 pub use intent::{classify_user_intent, UserIntent};
 
@@ -36,11 +36,32 @@ pub(crate) fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
 /// `AgentExecutor` implementation backed by an `AgentBridge`.
 pub struct BridgeAgentExecutor {
     pub(crate) bridge: Arc<AgentBridge>,
+    _top_level_request_lease: TopLevelRequestLease,
 }
 
 impl BridgeAgentExecutor {
-    pub fn new(bridge: Arc<AgentBridge>) -> Self {
-        Self { bridge }
+    /// Standalone convenience boundary. Production GUI/profile handoff and CLI
+    /// entrypoints normally acquire before dispatch and call [`Self::from_request`].
+    pub async fn new(bridge: Arc<AgentBridge>) -> Result<Self> {
+        let request = bridge.begin_top_level_request().await?;
+        Self::from_request(bridge, request)
+    }
+
+    /// Build a Task executor from an already-owned top-level request.
+    ///
+    /// This is the no-self-lock seam used by Task/profile lead→orchestrator
+    /// handoff. The first Task upgrade refreshes the request-scoped retry guard;
+    /// subsequent users of the same token do not reopen an exhausted budget.
+    pub fn from_request(bridge: Arc<AgentBridge>, request: TopLevelRequestLease) -> Result<Self> {
+        request.initialize_task(
+            &bridge.session_request_slot,
+            bridge.session_request_generation,
+            &bridge.stage_run_reentry_guard,
+        )?;
+        Ok(Self {
+            bridge,
+            _top_level_request_lease: request,
+        })
     }
 
     /// Try to build a per-phase LLM client from settings `sub_agent_models`.
@@ -113,6 +134,12 @@ impl BridgeAgentExecutor {
             resume: None,
             sub_tool_router: None,
             session_id: None,
+            persistence_session_id: self
+                .bridge
+                .services
+                .db_tracker
+                .as_ref()
+                .map(crate::db_tracking::DbTracker::session_uuid),
             transcript_base_dir: None,
             api_request_stats: Some(self.bridge.api_request_stats()),
             cancelled: Some(&self.bridge.cancelled),
@@ -133,6 +160,7 @@ impl BridgeAgentExecutor {
             hide_tool_in_stage: None,
             active_org_id_source: None,
             active_org_id_override: None,
+            operation_id: execution_context.operation_id,
         };
 
         let client = self.bridge.client().read().await;

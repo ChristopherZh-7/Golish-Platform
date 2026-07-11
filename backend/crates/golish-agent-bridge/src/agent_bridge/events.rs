@@ -150,6 +150,14 @@ impl AgentBridge {
         self.session.pending_background.clone()
     }
 
+    /// Reuse the stable logical session's pending-background queue when a new
+    /// bridge generation replaces an idle old bridge. An old listener finishing
+    /// its retirement drain and the new listener therefore feed the same queue,
+    /// so the next turn cannot miss a completion note during handoff.
+    pub fn inherit_background_notes(&mut self, notes: Arc<std::sync::Mutex<Vec<String>>>) {
+        self.session.pending_background = notes;
+    }
+
     pub async fn coordinator_state(&self) -> Option<CoordinatorState> {
         if let Some(ref coordinator) = self.events.coordinator {
             coordinator.query_state().await

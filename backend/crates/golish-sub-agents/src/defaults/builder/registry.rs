@@ -157,7 +157,7 @@ pub async fn create_default_sub_agents_from_registry(
         SubAgentDefinition::new(
             "prober",
             "Prober",
-            "Active external-attack-surface mapper for the external_attack_surface stage. Turns one organization's passively-discovered footprint (inherited from target_intel) into a confirmed attack surface — liveness (httpx), open ports (naabu/masscan), and service/version fingerprints — by actively but lightly probing the target. NON-EXPLOIT: no exploitation or vulnerability scanning — that stays with the Pentester. The stage_run tool fans one Prober out per org.",
+            "Active external-attack-surface mapper for the external_attack_surface stage. Turns one organization's passively-discovered footprint (inherited from target_intel) into a confirmed attack surface — domain/URL liveness, concrete IP/CIDR open ports first, service/version fingerprints for every open IP:port, and WhatWeb fingerprints for confirmed web origins — by actively but lightly probing the target. NON-EXPLOIT: no exploitation or vulnerability scanning — that stays with the Pentester. The stage_run tool fans one Prober out per org.",
             // No `prober.tera` in the registry; its prompt body has literal
             // `{{input_file}}` / `{target_id, base_url}` braces that Tera would
             // treat as template vars. Use the hardcoded prompt directly.
@@ -167,11 +167,10 @@ pub async fn create_default_sub_agents_from_registry(
             "list_in_scope_targets".into(),
             "list_attack_surface_seeds".into(),
             "query_target_data".into(),
-            "manage_targets".into(),
             "eas_probe_http_liveness".into(),
             "eas_discover_ports".into(),
             "eas_fingerprint_services".into(),
-            "wait_for_background_jobs".into(),
+            "eas_fingerprint_web_stack".into(),
             "list_recent_evidence".into(),
             "submit_stage_deliverable".into(),
             "record_finding".into(),
@@ -198,10 +197,10 @@ pub async fn create_default_sub_agents_from_registry(
             "stage_worklist_next".into(),
             "list_enumeration_web_roots".into(),
             "query_target_data".into(),
+            "enum_preflight_web_origins".into(),
             "enum_crawl_same_origin_urls".into(),
             "wait_for_background_jobs".into(),
             "browser_collect_js_api".into(),
-            "js_collect".into(),
             "js_extract_apis".into(),
             "route_probe_paths".into(),
             "list_recent_evidence".into(),
@@ -362,7 +361,7 @@ pub async fn create_default_sub_agents_from_registry(
             tmpl_or_fallback!("browser", build_browser_prompt()),
         )
         .with_tools(vec![
-            "browser_collect_js_api".into(), "js_collect".into(), "js_extract_apis".into(),
+            "browser_collect_js_api".into(), "js_extract_apis".into(),
             "web_fetch".into(), "web_search".into(),
             "read_file".into(), "write_file".into(), "grep_file".into(), "record_finding".into(),
         ])

@@ -28,6 +28,10 @@ pub struct AgentToolContext {
     pub request_id: String,
     pub tool_name: String,
     pub source: ToolSource,
+    /// Trusted harness operation/stage-attempt identity captured by the agent
+    /// runtime. Active tools use this instead of accepting a caller-supplied
+    /// operation id from model-visible arguments.
+    pub operation_id: Option<uuid::Uuid>,
     /// Active harness organization for tools spawned from a stage run. Background
     /// jobs finish outside the agent turn, so completion listeners need this to
     /// persist structured coverage facts into the correct org.
@@ -163,6 +167,7 @@ mod tests {
             request_id: "req-1".to_string(),
             tool_name: "pentest_run".to_string(),
             source: ToolSource::Main,
+            operation_id: Some(uuid::Uuid::new_v4()),
             organization_id: None,
         };
         let got =
@@ -177,6 +182,7 @@ mod tests {
             request_id: "outer".to_string(),
             tool_name: "run_command".to_string(),
             source: ToolSource::Main,
+            operation_id: None,
             organization_id: None,
         };
         let inner = AgentToolContext {
@@ -186,6 +192,7 @@ mod tests {
                 agent_id: "recon".to_string(),
                 agent_name: "Recon".to_string(),
             },
+            operation_id: Some(uuid::Uuid::new_v4()),
             organization_id: Some(uuid::Uuid::nil()),
         };
         let got = with_agent_tool_context(Some(outer.clone()), async {
@@ -207,6 +214,7 @@ mod tests {
             request_id: "req-1".to_string(),
             tool_name: "browser_collect_js_api".to_string(),
             source: ToolSource::Main,
+            operation_id: None,
             organization_id: None,
         };
 

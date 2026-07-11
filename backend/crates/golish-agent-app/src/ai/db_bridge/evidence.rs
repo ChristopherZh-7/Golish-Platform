@@ -16,6 +16,339 @@ use golish_pentest::evidence_ledger::{InMemoryScopeService, ScopeVersion};
 
 use super::GolishDbRepoProvider;
 
+pub(crate) type TargetBoundEvidenceFactSet = HashSet<(String, String, String, i64)>;
+pub(crate) type EnumerationEvidenceFactSet = TargetBoundEvidenceFactSet;
+const ENUM_PREFLIGHT_BLOCKED_TOOL: &str = "enum_preflight_web_origins";
+const ENUM_PREFLIGHT_BLOCKED_KIND: &str = "enumeration_transport_blocked";
+const ENUM_ROUTE_RECOVERY_BLOCKED_TOOL: &str = "route_probe_paths";
+const ENUM_ROUTE_RECOVERY_BLOCKED_KIND: &str = "dir_probe_recovery_exhausted";
+const ENUM_COLLECTION_RECOVERY_BLOCKED_TOOL: &str = "browser_collect_js_api";
+const ENUM_COLLECTION_RECOVERY_BLOCKED_KIND: &str = "enumeration_collection_recovery_exhausted";
+
+fn is_enumeration_technique(technique: &str) -> bool {
+    matches!(
+        technique,
+        golish_db::repo::coverage_truth::TECH_ENUM_JS
+            | golish_db::repo::coverage_truth::TECH_ENUM_DIR
+            | golish_db::repo::coverage_truth::TECH_ENUM_PARAM
+            | golish_db::repo::coverage_truth::TECH_ENUM_JSAPI
+    )
+}
+
+fn is_enumeration_terminal_outcome(technique: &str, outcome: &str) -> bool {
+    is_enumeration_technique(technique) && matches!(outcome, "found" | "empty" | "blocked")
+}
+
+fn enumeration_terminal_source_is_authoritative(
+    technique: &str,
+    outcome: &str,
+    source: Option<&str>,
+) -> bool {
+    if !is_enumeration_terminal_outcome(technique, outcome) {
+        return true;
+    }
+    if outcome == "blocked" {
+        return enumeration_blocked_source_is_authoritative(technique, source);
+    }
+    match technique {
+        golish_db::repo::coverage_truth::TECH_ENUM_JS => source == Some("browser_collect_js_api"),
+        golish_db::repo::coverage_truth::TECH_ENUM_JSAPI => source == Some("js_extract_apis"),
+        golish_db::repo::coverage_truth::TECH_ENUM_DIR => source == Some("route_probe_paths"),
+        golish_db::repo::coverage_truth::TECH_ENUM_PARAM => source == Some("js_extract_apis"),
+        _ => false,
+    }
+}
+
+fn enumeration_blocked_source_is_authoritative(technique: &str, source: Option<&str>) -> bool {
+    match source {
+        Some(ENUM_PREFLIGHT_BLOCKED_TOOL) => is_enumeration_technique(technique),
+        Some(ENUM_ROUTE_RECOVERY_BLOCKED_TOOL) => {
+            technique == golish_db::repo::coverage_truth::TECH_ENUM_DIR
+        }
+        Some(ENUM_COLLECTION_RECOVERY_BLOCKED_TOOL) => matches!(
+            technique,
+            golish_db::repo::coverage_truth::TECH_ENUM_JS
+                | golish_db::repo::coverage_truth::TECH_ENUM_PARAM
+                | golish_db::repo::coverage_truth::TECH_ENUM_JSAPI
+        ),
+        _ => false,
+    }
+}
+
+fn is_eas_technique(technique: &str) -> bool {
+    matches!(
+        technique,
+        golish_db::repo::coverage_truth::TECH_EAS_LIVENESS
+            | golish_db::repo::coverage_truth::TECH_EAS_PORT
+            | golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP
+            | golish_db::repo::coverage_truth::TECH_EAS_WEB_FP
+    )
+}
+
+fn is_eas_terminal_outcome(technique: &str, outcome: &str) -> bool {
+    is_eas_technique(technique) && matches!(outcome, "found" | "empty")
+}
+
+fn strict_evidence_asset_key(asset: &str, technique: &str) -> Option<String> {
+    if matches!(
+        technique,
+        golish_db::repo::coverage_truth::TECH_ENUM_JS
+            | golish_db::repo::coverage_truth::TECH_ENUM_DIR
+            | golish_db::repo::coverage_truth::TECH_ENUM_PARAM
+            | golish_db::repo::coverage_truth::TECH_ENUM_JSAPI
+    ) {
+        return golish_pentest_domain::canonical_web_origin(asset).map(|origin| origin.key);
+    }
+    if technique == golish_db::repo::coverage_truth::TECH_EAS_LIVENESS {
+        return golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(asset);
+    }
+    if is_eas_technique(technique) {
+        return golish_pentest_domain::canonical_asset_key(asset).map(|key| key.key);
+    }
+    None
+}
+
+/// Build the exact-origin evidence identity set used to validate Enumeration
+/// terminal outcome refs. Invalid/non-HTTP(S) assets and non-positive ids are
+/// deliberately omitted so malformed audit facts cannot close a coverage cell.
+#[cfg(test)]
+pub(crate) fn enumeration_evidence_fact_set(
+    rows: impl IntoIterator<Item = (String, String, String, i64)>,
+) -> EnumerationEvidenceFactSet {
+    rows.into_iter()
+        .filter_map(|(asset, technique, outcome, evidence_id)| {
+            if evidence_id <= 0 {
+                return None;
+            }
+            let asset = golish_pentest_domain::canonical_web_origin(&asset)?.key;
+            Some((asset, technique, outcome, evidence_id))
+        })
+        .collect()
+}
+
+fn target_row_still_authorizes_origin(
+    row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
+    asset: &str,
+) -> bool {
+    let Some(asset) = golish_pentest_domain::canonical_web_origin(asset) else {
+        return false;
+    };
+    golish_pentest_domain::confirmed_target_web_origins(
+        &row.target_name,
+        &row.target_value,
+        &row.target_ports,
+    )
+    .into_iter()
+    .any(|origin| origin.key == asset.key)
+}
+
+fn row_has_matching_producer_and_current_org(
+    row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
+) -> bool {
+    row.evidence_organization_id
+        .parse::<Uuid>()
+        .ok()
+        .is_some_and(|producer_org| Some(producer_org) == row.target_organization_id)
+}
+
+fn row_has_trusted_enumeration_blocked_producer(
+    row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
+) -> bool {
+    if row.evidence_outcome != "blocked" {
+        return true;
+    }
+    (is_enumeration_technique(&row.evidence_technique)
+        && matches!(
+            (row.tool_name.as_deref(), row.evidence_kind.as_deref()),
+            (
+                Some(ENUM_PREFLIGHT_BLOCKED_TOOL),
+                Some(ENUM_PREFLIGHT_BLOCKED_KIND)
+            )
+        ))
+        || (row.evidence_technique == golish_db::repo::coverage_truth::TECH_ENUM_DIR
+            && matches!(
+                (row.tool_name.as_deref(), row.evidence_kind.as_deref()),
+                (
+                    Some(ENUM_ROUTE_RECOVERY_BLOCKED_TOOL),
+                    Some(ENUM_ROUTE_RECOVERY_BLOCKED_KIND)
+                )
+            ))
+        || (matches!(
+            row.evidence_technique.as_str(),
+            golish_db::repo::coverage_truth::TECH_ENUM_JS
+                | golish_db::repo::coverage_truth::TECH_ENUM_PARAM
+                | golish_db::repo::coverage_truth::TECH_ENUM_JSAPI
+        ) && matches!(
+            (row.tool_name.as_deref(), row.evidence_kind.as_deref()),
+            (
+                Some(ENUM_COLLECTION_RECOVERY_BLOCKED_TOOL),
+                Some(ENUM_COLLECTION_RECOVERY_BLOCKED_KIND)
+            )
+        ))
+}
+
+fn open_port_urls(
+    row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
+) -> impl Iterator<Item = &str> {
+    row.target_ports
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|state| !state.is_empty())
+                .map(|state| state.eq_ignore_ascii_case("open"))
+                .unwrap_or(true)
+        })
+        .filter_map(|entry| entry.get("url").and_then(serde_json::Value::as_str))
+}
+
+fn target_row_still_authorizes_eas_fact(
+    row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
+) -> bool {
+    let technique = row.evidence_technique.as_str();
+    let Some(evidence_key) = strict_evidence_asset_key(&row.evidence_asset, technique) else {
+        return false;
+    };
+    match technique {
+        golish_db::repo::coverage_truth::TECH_EAS_LIVENESS => [&row.target_name, &row.target_value]
+            .into_iter()
+            .map(String::as_str)
+            .chain(open_port_urls(row))
+            .filter_map(golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key)
+            .any(|candidate| candidate == evidence_key),
+        golish_db::repo::coverage_truth::TECH_EAS_PORT
+        | golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP => {
+            let class = golish_pentest_domain::AssetClass::classify(
+                Some(&row.target_type),
+                &row.target_value,
+            );
+            matches!(
+                class,
+                golish_pentest_domain::AssetClass::Ip | golish_pentest_domain::AssetClass::Cidr
+            ) && [&row.target_name, &row.target_value]
+                .into_iter()
+                .filter_map(|candidate| golish_pentest_domain::canonical_asset_key(candidate))
+                .any(|candidate| candidate.key == evidence_key)
+        }
+        golish_db::repo::coverage_truth::TECH_EAS_WEB_FP => [&row.target_name, &row.target_value]
+            .into_iter()
+            .map(String::as_str)
+            .chain(open_port_urls(row))
+            .filter_map(golish_pentest_domain::canonical_web_origin)
+            .filter_map(|origin| golish_pentest_domain::canonical_asset_key(&origin.key))
+            .any(|candidate| candidate.key == evidence_key),
+        _ => false,
+    }
+}
+
+/// Convert fresh DB evidence only while its original target still owns the
+/// exact origin. This prevents a same-org/project target move from redirecting
+/// old evidence to a sibling target that later takes over the origin.
+pub(crate) fn enumeration_target_bound_evidence_fact_set(
+    rows: impl IntoIterator<Item = golish_db::repo::audit::TargetBoundEvidenceFactRow>,
+) -> EnumerationEvidenceFactSet {
+    rows.into_iter()
+        .filter(row_has_matching_producer_and_current_org)
+        .filter(|row| target_row_still_authorizes_origin(row, &row.evidence_asset))
+        .filter(row_has_trusted_enumeration_blocked_producer)
+        .filter(|row| {
+            enumeration_terminal_source_is_authoritative(
+                &row.evidence_technique,
+                &row.evidence_outcome,
+                row.tool_name.as_deref(),
+            )
+        })
+        .filter_map(|row| {
+            if row.evidence_id <= 0 {
+                return None;
+            }
+            let asset = golish_pentest_domain::canonical_web_origin(&row.evidence_asset)?.key;
+            Some((
+                asset,
+                row.evidence_technique,
+                row.evidence_outcome,
+                row.evidence_id,
+            ))
+        })
+        .collect()
+}
+
+pub(crate) fn eas_target_bound_evidence_fact_set(
+    organization_id: Uuid,
+    rows: impl IntoIterator<Item = golish_db::repo::audit::TargetBoundEvidenceFactRow>,
+) -> TargetBoundEvidenceFactSet {
+    rows.into_iter()
+        .filter(|row| {
+            row.target_organization_id == Some(organization_id)
+                && row.evidence_organization_id == organization_id.to_string()
+        })
+        .filter(row_has_matching_producer_and_current_org)
+        .filter(target_row_still_authorizes_eas_fact)
+        .filter_map(|row| {
+            if row.evidence_id <= 0
+                || !is_eas_terminal_outcome(&row.evidence_technique, &row.evidence_outcome)
+            {
+                return None;
+            }
+            let asset = strict_evidence_asset_key(&row.evidence_asset, &row.evidence_technique)?;
+            Some((
+                asset,
+                row.evidence_technique,
+                row.evidence_outcome,
+                row.evidence_id,
+            ))
+        })
+        .collect()
+}
+
+pub(crate) fn eas_target_bound_evidence_facts(
+    organization_id: Uuid,
+    rows: impl IntoIterator<Item = golish_db::repo::audit::TargetBoundEvidenceFactRow>,
+) -> Vec<(String, String, String, i64)> {
+    let mut facts = eas_target_bound_evidence_fact_set(organization_id, rows)
+        .into_iter()
+        .collect::<Vec<_>>();
+    facts.sort();
+    facts
+}
+
+pub(crate) fn projected_technique_outcome_evidence_id(
+    asset: &str,
+    technique: &str,
+    outcome: &str,
+    evidence_ids: &[i64],
+    enumeration_evidence_facts: &EnumerationEvidenceFactSet,
+    source: Option<&str>,
+) -> Option<i64> {
+    if !enumeration_terminal_source_is_authoritative(technique, outcome, source) {
+        return None;
+    }
+    if is_enumeration_terminal_outcome(technique, outcome)
+        || is_eas_terminal_outcome(technique, outcome)
+    {
+        let asset = strict_evidence_asset_key(asset, technique)?;
+        return evidence_ids
+            .iter()
+            .copied()
+            .filter(|id| *id > 0)
+            .find(|id| {
+                enumeration_evidence_facts.contains(&(
+                    asset.clone(),
+                    technique.to_string(),
+                    outcome.to_string(),
+                    *id,
+                ))
+            });
+    }
+
+    let real_evidence_id = evidence_ids.iter().copied().find(|id| *id > 0);
+    Some(real_evidence_id.unwrap_or(0))
+}
+
 impl GolishDbRepoProvider {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn evidence_append_impl(
@@ -47,6 +380,7 @@ impl GolishDbRepoProvider {
             stage_run_id,
             project_path,
             session_id,
+            target_id: None,
             technique,
             asset,
             outcome,
@@ -65,6 +399,22 @@ impl GolishDbRepoProvider {
         let rows =
             golish_db::repo::audit::evidence_facts_for_session(&self.pool, session_id).await?;
         Ok(rows)
+    }
+
+    pub(crate) async fn eas_evidence_facts_for_session_org_fresh_impl(
+        &self,
+        session_id: &str,
+        organization_id: Uuid,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<(String, String, String, i64)>> {
+        let rows = golish_db::repo::audit::evidence_facts_for_session_org_fresh(
+            &self.pool,
+            session_id,
+            organization_id,
+            since,
+        )
+        .await?;
+        Ok(eas_target_bound_evidence_facts(organization_id, rows))
     }
 
     /// PR-C step2b（#4 / E3，设计 2026-06-23-technique-outcomes-provenance）：upsert 一条
@@ -227,13 +577,14 @@ impl GolishDbRepoProvider {
     }
 
     /// PR-D（#4 / E3）：读某 `(org, run)` 的 technique_outcomes 行 → coverage 投影元组
-    /// `(asset, technique, outcome, evidence_id)`。`evidence_id` 取 `evidence_ids` 首个
-    /// （无则 0 哨兵）。fail-safe：读失败 → 空 + warn（gate 退回 coverage_truth/ledger）。
+    /// `(asset, technique, outcome, evidence_id)`。Enumeration terminal 行只取能与
+    /// same-run audit evidence 四元组完整匹配的 id；其它 technique 保留首个正数 id / 0
+    /// 哨兵兼容。fail-safe：读失败 → 空 + warn（gate 退回 coverage_truth/ledger）。
     pub(crate) async fn technique_outcome_facts_impl(
         &self,
         organization_id: uuid::Uuid,
         run_id: &str,
-    ) -> Vec<(String, String, String, i64)> {
+    ) -> Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact> {
         self.technique_outcome_facts_fresh_impl(organization_id, run_id, None)
             .await
     }
@@ -248,8 +599,8 @@ impl GolishDbRepoProvider {
         organization_id: uuid::Uuid,
         run_id: &str,
         since: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Vec<(String, String, String, i64)> {
-        match golish_db::repo::technique_outcomes::list_for_run_fresh(
+    ) -> Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact> {
+        let rows = match golish_db::repo::technique_outcomes::list_for_run_fresh(
             &self.pool,
             organization_id,
             run_id,
@@ -257,22 +608,75 @@ impl GolishDbRepoProvider {
         )
         .await
         {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|r| {
-                    let eid = r.evidence_ids.first().copied().unwrap_or(0);
-                    (r.asset, r.technique, r.outcome, eid)
-                })
-                .collect(),
+            Ok(rows) => rows,
             Err(e) => {
                 tracing::warn!(
                     target: "harness::submit_tool",
                     error = %e,
                     "technique_outcome_facts read failed; gate runs without technique_outcomes projection"
                 );
-                Vec::new()
+                return Vec::new();
             }
-        }
+        };
+
+        let target_bound_evidence_facts = if rows.iter().any(|row| {
+            is_enumeration_terminal_outcome(&row.technique, &row.outcome)
+                || is_eas_terminal_outcome(&row.technique, &row.outcome)
+        }) {
+            match since {
+                Some(cutoff) => match golish_db::repo::audit::evidence_facts_for_session_org_fresh(
+                    &self.pool,
+                    run_id,
+                    organization_id,
+                    cutoff,
+                )
+                .await
+                {
+                    Ok(rows) => {
+                        let mut facts = enumeration_target_bound_evidence_fact_set(rows.clone());
+                        facts.extend(eas_target_bound_evidence_fact_set(organization_id, rows));
+                        facts
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "harness::submit_tool",
+                            error = %e,
+                            "org-bound fresh evidence facts read failed; strict EAS/Enumeration terminal outcomes remain unprojected"
+                        );
+                        TargetBoundEvidenceFactSet::new()
+                    }
+                },
+                None => {
+                    tracing::warn!(
+                        target: "harness::submit_tool",
+                        "strict EAS/Enumeration terminal outcomes require a stage freshness cutoff"
+                    );
+                    TargetBoundEvidenceFactSet::new()
+                }
+            }
+        } else {
+            TargetBoundEvidenceFactSet::new()
+        };
+
+        rows.into_iter()
+            .filter_map(|r| {
+                let eid = projected_technique_outcome_evidence_id(
+                    &r.asset,
+                    &r.technique,
+                    &r.outcome,
+                    &r.evidence_ids,
+                    &target_bound_evidence_facts,
+                    r.source.as_deref(),
+                )?;
+                Some(golish_agent_kit::db_traits::TechniqueOutcomeFact::new(
+                    r.asset,
+                    r.technique,
+                    r.outcome,
+                    eid,
+                    r.source,
+                ))
+            })
+            .collect()
     }
 
     /// #5 Phase 3（provider-source closure）：读 `source_query_log` 的 terminal source
@@ -435,6 +839,7 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
                     let outcome = match outcome.as_str() {
                         "found" => EvidenceOutcome::Found,
                         "empty" => EvidenceOutcome::Empty,
+                        "blocked" => EvidenceOutcome::Blocked,
                         // T2：失败检查（gray-switch GOLISH_FAILURE_OUTCOME_ERROR）记 error。
                         "error" => EvidenceOutcome::Error,
                         _ => return None,
@@ -452,6 +857,44 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
                     target: "harness::submit_tool",
                     error = %e,
                     "evidence_facts_for_session failed; submit gate preview runs without projection"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    async fn eas_evidence_facts_for_session_org_fresh(
+        &self,
+        session_id: &str,
+        organization_id: uuid::Uuid,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<golish_agent_kit::harness::EvidenceFact> {
+        use golish_agent_kit::harness::{EvidenceFact, EvidenceOutcome};
+        match self
+            .eas_evidence_facts_for_session_org_fresh_impl(session_id, organization_id, since)
+            .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .filter_map(|(asset, technique, outcome, evidence_id)| {
+                    let outcome = match outcome.as_str() {
+                        "found" => EvidenceOutcome::Found,
+                        "empty" => EvidenceOutcome::Empty,
+                        _ => return None,
+                    };
+                    Some(EvidenceFact {
+                        asset,
+                        technique,
+                        outcome,
+                        evidence_id,
+                    })
+                })
+                .collect(),
+            Err(error) => {
+                tracing::warn!(
+                    target: "harness::submit_tool",
+                    %error,
+                    "strict EAS evidence fact lookup failed; submit preview keeps EAS cells pending"
                 );
                 Vec::new()
             }
@@ -514,6 +957,27 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             .unwrap_or_default()
     }
 
+    async fn stage_asset_coverage(
+        &self,
+        organization_id: uuid::Uuid,
+        stage: golish_agent_kit::harness::StageKind,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        self.stage_asset_coverage_impl(
+            organization_id,
+            stage.as_str(),
+            session_id,
+            stage_started_at,
+            current_wave_target_ids,
+            current_wave_asset_values,
+        )
+        .await
+        .map(Some)
+    }
+
     async fn in_scope_typed_assets(&self, org_id: Option<uuid::Uuid>) -> Vec<(String, String)> {
         // T3 (设计 2026-06-23-submit-preview-authoritative-context): host-aware
         // asset_types for the submit preview (same source as the stage-close gate).
@@ -534,6 +998,16 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         // 设计 2026-07-01 §5.3: EAS/httpx-proven IP web roots for the submit
         // preview (same source as the stage-close gate / org_gate).
         self.enumeration_web_capable_assets_impl(org_id)
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn eas_web_capable_assets(
+        &self,
+        org_id: Option<uuid::Uuid>,
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<String> {
+        self.eas_web_capable_assets_impl(org_id, run_start)
             .await
             .unwrap_or_default()
     }
@@ -559,9 +1033,19 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         &self,
         org_id: uuid::Uuid,
         run_id: &str,
-    ) -> Vec<(String, String, String, i64)> {
+    ) -> Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact> {
         // PR-D (#4/E3): submit 预检 dual-read 投影源（与 DbRepoProvider 同 impl）。
         self.technique_outcome_facts_impl(org_id, run_id).await
+    }
+
+    async fn technique_outcome_facts_fresh(
+        &self,
+        org_id: uuid::Uuid,
+        run_id: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact> {
+        self.technique_outcome_facts_fresh_impl(org_id, run_id, since)
+            .await
     }
 
     async fn source_query_facts(&self, org_id: uuid::Uuid, run_id: &str) -> Vec<SourceQueryFact> {
@@ -578,6 +1062,16 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         let state = self.operation_state_get_impl(operation_id).await.ok()??;
         let stage = golish_agent_kit::harness::StageKind::try_parse(&state.current_stage)?;
         Some((stage, state.stage_started_at))
+    }
+
+    async fn stage_asset_wave_current_running(
+        &self,
+        operation_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+        stage: golish_agent_kit::harness::StageKind,
+    ) -> anyhow::Result<Option<golish_agent_kit::db_traits::StageAssetWaveView>> {
+        self.stage_asset_wave_current_running_impl(operation_id, organization_id, stage.as_str())
+            .await
     }
 
     /// P5.1 (设计 2026-07-02-attack-stage §3.7): upsert the deliverable's attack
@@ -634,5 +1128,544 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             }
         }
         stored
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        eas_target_bound_evidence_facts, enumeration_evidence_fact_set,
+        enumeration_target_bound_evidence_fact_set, projected_technique_outcome_evidence_id,
+    };
+    use uuid::Uuid;
+
+    fn target_bound_row(
+        organization_id: Uuid,
+        asset: &str,
+        technique: &str,
+        target_value: &str,
+        target_type: &str,
+    ) -> golish_db::repo::audit::TargetBoundEvidenceFactRow {
+        golish_db::repo::audit::TargetBoundEvidenceFactRow {
+            evidence_asset: asset.to_string(),
+            evidence_technique: technique.to_string(),
+            evidence_outcome: "found".to_string(),
+            evidence_id: 91,
+            evidence_organization_id: organization_id.to_string(),
+            tool_name: Some("route_probe_paths".to_string()),
+            evidence_kind: Some("enumeration_route_probe".to_string()),
+            target_id: Uuid::new_v4(),
+            target_organization_id: Some(organization_id),
+            target_type: target_type.to_string(),
+            target_name: target_value.to_string(),
+            target_value: target_value.to_string(),
+            target_ports: serde_json::json!([]),
+        }
+    }
+
+    #[test]
+    fn enumeration_terminal_outcome_projection_requires_real_evidence() {
+        let technique = golish_db::repo::coverage_truth::TECH_ENUM_DIR;
+        let asset = "https://app.example.com:443";
+        let matching = enumeration_evidence_fact_set(vec![(
+            "https://app.example.com/path".to_string(),
+            technique.to_string(),
+            "found".to_string(),
+            91,
+        )]);
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                asset,
+                technique,
+                "found",
+                &[],
+                &matching,
+                Some("route_probe_paths"),
+            ),
+            None
+        );
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                asset,
+                technique,
+                "empty",
+                &[0],
+                &matching,
+                Some("route_probe_paths"),
+            ),
+            None
+        );
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                asset,
+                technique,
+                "found",
+                &[0, 91],
+                &matching,
+                Some("route_probe_paths"),
+            ),
+            Some(91)
+        );
+        let blocked = enumeration_evidence_fact_set(vec![(
+            asset.to_string(),
+            technique.to_string(),
+            "blocked".to_string(),
+            92,
+        )]);
+        for source in [
+            None,
+            Some("browser_collect_js_api"),
+            Some("Enum_Preflight_Web_Origins"),
+        ] {
+            assert_eq!(
+                projected_technique_outcome_evidence_id(
+                    asset,
+                    technique,
+                    "blocked",
+                    &[92],
+                    &blocked,
+                    source,
+                ),
+                None,
+                "blocked materialization must reject untrusted source {source:?}"
+            );
+        }
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                asset,
+                technique,
+                "blocked",
+                &[92],
+                &blocked,
+                Some("route_probe_paths"),
+            ),
+            Some(92),
+            "DIR recovery exhaustion may be closed only by route_probe_paths"
+        );
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                asset,
+                technique,
+                "blocked",
+                &[92],
+                &blocked,
+                Some("enum_preflight_web_origins"),
+            ),
+            Some(92)
+        );
+    }
+
+    #[test]
+    fn enumeration_terminal_outcome_projection_enforces_technique_source_owner() {
+        let asset = "https://app.example.com:443";
+        let cases = [
+            (
+                golish_db::repo::coverage_truth::TECH_ENUM_JS,
+                &["browser_collect_js_api"][..],
+                "js_extract_apis",
+            ),
+            (
+                golish_db::repo::coverage_truth::TECH_ENUM_JSAPI,
+                &["js_extract_apis"][..],
+                "browser_collect_js_api",
+            ),
+            (
+                golish_db::repo::coverage_truth::TECH_ENUM_DIR,
+                &["route_probe_paths"][..],
+                "browser_collect_js_api",
+            ),
+            (
+                golish_db::repo::coverage_truth::TECH_ENUM_PARAM,
+                &["js_extract_apis"][..],
+                "browser_collect_js_api",
+            ),
+        ];
+
+        for (technique, allowed_sources, forged_source) in cases {
+            let facts = enumeration_evidence_fact_set(vec![(
+                asset.to_string(),
+                technique.to_string(),
+                "found".to_string(),
+                91,
+            )]);
+            for source in allowed_sources {
+                assert_eq!(
+                    projected_technique_outcome_evidence_id(
+                        asset,
+                        technique,
+                        "found",
+                        &[91],
+                        &facts,
+                        Some(source),
+                    ),
+                    Some(91),
+                    "{technique} should accept its owner {source}"
+                );
+            }
+            assert_eq!(
+                projected_technique_outcome_evidence_id(
+                    asset,
+                    technique,
+                    "found",
+                    &[91],
+                    &facts,
+                    Some(forged_source),
+                ),
+                None,
+                "{technique} must reject forged source {forged_source}"
+            );
+        }
+    }
+
+    #[test]
+    fn enumeration_evidence_fact_rejects_non_owner_producer() {
+        let org = Uuid::new_v4();
+        let asset = "https://app.example.com:443";
+        for technique in [
+            golish_db::repo::coverage_truth::TECH_ENUM_JSAPI,
+            golish_db::repo::coverage_truth::TECH_ENUM_PARAM,
+        ] {
+            let mut row = target_bound_row(org, asset, technique, asset, "url");
+            row.tool_name = Some("browser_collect_js_api".to_string());
+
+            assert!(
+                enumeration_target_bound_evidence_fact_set(vec![row]).is_empty(),
+                "browser evidence must not terminally own {technique}"
+            );
+        }
+    }
+
+    #[test]
+    fn enumeration_blocked_audit_fact_requires_trusted_preflight_tool_and_kind() {
+        let org = Uuid::new_v4();
+        let asset = "https://app.example.com:443";
+        let mut row = target_bound_row(
+            org,
+            asset,
+            golish_db::repo::coverage_truth::TECH_ENUM_DIR,
+            asset,
+            "url",
+        );
+        row.evidence_outcome = "blocked".to_string();
+
+        for (tool, kind) in [
+            (
+                Some("route_probe_paths"),
+                Some("enumeration_transport_blocked"),
+            ),
+            (Some("enum_preflight_web_origins"), Some("generic_error")),
+            (None, Some("enumeration_transport_blocked")),
+        ] {
+            let mut forged = row.clone();
+            forged.tool_name = tool.map(str::to_string);
+            forged.evidence_kind = kind.map(str::to_string);
+            assert!(
+                enumeration_target_bound_evidence_fact_set(vec![forged]).is_empty(),
+                "forged blocked fact {tool:?}/{kind:?} must fail closed"
+            );
+        }
+
+        row.tool_name = Some("enum_preflight_web_origins".to_string());
+        row.evidence_kind = Some("enumeration_transport_blocked".to_string());
+        assert_eq!(
+            enumeration_target_bound_evidence_fact_set(vec![row.clone()]).len(),
+            1
+        );
+
+        for technique in [
+            golish_db::repo::coverage_truth::TECH_ENUM_JS,
+            golish_db::repo::coverage_truth::TECH_ENUM_DIR,
+            golish_db::repo::coverage_truth::TECH_ENUM_PARAM,
+            golish_db::repo::coverage_truth::TECH_ENUM_JSAPI,
+        ] {
+            let mut preflight = row.clone();
+            preflight.evidence_technique = technique.to_string();
+            preflight.tool_name = Some("enum_preflight_web_origins".to_string());
+            preflight.evidence_kind = Some("enumeration_transport_blocked".to_string());
+            assert_eq!(
+                enumeration_target_bound_evidence_fact_set(vec![preflight]).len(),
+                1,
+                "preflight should own blocked {technique}"
+            );
+        }
+
+        row.tool_name = Some("route_probe_paths".to_string());
+        row.evidence_kind = Some("dir_probe_recovery_exhausted".to_string());
+        assert_eq!(
+            enumeration_target_bound_evidence_fact_set(vec![row.clone()]).len(),
+            1,
+            "DIR producer may publish evidence-backed recovery exhaustion"
+        );
+
+        row.evidence_technique = golish_db::repo::coverage_truth::TECH_ENUM_JS.to_string();
+        assert!(
+            enumeration_target_bound_evidence_fact_set(vec![row]).is_empty(),
+            "route producer must not publish blocked for another axis"
+        );
+    }
+
+    #[test]
+    fn enumeration_browser_recovery_blocked_is_limited_to_browser_axes_and_kind() {
+        let org = Uuid::new_v4();
+        let asset = "https://app.example.com:443";
+        for technique in [
+            golish_db::repo::coverage_truth::TECH_ENUM_JS,
+            golish_db::repo::coverage_truth::TECH_ENUM_JSAPI,
+            golish_db::repo::coverage_truth::TECH_ENUM_PARAM,
+        ] {
+            let mut row = target_bound_row(org, asset, technique, asset, "url");
+            row.evidence_outcome = "blocked".to_string();
+            row.tool_name = Some("browser_collect_js_api".to_string());
+            row.evidence_kind = Some("enumeration_collection_recovery_exhausted".to_string());
+            assert_eq!(
+                enumeration_target_bound_evidence_fact_set(vec![row]).len(),
+                1,
+                "browser recovery exhaustion should own blocked {technique}"
+            );
+
+            let mut wrong_kind = target_bound_row(org, asset, technique, asset, "url");
+            wrong_kind.evidence_outcome = "blocked".to_string();
+            wrong_kind.tool_name = Some("browser_collect_js_api".to_string());
+            wrong_kind.evidence_kind = Some("enumeration_transport_blocked".to_string());
+            assert!(
+                enumeration_target_bound_evidence_fact_set(vec![wrong_kind]).is_empty(),
+                "browser blocked {technique} must carry its recovery-exhausted kind"
+            );
+        }
+
+        let mut dir = target_bound_row(
+            org,
+            asset,
+            golish_db::repo::coverage_truth::TECH_ENUM_DIR,
+            asset,
+            "url",
+        );
+        dir.evidence_outcome = "blocked".to_string();
+        dir.tool_name = Some("browser_collect_js_api".to_string());
+        dir.evidence_kind = Some("enumeration_collection_recovery_exhausted".to_string());
+        assert!(enumeration_target_bound_evidence_fact_set(vec![dir]).is_empty());
+    }
+
+    #[test]
+    fn enumeration_evidence_owner_matches_no_url_http_service_denominator() {
+        let org = Uuid::new_v4();
+        let mut row = target_bound_row(
+            org,
+            "https://203.0.113.10:443",
+            golish_db::repo::coverage_truth::TECH_ENUM_DIR,
+            "203.0.113.10",
+            "ip_address",
+        );
+        row.evidence_outcome = "blocked".to_string();
+        row.tool_name = Some("enum_preflight_web_origins".to_string());
+        row.evidence_kind = Some("enumeration_transport_blocked".to_string());
+        row.target_ports = serde_json::json!([
+            {"port": 443, "state": "open", "service": "ssl/http"}
+        ]);
+
+        assert_eq!(
+            enumeration_target_bound_evidence_fact_set(vec![row.clone()]).len(),
+            1,
+            "worklist-origin synthesis and evidence owner validation must agree"
+        );
+
+        for ports in [
+            serde_json::json!([{"port": 443, "state": "closed", "service": "ssl/http"}]),
+            serde_json::json!([{"port": 443, "state": "open", "service": "ssh"}]),
+        ] {
+            let mut denied = row.clone();
+            denied.target_ports = ports;
+            assert!(enumeration_target_bound_evidence_fact_set(vec![denied]).is_empty());
+        }
+    }
+
+    #[test]
+    fn enumeration_terminal_outcome_rejects_mismatched_evidence_fact() {
+        let technique = golish_db::repo::coverage_truth::TECH_ENUM_DIR;
+        let asset = "https://app.example.com:443";
+        for fact in [
+            (
+                "https://other.example.com:443".to_string(),
+                technique.to_string(),
+                "found".to_string(),
+                91,
+            ),
+            (
+                asset.to_string(),
+                golish_db::repo::coverage_truth::TECH_ENUM_JS.to_string(),
+                "found".to_string(),
+                91,
+            ),
+            (
+                asset.to_string(),
+                technique.to_string(),
+                "empty".to_string(),
+                91,
+            ),
+            (
+                asset.to_string(),
+                technique.to_string(),
+                "found".to_string(),
+                92,
+            ),
+        ] {
+            let facts = enumeration_evidence_fact_set(vec![fact]);
+            assert_eq!(
+                projected_technique_outcome_evidence_id(
+                    asset,
+                    technique,
+                    "found",
+                    &[91],
+                    &facts,
+                    Some("route_probe_paths"),
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn nonterminal_and_non_enumeration_projection_keep_legacy_sentinel() {
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                "https://app.example.com:443",
+                golish_db::repo::coverage_truth::TECH_ENUM_DIR,
+                "partial",
+                &[],
+                &Default::default(),
+                Some("route_probe_paths"),
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                "example.com",
+                golish_db::repo::coverage_truth::TECH_DNS,
+                "found",
+                &[],
+                &Default::default(),
+                None,
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn moved_origin_evidence_is_rejected_until_original_target_still_owns_it() {
+        let row = target_bound_row(
+            Uuid::new_v4(),
+            "https://app.example.com:443",
+            golish_db::repo::coverage_truth::TECH_ENUM_DIR,
+            "other.example.com",
+            "domain",
+        );
+        assert!(enumeration_target_bound_evidence_fact_set(vec![row.clone()]).is_empty());
+
+        let mut still_owned = row;
+        still_owned.target_ports = serde_json::json!([{
+            "state": "open",
+            "url": "https://app.example.com/"
+        }]);
+        assert_eq!(
+            enumeration_target_bound_evidence_fact_set(vec![still_owned]).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn eas_target_bound_evidence_requires_producer_and_current_org() {
+        let org_a = Uuid::new_v4();
+        let org_b = Uuid::new_v4();
+        let row = target_bound_row(
+            org_a,
+            "192.0.2.10",
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            "192.0.2.10",
+            "ip_address",
+        );
+
+        assert_eq!(
+            eas_target_bound_evidence_facts(org_a, vec![row.clone()]).len(),
+            1
+        );
+        assert!(eas_target_bound_evidence_facts(org_b, vec![row.clone()]).is_empty());
+
+        let mut moved_to_b = row;
+        moved_to_b.target_organization_id = Some(org_b);
+        assert!(eas_target_bound_evidence_facts(org_a, vec![moved_to_b]).is_empty());
+    }
+
+    #[test]
+    fn eas_target_move_same_project_cannot_reuse_old_asset_fact() {
+        let org = Uuid::new_v4();
+        let mut moved = target_bound_row(
+            org,
+            "192.0.2.10",
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            "192.0.2.10",
+            "ip_address",
+        );
+        moved.target_name = "192.0.2.20".to_string();
+        moved.target_value = "192.0.2.20".to_string();
+
+        assert!(eas_target_bound_evidence_facts(org, vec![moved]).is_empty());
+    }
+
+    #[test]
+    fn eas_legacy_evidence_without_producer_org_fails_closed() {
+        let org = Uuid::new_v4();
+        let mut legacy = target_bound_row(
+            org,
+            "192.0.2.10",
+            golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+            "192.0.2.10",
+            "ip_address",
+        );
+        legacy.evidence_organization_id.clear();
+
+        assert!(eas_target_bound_evidence_facts(org, vec![legacy]).is_empty());
+    }
+
+    #[test]
+    fn eas_terminal_outcome_ref_must_match_guarded_audit_quadruple() {
+        let org = Uuid::new_v4();
+        let row = target_bound_row(
+            org,
+            "192.0.2.10",
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            "192.0.2.10",
+            "ip_address",
+        );
+        let facts = super::eas_target_bound_evidence_fact_set(org, vec![row]);
+
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                "192.0.2.10",
+                golish_db::repo::coverage_truth::TECH_EAS_PORT,
+                "found",
+                &[91],
+                &facts,
+                Some("eas_discover_ports"),
+            ),
+            Some(91)
+        );
+        for (asset, outcome, ids) in [
+            ("192.0.2.11", "found", vec![91]),
+            ("192.0.2.10", "empty", vec![91]),
+            ("192.0.2.10", "found", vec![92]),
+            ("192.0.2.10", "found", vec![0]),
+        ] {
+            assert_eq!(
+                projected_technique_outcome_evidence_id(
+                    asset,
+                    golish_db::repo::coverage_truth::TECH_EAS_PORT,
+                    outcome,
+                    &ids,
+                    &facts,
+                    Some("eas_discover_ports"),
+                ),
+                None
+            );
+        }
     }
 }

@@ -59,7 +59,7 @@ mod tests {
     fn test_build_function_declarations_returns_all_tools() {
         let declarations = build_function_declarations();
 
-        assert_eq!(declarations.len(), 47);
+        assert_eq!(declarations.len(), 48);
 
         let names: Vec<&str> = declarations.iter().map(|d| d.name.as_str()).collect();
 
@@ -103,6 +103,7 @@ mod tests {
         assert!(names.contains(&"list_in_scope_targets"));
         assert!(names.contains(&"list_attack_surface_seeds"));
         assert!(names.contains(&"list_enumeration_web_roots"));
+        assert!(names.contains(&"enum_preflight_web_origins"));
         assert!(names.contains(&"check_stage_asset_coverage"));
         assert!(names.contains(&"stage_worklist_status"));
         assert!(names.contains(&"stage_worklist_next"));
@@ -139,6 +140,68 @@ mod tests {
                 decl.name
             );
         }
+    }
+
+    #[test]
+    fn enumeration_preflight_tools_share_terminal_exception_preview_schema() {
+        let declarations = build_function_declarations();
+
+        for name in [
+            "check_stage_asset_coverage",
+            "stage_worklist_status",
+            "stage_worklist_next",
+        ] {
+            let declaration = declarations
+                .iter()
+                .find(|declaration| declaration.name == name)
+                .unwrap_or_else(|| panic!("missing declaration for {name}"));
+            let schema = &declaration.parameters["properties"]["terminal_exceptions"];
+            assert_eq!(schema["type"], "array");
+            assert!(schema.get("maxItems").is_none());
+            assert_eq!(schema["items"]["additionalProperties"], false);
+            assert_eq!(schema["items"]["properties"], json!({}));
+            assert!(schema["description"]
+                .as_str()
+                .unwrap()
+                .contains("non-empty array is rejected"));
+        }
+
+        let next = declarations
+            .iter()
+            .find(|declaration| declaration.name == "stage_worklist_next")
+            .unwrap();
+        assert!(next.parameters["properties"]["prefer"]["items"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("partial")));
+        assert!(next
+            .description
+            .contains("at most 50 distinct exact-origin roots"));
+        assert!(next.parameters["properties"]["limit"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("max 200"));
+
+        let roots = declarations
+            .iter()
+            .find(|declaration| declaration.name == "list_enumeration_web_roots")
+            .unwrap();
+        assert!(roots.parameters["properties"]["limit"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Default 25, max 50"));
+
+        let transport = declarations
+            .iter()
+            .find(|declaration| declaration.name == "enum_preflight_web_origins")
+            .unwrap();
+        let origins = &transport.parameters["properties"]["origins"];
+        assert!(origins.get("minItems").is_none());
+        assert!(origins.get("maxItems").is_none());
+        assert!(origins["items"]["properties"]["target_id"]
+            .get("format")
+            .is_none());
+        assert_eq!(origins["items"]["additionalProperties"], false);
     }
 
     #[test]

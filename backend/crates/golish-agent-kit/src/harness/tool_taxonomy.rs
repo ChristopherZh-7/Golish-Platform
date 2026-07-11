@@ -47,17 +47,21 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         | "naabu"
         | "eas_discover_ports"
         | "eas_fingerprint_services" => ("recon", "port-scan"),
-        "httpx" | "whatweb" | "curl" | "wget" | "http" | "eas_probe_http_liveness" => {
-            ("recon", "http")
-        }
+        "httpx"
+        | "whatweb"
+        | "curl"
+        | "wget"
+        | "http"
+        | "enum_preflight_web_origins"
+        | "eas_probe_http_liveness"
+        | "eas_fingerprint_web_stack" => ("recon", "http"),
         "amass" | "subfinder" | "assetfinder" | "sublist3r" | "findomain" => ("recon", "subdomain"),
-        "katana"
-        | "hakrawler"
-        | "gospider"
-        | "enum_crawl_same_origin_urls"
-        | "browser_collect_js_api"
-        | "js_collect"
-        | "js_extract_apis" => ("recon", "crawler"),
+        // Raw crawler CLIs (katana/hakrawler/gospider) are intentionally not
+        // stage-allowlisted directly. Enumeration exposes the backend wrapper
+        // below so the model cannot bypass same-origin/org-bound landing.
+        "enum_crawl_same_origin_urls" | "browser_collect_js_api" | "js_extract_apis" => {
+            ("recon", "crawler")
+        }
         "gau" | "waybackurls" => ("recon", "url-history"),
         // whois / ASN lookups are zero-touch (query the registrar/RIR, not the
         // target's own hosts). Some stages may opt into this scan wrapper; current
@@ -128,13 +132,13 @@ const CANONICAL_TOOLS: &[&str] = &[
     "eas_fingerprint_services",
     "httpx",
     "eas_probe_http_liveness",
+    "eas_fingerprint_web_stack",
+    "enum_preflight_web_origins",
     "whatweb",
     "subfinder",
     "amass",
-    "katana",
     "enum_crawl_same_origin_urls",
     "browser_collect_js_api",
-    "js_collect",
     "js_extract_apis",
     "gau",
     "waybackurls",
@@ -597,6 +601,7 @@ mod tests {
             "vuln_run_formulaic_sweep",
             "sqlmap",
             "subfinder",
+            "enum_preflight_web_origins",
             "browser_collect_js_api",
             "route_probe_paths",
         ] {
@@ -682,7 +687,14 @@ mod tests {
         // external_attack_surface: active mapping — port-scan / http / visual.
         let allowed = allow(&["recon/port-scan", "recon/http", "recon/visual"]);
         let names = allowed_tool_names(&allowed);
-        for must in ["nmap", "naabu", "httpx", "whatweb", "gowitness"] {
+        for must in [
+            "nmap",
+            "naabu",
+            "httpx",
+            "eas_fingerprint_web_stack",
+            "whatweb",
+            "gowitness",
+        ] {
             assert!(names.contains(&must), "{must} must be listed: {names:?}");
         }
         // passive-only intel tools are not part of EAS's allowed types
@@ -696,12 +708,16 @@ mod tests {
 
     #[test]
     fn allowed_tool_names_enumeration_selectors_include_direct_enum_tools() {
-        let allowed = allow(&["recon/crawler", "web/route-probe"]);
+        let allowed = allow(&[
+            "enum_preflight_web_origins",
+            "recon/crawler",
+            "web/route-probe",
+        ]);
         let names = allowed_tool_names(&allowed);
         for must in [
-            "katana",
+            "enum_preflight_web_origins",
+            "enum_crawl_same_origin_urls",
             "browser_collect_js_api",
-            "js_collect",
             "js_extract_apis",
             "route_probe_paths",
         ] {
@@ -715,6 +731,7 @@ mod tests {
             "wget",
             "nmap",
             "naabu",
+            "katana",
             "sqlmap",
             "ffuf",
             "gobuster",
@@ -729,6 +746,16 @@ mod tests {
             );
             assert!(!stage_allows(never, &json!({}), &allowed));
         }
+        assert!(!stage_allows(
+            "pentest_run",
+            &json!({"tool_name": "katana"}),
+            &allowed
+        ));
+        assert!(!stage_allows(
+            "run_command",
+            &json!({"command": "katana -list roots.txt -jc"}),
+            &allowed
+        ));
     }
 
     #[test]

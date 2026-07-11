@@ -157,12 +157,19 @@ describe("extractToolAiTraceSections", () => {
     const sections = extractToolAiTraceSections({
       endpoints_total: 7,
       persisted_endpoint_rows: 4,
+      hae_route_candidates_total: 12,
+      hae_ai_promoted: 2,
       summary: { ai_used: true, ai_endpoints_added: 3 },
     });
 
     expect(sections).toHaveLength(1);
     expect(sections[0].title).toBe("Key Findings");
-    expect(sections[0].chips).toContain("AI +3");
+    expect(sections[0].chips).toEqual(
+      expect.arrayContaining(["HAE candidates 12", "HAE promoted 2", "AI +3"])
+    );
+    expect(sections[0].reasons).toContain(
+      "HaE-style regex produced 12 route/path candidate(s); 2 were AI-promoted into the API set."
+    );
     expect(sections[0].reasons).toContain("AI review ran and added 3 endpoint candidate(s).");
   });
 

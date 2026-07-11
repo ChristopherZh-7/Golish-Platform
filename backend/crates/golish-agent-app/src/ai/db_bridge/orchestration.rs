@@ -12,6 +12,7 @@ use golish_agent_kit::db_traits::*;
 fn stage_asset_wave_to_view(
     wave: golish_db::repo::stage_asset_waves::StageAssetWaveWithItems,
 ) -> StageAssetWaveView {
+    let target_ids = wave.items.iter().map(|item| item.target_id).collect();
     StageAssetWaveView {
         id: wave.wave.id,
         operation_id: wave.wave.operation_id,
@@ -19,7 +20,9 @@ fn stage_asset_wave_to_view(
         stage_kind: wave.wave.stage_kind,
         wave_index: wave.wave.wave_index,
         started_at: wave.wave.started_at,
+        parent_wave_id: wave.wave.parent_wave_id,
         asset_hash: wave.wave.asset_hash,
+        target_ids,
         asset_values: wave
             .items
             .into_iter()

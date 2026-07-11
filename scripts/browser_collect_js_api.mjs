@@ -3,17 +3,21 @@ import { chromium } from "@playwright/test";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+const NO_LIMIT = Number.POSITIVE_INFINITY;
 const DEFAULT_TIMEOUT_MS = 60_000;
-const DEFAULT_MAX_PAGES = 12;
-const DEFAULT_MAX_ACTIONS = 12;
-const DEFAULT_MAX_SCRIPT_BYTES = 5_000_000;
-const DEFAULT_MAX_RECURSIVE_SCRIPTS = 1_000;
-const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
-const DEFAULT_BODY_TIMEOUT_MS = 3_000;
+const DEFAULT_HARD_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_PAGES = 100;
+const DEFAULT_MAX_ACTIONS = 0;
+const DEFAULT_MAX_SCRIPT_BYTES = NO_LIMIT;
+const DEFAULT_MAX_RECURSIVE_SCRIPTS = NO_LIMIT;
+const DEFAULT_FETCH_TIMEOUT_MS = NO_LIMIT;
+const DEFAULT_BODY_TIMEOUT_MS = NO_LIMIT;
 const MAX_API_CAPTURE_BYTES = 512_000;
 const DEFAULT_CONTEXT_CLOSE_TIMEOUT_MS = 2_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
+const MAX_RECOVERY_FAILURES = 2;
 const TIMEOUT = Symbol("timeout");
 
 function progress(label, fields = {}) {
@@ -47,10 +51,138 @@ function toInt(value, fallback, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+function toLimit(value, fallback, min, max) {
+  if (value == null || value === true || value === "") return fallback;
+  const n = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(n) || n <= 0) return NO_LIMIT;
+  return Math.max(min, Math.min(max, n));
+}
+
+export function boundedHardTimeoutMs(value) {
+  const n = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_HARD_TIMEOUT_MS;
+  return Math.max(10_000, Math.min(600_000, n));
+}
+
+function limitForJson(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+function limitLabel(value) {
+  return Number.isFinite(value) ? value : "unlimited";
+}
+
 function toBool(value, fallback) {
   if (value == null) return fallback;
   if (typeof value === "boolean") return value;
   return ["1", "true", "yes", "y"].includes(String(value).toLowerCase());
+}
+
+export function isExactOriginUrl(value, exactOrigin) {
+  try {
+    return new URL(value).origin === exactOrigin;
+  } catch {
+    return false;
+  }
+}
+
+export function isExactOriginWebSocketUrl(value, targetUrl) {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") return false;
+    parsed.protocol = parsed.protocol === "wss:" ? "https:" : "http:";
+    return parsed.origin === targetUrl.origin;
+  } catch {
+    return false;
+  }
+}
+
+export function captureDirectoryFor(workspace, targetUrl, kind) {
+  const parsed = targetUrl instanceof URL ? targetUrl : new URL(targetUrl);
+  const scheme = parsed.protocol.replace(/:$/, "");
+  if (scheme !== "http" && scheme !== "https") {
+    throw new Error(`unsupported capture scheme: ${scheme}`);
+  }
+  const port = parsed.port || (scheme === "http" ? "80" : "443");
+  return path.join(
+    workspace,
+    ".golish",
+    "captures",
+    parsed.hostname || "unknown",
+    String(port),
+    scheme,
+    kind,
+  );
+}
+
+function count(value) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+export function classifyCollectionCompletion(input = {}) {
+  const navigationAttempts = count(input.navigation_attempts);
+  const successfulPages = count(input.successful_pages);
+  const navigationErrors = count(input.navigation_errors);
+  const pageQueueRemaining = count(input.page_queue_remaining);
+  const pageCandidatesDropped = count(input.page_candidates_dropped);
+  const recursiveQueueRemaining = count(input.recursive_queue_remaining);
+  const scriptByteLimitSkips = count(input.script_byte_limit_skips);
+  const scriptCaptureErrors = count(input.script_capture_errors);
+  const scopeViolations = count(input.scope_violations);
+  const pendingBodyTimeouts = count(input.pending_body_timeouts);
+  const recoveryPending = count(input.recovery_pending);
+  const recoveryExhausted = count(input.recovery_exhausted);
+  const reasons = [];
+
+  if (navigationAttempts > 0 && successfulPages === 0) {
+    reasons.push("all_navigation_failed");
+  } else if (navigationErrors > 0) {
+    reasons.push("navigation_errors");
+  }
+  if (pageQueueRemaining > 0) reasons.push("page_queue_remaining");
+  if (pageCandidatesDropped > 0) reasons.push("page_budget_truncated");
+  if (recursiveQueueRemaining > 0) reasons.push("recursive_queue_remaining");
+  if (input.recursive_limit_hit) reasons.push("max_recursive_scripts_hit");
+  if (input.recursive_deadline_hit) reasons.push("recursive_deadline_hit");
+  if (input.hard_deadline_hit) reasons.push("hard_deadline_hit");
+  if (input.pending_wait_timed_out) reasons.push("pending_wait_timed_out");
+  if (pendingBodyTimeouts > 0) reasons.push("pending_body_timeouts");
+  if (scriptByteLimitSkips > 0) reasons.push("max_script_bytes_hit");
+  if (scriptCaptureErrors > 0) reasons.push("script_capture_errors");
+  if (scopeViolations > 0) reasons.push("exact_origin_scope_violations");
+  if (recoveryPending > recoveryExhausted) reasons.push("recovery_pending");
+  if (recoveryExhausted > 0) reasons.push("recovery_exhausted");
+
+  if (
+    reasons.includes("all_navigation_failed") ||
+    reasons.includes("recovery_exhausted")
+  ) {
+    return {
+      status: "error",
+      completion_state: "error",
+      closure_complete: false,
+      reasons,
+    };
+  }
+  if (reasons.length > 0) {
+    const timedOut =
+      Boolean(input.hard_deadline_hit) ||
+      Boolean(input.pending_wait_timed_out) ||
+      pendingBodyTimeouts > 0;
+    return {
+      status: timedOut ? "timeout_partial" : "closure_partial",
+      completion_state: "partial",
+      closure_complete: false,
+      reasons,
+    };
+  }
+  return {
+    status: "ok",
+    completion_state: "complete",
+    closure_complete: true,
+    reasons: [],
+  };
 }
 
 function parseCrawlMode(_value) {
@@ -95,13 +227,18 @@ function recipeSchema() {
     manifest_paths: ["same-origin manifest path such as /asset-manifest.json"],
     script_urls: ["same-origin or already-observed-origin JS URL/path to fetch"],
     routes: ["same-origin route/path/hash route to visit in the browser"],
-    click_texts: ["visible non-destructive text to click, e.g. API or Settings"],
+    click_texts: [
+      "disabled in Enumeration until a separate explicit high-risk interaction authorization exists",
+    ],
     public_path: "optional public path override for chunk_pairs",
     chunk_pairs: [{ id: "123", hash: "abcdef1234" }],
   };
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_FETCH_TIMEOUT_MS) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return await fetch(url, options);
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -114,15 +251,56 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_FETCH_TIM
   }
 }
 
+export async function fetchExactOrigin(
+  url,
+  exactOrigin,
+  options = {},
+  timeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
+) {
+  let current = new URL(url);
+  for (let hop = 0; hop <= 5; hop += 1) {
+    if (current.origin !== exactOrigin) {
+      throw new Error(`exact-origin request blocked: ${current.href}`);
+    }
+    if (isDangerousNavigationUrl(current)) {
+      throw new Error(`read-only fetch blocked: ${current.href}`);
+    }
+    const response = await fetchWithTimeout(
+      current.href,
+      { ...options, redirect: "manual" },
+      timeoutMs,
+    );
+    const location = response.headers.get("location");
+    const isRedirect = [301, 302, 303, 307, 308].includes(response.status);
+    if (!isRedirect || !location) {
+      if (!isExactOriginUrl(response.url || current.href, exactOrigin)) {
+        throw new Error(`exact-origin final URL blocked: ${response.url}`);
+      }
+      return response;
+    }
+    const next = new URL(location, current);
+    if (next.origin !== exactOrigin) {
+      throw new Error(`exact-origin redirect blocked: ${current.href} -> ${next.href}`);
+    }
+    if (isDangerousNavigationUrl(next)) {
+      throw new Error(`read-only redirect blocked: ${current.href} -> ${next.href}`);
+    }
+    if (hop === 5) {
+      throw new Error(`exact-origin redirect limit exceeded: ${url}`);
+    }
+    current = next;
+  }
+  throw new Error(`exact-origin fetch failed: ${url}`);
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function withTimeout(promise, timeoutMs) {
   const guarded = Promise.resolve(promise);
-  if (timeoutMs <= 0) {
-    guarded.catch(() => {});
-    return TIMEOUT;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return await guarded;
   }
   let timer;
   try {
@@ -138,8 +316,21 @@ async function withTimeout(promise, timeoutMs) {
 }
 
 function timeLeft(deadlineMs, capMs) {
-  const remaining = Math.max(0, deadlineMs - Date.now());
-  return capMs == null ? remaining : Math.min(capMs, remaining);
+  const remaining = Number.isFinite(deadlineMs)
+    ? Math.max(0, deadlineMs - Date.now())
+    : NO_LIMIT;
+  if (capMs == null || !Number.isFinite(capMs) || capMs <= 0) return remaining;
+  return Math.min(capMs, remaining);
+}
+
+function redirectDepth(request) {
+  let depth = 0;
+  let previous = request.redirectedFrom();
+  while (previous) {
+    depth += 1;
+    previous = previous.redirectedFrom();
+  }
+  return depth;
 }
 
 function isNoiseUrl(url) {
@@ -166,6 +357,57 @@ async function closeBrowserHard(browser) {
 async function closeContextHard(context) {
   const result = await withTimeout(context.close(), DEFAULT_CONTEXT_CLOSE_TIMEOUT_MS);
   return result === TIMEOUT;
+}
+
+async function fulfillSafeNavigationOnce(route, exactOrigin, timeoutMs) {
+  const current = new URL(route.request().url());
+  if (current.origin !== exactOrigin) {
+    return { allowed: false, blocked_url: current.href };
+  }
+  const response = await route.fetch({
+    maxRedirects: 0,
+    timeout: Number.isFinite(timeoutMs) ? Math.max(1, timeoutMs) : 0,
+  });
+  const status = response.status();
+  const location = response.headers().location;
+  if ([301, 302, 303, 307, 308].includes(status) && location) {
+    const next = new URL(location, current);
+    if (next.origin !== exactOrigin) {
+      const terminalRedirect = {
+        from: current.href,
+        to: next.href,
+        status,
+      };
+      try {
+        // The authorized origin was contacted exactly once and answered with a
+        // terminal redirect outside the approved origin. Preserve that fact as
+        // evidence, but replace the browser-visible response with a local empty
+        // document so Playwright never schedules the foreign hop. This is a
+        // completed scope decision, not a DNS/TLS/navigation failure.
+        await route.fulfill({
+          status: 200,
+          contentType: "text/html; charset=utf-8",
+          body: "<!doctype html><title>Golish exact-origin redirect boundary</title>",
+        });
+      } finally {
+        await response.dispose();
+      }
+      return {
+        allowed: true,
+        final_url: current.href,
+        terminal_redirect: terminalRedirect,
+      };
+    }
+  }
+  try {
+    // `route.fetch()` already performed the one authorized request. Fulfill
+    // from that response instead of `route.continue()` (which would send it a
+    // second time). Redirect hops are routed and checked independently.
+    await route.fulfill({ response });
+  } finally {
+    await response.dispose();
+  }
+  return { allowed: true, final_url: current.href };
 }
 
 async function writeJsonAndExit(value) {
@@ -212,6 +454,7 @@ function safeParentFromUrlPath(urlPath) {
 function isJavaScriptResponse(urlString, headers) {
   const contentType = headers["content-type"] ?? "";
   if (/javascript|ecmascript|text\/js/i.test(contentType)) return true;
+  if (/text\/html|application\/xhtml\+xml/i.test(contentType)) return false;
   try {
     const pathname = new URL(urlString).pathname.toLowerCase();
     return pathname.endsWith(".js") || pathname.endsWith(".mjs");
@@ -580,6 +823,7 @@ async function saveApiResponseCapture(
   workspace,
   targetHost,
   targetPort,
+  targetScheme,
   entry,
   headers,
   body,
@@ -597,6 +841,7 @@ async function saveApiResponseCapture(
     "captures",
     targetHost,
     String(targetPort),
+    targetScheme,
     "api",
     parent,
   );
@@ -632,7 +877,14 @@ async function saveApiResponseCapture(
   return path.relative(workspace, fullPath);
 }
 
-async function saveScriptCapture(workspace, targetHost, targetPort, scriptUrl, body) {
+async function saveScriptCapture(
+  workspace,
+  targetHost,
+  targetPort,
+  targetScheme,
+  scriptUrl,
+  body,
+) {
   let urlPath = "/unknown.js";
   try {
     urlPath = new URL(scriptUrl).pathname || urlPath;
@@ -645,6 +897,7 @@ async function saveScriptCapture(workspace, targetHost, targetPort, scriptUrl, b
     "captures",
     targetHost,
     String(targetPort),
+    targetScheme,
     "js",
     parent,
   );
@@ -656,20 +909,27 @@ async function saveScriptCapture(workspace, targetHost, targetPort, scriptUrl, b
   return path.relative(workspace, fullPath);
 }
 
-function scriptManifestPath(workspace, targetHost, targetPort) {
+function scriptManifestPath(workspace, targetHost, targetPort, targetScheme) {
   return path.join(
     workspace,
     ".golish",
     "captures",
     targetHost,
     String(targetPort),
+    targetScheme,
     "js",
     "manifest.json",
   );
 }
 
-async function loadScriptManifest(workspace, targetHost, targetPort, maxScriptBytes) {
-  const manifestPath = scriptManifestPath(workspace, targetHost, targetPort);
+async function loadScriptManifest(
+  workspace,
+  targetHost,
+  targetPort,
+  targetScheme,
+  maxScriptBytes,
+) {
+  const manifestPath = scriptManifestPath(workspace, targetHost, targetPort, targetScheme);
   try {
     const text = await fs.readFile(manifestPath, "utf8");
     const parsed = JSON.parse(text);
@@ -680,6 +940,7 @@ async function loadScriptManifest(workspace, targetHost, targetPort, maxScriptBy
         : [];
     const entries = [];
     let stale = 0;
+    let sizeLimited = 0;
     for (const item of scripts) {
       if (!item || typeof item !== "object") continue;
       const url = typeof item.url === "string" ? item.url : "";
@@ -693,8 +954,13 @@ async function loadScriptManifest(workspace, targetHost, targetPort, maxScriptBy
         stale += 1;
         continue;
       }
-      if (!stat.isFile() || stat.size > maxScriptBytes) {
+      if (!stat.isFile()) {
         stale += 1;
+        continue;
+      }
+      if (Number.isFinite(maxScriptBytes) && stat.size > maxScriptBytes) {
+        stale += 1;
+        sizeLimited += 1;
         continue;
       }
       entries.push({
@@ -709,14 +975,327 @@ async function loadScriptManifest(workspace, targetHost, targetPort, maxScriptBy
         full_path: fullPath,
       });
     }
-    return { path: manifestPath, entries, stale };
+    return {
+      path: manifestPath,
+      entries,
+      raw_entries: scripts.length,
+      stale,
+      size_limited: sizeLimited,
+      producer_run_id:
+        typeof parsed?.producer_run_id === "string" ? parsed.producer_run_id : null,
+      producer_session_id:
+        typeof parsed?.producer_session_id === "string" ? parsed.producer_session_id : null,
+      producer_operation_id:
+        typeof parsed?.producer_operation_id === "string"
+          ? parsed.producer_operation_id
+          : null,
+      producer_stage_started_at:
+        typeof parsed?.producer_stage_started_at === "string"
+          ? parsed.producer_stage_started_at
+          : null,
+      captured_at: typeof parsed?.captured_at === "string" ? parsed.captured_at : null,
+      completion_state:
+        typeof parsed?.completion_state === "string" ? parsed.completion_state : null,
+      closure_complete: parsed?.closure_complete === true,
+      closure_incomplete_reasons: Array.isArray(parsed?.closure_incomplete_reasons)
+        ? parsed.closure_incomplete_reasons.filter((reason) => typeof reason === "string")
+        : [],
+      visited_pages: Array.isArray(parsed?.visited_pages)
+        ? parsed.visited_pages.filter((url) => typeof url === "string")
+        : [],
+      pending_pages: Array.isArray(parsed?.pending_pages)
+        ? parsed.pending_pages.filter((url) => typeof url === "string")
+        : [],
+      pending_recursive_scripts: Array.isArray(parsed?.pending_recursive_scripts)
+        ? parsed.pending_recursive_scripts.filter(
+            (item) =>
+              typeof item === "string" ||
+              (item && typeof item === "object" && !Array.isArray(item)),
+          )
+        : [],
+      api_requests: Array.isArray(parsed?.api_requests)
+        ? parsed.api_requests.filter(
+            (request) => request && typeof request === "object" && !Array.isArray(request),
+          )
+        : [],
+      page_resume_count: Number.isInteger(parsed?.page_resume_count)
+        ? Math.max(0, parsed.page_resume_count)
+        : 0,
+      checkpoint_resume_count: Number.isInteger(parsed?.checkpoint_resume_count)
+        ? Math.max(0, parsed.checkpoint_resume_count)
+        : Number.isInteger(parsed?.page_resume_count)
+          ? Math.max(0, parsed.page_resume_count)
+          : 0,
+      recovery_failures: Array.isArray(parsed?.recovery_failures)
+        ? parsed.recovery_failures.filter(
+            (item) => item && typeof item === "object" && !Array.isArray(item),
+          )
+        : [],
+      recovery_exhausted: parsed?.recovery_exhausted === true,
+      automatic_retry_allowed: parsed?.automatic_retry_allowed !== false,
+    };
   } catch {
-    return { path: manifestPath, entries: [], stale: 0 };
+    return {
+      path: manifestPath,
+      entries: [],
+      raw_entries: 0,
+      stale: 0,
+      size_limited: 0,
+      producer_run_id: null,
+      producer_session_id: null,
+      producer_operation_id: null,
+      producer_stage_started_at: null,
+      captured_at: null,
+      completion_state: null,
+      closure_complete: false,
+      closure_incomplete_reasons: [],
+      visited_pages: [],
+      pending_pages: [],
+      pending_recursive_scripts: [],
+      api_requests: [],
+      page_resume_count: 0,
+      checkpoint_resume_count: 0,
+      recovery_failures: [],
+      recovery_exhausted: false,
+      automatic_retry_allowed: true,
+    };
   }
 }
 
-async function writeScriptManifest(workspace, targetHost, targetPort, scripts) {
-  const manifestPath = scriptManifestPath(workspace, targetHost, targetPort);
+const RECOVERABLE_CHECKPOINT_REASONS = new Set([
+  "page_queue_remaining",
+  "recursive_queue_remaining",
+  "max_recursive_scripts_hit",
+  "recursive_deadline_hit",
+  "all_navigation_failed",
+  "navigation_errors",
+  "hard_deadline_hit",
+  "pending_wait_timed_out",
+  "pending_body_timeouts",
+  "script_capture_errors",
+  "recovery_pending",
+  "recovery_exhausted",
+]);
+const RECOVERY_KINDS = new Set([
+  "navigation",
+  "page_inspection",
+  "script_body",
+  // Kept as a recognized legacy checkpoint kind so an existing v2 manifest
+  // can be sanitized instead of rejected wholesale. API response-body capture
+  // is diagnostic, though: URL/method/status metadata already proves the
+  // observation and a missing body must not keep JS closure pending.
+  "api_body",
+  "manifest_body",
+  "recursive_body",
+  "recursive_fetch",
+  "pending_wait",
+]);
+
+export function recoveryKindBlocksClosure(kind) {
+  return RECOVERY_KINDS.has(kind) && kind !== "api_body";
+}
+
+function canonicalRecoveryUrl(value) {
+  const parsed = new URL(value);
+  parsed.hash = "";
+  parsed.searchParams.sort();
+  return parsed.href;
+}
+
+function recoverySignature(kind, url) {
+  return crypto
+    .createHash("sha256")
+    .update(`${kind}\0${canonicalRecoveryUrl(url)}`)
+    .digest("hex");
+}
+
+function resumableCollectionCheckpoint(
+  manifest,
+  targetUrl,
+  producerRunId,
+  producerSessionId,
+  producerOperationId,
+  producerStageStartedAt,
+) {
+  if (
+    !producerRunId ||
+    !producerSessionId ||
+    !producerOperationId ||
+    !producerStageStartedAt
+  ) {
+    return null;
+  }
+  const activeStageStartedAt = Date.parse(producerStageStartedAt);
+  const manifestStageStartedAt = Date.parse(manifest.producer_stage_started_at ?? "");
+  const manifestCapturedAt = Date.parse(manifest.captured_at ?? "");
+  if (
+    !Number.isFinite(activeStageStartedAt) ||
+    !Number.isFinite(manifestStageStartedAt) ||
+    !Number.isFinite(manifestCapturedAt) ||
+    manifest.producer_stage_started_at !== producerStageStartedAt ||
+    manifestCapturedAt < activeStageStartedAt
+  ) {
+    return null;
+  }
+  if (
+    manifest.producer_run_id !== producerRunId ||
+    manifest.producer_session_id !== producerSessionId ||
+    manifest.producer_operation_id !== producerOperationId ||
+    manifest.closure_complete ||
+    !["partial", "error"].includes(manifest.completion_state) ||
+    manifest.stale > 0 ||
+    manifest.size_limited > 0 ||
+    manifest.entries.length !== manifest.raw_entries
+  ) {
+    return null;
+  }
+  const reasons = manifest.closure_incomplete_reasons;
+  if (
+    reasons.length === 0 ||
+    !reasons.every((reason) => RECOVERABLE_CHECKPOINT_REASONS.has(reason))
+  ) {
+    return null;
+  }
+  const sanitizePages = (pages) => {
+    const out = [];
+    const seen = new Set();
+    for (const value of pages) {
+      let parsed;
+      try {
+        parsed = new URL(value);
+      } catch {
+        return null;
+      }
+      if (
+        parsed.origin !== targetUrl.origin ||
+        isDangerousNavigationUrl(parsed) ||
+        seen.has(parsed.href)
+      ) {
+        if (seen.has(parsed.href)) continue;
+        return null;
+      }
+      seen.add(parsed.href);
+      out.push(parsed.href);
+    }
+    return out;
+  };
+  const visitedPages = sanitizePages(manifest.visited_pages);
+  const pendingPages = sanitizePages(manifest.pending_pages);
+  if (!visitedPages || !pendingPages) return null;
+  const visited = new Set(visitedPages);
+  if (pendingPages.some((url) => visited.has(url))) return null;
+  const pendingRecursiveScripts = [];
+  const recursiveKeys = new Set();
+  const cachedScriptKeys = new Set(manifest.entries.map((entry) => entry.key));
+  for (const item of manifest.pending_recursive_scripts) {
+    const rawUrl = typeof item === "string" ? item : item.url;
+    if (typeof rawUrl !== "string") return null;
+    let parsed;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      return null;
+    }
+    if (parsed.origin !== targetUrl.origin || isDangerousNavigationUrl(parsed)) {
+      return null;
+    }
+    const key = canonicalScriptUrl(parsed.href);
+    if (!key || cachedScriptKeys.has(key) || recursiveKeys.has(key)) continue;
+    let source = typeof item === "object" ? item.source : null;
+    if (typeof source !== "string" || !isExactOriginUrl(source, targetUrl.origin)) {
+      source = targetUrl.href;
+    }
+    recursiveKeys.add(key);
+    pendingRecursiveScripts.push({ url: parsed.href, key, source });
+  }
+  const apiRequests = [];
+  const apiKeys = new Set();
+  for (const request of manifest.api_requests) {
+    if (
+      typeof request.url !== "string" ||
+      !isExactOriginUrl(request.url, targetUrl.origin) ||
+      typeof request.method !== "string" ||
+      !request.method.trim()
+    ) {
+      return null;
+    }
+    const key = `${request.method} ${request.url}`;
+    if (apiKeys.has(key)) continue;
+    apiKeys.add(key);
+    apiRequests.push(request);
+  }
+  const recoveryFailures = [];
+  const recoverySignatures = new Set();
+  for (const failure of manifest.recovery_failures) {
+    const kind = typeof failure.kind === "string" ? failure.kind : "";
+    const url = typeof failure.url === "string" ? failure.url : "";
+    const count = Number.isInteger(failure.count) ? failure.count : 0;
+    if (
+      !RECOVERY_KINDS.has(kind) ||
+      !isExactOriginUrl(url, targetUrl.origin) ||
+      isDangerousNavigationUrl(url) ||
+      count < 1 ||
+      count > MAX_RECOVERY_FAILURES
+    ) {
+      return null;
+    }
+    const signature = recoverySignature(kind, url);
+    if (
+      (typeof failure.signature === "string" && failure.signature !== signature) ||
+      recoverySignatures.has(signature)
+    ) {
+      return null;
+    }
+    if (!recoveryKindBlocksClosure(kind)) {
+      // Drop legacy API-body failures from the resumable closure state. The
+      // per-request capture_error remains in api_requests for diagnostics.
+      continue;
+    }
+    recoverySignatures.add(signature);
+    recoveryFailures.push({
+      signature,
+      kind,
+      url: canonicalRecoveryUrl(url),
+      count,
+      reason:
+        typeof failure.reason === "string" ? failure.reason.slice(0, 300) : "retryable failure",
+    });
+  }
+  const recoveryExhausted = recoveryFailures.some(
+    (failure) => failure.count >= MAX_RECOVERY_FAILURES,
+  );
+  if (manifest.recovery_exhausted && !recoveryExhausted) return null;
+  if (
+    pendingPages.length === 0 &&
+    pendingRecursiveScripts.length === 0 &&
+    recoveryFailures.length === 0
+  ) {
+    return null;
+  }
+  return {
+    visited_pages: visitedPages,
+    pending_pages: pendingPages,
+    pending_recursive_scripts: pendingRecursiveScripts,
+    api_requests: apiRequests,
+    page_resume_count: manifest.page_resume_count + 1,
+    checkpoint_resume_count: manifest.checkpoint_resume_count + 1,
+    recovery_failures: recoveryFailures,
+    recovery_exhausted: recoveryExhausted,
+    automatic_retry_allowed: !recoveryExhausted,
+  };
+}
+
+async function writeScriptManifest(
+  workspace,
+  targetHost,
+  targetPort,
+  targetScheme,
+  scripts,
+  completion,
+  provenance,
+  checkpoint,
+) {
+  const manifestPath = scriptManifestPath(workspace, targetHost, targetPort, targetScheme);
   await fs.mkdir(path.dirname(manifestPath), { recursive: true });
   const rows = scripts
     .filter((script) => script.path && script.url)
@@ -732,9 +1311,31 @@ async function writeScriptManifest(workspace, targetHost, targetPort, scripts) {
       duplicate_of: script.duplicate_of ?? null,
     }))
     .sort((a, b) => a.canonical_url.localeCompare(b.canonical_url));
+  const capturedAt = new Date().toISOString();
   const payload = {
-    version: 1,
-    updated_at: new Date().toISOString(),
+    version: 2,
+    updated_at: capturedAt,
+    captured_at: capturedAt,
+    producer_run_id: provenance.run_id || null,
+    producer_session_id: provenance.session_id || null,
+    producer_operation_id: provenance.operation_id || null,
+    producer_stage_started_at: provenance.stage_started_at || null,
+    visited_pages: checkpoint.visited_pages,
+    pending_pages: checkpoint.pending_pages,
+    pending_recursive_scripts: checkpoint.pending_recursive_scripts,
+    api_requests: checkpoint.api_requests,
+    page_resume_count: checkpoint.page_resume_count,
+    checkpoint_resume_count: checkpoint.checkpoint_resume_count,
+    recovery_failures: checkpoint.recovery_failures,
+    recovery_exhausted: checkpoint.recovery_exhausted,
+    automatic_retry_allowed: checkpoint.automatic_retry_allowed,
+    recovery_instruction: checkpoint.recovery_exhausted
+      ? "Start a new trusted producer operation or stage attempt after changing the failing transport/timeout condition; this provenance will not auto-retry again."
+      : null,
+    collection_status: completion.status,
+    completion_state: completion.completion_state,
+    closure_complete: completion.closure_complete,
+    closure_incomplete_reasons: completion.reasons,
     scripts: rows,
   };
   const tmpPath = `${manifestPath}.tmp`;
@@ -796,15 +1397,44 @@ function resolveAllowedScriptUrl(value, targetUrl, allowedOrigins) {
 }
 
 function shouldSkipClick(text) {
-  return /(logout|log out|delete|remove|checkout|purchase|buy|pay|submit|sign out|退出|删除|支付|购买|提交)/i.test(
+  return /(logout|log out|delete|remove|checkout|purchase|shutdown|restart|stop|cancel|disable|deactivate|archive|unsubscribe|approve|reject|activate|enable|refund|buy|pay|submit|sign out|退出|删除|支付|购买|提交)/i.test(
     text,
   );
 }
 
-async function collectSameOriginLinks(page, origin, limit) {
-  const links = await page.evaluate(
-    ({ origin, limit }) =>
-      Array.from(document.querySelectorAll("a[href]"))
+const DANGEROUS_NAVIGATION_PATTERN =
+  /(?:logout|log[-_ ]?out|sign[-_ ]?out|delete|remove|destroy|payment|checkout|purchase|confirm|reset|clear|terminate|revoke|shutdown|restart|stop|cancel|disable|deactivate|archive|unsubscribe|approve|reject|activate|enable|refund)/i;
+
+function decodePercentOnce(value) {
+  return value.replace(/%([0-9a-f]{2})/gi, (_match, hex) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+}
+
+export function isDangerousNavigationUrl(value) {
+  try {
+    const parsed = value instanceof URL ? value : new URL(value);
+    let route = `${parsed.pathname}${parsed.search}`;
+    for (let pass = 0; pass < 2; pass += 1) {
+      const decoded = decodePercentOnce(route);
+      if (decoded === route) break;
+      route = decoded;
+    }
+    // Two decoding passes are the supported interpretation boundary. A valid
+    // escape that remains is deeper/mixed encoding, so fail closed instead of
+    // guessing how many downstream layers may decode it.
+    if (/%[0-9a-f]{2}/i.test(route)) return true;
+    return DANGEROUS_NAVIGATION_PATTERN.test(route);
+  } catch {
+    return true;
+  }
+}
+
+async function collectSameOriginLinks(page, origin) {
+  const result = await page.evaluate(
+    ({ origin }) =>
+      (() => {
+        const links = Array.from(document.querySelectorAll("a[href]"))
         .map((a) => a.href)
         .filter((href) => {
           try {
@@ -818,11 +1448,19 @@ async function collectSameOriginLinks(page, origin, limit) {
           } catch {
             return false;
           }
-        })
-        .slice(0, limit),
-    { origin, limit },
+        });
+        const unique = [...new Set(links)];
+        return {
+          // `max_pages` is an execution slice, not a discovery limit. Keep
+          // every safe exact-origin candidate in the durable pending queue so
+          // a wide page can make deterministic progress across invocations.
+          links: unique,
+          dropped: 0,
+        };
+      })(),
+    { origin },
   );
-  return [...new Set(links)];
+  return result;
 }
 
 async function collectDomScriptCandidates(page, origin, limit) {
@@ -1004,6 +1642,7 @@ async function main() {
   const targetHost = targetUrl.hostname || "unknown";
   const targetPort =
     targetUrl.port || (targetUrl.protocol === "http:" ? "80" : "443");
+  const targetScheme = targetUrl.protocol.replace(/:$/, "");
   const crawlMode = parseCrawlMode(args.crawl_mode);
   const timeoutMs = toInt(
     args.timeout_ms,
@@ -1011,12 +1650,10 @@ async function main() {
     5_000,
     300_000,
   );
-  const hardTimeoutMs = toInt(
-    args.hard_timeout_ms,
-    Math.max(timeoutMs + 60_000, 120_000),
-    10_000,
-    600_000,
-  );
+  // A finite per-origin wall clock is mandatory. Page count alone cannot bound
+  // a response body, recursive fetch, or stuck browser-protocol operation.
+  // Explicit zero is legacy input and is normalized to the same safe default.
+  const hardTimeoutMs = boundedHardTimeoutMs(args.hard_timeout_ms);
   const hardDeadline = Date.now() + hardTimeoutMs;
   const maxPages = toInt(
     args.max_pages,
@@ -1024,45 +1661,90 @@ async function main() {
     1,
     100,
   );
-  const maxActions = toInt(
+  const requestedMaxActions = toInt(
     args.max_actions,
     DEFAULT_MAX_ACTIONS,
     0,
     100,
   );
-  const maxScriptBytes = toInt(
+  // Enumeration has no authorization contract for state-changing UI
+  // interactions. Keep scrolling/lazy loading, but clicks remain disabled even
+  // if an old caller or AI recipe asks for them.
+  const maxActions = 0;
+  const maxScriptBytes = toLimit(
     args.max_script_bytes,
     DEFAULT_MAX_SCRIPT_BYTES,
     100_000,
-    50_000_000,
+    Number.MAX_SAFE_INTEGER,
   );
-  const maxRecursiveScripts = toInt(
+  const maxRecursiveScripts = toLimit(
     args.max_recursive_scripts,
     DEFAULT_MAX_RECURSIVE_SCRIPTS,
-    0,
-    10_000,
+    1,
+    Number.MAX_SAFE_INTEGER,
   );
-  const restrictApisToSameOrigin = toBool(args.same_origin, true);
+  const requestedSameOrigin = toBool(args.same_origin, true);
+  const restrictApisToSameOrigin = true;
   const includeAiAssist = toBool(args.ai_assist, true);
   const blockNoise = toBool(args.block_noise, true);
+  const producerRunId =
+    typeof args.run_id === "string" && args.run_id.trim() ? args.run_id.trim() : null;
+  const producerSessionId =
+    typeof args.session_id === "string" && args.session_id.trim()
+      ? args.session_id.trim()
+      : null;
+  const producerOperationId =
+    typeof args.operation_id === "string" && args.operation_id.trim()
+      ? args.operation_id.trim()
+      : null;
+  const producerStageStartedAt =
+    typeof args.stage_started_at === "string" && args.stage_started_at.trim()
+      ? args.stage_started_at.trim()
+      : null;
   const recipe = parseRecipe(args.recipe_json);
-  const recipeRoutes = safeStringArray(recipe.routes, 20)
-    .map((route) => resolveSameOriginUrl(route, targetUrl))
-    .filter(Boolean);
-  const recipeManifestPaths = safeStringArray(recipe.manifest_paths, 20)
-    .map((route) => resolveSameOriginPath(route, targetUrl))
-    .filter(Boolean);
-  const recipeScriptUrlHints = safeStringArray(recipe.script_urls, DEFAULT_MAX_RECURSIVE_SCRIPTS);
-  const recipeClickTexts = safeStringArray(recipe.click_texts, 20, 120);
+  const blockedReadOnlyRouteUrls = new Set();
+  if (isDangerousNavigationUrl(targetUrl)) {
+    throw new Error(`read-only Enumeration navigation blocked: ${targetUrl.href}`);
+  }
+  const recipeRoutes = [];
+  for (const route of safeStringArray(recipe.routes, 20)) {
+    const resolved = resolveSameOriginUrl(route, targetUrl);
+    if (!resolved) continue;
+    if (isDangerousNavigationUrl(resolved)) {
+      blockedReadOnlyRouteUrls.add(resolved);
+      continue;
+    }
+    recipeRoutes.push(resolved);
+  }
+  const recipeManifestPaths = [];
+  let disabledRecipeManifestPaths = 0;
+  for (const manifestPath of safeStringArray(recipe.manifest_paths, 20)) {
+    const resolved = resolveSameOriginPath(manifestPath, targetUrl);
+    if (!resolved) continue;
+    const absolute = new URL(resolved, targetUrl.href);
+    if (isDangerousNavigationUrl(absolute)) {
+      blockedReadOnlyRouteUrls.add(absolute.href);
+      disabledRecipeManifestPaths += 1;
+      continue;
+    }
+    recipeManifestPaths.push(resolved);
+  }
+  const recipeScriptUrlHints = safeStringArray(recipe.script_urls, maxRecursiveScripts);
+  let disabledRecipeScriptUrls = 0;
+  const requestedRecipeClickTexts = safeStringArray(recipe.click_texts, 20, 120);
+  const recipeClickTexts = [];
   const recipePublicPath =
     typeof recipe.public_path === "string" ? recipe.public_path.trim().slice(0, 300) : null;
-  const recipeChunkPairs = safeChunkPairs(recipe.chunk_pairs, DEFAULT_MAX_RECURSIVE_SCRIPTS);
+  const recipeChunkPairs = safeChunkPairs(recipe.chunk_pairs, maxRecursiveScripts);
   const recipeSummary = {
     crawl_mode: crawlMode,
     routes: recipeRoutes.length,
     manifest_paths: recipeManifestPaths.length,
+    manifest_paths_disabled: disabledRecipeManifestPaths,
     script_urls: recipeScriptUrlHints.length,
+    script_urls_disabled: disabledRecipeScriptUrls,
     click_texts: recipeClickTexts.length,
+    click_texts_disabled: requestedRecipeClickTexts.length,
     public_path: recipePublicPath || null,
     chunk_pairs: recipeChunkPairs.length,
   };
@@ -1070,26 +1752,130 @@ async function main() {
   progress("start", {
     target: targetUrl.href,
     timeout_ms: timeoutMs,
-    hard_timeout_ms: hardTimeoutMs,
+    hard_timeout_ms: limitLabel(hardTimeoutMs),
     max_pages: maxPages,
     max_actions: maxActions,
-    max_recursive_scripts: maxRecursiveScripts,
+    requested_max_actions: requestedMaxActions,
+    max_script_bytes: limitLabel(maxScriptBytes),
+    max_recursive_scripts: limitLabel(maxRecursiveScripts),
   });
   progress("launch_browser");
   const browser = await withTimeout(launchBrowser(), timeLeft(hardDeadline, 15_000));
   if (browser === TIMEOUT) {
-    throw new Error(`browser launch timed out after ${hardTimeoutMs} ms hard deadline`);
+    throw new Error("browser launch timed out");
   }
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
+    serviceWorkers: "block",
     userAgent:
       "Mozilla/5.0 (compatible; GolishBrowserCollect/1.0; +https://golish.local)",
   });
   let blockedResourceRequests = 0;
+  const blockedNavigationUrls = new Set();
+  const blockedSubresourceUrls = new Set();
+  const blockedWebSocketUrls = new Set();
+  const blockedReadOnlyRequests = new Set();
+  const terminalCrossOriginRedirects = new Map();
+  const apiRequestsByKey = new Map();
+  let apiTraceCount = 0;
+
+  const observeApiRequest = (request, blockedReadOnly = false, force = false) => {
+    const type = request.resourceType();
+    if (!force && type !== "xhr" && type !== "fetch") return null;
+    const url = request.url();
+    if (!isExactOriginUrl(url, targetUrl.origin)) return null;
+    const key = `${request.method()} ${url}`;
+    if (!apiRequestsByKey.has(key)) {
+      apiRequestsByKey.set(key, {
+        url,
+        method: request.method(),
+        resource_type: type,
+        status: null,
+        request_headers: request.headers(),
+        request_body: request.postData() ?? null,
+        read_only_blocked: blockedReadOnly,
+      });
+      if (apiTraceCount < 80) {
+        progress(blockedReadOnly ? "api_observed_blocked_read_only" : "api_observed", {
+          method: request.method(),
+          url,
+        });
+        apiTraceCount += 1;
+      }
+    } else if (blockedReadOnly) {
+      apiRequestsByKey.get(key).read_only_blocked = true;
+    }
+    return apiRequestsByKey.get(key);
+  };
+
   await context.route("**/*", async (route) => {
     const request = route.request();
     const type = request.resourceType();
     const url = request.url();
+    let parsedRequestUrl = null;
+    try {
+      parsedRequestUrl = new URL(url);
+    } catch {
+      // Browser-internal schemes are not network requests; leave them to the
+      // existing resource/noise policy below.
+    }
+    if (
+      parsedRequestUrl &&
+      (parsedRequestUrl.protocol === "http:" || parsedRequestUrl.protocol === "https:") &&
+      parsedRequestUrl.origin !== targetUrl.origin
+    ) {
+      if (request.isNavigationRequest()) blockedNavigationUrls.add(url);
+      else blockedSubresourceUrls.add(url);
+      await route.abort("blockedbyclient").catch(() => {});
+      return;
+    }
+    const unsafeMethod = !matchesSafeNavigationMethod(request.method());
+    const dangerousRoute = parsedRequestUrl && isDangerousNavigationUrl(parsedRequestUrl);
+    const observedApi = observeApiRequest(
+      request,
+      unsafeMethod || dangerousRoute,
+      unsafeMethod,
+    );
+    if (unsafeMethod || dangerousRoute) {
+      const key = `${request.method()} ${url}`;
+      blockedReadOnlyRequests.add(key);
+      if (dangerousRoute) blockedReadOnlyRouteUrls.add(url);
+      if (observedApi) observedApi.read_only_block_reason = unsafeMethod
+        ? "method_not_read_only"
+        : "dangerous_route";
+      await route.abort("blockedbyclient").catch(() => {});
+      return;
+    }
+    if (request.isNavigationRequest()) {
+      if (redirectDepth(request) > 5) {
+        blockedNavigationUrls.add(url);
+        await route.abort("blockedbyclient").catch(() => {});
+        return;
+      }
+      try {
+        const inspection = await fulfillSafeNavigationOnce(
+          route,
+          targetUrl.origin,
+          timeLeft(hardDeadline, Math.min(timeoutMs, 10_000)),
+        );
+        if (!inspection.allowed) {
+          blockedNavigationUrls.add(inspection.blocked_url);
+          await route.abort("blockedbyclient").catch(() => {});
+          return;
+        }
+        if (inspection.terminal_redirect) {
+          const redirect = inspection.terminal_redirect;
+          terminalCrossOriginRedirects.set(
+            `${redirect.status} ${redirect.from} -> ${redirect.to}`,
+            redirect,
+          );
+        }
+      } catch {
+        await route.abort("failed").catch(() => {});
+        return;
+      }
+      return;
+    }
     if (isBlockedResourceType(type) || (blockNoise && isNoiseUrl(url))) {
       blockedResourceRequests += 1;
       await route.abort().catch(() => {});
@@ -1097,8 +1883,22 @@ async function main() {
     }
     await route.continue().catch(() => {});
   });
+  await context.routeWebSocket(/.*/, async (webSocketRoute) => {
+    const url = webSocketRoute.url();
+    blockedWebSocketUrls.add(url);
+    const reason = isExactOriginWebSocketUrl(url, targetUrl)
+      ? "Golish read-only Enumeration"
+      : "Golish exact-origin scope";
+    // Even a same-origin WebSocket can send state-changing messages. There is
+    // no read-only handshake contract here, so Enumeration never connects it.
+    await webSocketRoute.close({ code: 1008, reason }).catch(() => {});
+  });
   const page = await context.newPage();
-  progress("browser_ready", { block_noise: blockNoise, same_origin: restrictApisToSameOrigin });
+  progress("browser_ready", {
+    block_noise: blockNoise,
+    same_origin: restrictApisToSameOrigin,
+    requested_same_origin: requestedSameOrigin,
+  });
 
   const scriptsByUrl = new Map();
   const scriptInsightsByUrl = new Map();
@@ -1107,20 +1907,21 @@ async function main() {
   const queuedRecursiveUrls = new Set();
   const scriptPathByHash = new Map();
   const scannedScriptHashes = new Set();
-  const apiRequestsByKey = new Map();
   const pending = new Set();
   const navigationErrors = [];
   const consoleErrors = [];
   const recursiveErrors = [];
   let publicPathHint = null;
   let recursiveScriptsDownloaded = 0;
+  let scriptByteLimitSkips = 0;
+  let scriptCaptureErrors = 0;
   let hardDeadlineHit = false;
   let pendingBodyTimeouts = 0;
+  let apiBodyCaptureErrors = 0;
   let pendingWaitTimedOut = false;
   let contextCloseTimedOut = false;
   let browserCloseTimedOut = false;
   let duplicateContentHits = 0;
-  let apiTraceCount = 0;
   let scriptTraceCount = 0;
   let recursiveTraceCount = 0;
 
@@ -1150,8 +1951,11 @@ async function main() {
     if (!key || scriptsByUrl.has(key) || queuedRecursiveUrls.has(key)) return;
     try {
       const parsed = new URL(url);
-      const sourceOrigin = source ? new URL(source).origin : targetUrl.origin;
-      if (parsed.origin !== targetUrl.origin && parsed.origin !== sourceOrigin) return;
+      if (parsed.origin !== targetUrl.origin) return;
+      if (isDangerousNavigationUrl(parsed)) {
+        blockedReadOnlyRouteUrls.add(parsed.href);
+        return;
+      }
       queuedRecursiveUrls.add(key);
       recursiveQueue.push({ url: parsed.href, key, source });
     } catch {
@@ -1211,56 +2015,159 @@ async function main() {
     workspace,
     targetHost,
     targetPort,
+    targetScheme,
     maxScriptBytes,
   );
+  const checkpointResume = resumableCollectionCheckpoint(
+    manifestCache,
+    targetUrl,
+    producerRunId,
+    producerSessionId,
+    producerOperationId,
+    producerStageStartedAt,
+  );
   let cachedScriptsPreloaded = 0;
-  for (const entry of manifestCache.entries) {
-    if (!entry.key || scriptsByUrl.has(entry.key)) continue;
-    let body = null;
-    try {
-      body = await fs.readFile(entry.full_path);
-    } catch {
-      continue;
+  if (checkpointResume) {
+    // Only the same run/session/operation/stage attempt may carry verified
+    // observations and pending cursors forward. The manifest is revalidated
+    // for exact-origin scope, safe routes, and intact script files first.
+    for (const entry of manifestCache.entries) {
+      if (!entry.key || scriptsByUrl.has(entry.key)) continue;
+      scriptsByUrl.set(entry.key, {
+        url: entry.url,
+        path: entry.path,
+        size: entry.size,
+        status: entry.status,
+        content_type: entry.content_type,
+        sha256: entry.sha256,
+        cached: true,
+        resumed_from_checkpoint: true,
+      });
+      if (entry.sha256) scriptPathByHash.set(entry.sha256, entry.path);
+      cachedScriptsPreloaded += 1;
     }
-    const sha = entry.sha256 || sha256Hex(body);
-    const cached = {
-      url: entry.url,
-      path: entry.path,
-      size: entry.size,
-      status: entry.status,
-      content_type: entry.content_type,
-      sha256: sha,
-      cached: true,
-    };
-    scriptsByUrl.set(entry.key, cached);
-    scriptPathByHash.set(sha, entry.path);
-    cachedScriptsPreloaded += 1;
-    enqueueRefsFromScript(entry.url, body);
+    for (const request of checkpointResume.api_requests) {
+      apiRequestsByKey.set(`${request.method} ${request.url}`, request);
+    }
+    progress("resume_collection_checkpoint", {
+      visited_pages: checkpointResume.visited_pages.length,
+      pending_pages: checkpointResume.pending_pages.length,
+      pending_recursive_scripts: checkpointResume.pending_recursive_scripts.length,
+      scripts: cachedScriptsPreloaded,
+      api_requests: checkpointResume.api_requests.length,
+      resume_count: checkpointResume.checkpoint_resume_count,
+      recovery_exhausted: checkpointResume.recovery_exhausted,
+    });
+  } else {
+    // Cross-run/session/stage or structurally unsafe manifests are historical
+    // evidence, never current observations. Do not seed discovery/dedupe or
+    // completion counters from them.
+    progress("ignore_previous_script_manifest", {
+      previous_entries: manifestCache.entries.length,
+      stale_entries: manifestCache.stale,
+      size_limited_entries: manifestCache.size_limited,
+    });
   }
-  progress("preload_cached_scripts", {
-    cached: cachedScriptsPreloaded,
-    queued_recursive: recursiveQueue.length,
-  });
+
+  const recoveryFailures = new Map(
+    (checkpointResume?.recovery_failures ?? []).map((failure) => [
+      failure.signature,
+      failure,
+    ]),
+  );
+  const pendingRecoveryPages = new Set();
+  const recoveryFailureList = () =>
+    [...recoveryFailures.values()].sort(
+      (left, right) => left.signature.localeCompare(right.signature),
+    );
+  const noteRecoveryFailure = (kind, rawUrl, reason) => {
+    if (!recoveryKindBlocksClosure(kind)) {
+      return { exhausted: false, count: 0, failure: null };
+    }
+    let url;
+    try {
+      url = canonicalRecoveryUrl(rawUrl);
+    } catch {
+      return { exhausted: true, count: MAX_RECOVERY_FAILURES };
+    }
+    if (
+      !RECOVERY_KINDS.has(kind) ||
+      !isExactOriginUrl(url, targetUrl.origin) ||
+      isDangerousNavigationUrl(url)
+    ) {
+      return { exhausted: true, count: MAX_RECOVERY_FAILURES };
+    }
+    const signature = recoverySignature(kind, url);
+    const count = Math.min(
+      MAX_RECOVERY_FAILURES,
+      (recoveryFailures.get(signature)?.count ?? 0) + 1,
+    );
+    const failure = {
+      signature,
+      kind,
+      url,
+      count,
+      reason: String(reason || "retryable failure").slice(0, 300),
+    };
+    recoveryFailures.set(signature, failure);
+    return { exhausted: count >= MAX_RECOVERY_FAILURES, count, failure };
+  };
+  const clearRecoveryFailure = (kind, rawUrl) => {
+    try {
+      recoveryFailures.delete(recoverySignature(kind, rawUrl));
+    } catch {
+      // Invalid current observations cannot match a validated checkpoint row.
+    }
+  };
+  const retryPageForRequest = (request) => {
+    try {
+      const frameUrl = request.frame().url();
+      if (
+        isExactOriginUrl(frameUrl, targetUrl.origin) &&
+        !isDangerousNavigationUrl(frameUrl)
+      ) {
+        return canonicalRecoveryUrl(frameUrl);
+      }
+    } catch {
+      // Fall back to the authorized seed below.
+    }
+    return targetUrl.href;
+  };
+  const automaticRetryBlocked = () =>
+    recoveryFailureList().some((failure) => failure.count >= MAX_RECOVERY_FAILURES);
 
   const allowedRecipeScriptOrigins = new Set([targetUrl.origin]);
-  for (const script of scriptsByUrl.values()) {
-    try {
-      allowedRecipeScriptOrigins.add(new URL(script.url).origin);
-    } catch {
-      // Ignore malformed cached script URLs.
+  const recipeScriptUrls = [];
+  for (const scriptUrl of recipeScriptUrlHints) {
+    const resolved = resolveAllowedScriptUrl(
+      scriptUrl,
+      targetUrl,
+      allowedRecipeScriptOrigins,
+    );
+    if (!resolved) continue;
+    if (isDangerousNavigationUrl(resolved)) {
+      blockedReadOnlyRouteUrls.add(resolved);
+      disabledRecipeScriptUrls += 1;
+      continue;
+    }
+    recipeScriptUrls.push(resolved);
+  }
+  recipeSummary.script_urls = recipeScriptUrls.length;
+  recipeSummary.script_urls_disabled = disabledRecipeScriptUrls;
+
+  if (!automaticRetryBlocked()) {
+    for (const pendingScript of checkpointResume?.pending_recursive_scripts ?? []) {
+      enqueueScriptUrl(pendingScript.url, pendingScript.source);
+    }
+    for (const scriptUrl of recipeScriptUrls) {
+      enqueueScriptUrl(scriptUrl, targetUrl.href);
     }
   }
-  const recipeScriptUrls = recipeScriptUrlHints
-    .map((scriptUrl) =>
-      resolveAllowedScriptUrl(scriptUrl, targetUrl, allowedRecipeScriptOrigins),
-    )
-    .filter(Boolean);
-  recipeSummary.script_urls = recipeScriptUrls.length;
-
-  for (const scriptUrl of recipeScriptUrls) {
-    enqueueScriptUrl(scriptUrl, targetUrl.href);
-  }
-  if (recipePublicPath && recipeChunkPairs.length > 0) {
+  if (
+    !automaticRetryBlocked() &&
+    recipePublicPath &&
+    recipeChunkPairs.length > 0
+  ) {
     const base = resolvePublicPath(recipePublicPath, targetUrl.href);
     for (const pair of recipeChunkPairs) {
       enqueueScriptUrl(`${base}${pair.id}.${pair.hash}.js`, targetUrl.href);
@@ -1288,10 +2195,10 @@ async function main() {
         break;
       }
       try {
-        const response = await fetchWithTimeout(
+        const response = await fetchExactOrigin(
           manifestUrl,
+          targetUrl.origin,
           {
-            redirect: "follow",
             headers: {
               "user-agent":
                 "Mozilla/5.0 (compatible; GolishBrowserCollect/1.0; +https://golish.local)",
@@ -1311,9 +2218,13 @@ async function main() {
         if (body === TIMEOUT) {
           failed += 1;
           pendingBodyTimeouts += 1;
+          pendingRecoveryPages.add(targetUrl.href);
+          noteRecoveryFailure("manifest_body", manifestUrl, "manifest body-timeout");
           recordRecursiveError(manifestUrl, response.status, "manifest body-timeout");
           continue;
         }
+        clearRecoveryFailure("manifest_body", manifestUrl);
+        clearRecoveryFailure("recursive_fetch", manifestUrl);
         fetched += 1;
         for (const ref of [
           ...scanJsForReferences(body, { allowRelativeModules: true }),
@@ -1331,6 +2242,12 @@ async function main() {
         }
       } catch (error) {
         failed += 1;
+        pendingRecoveryPages.add(targetUrl.href);
+        noteRecoveryFailure(
+          "recursive_fetch",
+          manifestUrl,
+          `manifest ${String(error?.message ?? error).slice(0, 300)}`,
+        );
         recordRecursiveError(
           manifestUrl,
           null,
@@ -1350,23 +2267,7 @@ async function main() {
   });
 
   page.on("request", (request) => {
-    const type = request.resourceType();
-    if (type !== "xhr" && type !== "fetch") return;
-    const url = request.url();
-    if (restrictApisToSameOrigin && !sameOrigin(url, targetUrl.origin)) return;
-    const key = `${request.method()} ${url}`;
-    if (!apiRequestsByKey.has(key)) {
-      apiRequestsByKey.set(key, {
-        url,
-        method: request.method(),
-        resource_type: type,
-        status: null,
-      });
-      if (apiTraceCount < 80) {
-        progress("api_observed", { method: request.method(), url });
-        apiTraceCount += 1;
-      }
-    }
+    observeApiRequest(request);
   });
 
   page.on("response", (response) => {
@@ -1391,6 +2292,7 @@ async function main() {
               workspace,
               targetHost,
               targetPort,
+              targetScheme,
               entry,
               headers,
               null,
@@ -1401,22 +2303,28 @@ async function main() {
             );
             return;
           }
-          const body = await withTimeout(response.body(), timeLeft(hardDeadline, 10_000));
+          const body = await withTimeout(
+            response.body(),
+            timeLeft(hardDeadline, DEFAULT_BODY_TIMEOUT_MS),
+          );
           if (body === TIMEOUT) {
-            pendingBodyTimeouts += 1;
+            apiBodyCaptureErrors += 1;
             entry.capture_error = "body-timeout";
             return;
           }
+          clearRecoveryFailure("api_body", url);
           entry.capture_path = await saveApiResponseCapture(
             workspace,
             targetHost,
             targetPort,
+            targetScheme,
             entry,
             headers,
             body,
             { body_truncated: false },
           );
         } catch (error) {
+          apiBodyCaptureErrors += 1;
           entry.capture_error = String(error?.message ?? error).slice(0, 300);
         }
       })();
@@ -1425,9 +2333,16 @@ async function main() {
     }
 
     const scriptKey = canonicalScriptUrl(url);
-    if (!isJavaScriptResponse(url, headers) || scriptsByUrl.has(scriptKey)) return;
+    if (
+      !isExactOriginUrl(url, targetUrl.origin) ||
+      !isJavaScriptResponse(url, headers) ||
+      scriptsByUrl.has(scriptKey)
+    ) {
+      return;
+    }
     const contentLength = Number.parseInt(headers["content-length"] ?? "0", 10);
-    if (Number.isFinite(contentLength) && contentLength > maxScriptBytes) {
+    if (Number.isFinite(maxScriptBytes) && Number.isFinite(contentLength) && contentLength > maxScriptBytes) {
+      scriptByteLimitSkips += 1;
       scriptsByUrl.set(scriptKey, {
         url,
         status: response.status(),
@@ -1444,6 +2359,9 @@ async function main() {
         );
         if (body === TIMEOUT) {
           pendingBodyTimeouts += 1;
+          const retryPage = retryPageForRequest(request);
+          pendingRecoveryPages.add(retryPage);
+          noteRecoveryFailure("script_body", url, "script response body-timeout");
           scriptsByUrl.set(scriptKey, {
             url,
             status: response.status(),
@@ -1452,7 +2370,9 @@ async function main() {
           });
           return;
         }
-        if (body.length > maxScriptBytes) {
+        clearRecoveryFailure("script_body", url);
+        if (Number.isFinite(maxScriptBytes) && body.length > maxScriptBytes) {
+          scriptByteLimitSkips += 1;
           scriptsByUrl.set(scriptKey, {
             url,
             status: response.status(),
@@ -1472,6 +2392,7 @@ async function main() {
             workspace,
             targetHost,
             targetPort,
+            targetScheme,
             url,
             body,
           );
@@ -1498,6 +2419,14 @@ async function main() {
         }
       })()
       .catch((error) => {
+        scriptCaptureErrors += 1;
+        const retryPage = retryPageForRequest(request);
+        pendingRecoveryPages.add(retryPage);
+        noteRecoveryFailure(
+          "script_body",
+          url,
+          String(error?.message ?? error).slice(0, 500),
+        );
         scriptsByUrl.set(scriptKey, {
           url,
           status: response.status(),
@@ -1509,18 +2438,32 @@ async function main() {
     pending.add(task);
   });
 
-  const queue = [targetUrl.href, ...recipeRoutes];
-  const seenPages = new Set();
+  const recoveryWasExhausted = checkpointResume?.recovery_exhausted === true;
+  const blockedCheckpointPages = recoveryWasExhausted
+    ? checkpointResume.pending_pages
+    : [];
+  const initialQueue = checkpointResume
+    ? recoveryWasExhausted
+      ? []
+      : checkpointResume.pending_pages
+    : [targetUrl.href, ...recipeRoutes];
+  const queue = [...new Set(initialQueue)];
+  const queuedPages = new Set(queue);
+  const seenPages = new Set(checkpointResume?.visited_pages ?? []);
+  const pagesVisitedThisRun = [];
   let actionsClicked = 0;
+  let successfulPages = 0;
+  let pageCandidatesDropped = 0;
 
   while (
     queue.length > 0 &&
-    seenPages.size < maxPages &&
+    pagesVisitedThisRun.length < maxPages &&
     timeLeft(hardDeadline) > 0
   ) {
     const nextUrl = queue.shift();
+    queuedPages.delete(nextUrl);
     if (!nextUrl || seenPages.has(nextUrl)) continue;
-    seenPages.add(nextUrl);
+    pagesVisitedThisRun.push(nextUrl);
 
     try {
       const navTimeout = timeLeft(hardDeadline, Math.min(timeoutMs, 10_000));
@@ -1529,7 +2472,8 @@ async function main() {
         break;
       }
       progress("goto", {
-        page: seenPages.size,
+        page: pagesVisitedThisRun.length,
+        cumulative_page: seenPages.size + 1,
         queued: queue.length,
         url: nextUrl,
         timeout_ms: navTimeout,
@@ -1538,6 +2482,13 @@ async function main() {
         waitUntil: "commit",
         timeout: Math.max(1, navTimeout),
       });
+      if (!isExactOriginUrl(page.url(), targetUrl.origin)) {
+        blockedNavigationUrls.add(page.url());
+        throw new Error(`exact-origin final URL blocked: ${page.url()}`);
+      }
+      clearRecoveryFailure("navigation", nextUrl);
+      seenPages.add(nextUrl);
+      successfulPages += 1;
       const domTimeout = timeLeft(hardDeadline, 5_000);
       if (domTimeout > 0) {
         await page
@@ -1545,13 +2496,16 @@ async function main() {
           .catch(() => {});
       }
     } catch (error) {
+      const message = String(error?.message ?? error).slice(0, 500);
       navigationErrors.push({
         url: nextUrl,
-        error: String(error?.message ?? error).slice(0, 500),
+        error: message,
       });
-      if (page.url() === "about:blank") {
-        continue;
+      if (!message.includes("exact-origin")) {
+        noteRecoveryFailure("navigation", nextUrl, message);
+        pendingRecoveryPages.add(nextUrl);
       }
+      continue;
     }
 
     try {
@@ -1590,7 +2544,9 @@ async function main() {
         collectDomScriptCandidates(
           page,
           targetUrl.origin,
-          Math.max(maxRecursiveScripts, maxPages * 10, 50),
+          Number.isFinite(maxRecursiveScripts)
+            ? Math.max(maxRecursiveScripts, maxPages * 10, 50)
+            : Number.MAX_SAFE_INTEGER,
         ),
         timeLeft(hardDeadline, 3_000),
       );
@@ -1600,27 +2556,46 @@ async function main() {
         }
       }
 
-      const links = await withTimeout(
-        collectSameOriginLinks(page, targetUrl.origin, Math.max(maxPages * 3, 10)),
+      const linkResult = await withTimeout(
+        collectSameOriginLinks(page, targetUrl.origin),
         timeLeft(hardDeadline, 3_000),
       );
-      if (links === TIMEOUT) {
+      if (linkResult === TIMEOUT) {
+        const retryPage = canonicalRecoveryUrl(page.url());
         navigationErrors.push({
-          url: page.url(),
+          url: retryPage,
           error: "collect-links-timeout",
         });
+        noteRecoveryFailure(
+          "page_inspection",
+          retryPage,
+          "collect-links-timeout",
+        );
+        pendingRecoveryPages.add(retryPage);
         continue;
       }
-      for (const link of links) {
-        if (!seenPages.has(link) && queue.length + seenPages.size < maxPages) {
-          queue.push(link);
+      clearRecoveryFailure("page_inspection", page.url());
+      pageCandidatesDropped += linkResult.dropped;
+      for (const link of linkResult.links) {
+        if (seenPages.has(link) || queuedPages.has(link)) continue;
+        if (isDangerousNavigationUrl(link)) {
+          blockedReadOnlyRouteUrls.add(link);
+          continue;
         }
+        queue.push(link);
+        queuedPages.add(link);
       }
     } catch (error) {
+      const retryPage = isExactOriginUrl(page.url(), targetUrl.origin)
+        ? canonicalRecoveryUrl(page.url())
+        : nextUrl;
+      const message = String(error?.message ?? error).slice(0, 500);
       navigationErrors.push({
-        url: page.url(),
-        error: String(error?.message ?? error).slice(0, 500),
+        url: retryPage,
+        error: message,
       });
+      noteRecoveryFailure("page_inspection", retryPage, message);
+      pendingRecoveryPages.add(retryPage);
     }
   }
 
@@ -1630,25 +2605,35 @@ async function main() {
 
   const pendingResult = await withTimeout(
     Promise.allSettled([...pending]),
-    timeLeft(hardDeadline, 3_000),
+    timeLeft(hardDeadline, DEFAULT_BODY_TIMEOUT_MS),
   );
   if (pendingResult === TIMEOUT) {
     pendingWaitTimedOut = true;
+    pendingRecoveryPages.add(targetUrl.href);
+    noteRecoveryFailure(
+      "pending_wait",
+      targetUrl.href,
+      "pending response wait timed out",
+    );
     progress("pending_response_wait_timeout", { pending: pending.size });
+  } else {
+    clearRecoveryFailure("pending_wait", targetUrl.href);
   }
 
-  if (timeLeft(hardDeadline) > 0) {
+  if (!automaticRetryBlocked() && timeLeft(hardDeadline) > 0) {
     progress("fetch_manifests", { queued_recursive: recursiveQueue.length });
     await fetchManifests();
-  } else {
+  } else if (timeLeft(hardDeadline) <= 0) {
     hardDeadlineHit = true;
   }
 
-  const recursiveDeadline = Math.min(
-    hardDeadline,
-    Date.now() + Math.min(hardTimeoutMs, 180_000),
-  );
+  const recursiveDeadline = hardDeadline;
+  const recursiveRetryQueue = [];
+  const blockedCheckpointRecursive = recoveryWasExhausted
+    ? checkpointResume.pending_recursive_scripts
+    : [];
   while (
+    !automaticRetryBlocked() &&
     recursiveQueue.length > 0 &&
     recursiveScriptsDownloaded < maxRecursiveScripts &&
     Date.now() < recursiveDeadline &&
@@ -1663,10 +2648,10 @@ async function main() {
         hardDeadlineHit = true;
         break;
       }
-      const response = await fetchWithTimeout(
+      const response = await fetchExactOrigin(
         queued.url,
+        targetUrl.origin,
         {
-          redirect: "follow",
           headers: {
             "user-agent":
               "Mozilla/5.0 (compatible; GolishBrowserCollect/1.0; +https://golish.local)",
@@ -1677,9 +2662,13 @@ async function main() {
       const headers = Object.fromEntries(response.headers.entries());
       const responseKey = canonicalScriptUrl(response.url);
       if (scriptsByUrl.has(responseKey)) {
+        clearRecoveryFailure("recursive_fetch", queued.url);
+        clearRecoveryFailure("recursive_body", queued.url);
         continue;
       }
       if (!response.ok || !isJavaScriptResponse(response.url, headers)) {
+        clearRecoveryFailure("recursive_fetch", queued.url);
+        clearRecoveryFailure("recursive_body", queued.url);
         recordRecursiveError(
           queued.url,
           response.status,
@@ -1688,7 +2677,8 @@ async function main() {
         continue;
       }
       const contentLength = Number.parseInt(headers["content-length"] ?? "0", 10);
-      if (Number.isFinite(contentLength) && contentLength > maxScriptBytes) {
+      if (Number.isFinite(maxScriptBytes) && Number.isFinite(contentLength) && contentLength > maxScriptBytes) {
+        scriptByteLimitSkips += 1;
         recordRecursiveError(
           response.url,
           response.status,
@@ -1702,11 +2692,16 @@ async function main() {
       );
       if (arrayBuffer === TIMEOUT) {
         pendingBodyTimeouts += 1;
+        noteRecoveryFailure("recursive_body", queued.url, "recursive body-timeout");
+        recursiveRetryQueue.push(queued);
         recordRecursiveError(response.url, response.status, "body-timeout");
         continue;
       }
+      clearRecoveryFailure("recursive_fetch", queued.url);
+      clearRecoveryFailure("recursive_body", queued.url);
       const body = Buffer.from(arrayBuffer);
-      if (body.length > maxScriptBytes) {
+      if (Number.isFinite(maxScriptBytes) && body.length > maxScriptBytes) {
+        scriptByteLimitSkips += 1;
         recordRecursiveError(response.url, response.status, `body>${maxScriptBytes}`);
         continue;
       }
@@ -1721,6 +2716,7 @@ async function main() {
           workspace,
           targetHost,
           targetPort,
+          targetScheme,
           response.url,
           body,
         );
@@ -1749,12 +2745,28 @@ async function main() {
       }
       enqueueRefsFromScript(response.url, body);
     } catch (error) {
+      const reason = String(error?.message ?? error).slice(0, 500);
+      if (!reason.includes("exact-origin") && !reason.includes("read-only")) {
+        noteRecoveryFailure("recursive_fetch", queued.url, reason);
+        recursiveRetryQueue.push(queued);
+      }
       recordRecursiveError(
         queued.url,
         null,
-        String(error?.message ?? error).slice(0, 500),
+        reason,
       );
     }
+  }
+
+  for (const queued of [...recursiveRetryQueue, ...blockedCheckpointRecursive]) {
+    if (
+      !queued ||
+      scriptsByUrl.has(queued.key) ||
+      recursiveQueue.some((item) => item.key === queued.key)
+    ) {
+      continue;
+    }
+    recursiveQueue.push(queued);
   }
 
   if (timeLeft(hardDeadline) <= 0) {
@@ -1773,12 +2785,6 @@ async function main() {
   const scripts = [...scriptsByUrl.values()].sort((a, b) =>
     a.url.localeCompare(b.url),
   );
-  const manifestPath = await writeScriptManifest(
-    workspace,
-    targetHost,
-    targetPort,
-    scripts,
-  );
   const apiRequests = [...apiRequestsByKey.values()].sort((a, b) =>
     a.url.localeCompare(b.url),
   );
@@ -1793,6 +2799,29 @@ async function main() {
   const recursiveErrorSummary = summarizeRecursiveErrors(recursiveErrors);
   const aiReviewRefs = [...aiReviewRefsByKey.values()].slice(0, 100);
   const aiAssistReasons = [];
+  for (const pendingPage of [...pendingRecoveryPages, ...blockedCheckpointPages]) {
+    if (
+      !isExactOriginUrl(pendingPage, targetUrl.origin) ||
+      isDangerousNavigationUrl(pendingPage)
+    ) {
+      continue;
+    }
+    const canonical = canonicalRecoveryUrl(pendingPage);
+    seenPages.delete(canonical);
+    if (!queuedPages.has(canonical)) {
+      queue.push(canonical);
+      queuedPages.add(canonical);
+    }
+  }
+  const checkpointRecoveryFailures = recoveryFailureList();
+  const recoveryExhaustedCount = checkpointRecoveryFailures.filter(
+    (failure) => failure.count >= MAX_RECOVERY_FAILURES,
+  ).length;
+  const recoveryExhausted = recoveryExhaustedCount > 0;
+  const automaticRetryAllowed = !recoveryExhausted;
+  const recoveryInstruction = recoveryExhausted
+    ? "Start a new trusted producer operation or stage attempt after changing the failing transport/timeout condition; this provenance will not auto-retry again."
+    : null;
   if (scriptsSaved === 0) {
     aiAssistReasons.push("no_js_saved");
   }
@@ -1809,19 +2838,80 @@ async function main() {
     aiAssistReasons.push("relative_js_refs_need_ai_review");
   }
   const recursiveLimitHit =
-    recursiveQueue.length > 0 && recursiveScriptsDownloaded >= maxRecursiveScripts;
+    Number.isFinite(maxRecursiveScripts) &&
+    recursiveQueue.length > 0 &&
+    recursiveScriptsDownloaded >= maxRecursiveScripts;
   const recursiveDeadlineHit =
+    Number.isFinite(recursiveDeadline) &&
     recursiveQueue.length > 0 &&
     recursiveScriptsDownloaded < maxRecursiveScripts &&
     (Date.now() >= recursiveDeadline || hardDeadlineHit);
-  const closureIncompleteReasons = [];
-  if (recursiveQueue.length > 0) closureIncompleteReasons.push("recursive_queue_remaining");
-  if (recursiveLimitHit) closureIncompleteReasons.push("max_recursive_scripts_hit");
-  if (recursiveDeadlineHit) closureIncompleteReasons.push("recursive_deadline_hit");
-  if (hardDeadlineHit) closureIncompleteReasons.push("hard_deadline_hit");
-  if (pendingWaitTimedOut) closureIncompleteReasons.push("pending_wait_timed_out");
-  if (pendingBodyTimeouts > 0) closureIncompleteReasons.push("pending_body_timeouts");
-  const closureComplete = closureIncompleteReasons.length === 0;
+  const recursiveScopeViolations = recursiveErrors.filter((entry) =>
+    String(entry?.reason ?? "").includes("exact-origin"),
+  ).length;
+  const scopeViolationCount =
+    blockedNavigationUrls.size +
+    recursiveScopeViolations;
+  // Foreign subresources/WebSockets successfully aborted before request are a
+  // completed scope decision, not unfinished in-origin work. Keep them visible
+  // as exclusions without making every CDN/analytics-using page permanently
+  // partial. Main-navigation/explicit recursive escape attempts remain real
+  // closure violations.
+  const scopeExclusionCount =
+    blockedSubresourceUrls.size +
+    blockedWebSocketUrls.size +
+    blockedReadOnlyRequests.size +
+    blockedReadOnlyRouteUrls.size +
+    terminalCrossOriginRedirects.size;
+  const completion = classifyCollectionCompletion({
+    navigation_attempts: pagesVisitedThisRun.length,
+    successful_pages: successfulPages,
+    navigation_errors: navigationErrors.length,
+    page_queue_remaining: queue.length,
+    page_candidates_dropped: pageCandidatesDropped,
+    recursive_queue_remaining: recursiveQueue.length,
+    recursive_limit_hit: recursiveLimitHit,
+    recursive_deadline_hit: recursiveDeadlineHit,
+    hard_deadline_hit: hardDeadlineHit,
+    pending_wait_timed_out: pendingWaitTimedOut,
+    pending_body_timeouts: pendingBodyTimeouts,
+    script_byte_limit_skips: scriptByteLimitSkips,
+    script_capture_errors: scriptCaptureErrors,
+    scope_violations: scopeViolationCount,
+    recovery_pending: checkpointRecoveryFailures.length,
+    recovery_exhausted: recoveryExhaustedCount,
+  });
+  const closureIncompleteReasons = completion.reasons;
+  const closureComplete = completion.closure_complete;
+  const status = completion.status;
+  const manifestPath = await writeScriptManifest(
+    workspace,
+    targetHost,
+    targetPort,
+    targetScheme,
+    scripts,
+    completion,
+    {
+      run_id: producerRunId,
+      session_id: producerSessionId,
+      operation_id: producerOperationId,
+      stage_started_at: producerStageStartedAt,
+    },
+    {
+      visited_pages: [...seenPages],
+      pending_pages: [...queue],
+      pending_recursive_scripts: recursiveQueue.map(({ url, source }) => ({
+        url,
+        source,
+      })),
+      api_requests: apiRequests,
+      page_resume_count: checkpointResume?.page_resume_count ?? 0,
+      checkpoint_resume_count: checkpointResume?.checkpoint_resume_count ?? 0,
+      recovery_failures: checkpointRecoveryFailures,
+      recovery_exhausted: recoveryExhausted,
+      automatic_retry_allowed: automaticRetryAllowed,
+    },
+  );
   if (!closureComplete) {
     aiAssistReasons.push("js_closure_incomplete");
   }
@@ -1834,12 +2924,16 @@ async function main() {
   ) {
     aiAssistReasons.push("timeout_partial_collection");
   }
+  if (recoveryExhausted) {
+    aiAssistReasons.push("recovery_exhausted");
+  }
   const aiAssist = includeAiAssist
     ? {
-        recommended: aiAssistReasons.length > 0,
+        recommended: !recoveryExhausted && aiAssistReasons.length > 0,
         reasons: aiAssistReasons,
-        next_step:
-          "If recommended, inspect context and call browser_collect_js_api again with a bounded recipe. Do not report endpoints from inference alone; only persisted files/network observations count.",
+        next_step: recoveryExhausted
+          ? recoveryInstruction
+          : "If recommended, inspect context and call browser_collect_js_api again with a bounded recipe. Do not report endpoints from inference alone; only persisted files/network observations count.",
         recipe_schema: recipeSchema(),
         recipe_applied: recipeSummary,
         context: {
@@ -1858,6 +2952,15 @@ async function main() {
             recursive_errors_by_status: recursiveErrorSummary.by_status,
             ai_review_refs: aiReviewRefsByKey.size,
             pages_visited: seenPages.size,
+            pages_visited_this_run: pagesVisitedThisRun.length,
+            successful_pages: successfulPages,
+            page_queue_remaining: queue.length,
+            page_candidates_dropped: pageCandidatesDropped,
+            script_byte_limit_skips: scriptByteLimitSkips,
+            scope_violations: scopeViolationCount,
+            scope_exclusions: scopeExclusionCount,
+            recovery_exhausted: recoveryExhaustedCount,
+            automatic_retry_allowed: automaticRetryAllowed,
           },
           recursive_errors_sample: recursiveErrorSummary.sample,
           script_observations: scriptObservations,
@@ -1868,14 +2971,6 @@ async function main() {
         },
       }
     : null;
-  const status =
-    hardDeadlineHit ||
-    pendingWaitTimedOut ||
-    pendingBodyTimeouts > 0
-      ? "timeout_partial"
-      : !closureComplete
-        ? "closure_partial"
-      : "ok";
 
   progress("summary", {
     status,
@@ -1885,21 +2980,64 @@ async function main() {
     api_requests: apiRequests.length,
     recursive_errors: recursiveErrors.length,
     closure_complete: closureComplete,
+    completion_state: completion.completion_state,
   });
 
   await writeJsonAndExit({
         status,
+        completion_state: completion.completion_state,
         target_url: targetUrl.href,
+        producer_run_id: producerRunId,
+        producer_session_id: producerSessionId,
+        producer_operation_id: producerOperationId,
+        producer_stage_started_at: producerStageStartedAt,
+        checkpoint_version: 2,
+        checkpoint_resume_applied: Boolean(checkpointResume),
+        checkpoint_resume_count: checkpointResume?.checkpoint_resume_count ?? 0,
+        automatic_retry_allowed: automaticRetryAllowed,
+        recovery_exhausted: recoveryExhausted,
+        recovery_instruction: recoveryInstruction,
+        recovery_failures: checkpointRecoveryFailures,
         crawl_mode: crawlMode,
-        hard_timeout_ms: hardTimeoutMs,
+        hard_timeout_ms: limitForJson(hardTimeoutMs),
         hard_deadline_hit: hardDeadlineHit,
         pending_body_timeouts: pendingBodyTimeouts,
+        api_body_capture_errors: apiBodyCaptureErrors,
         pending_wait_timed_out: pendingWaitTimedOut,
         context_close_timed_out: contextCloseTimedOut,
         browser_close_timed_out: browserCloseTimedOut,
         block_noise: blockNoise,
+        same_origin: restrictApisToSameOrigin,
+        requested_same_origin: requestedSameOrigin,
         blocked_resource_requests: blockedResourceRequests,
+        blocked_navigation_urls: [...blockedNavigationUrls].slice(0, 20),
+        terminal_cross_origin_redirects: [...terminalCrossOriginRedirects.values()].slice(0, 20),
+        blocked_subresource_urls: [...blockedSubresourceUrls].slice(0, 40),
+        blocked_websocket_urls: [...blockedWebSocketUrls].slice(0, 20),
+        service_workers: "block",
+        read_only_enumeration: true,
+        interactive_actions_authorized: false,
+        requested_max_actions: requestedMaxActions,
+        max_actions: maxActions,
+        disabled_recipe_click_texts: requestedRecipeClickTexts.length,
+        disabled_recipe_manifest_paths: disabledRecipeManifestPaths,
+        disabled_recipe_script_urls: disabledRecipeScriptUrls,
+        blocked_read_only_requests: [...blockedReadOnlyRequests].slice(0, 40),
+        blocked_read_only_routes: [...blockedReadOnlyRouteUrls].slice(0, 40),
+        scope_violations: scopeViolationCount,
+        scope_exclusions: scopeExclusionCount,
         pages_visited: [...seenPages],
+        pages_visited_this_run: pagesVisitedThisRun,
+        page_resume_applied: Boolean(
+          checkpointResume &&
+            checkpointResume.pending_pages.length > 0 &&
+            !recoveryWasExhausted,
+        ),
+        page_resume_count: checkpointResume?.page_resume_count ?? 0,
+        page_resume_prior_visited: checkpointResume?.visited_pages.length ?? 0,
+        successful_pages: successfulPages,
+        page_queue_remaining: queue.length,
+        page_candidates_dropped: pageCandidatesDropped,
         actions_clicked: actionsClicked,
         scripts_total: scriptsObserved,
         scripts_observed: scriptsObserved,
@@ -1910,8 +3048,18 @@ async function main() {
         scripts_duplicate_content_hits: duplicateContentHits,
         script_manifest: path.relative(workspace, manifestPath),
         script_manifest_stale_entries: manifestCache.stale,
+        script_byte_limit_skips: scriptByteLimitSkips,
+        script_capture_errors: scriptCaptureErrors,
         scripts_recursive_downloaded: recursiveScriptsDownloaded,
-        max_recursive_scripts: maxRecursiveScripts,
+        max_script_bytes: limitForJson(maxScriptBytes),
+        max_recursive_scripts: limitForJson(maxRecursiveScripts),
+        recursive_resume_applied: Boolean(
+          checkpointResume &&
+            checkpointResume.pending_recursive_scripts.length > 0 &&
+            !recoveryWasExhausted,
+        ),
+        recursive_resume_prior_pending:
+          checkpointResume?.pending_recursive_scripts.length ?? 0,
         recursive_queue_remaining: recursiveQueue.length,
         recursive_deadline_hit: recursiveDeadlineHit,
         recursive_limit_hit: recursiveLimitHit,
@@ -1931,18 +3079,19 @@ async function main() {
         api_requests: apiRequests,
         console_errors: consoleErrors.slice(0, 20),
         navigation_errors: navigationErrors,
-        output_dir: path.join(
-          workspace,
-          ".golish",
-          "captures",
-          targetHost,
-          String(targetPort),
-          "js",
-        ),
+        output_dir: captureDirectoryFor(workspace, targetUrl, "js"),
       });
 }
 
-main().catch((error) => {
-  process.stderr.write(`${String(error?.stack ?? error)}\n`);
-  process.exit(1);
-});
+function matchesSafeNavigationMethod(method) {
+  return method === "GET" || method === "HEAD";
+}
+
+const invokedDirectly =
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) {
+  main().catch((error) => {
+    process.stderr.write(`${String(error?.stack ?? error)}\n`);
+    process.exit(1);
+  });
+}

@@ -16,7 +16,7 @@ pub mod sitemap;
 pub mod targets;
 
 pub use assets::{PgReconAssetsAdapter, ReconAssetsPort};
-pub use directory::{PgReconDirectoryAdapter, ReconDirectoryPort};
+pub use directory::{ConditionalDirectoryEntryWrite, PgReconDirectoryAdapter, ReconDirectoryPort};
 pub use scans::{PgReconScansAdapter, ReconPassiveScanGlobal, ReconScansPort};
 pub use sitemap::{PgReconSitemapAdapter, ReconSitemapPort};
 pub use targets::{PgReconTargetsAdapter, ReconTargetsPort};

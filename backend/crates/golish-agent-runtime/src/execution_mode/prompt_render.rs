@@ -220,12 +220,8 @@ const BRIDGE_ROWS: &[ToolRow] = &[
         purpose: "Open a SPA/lazy-loaded page in a browser, save loaded JS chunks, observe XHR/fetch API calls, and return closure/AI-assist signals.",
     },
     ToolRow {
-        name: "js_collect",
-        purpose: "Crawl HTML / inline scripts / build manifests of a target and download all JS chunks into `.golish/captures/<host>/<port>/js/`.",
-    },
-    ToolRow {
         name: "js_extract_apis",
-        purpose: "Static-analyse the JS captured by `js_collect` to enumerate REST/GraphQL endpoints + secrets.",
+        purpose: "Static-analyse JS captured by `browser_collect_js_api` to enumerate REST/GraphQL endpoints + secrets.",
     },
     ToolRow {
         name: "auth_probe",

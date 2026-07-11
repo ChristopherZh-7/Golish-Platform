@@ -37,7 +37,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-db | PostgreSQL 持久化层（嵌入式 PG + pgvector + repo CRUD） | [→](backend/golish-db.md) | ✅ |
+| golish-db | PostgreSQL 持久化层（嵌入式 PG + scoped/atomic repo CRUD + current-owner evidence reads + attempt-generation CAS + terminal outcome/checkpoint atomic publish） | [→](backend/golish-db.md) | ✅ |
 | golish-graphiti | PG 图知识库（pentest 发现的实体/关系图） | [→](backend/golish-graphiti.md) | ✅ |
 | golish-indexer | 代码索引基座（IndexerBackend + vtcode 后端 + git 工具） | [→](backend/golish-indexer.md) | ✅ |
 | golish-artifacts | 自动维护项目文档提案（README/CLAUDE，未集成） | [→](backend/golish-artifacts.md) | ✅ |
@@ -59,7 +59,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| **golish-tools** | agent 工具执行系统（ToolRegistry + 文件/目录/shell/AST/联网工具） | [→](backend/golish-tools.md) | ✅ |
+| **golish-tools** | agent 工具执行系统（ToolRegistry + 文件/目录/shell/AST/联网/可信 Enumeration preflight schema） | [→](backend/golish-tools.md) | ✅ |
 | golish-tools / file_ops | 文件读写增删改 5 工具，经沙箱校验 | [→](backend/golish-tools/file_ops.md) | ✅ |
 | golish-tools / directory_ops | list_files / list_directory / grep_file | [→](backend/golish-tools/directory_ops.md) | ✅ |
 | golish-tools / ast_grep | 结构化代码搜索与替换 | [→](backend/golish-tools/ast_grep.md) | ✅ |
@@ -67,7 +67,7 @@
 | golish-web | Web 搜索与内容抓取（Tavily/Brave + 抓取），封装成 agent 工具 | [→](backend/golish-web.md) | ✅ |
 | golish-integrations | schema 驱动的外部服务凭据管理（FOFA/Quake/Hunter/Shodan/0.zone/ENScan/GitHub） | [→](backend/golish-integrations.md) | ✅ |
 | golish-intel-providers | ASM/威胁情报 provider 抽象（0.zone/FOFA/Quake/Hunter/Shodan） | [→](backend/golish-intel-providers.md) | ✅ |
-| golish-mcp | MCP 客户端集成（加载配置+信任、rmcp 管理 client、外部工具转 Golish 工具） | [→](backend/golish-mcp.md) | ✅ |
+| golish-mcp | MCP 客户端集成（fail-closed 项目信任 + canonical builtin 来源、rmcp client、工具转换） | [→](backend/golish-mcp.md) | ✅ |
 | golish-js-analyzer | JS bundle 静态分析（抽取 API 端点调用点，省 LLM token） | [→](backend/golish-js-analyzer.md) | ✅ |
 | golish-auth-probe | API 授权探测（消费 js-analyzer 端点，跑匿名/IDOR/越权 3 轮检测） | [→](backend/golish-auth-probe.md) | ✅ |
 
@@ -75,31 +75,31 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-pentest-domain | pentest 领域层（纯类型/业务规则/I/O 边界 trait，无 I/O 依赖） | [→](backend/golish-pentest-domain.md) | ✅ |
-| golish-pentest | pentest 工具执行引擎 + 证据账本（evidence ledger） | [→](backend/golish-pentest.md) | ✅ |
+| golish-pentest-domain | pentest 领域层（纯类型/业务规则、共享 confirmed-target Web Origin identity、I/O 边界 trait） | [→](backend/golish-pentest-domain.md) | ✅ |
+| golish-pentest | pentest 工具执行引擎 + scoped output landing + producer-org guarded 证据账本 | [→](backend/golish-pentest.md) | ✅ |
 | golish-pentest-mcp | MCP server 二进制（把 pentest 工具作为 MCP 工具暴露） | [→](backend/golish-pentest-mcp.md) | ✅ |
 | golish-vuln-intel-domain | 漏洞情报领域层（纯类型 + I/O 边界 trait，无 I/O 依赖） | [→](backend/golish-vuln-intel-domain.md) | ✅ |
 | golish-vuln-intel | 漏洞情报引擎（NVD/CISA/RSS 摄取 + GitHub PoC + Nuclei 发现） | [→](backend/golish-vuln-intel.md) | ✅ |
-| golish-scan-runner | 扫描器调度（WhatWeb 指纹 + Nuclei 定向 + feroxbuster 目录爆破） | [→](backend/golish-scan-runner.md) | ✅ |
+| golish-scan-runner | guarded 扫描器调度（current-owner/exact-origin launch + WhatWeb/Nuclei/ferox guarded landing） | [→](backend/golish-scan-runner.md) | ✅ |
 | golish-projects | 项目配置存储 + `{project}/.golish/` 文件目录管理（无 Tauri 依赖） | [→](backend/golish-projects.md) | ✅ |
 
 ### Agent
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-agent-kit | agent runtime 底层构件（L4a：工具执行/loop detection/编排/HITL/policy/planner/harness gate） | [→](backend/golish-agent-kit.md) | ✅ |
-| golish-agent-runtime | 高层 agent runtime（L4b：流式 run_agentic_loop + 压缩 + evals） | [→](backend/golish-agent-runtime.md) | ✅ |
-| golish-agent-bridge | app↔runtime 桥接层（AgentBridge + bridge_* + bridge_executor） | [→](backend/golish-agent-bridge.md) | ✅ |
-| golish-sub-agents | sub-agent 系统（定义/registry/发现/执行器，MAX_AGENT_DEPTH 防失控） | [→](backend/golish-sub-agents.md) | ✅ |
+| golish-agent-kit | agent runtime 底层构件（guarded harness gate + exact-origin worklist + bounded recovery projection） | [→](backend/golish-agent-kit.md) | ✅ |
+| golish-agent-runtime | 高层 agent runtime（L4b：流式 run_agentic_loop + 压缩 + evals + request-scoped stage retry breaker + context-limit fail-stop + Enumeration bounded capacity continuation + structured/legacy worker chain identity wiring + failed-dispatch truth） | [→](backend/golish-agent-runtime.md) | ✅ |
+| golish-agent-bridge | app↔runtime 桥接层（stable generation owner + cancel epoch + abort-safe history/background-note handoff + DB chain session injection） | [→](backend/golish-agent-bridge.md) | ✅ |
+| golish-sub-agents | sub-agent 系统（定义/registry/执行器 + initial/atomic checkpoint addressability + provider-budgeted exact-chain replay + typed context-limit failure + full-data guards + bounded recovery projection） | [→](backend/golish-sub-agents.md) | ✅ |
 
 ### App 层（Tauri command facades）
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-app-core | 应用边界共享类型（L5：GolishError/DbState/ports/scoping/runtime） | [→](backend/golish-app-core.md) | ✅ |
-| golish-agent-app | agent 服务命令面（AiState/AgentState + ai/ 命令 + conversation_store） | [→](backend/golish-agent-app.md) | ✅ |
-| golish-pentest-app | pentest 服务命令面（工具管理/findings/methodology/evidence/AI 工具桥） | [→](backend/golish-pentest-app.md) | ✅ |
-| golish-recon-app | recon 服务命令面（targets/资产情报/组织/扫描队列/intel/capture） | [→](backend/golish-recon-app.md) | ✅ |
+| golish-app-core | 应用边界共享类型（L5：GolishError/DbState/scoping/runtime + generation-guarded recon ports + exactly-once pump-drained job terminal） | [→](backend/golish-app-core.md) | ✅ |
+| golish-agent-app | agent 服务命令面（stable lifecycle/listener handoff + shared-origin fresh read model + scoped durable-chain DB adapter） | [→](backend/golish-agent-app.md) | ✅ |
+| golish-pentest-app | pentest 服务命令面（AI 工具桥 + exact-origin producer binding + scope-classified JS endpoints + v8 finite route recovery + guarded evidence publish） | [→](backend/golish-pentest-app.md) | ✅ |
+| golish-recon-app | recon 服务命令面（targets/current-owner directory/资产情报/组织/扫描队列/intel/capture） | [→](backend/golish-recon-app.md) | ✅ |
 | golish-vuln-app | vuln-intel 服务命令面（feed/搜索/匹配/PoC·Nuclei 富化 + wiki） | [→](backend/golish-vuln-app.md) | ✅ |
 | golish-platform-app | platform 服务命令面（vault/audit/notes/recordings） | [→](backend/golish-platform-app.md) | ✅ |
 
@@ -108,7 +108,7 @@
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
 | golish | 组合根 + Tauri 桌面应用（apex：bootstrap + AppState + ~300 命令 + CLI） | [→](backend/golish.md) | ✅ |
-| golish / stage_run | headless 单/区间阶段实跑器（真后端 + 真 LLM + 可选临时 DB smoke） | [→](backend/golish/stage_run.md) | ✅ |
+| golish / stage_run | headless 单/区间阶段实跑 + exact session/task/chain recovery（含孤儿 claim 与首 stage checkpoint repair） | [→](backend/golish/stage_run.md) | ✅ |
 | rig-anthropic-vertex | rig fork：Claude on Vertex AI（CompletionModel + GCP 认证 + server tools） | [→](backend/rig-anthropic-vertex.md) | ✅ |
 | rig-gemini-vertex | rig fork：Gemini on Vertex AI（CompletionModel + GCP 认证 + 流式） | [→](backend/rig-gemini-vertex.md) | ✅ |
 | rig-openai-responses | rig fork：OpenAI Responses API（显式 reasoning 事件，o1/o3/gpt-5.x） | [→](backend/rig-openai-responses.md) | ✅ |
@@ -123,7 +123,7 @@
 | lib | 非-UI 基础设施（api 客户端/generated ts-rs/events/ai/pentest 等） | [→](frontend/lib.md) | ✅ |
 | pages | 独立页面（ComponentTestbed；主 shell 在 App.tsx） | [→](frontend/pages.md) | ✅ |
 | services | 事件服务（ai-events 处理器注册表 + terminal-events） | [→](frontend/services.md) | ✅ |
-| store | Zustand 全局 store（12 slice + selectors + types） | [→](frontend/store.md) | ✅ |
+| store | Zustand 全局 store（12 slice + selectors + types；backend-first atomic conversation clear） | [→](frontend/store.md) | ✅ |
 | styles | 终端/xterm 特化 CSS（通用走 Tailwind 4） | [→](frontend/styles.md) | ✅ |
 
 ---

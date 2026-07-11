@@ -37,6 +37,21 @@ impl SessionCaptureBackend for SidecarCaptureBackend {
         })
     }
 
+    fn resume_session(&self, session_id: &str) -> anyhow::Result<()> {
+        self.state.resume_session(session_id).map(|_| ())
+    }
+
+    async fn find_matching_session(
+        &self,
+        workspace_path: &std::path::Path,
+        started_at: chrono::DateTime<chrono::Utc>,
+        tolerance_secs: Option<i64>,
+    ) -> anyhow::Result<Option<String>> {
+        self.state
+            .find_matching_session(workspace_path, started_at, tolerance_secs)
+            .await
+    }
+
     fn capture_user_prompt(&self, session_id: &str, text: &str) {
         self.state
             .capture(SessionEvent::user_prompt(session_id.to_string(), text));

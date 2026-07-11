@@ -5,10 +5,13 @@ use std::collections::HashMap;
 use golish_core::EventEmitterHandle;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use uuid::Uuid;
 
+use crate::authorization::{
+    after_successful_validation, url_has_authorized_origin, AuthorizedScanTarget,
+};
 use crate::helpers::{
-    audit_scan_completed, audit_scan_failed, audit_scan_started, emit_progress, which_tool,
+    audit_scan_completed, audit_scan_failed, audit_scan_started, emit_progress,
+    scanner_process_succeeded, which_tool,
 };
 use crate::types::ScanResult;
 
@@ -31,11 +34,10 @@ struct WhatWebResult {
 async fn parse_whatweb_and_store(
     pool: &PgPool,
     json_output: &str,
-    target_id: Uuid,
-    project_path: Option<&str>,
+    authorization: &AuthorizedScanTarget,
 ) -> (u32, Vec<String>) {
-    let mut stored = 0u32;
     let mut errors = Vec::new();
+    let mut writes = Vec::new();
 
     let results: Vec<WhatWebResult> = match serde_json::from_str(json_output) {
         Ok(v) => v,
@@ -46,6 +48,16 @@ async fn parse_whatweb_and_store(
     };
 
     for result in &results {
+        let Some(result_target) = result.target.as_deref() else {
+            errors.push("WhatWeb result omitted its target URL".to_string());
+            continue;
+        };
+        if !url_has_authorized_origin(authorization, result_target) {
+            errors.push(format!(
+                "WhatWeb result escaped the authorized exact origin: {result_target}"
+            ));
+            continue;
+        }
         for (plugin_name, value) in &result.plugins {
             let name_lower = plugin_name.to_lowercase();
             if name_lower == "httpserver" || name_lower == "http-server" {
@@ -61,28 +73,27 @@ async fn parse_whatweb_and_store(
                 "target": result.target,
             });
 
-            if let Err(e) = golish_db::repo::fingerprints::upsert(
-                pool,
-                target_id,
-                project_path,
-                &category,
-                plugin_name,
-                version.as_deref(),
+            writes.push(golish_db::repo::fingerprints::FingerprintWrite {
+                category,
+                name: plugin_name.clone(),
+                version,
                 confidence,
-                &evidence,
-                None,
-                "whatweb",
-            )
-            .await
-            {
-                errors.push(format!("Failed to store {}: {}", plugin_name, e));
-            } else {
-                stored += 1;
-            }
+                evidence,
+                cpe: None,
+                source: "whatweb".to_string(),
+            });
         }
     }
 
-    (stored, errors)
+    match golish_db::repo::fingerprints::upsert_batch_guarded(pool, &authorization.guard, &writes)
+        .await
+    {
+        Ok(rows) => (rows.len() as u32, errors),
+        Err(error) => {
+            errors.push(format!("Failed guarded WhatWeb landing: {error}"));
+            (0, errors)
+        }
+    }
 }
 
 fn infer_whatweb_category(plugin_name: &str) -> String {
@@ -184,47 +195,47 @@ fn extract_whatweb_version_confidence(value: &serde_json::Value) -> (Option<Stri
 pub async fn run_whatweb(
     pool: &PgPool,
     emitter: Option<&EventEmitterHandle>,
-    target_url: &str,
-    target_id: Uuid,
-    project_path: Option<&str>,
+    authorization: &AuthorizedScanTarget,
     options: Option<WhatWebOptions>,
 ) -> crate::ScanRunnerResult<ScanResult> {
     let start = std::time::Instant::now();
+    let target_url = authorization.requested_url.as_str();
+    let project_path = authorization.guard.project_path.as_str();
 
-    let parent_audit_id = audit_scan_started(
-        pool,
-        "whatweb_scan_started",
-        target_id,
-        "whatweb",
-        target_url,
-        serde_json::json!({
-            "project_path": project_path,
-        }),
-    )
-    .await;
+    let opts = options.unwrap_or(WhatWebOptions {
+        aggression: None,
+        plugins: None,
+        user_agent: None,
+        proxy: None,
+        extra_args: None,
+    });
+    validate_whatweb_options(&opts)?;
 
     let whatweb_path = match which_tool("whatweb").await {
         Some(p) => p,
         None => {
-            audit_scan_failed(
-                pool,
-                parent_audit_id,
-                "whatweb_scan_failed",
-                target_id,
-                "whatweb",
-                "WhatWeb not installed",
-                serde_json::json!({
-                    "target_url": target_url,
-                    "duration_ms": start.elapsed().as_millis() as u64,
-                }),
-            )
-            .await;
             return Err(crate::ScanRunnerError::WhatWeb(
                 "WhatWeb not found. Install via: brew install whatweb or gem install whatweb"
                     .into(),
             ));
         }
     };
+
+    let args = build_whatweb_args(target_url, &opts);
+
+    golish_db::repo::scoped::validate_target_write_guard(pool, &authorization.guard).await?;
+    let parent_audit_id = audit_scan_started(
+        pool,
+        &authorization.guard,
+        "whatweb_scan_started",
+        "whatweb",
+        target_url,
+        serde_json::json!({
+            "project_path": project_path,
+            "exact_origin": authorization.exact_origin,
+        }),
+    )
+    .await?;
 
     emit_progress(
         emitter,
@@ -235,52 +246,30 @@ pub async fn run_whatweb(
         &format!("Scanning {}", target_url),
     );
 
-    let opts = options.unwrap_or(WhatWebOptions {
-        aggression: None,
-        plugins: None,
-        user_agent: None,
-        proxy: None,
-        extra_args: None,
-    });
-
-    let mut args = vec![
-        "--color=never".to_string(),
-        "--log-json=-".to_string(),
-        "--quiet".to_string(),
-    ];
-
-    if let Some(agg) = opts.aggression {
-        args.push(format!("--aggression={}", agg.clamp(1, 4)));
-    }
-    if let Some(ref plugins) = opts.plugins {
-        if !plugins.is_empty() {
-            args.push(format!("--plugins={}", plugins.join(",")));
-        }
-    }
-    if let Some(ref ua) = opts.user_agent {
-        args.push(format!("--user-agent={}", ua));
-    }
-    if let Some(ref proxy) = opts.proxy {
-        args.push(format!("--proxy={}", proxy));
-    }
-    if let Some(ref extra) = opts.extra_args {
-        args.extend(extra.iter().cloned());
-    }
-    args.push(target_url.to_string());
-
-    let output = match tokio::process::Command::new(&whatweb_path)
-        .args(&args)
-        .output()
-        .await
+    let output = match after_successful_validation(
+        async {
+            golish_db::repo::scoped::validate_target_write_guard(pool, &authorization.guard)
+                .await
+                .map_err(crate::ScanRunnerError::from)
+        },
+        || async {
+            tokio::process::Command::new(&whatweb_path)
+                .args(&args)
+                .output()
+                .await
+                .map_err(crate::ScanRunnerError::from)
+        },
+    )
+    .await
     {
         Ok(o) => o,
         Err(e) => {
             let msg = format!("WhatWeb execution failed: {}", e);
-            audit_scan_failed(
+            let _ = audit_scan_failed(
                 pool,
+                &authorization.guard,
                 parent_audit_id,
                 "whatweb_scan_failed",
-                target_id,
                 "whatweb",
                 &msg,
                 serde_json::json!({
@@ -296,13 +285,17 @@ pub async fn run_whatweb(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    if stdout.trim().is_empty() {
-        let msg = format!("WhatWeb returned no output. stderr: {}", stderr.trim());
-        audit_scan_failed(
+    if !scanner_process_succeeded(output.status, &stderr) || stdout.trim().is_empty() {
+        let msg = format!(
+            "WhatWeb did not complete successfully (status={}): {}",
+            output.status,
+            stderr.trim()
+        );
+        let _ = audit_scan_failed(
             pool,
+            &authorization.guard,
             parent_audit_id,
             "whatweb_scan_failed",
-            target_id,
             "whatweb",
             &msg,
             serde_json::json!({
@@ -316,7 +309,7 @@ pub async fn run_whatweb(
 
     emit_progress(emitter, "whatweb", "parsing", 1, 2, "Parsing results...");
 
-    let (stored, errors) = parse_whatweb_and_store(pool, &stdout, target_id, project_path).await;
+    let (stored, errors) = parse_whatweb_and_store(pool, &stdout, authorization).await;
 
     emit_progress(
         emitter,
@@ -339,9 +332,9 @@ pub async fn run_whatweb(
 
     audit_scan_completed(
         pool,
+        &authorization.guard,
         parent_audit_id,
         "whatweb_scan_completed",
-        target_id,
         "whatweb",
         &format!("WhatWeb scan on {}: {} techs found", target_url, stored),
         serde_json::json!({
@@ -353,7 +346,124 @@ pub async fn run_whatweb(
             "duration_ms": duration_ms,
         }),
     )
-    .await;
+    .await?;
 
     Ok(result)
+}
+
+fn build_whatweb_args(target_url: &str, options: &WhatWebOptions) -> Vec<String> {
+    let mut args = vec![
+        "--color=never".to_string(),
+        "--log-json=-".to_string(),
+        "--quiet".to_string(),
+        // WhatWeb defaults to following redirects across sites.  Active scan
+        // authorization is one exact Web Origin, so redirects must be disabled
+        // in the fixed recipe rather than filtered only after the request.
+        "--follow-redirect=never".to_string(),
+        "--max-redirects=0".to_string(),
+    ];
+
+    if let Some(aggression) = options.aggression {
+        args.push(format!("--aggression={}", aggression.clamp(1, 4)));
+    }
+    if let Some(plugins) = &options.plugins {
+        if !plugins.is_empty() {
+            args.push(format!("--plugins={}", plugins.join(",")));
+        }
+    }
+    if let Some(user_agent) = &options.user_agent {
+        args.push(format!("--user-agent={user_agent}"));
+    }
+    args.push(target_url.to_string());
+    args
+}
+
+fn validate_whatweb_options(options: &WhatWebOptions) -> crate::ScanRunnerResult<()> {
+    if options
+        .proxy
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(crate::ScanRunnerError::WhatWeb(
+            "caller-supplied proxy is disabled for authorized scans; use platform settings"
+                .to_string(),
+        ));
+    }
+    if options
+        .extra_args
+        .as_ref()
+        .is_some_and(|args| !args.is_empty())
+    {
+        return Err(crate::ScanRunnerError::WhatWeb(
+            "caller-supplied WhatWeb extra_args are disabled because they can override target/input/output/proxy controls"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    #[test]
+    fn caller_cannot_override_whatweb_target_or_proxy_surface() {
+        let options = WhatWebOptions {
+            aggression: Some(1),
+            plugins: None,
+            user_agent: None,
+            proxy: Some("http://127.0.0.1:8080".to_string()),
+            extra_args: None,
+        };
+        assert!(validate_whatweb_options(&options).is_err());
+
+        let options = WhatWebOptions {
+            proxy: None,
+            extra_args: Some(vec!["--input-file=/tmp/foreign".to_string()]),
+            ..options
+        };
+        assert!(validate_whatweb_options(&options).is_err());
+    }
+
+    #[tokio::test]
+    async fn fake_launch_receives_one_non_redirecting_whatweb_recipe() {
+        let options = WhatWebOptions {
+            aggression: Some(1),
+            plugins: Some(vec!["HTTPServer".to_string()]),
+            user_agent: None,
+            proxy: None,
+            extra_args: None,
+        };
+        validate_whatweb_options(&options).unwrap();
+        let args = build_whatweb_args("https://app.example/", &options);
+        let launches = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let captured = Arc::clone(&launches);
+
+        after_successful_validation(async { Ok::<(), &'static str>(()) }, move || async move {
+            captured.lock().unwrap().push(args);
+            Ok::<(), &'static str>(())
+        })
+        .await
+        .unwrap();
+
+        let launched = launches.lock().unwrap();
+        assert_eq!(launched.len(), 1);
+        assert_eq!(
+            launched[0]
+                .iter()
+                .filter(|arg| arg.as_str() == "--follow-redirect=never")
+                .count(),
+            1
+        );
+        assert_eq!(
+            launched[0]
+                .iter()
+                .filter(|arg| arg.as_str() == "--max-redirects=0")
+                .count(),
+            1
+        );
+        assert_eq!(launched[0].last().unwrap(), "https://app.example/");
+    }
 }

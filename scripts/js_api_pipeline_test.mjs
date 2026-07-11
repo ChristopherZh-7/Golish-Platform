@@ -62,8 +62,9 @@ function defaultWorkspaceFor(url) {
 
 function captureJsDir(workspace, url) {
   const parsed = new URL(url);
+  const scheme = parsed.protocol.replace(/:$/, "");
   const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
-  return path.join(workspace, ".golish", "captures", parsed.hostname, port, "js");
+  return path.join(workspace, ".golish", "captures", parsed.hostname, port, scheme, "js");
 }
 
 function runJsonCommand(command, commandArgs, options = {}) {
@@ -92,7 +93,6 @@ function runJsonCommand(command, commandArgs, options = {}) {
 }
 
 function runBrowserCollect(url, workspace, args) {
-  const fullClosure = String(args.closure || "bounded").toLowerCase() === "full";
   const commandArgs = [
     BROWSER_COLLECTOR,
     "--url",
@@ -109,7 +109,7 @@ function runBrowserCollect(url, workspace, args) {
     String(
       toInt(
         args.max_recursive_scripts,
-        1_000,
+        0,
         0,
         10_000,
       ),
@@ -120,8 +120,8 @@ function runBrowserCollect(url, workspace, args) {
     String(
       toInt(
         args.hard_timeout_ms,
-        fullClosure ? 240_000 : 120_000,
-        10_000,
+        0,
+        0,
         600_000,
       ),
     ),

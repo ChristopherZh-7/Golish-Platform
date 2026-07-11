@@ -22,7 +22,7 @@ agent 服务的命令面与运行时状态宿主。`AiState` 持有 per-session 
 
 | 符号 | 说明 |
 |---|---|
-| `AiState` | per-session agent bridges 运行时状态 |
+| `AiState` | per-session agent bridges + stable session request slots/generation/lifecycle 运行时状态 |
 | `AgentState` | agent 命令接收的窄 managed state |
 | `ai_session_not_initialized_error` | 会话未初始化错误构造 |
 | `ai`（`commands/` `db_bridge/` `tracking_bridge/`） | command handlers + AppState-free 桥接 |
@@ -55,6 +55,7 @@ agent 服务的命令面与运行时状态宿主。`AiState` 持有 per-session 
 - **不变量 I5**：`agents.rs` / `check_recon_tools_cmd` 暴露 ts-rs wire 类型给前端。
 - `golish-mcp` 是 path 依赖（非 workspace.dep），跨 workspace 引用注意。
 - 命令面经 `golish::commands_facade::{ai, workspace}` glob 暴露给 `generate_handler!`，新增命令要确认 facade 能 glob 到 `__cmd__$name`。
+- `AiState` 的 request slot 必须跨 `AgentBridge` generation：init 在构建前 fail-fast reserve，同 session concurrent init 不排队；shutdown 先 invalidate/remove 再 cancel returned Arc。GC 必须同时确认 wrapper slot 和内部 `SessionRequestSlot` 都没有 late bridge/request lease 引用；否则 same-id 新 slot 会绕过仍在 unwind 的 old owner。busy shutdown 当下不能回收时，后续 init 的 opportunistic sweep 只按相同安全条件清 tombstone。
 
 ## 测试入口
 

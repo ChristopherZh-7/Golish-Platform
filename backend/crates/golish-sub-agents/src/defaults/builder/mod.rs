@@ -145,20 +145,19 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         SubAgentDefinition::new(
             "prober",
             "Prober",
-            "Active external-attack-surface mapper for the external_attack_surface stage. Turns one organization's passively-discovered footprint (inherited from target_intel) into a confirmed attack surface — liveness (httpx), open ports (naabu/masscan), and service/version fingerprints — by actively but lightly probing the target. NON-EXPLOIT: no exploitation or vulnerability scanning — that stays with the Pentester. The stage_run tool fans one Prober out per org.",
+            "Active external-attack-surface mapper for the external_attack_surface stage. Turns one organization's passively-discovered footprint (inherited from target_intel) into a confirmed attack surface — domain/URL liveness, concrete IP/CIDR open ports first, service/version fingerprints for every open IP:port, and WhatWeb fingerprints for confirmed web origins — by actively but lightly probing the target. NON-EXPLOIT: no exploitation or vulnerability scanning — that stays with the Pentester. The stage_run tool fans one Prober out per org.",
             build_prober_prompt(),
         )
         .with_tools(vec![
             "list_in_scope_targets".to_string(),
             "list_attack_surface_seeds".to_string(),
             "query_target_data".to_string(),
-            "manage_targets".to_string(),
             // Active EAS probing is exposed as backend-owned capability wrappers
             // so the model chooses business actions, not raw CLI flags.
             "eas_probe_http_liveness".to_string(),
             "eas_discover_ports".to_string(),
             "eas_fingerprint_services".to_string(),
-            "wait_for_background_jobs".to_string(),
+            "eas_fingerprint_web_stack".to_string(),
             "list_recent_evidence".to_string(),
             "submit_stage_deliverable".to_string(),
             "record_finding".to_string(),
@@ -179,14 +178,14 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "stage_worklist_next".to_string(),
             "list_enumeration_web_roots".to_string(),
             "query_target_data".to_string(),
+            "enum_preflight_web_origins".to_string(),
             // Active content enumeration. Katana is exposed through a backend
-            // wrapper so the model chooses URL-crawl supplement, not raw CLI flags.
+            // wrapper so the model chooses browser seed discovery, not raw CLI flags.
             "enum_crawl_same_origin_urls".to_string(),
             "wait_for_background_jobs".to_string(),
             // JS/API extraction (GOLISH-ENUM-JSAPI): collect a host's JS, then pull
             // endpoints/paths out of it.
             "browser_collect_js_api".to_string(),
-            "js_collect".to_string(),
             "js_extract_apis".to_string(),
             "route_probe_paths".to_string(),
             "list_recent_evidence".to_string(),
@@ -318,7 +317,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         )
         .with_tools(vec![
             "browser_collect_js_api".to_string(),
-            "js_collect".to_string(),
             "js_extract_apis".to_string(),
             "web_fetch".to_string(),
             "web_search".to_string(),

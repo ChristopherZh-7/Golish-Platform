@@ -5,26 +5,52 @@
 
 use uuid::Uuid;
 
+use golish_db::repo::fingerprints::FingerprintWrite;
+use golish_db::repo::scoped::TargetWriteGuard;
+
 use super::severity_rank;
 use crate::types::PocMatch;
+
+const TARGET_RECON_FOR_GUARD_SQL: &str = r#"SELECT webserver, cdn_waf, os_info, ports
+FROM targets
+WHERE id = $1
+  AND organization_id IS NOT DISTINCT FROM $2
+  AND project_path = $3
+  AND scope::text = 'in'
+  AND scope::text = $4
+  AND name = $5
+  AND value = $6
+  AND ports = $7"#;
 
 pub async fn match_pocs_for_target(
     pool: &sqlx::PgPool,
     target_id: Uuid,
 ) -> crate::ScanRunnerResult<Vec<PocMatch>> {
     let start = std::time::Instant::now();
-    let mut fingerprints = golish_db::repo::fingerprints::list_by_target(pool, target_id).await?;
+    let guard = golish_db::repo::scoped::load_target_write_guard(pool, target_id)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Nuclei template selection requires a current in-scope project-bound target"
+            )
+        })?;
+    let mut fingerprints =
+        golish_db::repo::fingerprints::list_by_current_target_owner(pool, target_id).await?;
+    golish_db::repo::scoped::validate_target_write_guard(pool, &guard).await?;
 
     if fingerprints.is_empty() {
-        let backfilled = backfill_fingerprints_from_target(pool, target_id).await;
+        let backfilled = backfill_fingerprints_from_target(pool, &guard).await?;
         if backfilled > 0 {
             tracing::info!(
                 "[PoC-Match] Backfilled {} fingerprints from targets table for {}",
                 backfilled,
                 target_id
             );
-            fingerprints = golish_db::repo::fingerprints::list_by_target(pool, target_id).await?;
+            fingerprints =
+                golish_db::repo::fingerprints::list_by_current_target_owner(pool, target_id)
+                    .await?;
         }
+        golish_db::repo::scoped::validate_target_write_guard(pool, &guard).await?;
     }
 
     if fingerprints.is_empty() {
@@ -142,6 +168,7 @@ pub async fn match_pocs_for_target(
         matches.len(),
         start.elapsed().as_millis()
     );
+    golish_db::repo::scoped::validate_target_write_guard(pool, &guard).await?;
     Ok(matches)
 }
 
@@ -156,26 +183,27 @@ struct PocRow {
     content: String,
 }
 
-async fn backfill_fingerprints_from_target(pool: &sqlx::PgPool, target_id: Uuid) -> u32 {
-    let row: Option<(String, String, String, sqlx::types::Json<serde_json::Value>, String)> =
-        sqlx::query_as(
-            "SELECT webserver, cdn_waf, os_info, ports, COALESCE(project_path, '') FROM targets WHERE id = $1",
-        )
-        .bind(target_id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
+async fn backfill_fingerprints_from_target(
+    pool: &sqlx::PgPool,
+    guard: &TargetWriteGuard,
+) -> crate::ScanRunnerResult<u32> {
+    let row: Option<(String, String, String, sqlx::types::Json<serde_json::Value>)> =
+        sqlx::query_as(TARGET_RECON_FOR_GUARD_SQL)
+            .bind(guard.target_id)
+            .bind(guard.organization_id)
+            .bind(&guard.project_path)
+            .bind(&guard.scope)
+            .bind(&guard.name)
+            .bind(&guard.value)
+            .bind(&guard.ports)
+            .fetch_optional(pool)
+            .await?;
 
-    let Some((ws, cdn, os, ports, project_path)) = row else {
-        return 0;
+    let Some((ws, cdn, os, ports)) = row else {
+        golish_db::repo::scoped::validate_target_write_guard(pool, guard).await?;
+        return Ok(0);
     };
-    let pp = if project_path.is_empty() {
-        None
-    } else {
-        Some(project_path.as_str())
-    };
-    let mut count = 0u32;
+    let mut writes = Vec::new();
 
     fn parse_sv(s: &str) -> (String, Option<String>) {
         let s = s.trim();
@@ -192,58 +220,37 @@ async fn backfill_fingerprints_from_target(pool: &sqlx::PgPool, target_id: Uuid)
         }
     }
 
+    fn write(
+        category: &str,
+        name: String,
+        version: Option<String>,
+        confidence: f32,
+        evidence: serde_json::Value,
+    ) -> FingerprintWrite {
+        FingerprintWrite {
+            category: category.to_string(),
+            name,
+            version,
+            confidence,
+            evidence,
+            cpe: None,
+            source: "httpx".to_string(),
+        }
+    }
+
     if !ws.is_empty() {
         let (name, version) = parse_sv(&ws);
         let ev = serde_json::json!({ "source": "backfill", "raw": ws });
-        if golish_db::repo::fingerprints::upsert(
-            pool,
-            target_id,
-            pp,
-            "webserver",
-            &name,
-            version.as_deref(),
-            0.8,
-            &ev,
-            None,
-            "httpx",
-        )
-        .await
-        .is_ok()
-        {
-            count += 1;
-        }
+        writes.push(write("webserver", name, version, 0.8, ev));
     }
     if !cdn.is_empty() {
-        let ev = serde_json::json!({ "source": "backfill", "raw": cdn });
-        if golish_db::repo::fingerprints::upsert(
-            pool, target_id, pp, "cdn", &cdn, None, 0.9, &ev, None, "httpx",
-        )
-        .await
-        .is_ok()
-        {
-            count += 1;
-        }
+        let ev = serde_json::json!({ "source": "backfill", "raw": cdn.clone() });
+        writes.push(write("cdn", cdn, None, 0.9, ev));
     }
     if !os.is_empty() {
         let (name, version) = parse_sv(&os);
         let ev = serde_json::json!({ "source": "backfill", "raw": os });
-        if golish_db::repo::fingerprints::upsert(
-            pool,
-            target_id,
-            pp,
-            "os",
-            &name,
-            version.as_deref(),
-            0.6,
-            &ev,
-            None,
-            "httpx",
-        )
-        .await
-        .is_ok()
-        {
-            count += 1;
-        }
+        writes.push(write("os", name, version, 0.6, ev));
     }
 
     if let Some(arr) = ports.0.as_array() {
@@ -254,23 +261,7 @@ async fn backfill_fingerprints_from_target(pool: &sqlx::PgPool, target_id: Uuid)
                         if !tech.is_empty() {
                             let (name, version) = parse_sv(tech);
                             let ev = serde_json::json!({ "source": "backfill", "port": port_entry.get("port") });
-                            if golish_db::repo::fingerprints::upsert(
-                                pool,
-                                target_id,
-                                pp,
-                                "technology",
-                                &name,
-                                version.as_deref(),
-                                0.7,
-                                &ev,
-                                None,
-                                "httpx",
-                            )
-                            .await
-                            .is_ok()
-                            {
-                                count += 1;
-                            }
+                            writes.push(write("technology", name, version, 0.7, ev));
                         }
                     }
                 }
@@ -280,29 +271,14 @@ async fn backfill_fingerprints_from_target(pool: &sqlx::PgPool, target_id: Uuid)
                     let (name, version) = parse_sv(ws_val);
                     let ev =
                         serde_json::json!({ "source": "backfill", "port": port_entry.get("port") });
-                    if golish_db::repo::fingerprints::upsert(
-                        pool,
-                        target_id,
-                        pp,
-                        "webserver",
-                        &name,
-                        version.as_deref(),
-                        0.8,
-                        &ev,
-                        None,
-                        "httpx",
-                    )
-                    .await
-                    .is_ok()
-                    {
-                        count += 1;
-                    }
+                    writes.push(write("webserver", name, version, 0.8, ev));
                 }
             }
         }
     }
 
-    count
+    let rows = golish_db::repo::fingerprints::upsert_batch_guarded(pool, guard, &writes).await?;
+    Ok(rows.len() as u32)
 }
 
 fn build_search_terms(name: &str, version: Option<&str>) -> Vec<String> {
@@ -352,4 +328,24 @@ fn extract_nuclei_template_id(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recon_snapshot_query_matches_every_launch_guard_field() {
+        for predicate in [
+            "organization_id IS NOT DISTINCT FROM $2",
+            "project_path = $3",
+            "scope::text = 'in'",
+            "scope::text = $4",
+            "name = $5",
+            "value = $6",
+            "ports = $7",
+        ] {
+            assert!(TARGET_RECON_FOR_GUARD_SQL.contains(predicate));
+        }
+    }
 }

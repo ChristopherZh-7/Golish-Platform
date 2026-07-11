@@ -44,6 +44,7 @@
 - **单 store + slice 组合**：加状态先归到对应 slice（或新 slice 并在 `index.ts` + `slices/index.ts` 注册），别在组件里散落全局可变状态。
 - immer 写法（draft 可变）+ `enableMapSet()`（slice 用 Map/Set 时必需）。
 - 三态 UI（loading/error/empty，AGENTS.md §2.3）的状态多源自此（如 session streaming/hitl）。
+- `actions.ts::clearConversation` 是 backend/local timeline 的原子边界：先让 backend clear 成功，再 `clearTimeline`。session busy 或其他真实错误必须保留 timeline 并向调用方返回错误；只有明确的 unavailable-command 错误才调用 legacy clear，不能对 busy 二次 invoke。
 
 ## 测试入口
 

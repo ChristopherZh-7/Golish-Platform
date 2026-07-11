@@ -39,6 +39,7 @@ fn build_subdomain_count_sql() -> String {
     "SELECT COUNT(*)::bigint FROM target_assets ta \
        JOIN targets t ON ta.target_id = t.id \
       WHERE t.scope::text = 'in' AND t.organization_id = $1 \
+        AND ta.project_path IS NOT DISTINCT FROM t.project_path \
         AND ta.asset_type = 'subdomain'"
         .to_string()
 }
@@ -54,6 +55,7 @@ fn build_login_endpoints_count_sql() -> String {
     "SELECT COUNT(*)::bigint FROM api_endpoints ae \
        JOIN targets t ON ae.target_id = t.id \
       WHERE t.scope::text = 'in' AND t.organization_id = $1 \
+        AND ae.project_path IS NOT DISTINCT FROM t.project_path \
         AND (ae.url ILIKE '%login%' OR ae.url ILIKE '%admin%' OR ae.url ILIKE '%manage%')"
         .to_string()
 }
@@ -62,6 +64,7 @@ fn build_login_dirs_count_sql() -> String {
     "SELECT COUNT(*)::bigint FROM directory_entries de \
        JOIN targets t ON de.target_id = t.id \
       WHERE t.scope::text = 'in' AND t.organization_id = $1 \
+        AND de.project_path IS NOT DISTINCT FROM t.project_path \
         AND (de.url ILIKE '%login%' OR de.url ILIKE '%admin%' OR de.url ILIKE '%manage%')"
         .to_string()
 }
@@ -146,5 +149,15 @@ mod tests {
                 assert!(sql.contains(kw), "missing {kw}: {sql}");
             }
         }
+    }
+
+    #[test]
+    fn child_truth_counts_require_current_target_project() {
+        assert!(build_subdomain_count_sql()
+            .contains("ta.project_path IS NOT DISTINCT FROM t.project_path"));
+        assert!(build_login_endpoints_count_sql()
+            .contains("ae.project_path IS NOT DISTINCT FROM t.project_path"));
+        assert!(build_login_dirs_count_sql()
+            .contains("de.project_path IS NOT DISTINCT FROM t.project_path"));
     }
 }

@@ -127,7 +127,7 @@
         "description": "Hand discovered ports to nmap for service detection",
         "flag": "-nmap-cli",
         "label": "Nmap CLI",
-        "placeholder": "nmap -sV",
+        "placeholder": "nmap -n -sV",
         "type": "string"
       }
     ],
@@ -176,20 +176,20 @@
         ]
       },
       {
-        "args": "-host {{target}} -top-ports 1000 -s c -nmap-cli 'nmap -sV' -silent",
+        "args": "-host {{target}} -top-ports 1000 -s c -nmap-cli 'nmap -n -sV' -silent",
         "description": "Discover open ports then fingerprint services with nmap",
         "id": "naabu-to-nmap",
-        "name": "naabu → nmap -sV",
+        "name": "naabu → nmap -n -sV",
         "tags": [
           "recon",
           "fingerprint"
         ]
       },
       {
-        "args": "-list {{input_file}} -top-ports 1000 -s c -nmap-cli 'nmap -sV' -silent",
+        "args": "-list {{input_file}} -top-ports 1000 -s c -nmap-cli 'nmap -n -sV' -silent",
         "description": "Batch discover open ports and hand them to nmap for service detection",
         "id": "batch-naabu-to-nmap",
-        "name": "Batch naabu → nmap -sV",
+        "name": "Batch naabu → nmap -n -sV",
         "tags": [
           "recon",
           "fingerprint",

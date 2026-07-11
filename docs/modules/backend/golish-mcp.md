@@ -24,7 +24,7 @@
 | `McpManager` / `ServerStatus` | 多 server 管理 |
 | `McpClientConnection` / `McpClientHandler` | 客户端连接 |
 | `McpConfigFile` / `McpServerConfig` / `McpTransportType` | 配置 |
-| `load_mcp_config` / `trust_project_config` / `builtin_server_names` | 加载与信任 |
+| `load_mcp_config` / `trust_project_config` / `builtin_server_names` / `builtin_setup_directory` | fail-closed 可执行加载、信任与 canonical builtin setup |
 | `McpTool` / `convert_mcp_result_to_tool_result` / `parse_mcp_tool_name` | 工具转换 |
 
 ## 依赖
@@ -49,7 +49,8 @@
 ## 注意事项 / 坑
 
 - 这是 Golish 当 **MCP 客户端**（消费外部 server）；和 `golish-pentest-mcp`（Golish 自己当 **MCP server** 暴露 pentest 工具）方向相反，别混。
-- 项目级 MCP 配置有**信任门禁**（`trust_project_config`），别绕过直接加载不受信配置。
+- 项目级 MCP 配置有**中央信任门禁**：`load_mcp_config` 只返回 builtin + user-global + 已信任 project；GUI/CLI/手动管理路径都不得绕过。
+- builtin discovery/setup 只信 executable/compile-time repository 的 canonical 路径，不能把 `QBIT_WORKSPACE`/cwd 或同名 user/project override 当 builtin 来源。
 - 相关：`docs/mcp.md`、`docs/superpowers/plans/mcp-implementation-plan.md`、`docs/superpowers/plans/2026-05-07-builtin-mcp-auto-init.md`。
 
 ## 测试入口

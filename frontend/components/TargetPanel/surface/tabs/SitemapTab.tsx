@@ -531,6 +531,7 @@ function ScriptDetail({
     typeof result?.rawAnalysis?.skipped_reason === "string"
       ? (result.rawAnalysis.skipped_reason as string)
       : null;
+  const haeRouteCandidates = haeRouteCandidateCount(result?.rawAnalysis);
   const aiReview = result?.rawAnalysis?.ai_review;
 
   return (
@@ -557,6 +558,11 @@ function ScriptDetail({
           {skipped && (
             <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[9px] text-red-300">
               {skipReason ? `skipped · ${skipReason}` : "skipped · oversized"}
+            </span>
+          )}
+          {haeRouteCandidates > 0 && (
+            <span className="rounded bg-[var(--ansi-cyan)]/10 px-1.5 py-0.5 text-[9px] text-[var(--ansi-cyan)]/90">
+              HAE candidates {haeRouteCandidates}
             </span>
           )}
           {result && (
@@ -599,6 +605,15 @@ function ScriptDetail({
       </div>
     </div>
   );
+}
+
+function haeRouteCandidateCount(rawAnalysis?: Record<string, unknown> | null): number {
+  const count = rawAnalysis?.hae_route_candidate_count;
+  if (typeof count === "number" && Number.isFinite(count)) {
+    return count;
+  }
+  const candidates = rawAnalysis?.hae_route_candidates;
+  return Array.isArray(candidates) ? candidates.length : 0;
 }
 
 function DetailPanel({

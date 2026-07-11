@@ -19,6 +19,17 @@ use crate::cli_output::{run_event_loop, truncate};
 /// This spawns the event loop in a background task and calls
 /// the agent bridge to process the prompt.
 pub async fn execute_once(ctx: &mut CliContext, prompt: &str) -> Result<()> {
+    // Acquire before starting the output loop: a busy request emits no agent
+    // terminal event, so spawning the receiver first would leave CLI waiting.
+    let bridge_guard = ctx.bridge().await;
+    let bridge = bridge_guard
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Agent not initialized"))?;
+    let request = bridge
+        .begin_top_level_request()
+        .await
+        .context("start CLI request for this agent session")?;
+
     // Create a fresh channel for this execution
     let (event_tx, event_rx) = mpsc::unbounded_channel::<RuntimeEvent>();
 
@@ -39,14 +50,15 @@ pub async fn execute_once(ctx: &mut CliContext, prompt: &str) -> Result<()> {
         tokio::spawn(async move { run_event_loop(event_rx, json_mode, quiet_mode).await });
 
     // Execute the prompt via the agent bridge
-    let result = {
-        let bridge_guard = ctx.bridge().await;
-        let bridge = bridge_guard
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Agent not initialized"))?;
-
-        bridge.execute(prompt).await
+    let execution_result = bridge.execute(prompt).await;
+    let cleanup_result = bridge.clear_top_level_request_state(&request).await;
+    let result = match (execution_result, cleanup_result) {
+        (Ok(response), Ok(())) => Ok(response),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
     };
+    drop(request);
+    drop(bridge_guard);
 
     // Wait for the output handler to finish
     // It will exit when it sees Completed or Error events

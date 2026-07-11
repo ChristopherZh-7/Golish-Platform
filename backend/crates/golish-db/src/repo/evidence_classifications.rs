@@ -10,7 +10,7 @@
 use crate::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 /// `evidence_classifications` 行映射 (`sqlx::FromRow`).
@@ -58,6 +58,41 @@ pub async fn insert(
     .bind(producing_stage_run_id)
     .bind(relabel_decision)
     .fetch_one(pool)
+    .await?;
+    Ok(id)
+}
+
+/// Insert the initial classification on an existing caller-owned transaction.
+///
+/// Evidence creation uses this variant so the `audit_log` evidence row and its
+/// first active classification either both commit or both roll back. Keep this
+/// SQL aligned with [`insert`].
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_in_transaction(
+    connection: &mut PgConnection,
+    evidence_audit_id: i64,
+    classification: &str,
+    scope_version: i64,
+    reason: &str,
+    classified_by_session: &str,
+    producing_stage_run_id: Option<Uuid>,
+    relabel_decision: Option<&str>,
+) -> Result<i64> {
+    let id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO evidence_classifications
+               (evidence_audit_id, classification, scope_version, reason,
+                classified_by_session, producing_stage_run_id, relabel_decision)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING id"#,
+    )
+    .bind(evidence_audit_id)
+    .bind(classification)
+    .bind(scope_version)
+    .bind(reason)
+    .bind(classified_by_session)
+    .bind(producing_stage_run_id)
+    .bind(relabel_decision)
+    .fetch_one(connection)
     .await?;
     Ok(id)
 }

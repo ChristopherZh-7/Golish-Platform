@@ -21,7 +21,7 @@
 
 | 符号 | 说明 |
 |---|---|
-| `args`（clap 参数） | CLI 参数（含 `--stage-run` 等） |
+| `args`（clap 参数） | CLI 参数（含 fresh `--stage-run` 与 exact `--stage-run-resume`） |
 | `runner` / `repl` | headless 执行 / REPL |
 | `bootstrap::initialize_agent`（`pub(crate)`） | 用 CliRuntime 装配 agent；调用方显式传 `event_session_id`（evidence 账本/后台任务/事件 envelope 的会话身份）——REPL 传 `"cli"`，stage-run 传与 `set_chat_session_id` 一致的 `stage-run-{uuid}`（gate/refiner 按该 id 查账本，写读必须同 id） |
 
@@ -41,9 +41,22 @@
 
 - **与 GUI 共享逻辑**：经 `GolishRuntime` 抽象，别为 CLI 复制一套 agent 逻辑。
 - `--stage-run` 由 `stage_run` 模块承载；CLI 只 dispatch。
+- `--stage-run-resume <stage-run-key|session UUID|operation UUID>` 同样只 dispatch
+  到 `stage_run`，不进入普通 headless chat。它与 fresh slice/seed/ephemeral 参数
+  冲突；`--replay` 仍然只读，不能恢复 operation。
+- `running` 孤儿恢复必须显式传 `--allow-orphan-running`，首 stage 缺
+  `graph_flow` 时还必须传 `--repair-missing-graph-flow`；两者都依赖
+  `--expect-session/--expect-task/--expect-operation/--expect-org/--expect-stage`
+  的 exact identity 校验，不能从 task 年龄猜测进程已死。
+- 旧 startup reaper 若已把同一 flat-checkpoint orphan 标成固定
+  `Abandoned: ...` failed，必须另外显式传 `--repair-reaped-task`；CLI 只在完整
+  expected identity、固定 marker、operation advisory claim 和 CAS 全匹配时恢复，
+  普通 failed task 永不复活。
+- `runner::execute_once` 在启动 terminal-event receiver 前获取 bridge universal top-level lease；busy 请求不会发 `Completed/Error`，若先启动 receiver 再 acquire 会让 CLI 永久等待。执行结束仍持 lease 做 async request-state cleanup。
 
 ## 测试入口
 
 ```bash
 cd backend && cargo nextest run -p golish cli
+# 参数层：cargo test -p golish cli::args::tests::test_args_stage_run_resume --lib
 ```

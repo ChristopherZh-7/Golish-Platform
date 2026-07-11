@@ -42,6 +42,7 @@
 - schema sanitize 适配 provider 差异（OpenAI strict mode）；改 schema 形状要跑两家。
 - 工具 schema 与 `golish-tools` 实现要一致；改参数两边同步（这是 LLM「能看到哪些工具」的出口）。
 - `ToolSelectionConfig::main_agent()` 额外开放的 security-analysis 只读工具要和 execution_mode/static policy、direct executor 一起同步；例如 `check_stage_asset_coverage` / `stage_worklist_status` / `stage_worklist_next` 既要能被 active stage 看到，也不能泄漏到普通 lead turn。
+- `log_operation` / `discover_apis` / `save_js_analysis` / `fingerprint_target` / `log_scan_result` 是未携带 immutable target owner witness 的 legacy mutation tools；`ToolSelectionConfig::main_agent()` 不再暴露它们。active harness 必须使用 stage-specific guarded producer 落业务事实，不能把这些旧写接口重新加回默认工具集。
 
 ## 测试入口
 

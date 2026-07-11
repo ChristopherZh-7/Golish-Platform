@@ -1,11 +1,16 @@
 //! feroxbuster (directory busting) over caller-supplied seed paths.
 
+use std::path::{Path, PathBuf};
+
 use golish_core::EventEmitterHandle;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::authorization::{
+    after_successful_validation, url_has_authorized_origin, AuthorizedScanTarget,
+};
 use crate::helpers::{
-    audit_scan_completed, audit_scan_failed, audit_scan_started, emit_progress, which_tool,
+    audit_scan_completed, audit_scan_started, emit_progress, scanner_process_succeeded, which_tool,
 };
 use crate::storage::ScanStorage;
 use crate::types::ScanResult;
@@ -36,50 +41,16 @@ pub async fn run_feroxbuster(
     pool: &sqlx::PgPool,
     storage: &dyn ScanStorage,
     emitter: Option<&EventEmitterHandle>,
-    target_url: &str,
-    target_id: Uuid,
-    project_path: Option<&str>,
+    authorization: &AuthorizedScanTarget,
     base_paths: &[String],
     options: Option<FeroxScanOptions>,
 ) -> crate::ScanRunnerResult<ScanResult> {
     let start = std::time::Instant::now();
+    let target_url = authorization.requested_url.as_str();
+    let target_id = authorization.guard.target_id;
+    let project_path = authorization.guard.project_path.as_str();
 
-    let parent_audit_id = audit_scan_started(
-        pool,
-        "feroxbuster_scan_started",
-        target_id,
-        "feroxbuster",
-        target_url,
-        serde_json::json!({
-            "base_paths_count": base_paths.len(),
-            "base_paths_sample": base_paths.iter().take(20).cloned().collect::<Vec<_>>(),
-            "project_path": project_path,
-        }),
-    )
-    .await;
-
-    let ferox_path = match which_tool("feroxbuster").await {
-        Some(p) => p,
-        None => {
-            let msg = "feroxbuster not found. Install via: brew install feroxbuster or cargo install feroxbuster";
-            audit_scan_failed(
-                pool,
-                parent_audit_id,
-                "feroxbuster_scan_failed",
-                target_id,
-                "feroxbuster",
-                msg,
-                serde_json::json!({
-                    "target_url": target_url,
-                    "duration_ms": start.elapsed().as_millis() as u64,
-                }),
-            )
-            .await;
-            return Err(crate::ScanRunnerError::Feroxbuster(msg.into()));
-        }
-    };
-
-    let opts = options.unwrap_or(FeroxScanOptions {
+    let mut opts = options.unwrap_or(FeroxScanOptions {
         depth: Some(3),
         threads: Some(50),
         wordlist: None,
@@ -87,23 +58,32 @@ pub async fn run_feroxbuster(
         status_codes: None,
         timeout: Some(10),
     });
+    opts.wordlist = resolve_workspace_wordlist(project_path, opts.wordlist.as_deref())?;
+    let urls_to_scan = build_authorized_scan_urls(authorization, base_paths)?;
 
-    let urls_to_scan: Vec<String> = if base_paths.is_empty() {
-        vec![target_url.to_string()]
-    } else {
-        base_paths
-            .iter()
-            .map(|p| {
-                if p.starts_with("http://") || p.starts_with("https://") {
-                    p.clone()
-                } else {
-                    let base = target_url.trim_end_matches('/');
-                    let path = p.trim_start_matches('/');
-                    format!("{}/{}", base, path)
-                }
-            })
-            .collect()
+    let ferox_path = match which_tool("feroxbuster").await {
+        Some(p) => p,
+        None => {
+            let msg = "feroxbuster not found. Install via: brew install feroxbuster or cargo install feroxbuster";
+            return Err(crate::ScanRunnerError::Feroxbuster(msg.into()));
+        }
     };
+
+    golish_db::repo::scoped::validate_target_write_guard(pool, &authorization.guard).await?;
+    let parent_audit_id = audit_scan_started(
+        pool,
+        &authorization.guard,
+        "feroxbuster_scan_started",
+        "feroxbuster",
+        target_url,
+        serde_json::json!({
+            "base_paths_count": base_paths.len(),
+            "base_paths_sample": base_paths.iter().take(20).cloned().collect::<Vec<_>>(),
+            "project_path": project_path,
+            "exact_origin": authorization.exact_origin,
+        }),
+    )
+    .await?;
 
     let total_urls = urls_to_scan.len() as u32;
     let mut all_items_found = 0u32;
@@ -159,19 +139,39 @@ pub async fn run_feroxbuster(
             args.extend_from_slice(&["--timeout".to_string(), t.to_string()]);
         }
 
-        let output = match tokio::process::Command::new(&ferox_path)
-            .args(&args)
-            .output()
-            .await
+        let output = match after_successful_validation(
+            async {
+                golish_db::repo::scoped::validate_target_write_guard(pool, &authorization.guard)
+                    .await
+                    .map_err(crate::ScanRunnerError::from)
+            },
+            || async {
+                tokio::process::Command::new(&ferox_path)
+                    .args(&args)
+                    .output()
+                    .await
+                    .map_err(crate::ScanRunnerError::from)
+            },
+        )
+        .await
         {
             Ok(o) => o,
             Err(e) => {
                 all_errors.push(format!("feroxbuster failed for {}: {}", scan_url, e));
-                continue;
+                break;
             }
         };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !scanner_process_succeeded(output.status, &stderr) {
+            all_errors.push(format!(
+                "feroxbuster failed for {scan_url} (status={}): {}",
+                output.status,
+                stderr.trim()
+            ));
+            continue;
+        }
 
         for line in stdout.lines() {
             let trimmed = line.trim();
@@ -181,7 +181,10 @@ pub async fn run_feroxbuster(
 
             let result: FeroxResult = match serde_json::from_str(trimmed) {
                 Ok(r) => r,
-                Err(_) => continue,
+                Err(error) => {
+                    all_errors.push(format!("feroxbuster JSONL parse failed: {error}"));
+                    continue;
+                }
             };
 
             if result.result_type.as_deref() != Some("response") {
@@ -192,6 +195,12 @@ pub async fn run_feroxbuster(
                 Some(u) => u.clone(),
                 None => continue,
             };
+            if !url_has_authorized_origin(authorization, &url) {
+                all_errors.push(format!(
+                    "feroxbuster result escaped the authorized exact origin: {url}"
+                ));
+                continue;
+            }
             let status = result.status.unwrap_or(0) as i32;
 
             all_items_found += 1;
@@ -199,14 +208,13 @@ pub async fn run_feroxbuster(
             let store_result = storage
                 .store_directory_entry(
                     pool,
-                    Some(target_id),
+                    &authorization.guard,
                     &url,
                     Some(status),
                     result.content_length,
                     result.line_count,
                     result.word_count,
                     "feroxbuster",
-                    project_path,
                 )
                 .await;
 
@@ -220,26 +228,14 @@ pub async fn run_feroxbuster(
                     &Uuid::NAMESPACE_URL,
                     format!("ferox:sensitive:{}:{}", url, target_id).as_bytes(),
                 );
-                let _ = sqlx::query(
-                    r#"INSERT INTO findings (id, target, target_id, title, severity, description, tool, source, project_path)
-                       VALUES ($1, $2, $3, $4, $5, $6, 'feroxbuster', 'feroxbuster', $7)
-                       ON CONFLICT (id) DO NOTHING"#,
-                )
-                .bind(finding_id)
-                .bind(&url)
-                .bind(target_id)
-                .bind(format!(
-                    "Sensitive file/directory: {}",
-                    extract_path(&url)
-                ))
-                .bind(classify_sensitive_severity(&url))
-                .bind(format!(
-                    "Directory enumeration discovered a potentially sensitive resource at {} (HTTP {})",
-                    url, status
-                ))
-                .bind(project_path)
-                .execute(pool)
-                .await;
+                if let Err(error) =
+                    store_sensitive_finding_guarded(pool, authorization, finding_id, &url, status)
+                        .await
+                {
+                    all_errors.push(format!(
+                        "Failed guarded feroxbuster finding landing for {url}: {error}"
+                    ));
+                }
 
                 emit_progress(
                     emitter,
@@ -277,9 +273,9 @@ pub async fn run_feroxbuster(
 
     audit_scan_completed(
         pool,
+        &authorization.guard,
         parent_audit_id,
         "feroxbuster_scan_completed",
-        target_id,
         "feroxbuster",
         &format!(
             "feroxbuster on {}: {} paths found, {} URLs scanned",
@@ -295,9 +291,132 @@ pub async fn run_feroxbuster(
             "outcome": if result.success { "completed" } else { "partial" },
         }),
     )
-    .await;
+    .await?;
 
     Ok(result)
+}
+
+async fn store_sensitive_finding_guarded(
+    pool: &sqlx::PgPool,
+    authorization: &AuthorizedScanTarget,
+    finding_id: Uuid,
+    url: &str,
+    status: i32,
+) -> crate::ScanRunnerResult<()> {
+    let mut tx = pool.begin().await?;
+    golish_db::repo::scoped::lock_target_write_guard(&mut tx, &authorization.guard).await?;
+    sqlx::query_scalar::<_, Uuid>(
+        r#"INSERT INTO findings (id, target, target_id, title, severity, description, tool, source, project_path)
+           VALUES ($1, $2, $3, $4, $5, $6, 'feroxbuster', 'feroxbuster', $7)
+           ON CONFLICT (id) DO UPDATE SET
+               title = EXCLUDED.title,
+               severity = EXCLUDED.severity,
+               description = EXCLUDED.description,
+               target_id = EXCLUDED.target_id
+           WHERE findings.project_path IS NOT DISTINCT FROM EXCLUDED.project_path
+           RETURNING id"#,
+    )
+    .bind(finding_id)
+    .bind(url)
+    .bind(authorization.guard.target_id)
+    .bind(format!("Sensitive file/directory: {}", extract_path(url)))
+    .bind(classify_sensitive_severity(url))
+    .bind(format!(
+        "Directory enumeration discovered a potentially sensitive resource at {} (HTTP {})",
+        url, status
+    ))
+    .bind(&authorization.guard.project_path)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+fn build_authorized_scan_urls(
+    authorization: &AuthorizedScanTarget,
+    base_paths: &[String],
+) -> crate::ScanRunnerResult<Vec<String>> {
+    if base_paths.len() > 100 {
+        return Err(crate::ScanRunnerError::Feroxbuster(
+            "feroxbuster accepts at most 100 base paths".to_string(),
+        ));
+    }
+    if base_paths.is_empty() {
+        return Ok(vec![authorization.requested_url.clone()]);
+    }
+    let base = url::Url::parse(&authorization.requested_url).map_err(|error| {
+        crate::ScanRunnerError::Feroxbuster(format!("invalid authorized target URL: {error}"))
+    })?;
+    let mut urls = Vec::with_capacity(base_paths.len());
+    for raw in base_paths {
+        let raw = raw.trim();
+        if raw.is_empty() || raw.contains('\0') {
+            return Err(crate::ScanRunnerError::Feroxbuster(
+                "feroxbuster base paths must be non-empty URL/path strings".to_string(),
+            ));
+        }
+        let joined = match url::Url::parse(raw) {
+            Ok(url) => url,
+            Err(url::ParseError::RelativeUrlWithoutBase) => base.join(raw).map_err(|error| {
+                crate::ScanRunnerError::Feroxbuster(format!(
+                    "invalid feroxbuster base path {raw:?}: {error}"
+                ))
+            })?,
+            Err(error) => {
+                return Err(crate::ScanRunnerError::Feroxbuster(format!(
+                    "invalid feroxbuster base URL {raw:?}: {error}"
+                )))
+            }
+        };
+        let joined = joined.to_string();
+        if !url_has_authorized_origin(authorization, &joined) {
+            return Err(crate::ScanRunnerError::Feroxbuster(format!(
+                "feroxbuster base path escaped the authorized exact origin: {raw}"
+            )));
+        }
+        urls.push(joined);
+    }
+    urls.sort();
+    urls.dedup();
+    Ok(urls)
+}
+
+fn resolve_workspace_wordlist(
+    project_path: &str,
+    requested: Option<&str>,
+) -> crate::ScanRunnerResult<Option<String>> {
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return Err(crate::ScanRunnerError::Feroxbuster(
+            "feroxbuster wordlist must not be empty".to_string(),
+        ));
+    }
+    let project = Path::new(project_path).canonicalize().map_err(|error| {
+        crate::ScanRunnerError::Feroxbuster(format!(
+            "cannot resolve target workspace for wordlist authorization: {error}"
+        ))
+    })?;
+    let raw = PathBuf::from(requested);
+    let candidate = if raw.is_absolute() {
+        raw
+    } else {
+        project.join(raw)
+    };
+    let candidate = candidate.canonicalize().map_err(|error| {
+        crate::ScanRunnerError::Feroxbuster(format!("cannot resolve feroxbuster wordlist: {error}"))
+    })?;
+    let allowed = candidate == project.join("1.txt")
+        || candidate.starts_with(project.join(".golish").join("wordlists"));
+    if !allowed || !candidate.is_file() {
+        return Err(crate::ScanRunnerError::Feroxbuster(
+            "feroxbuster wordlist must be workspace/1.txt or a regular file under workspace/.golish/wordlists"
+                .to_string(),
+        ));
+    }
+    Ok(Some(candidate.to_string_lossy().to_string()))
 }
 
 fn is_sensitive_path(url: &str) -> bool {
@@ -369,4 +488,74 @@ fn extract_path(url: &str) -> &str {
             &url[start..]
         })
         .unwrap_or("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::authorization::authorize_scan_target_from_guard;
+
+    fn authorization(project_path: &str) -> AuthorizedScanTarget {
+        authorize_scan_target_from_guard(
+            golish_db::repo::scoped::TargetWriteGuard {
+                target_id: Uuid::new_v4(),
+                organization_id: Some(Uuid::new_v4()),
+                project_path: project_path.to_string(),
+                scope: "in".to_string(),
+                name: "https://app.example/".to_string(),
+                value: "https://app.example/".to_string(),
+                ports: serde_json::json!([]),
+            },
+            Some(project_path),
+            "https://app.example/root/",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn base_paths_cannot_add_a_foreign_command_target() {
+        let authorization = authorization("/workspace/a");
+        assert!(build_authorized_scan_urls(
+            &authorization,
+            &["https://foreign.example/admin".to_string()]
+        )
+        .is_err());
+        assert!(build_authorized_scan_urls(
+            &authorization,
+            &["//foreign.example/admin".to_string()]
+        )
+        .is_err());
+        assert_eq!(
+            build_authorized_scan_urls(&authorization, &["admin".to_string()]).unwrap(),
+            vec!["https://app.example/root/admin"]
+        );
+    }
+
+    #[test]
+    fn wordlist_cannot_traverse_or_escape_the_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let allowed_dir = workspace.join(".golish/wordlists");
+        std::fs::create_dir_all(&allowed_dir).unwrap();
+        let allowed = allowed_dir.join("paths.txt");
+        std::fs::write(&allowed, "admin\n").unwrap();
+        let outside = temp.path().join("outside.txt");
+        std::fs::write(&outside, "secret\n").unwrap();
+
+        assert!(resolve_workspace_wordlist(
+            workspace.to_string_lossy().as_ref(),
+            Some(".golish/wordlists/paths.txt")
+        )
+        .is_ok());
+        assert!(resolve_workspace_wordlist(
+            workspace.to_string_lossy().as_ref(),
+            Some("../outside.txt")
+        )
+        .is_err());
+        assert!(resolve_workspace_wordlist(
+            workspace.to_string_lossy().as_ref(),
+            Some(outside.to_string_lossy().as_ref())
+        )
+        .is_err());
+    }
 }

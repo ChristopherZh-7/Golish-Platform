@@ -11,7 +11,7 @@
 
 use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
@@ -21,6 +21,23 @@ use crate::state::{AppState, McpManaged};
 fn is_platform_node_available() -> bool {
     let env_status = golish_pentest::handlers::check_env_setup();
     env_status.nvm_installed
+}
+
+fn classify_mcp_server_source(
+    name: &str,
+    project_names: &HashSet<String>,
+    user_names: &HashSet<String>,
+    builtin_names: &HashSet<String>,
+) -> &'static str {
+    if project_names.contains(name) {
+        "project"
+    } else if user_names.contains(name) {
+        "user"
+    } else if builtin_names.contains(name) {
+        "builtin"
+    } else {
+        "unknown"
+    }
 }
 
 /// Information about a configured MCP server for the frontend.
@@ -109,6 +126,16 @@ pub async fn mcp_list_servers(
         })
         .unwrap_or_default();
 
+    let project_config = if golish_mcp::is_project_config_trusted(&workspace) {
+        std::fs::read_to_string(workspace.join(".golish/mcp.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<golish_mcp::McpConfigFile>(&s).ok())
+            .map(|c| c.mcp_servers.into_keys().collect::<HashSet<_>>())
+            .unwrap_or_default()
+    } else {
+        HashSet::new()
+    };
+
     // Get live status from the global MCP manager (if initialized)
     let manager_guard = state.manager.read().await;
     let manager = manager_guard.as_ref();
@@ -121,13 +148,8 @@ pub async fn mcp_list_servers(
             McpTransportType::Sse => "sse",
         };
 
-        let source = if user_config.contains(&name) {
-            "user"
-        } else if builtin_names.contains(&name) {
-            "builtin"
-        } else {
-            "project"
-        };
+        let source =
+            classify_mcp_server_source(&name, &project_config, &user_config, &builtin_names);
 
         // Get live connection status from the global manager
         let (status, tool_count, error) = if let Some(mgr) = manager {
@@ -346,22 +368,8 @@ pub async fn mcp_disconnect(
 pub async fn mcp_setup_builtin(
     server_name: String,
     workspace_path: Option<String>,
-    state: State<'_, McpManaged>,
-    app_state: State<'_, AppState>,
 ) -> Result<McpSetupResult, GolishError> {
-    use golish_mcp::load_mcp_config;
-
-    let workspace = match workspace_path {
-        Some(p) => PathBuf::from(p),
-        None => std::env::current_dir()
-            .map_err(|e| format!("Failed to get current directory: {}", e))?,
-    };
-
-    let config = load_mcp_config(&workspace)?;
-    let server_config = config
-        .mcp_servers
-        .get(&server_name)
-        .ok_or_else(|| format!("Server '{}' not found", server_name))?;
+    let _ = workspace_path;
 
     if !is_platform_node_available() {
         return Ok(McpSetupResult {
@@ -371,16 +379,8 @@ pub async fn mcp_setup_builtin(
         });
     }
 
-    let entry_point = server_config
-        .args
-        .first()
-        .ok_or_else(|| format!("Server '{}' has no entry point configured", server_name))?;
-
-    let entry_path = std::path::Path::new(entry_point);
-    let tool_dir = entry_path
-        .parent()
-        .and_then(|p| p.parent())
-        .ok_or_else(|| format!("Cannot determine tool directory from '{}'", entry_point))?;
+    let tool_dir = golish_mcp::builtin_setup_directory(&server_name)
+        .ok_or_else(|| format!("Unknown built-in MCP server '{}'", server_name))?;
 
     if !tool_dir.exists() {
         return Ok(McpSetupResult {
@@ -397,7 +397,7 @@ pub async fn mcp_setup_builtin(
 
     let npm_install = std::process::Command::new("npm")
         .arg("install")
-        .current_dir(tool_dir)
+        .current_dir(&tool_dir)
         .output()
         .map_err(|e| format!("Failed to run npm install: {}", e))?;
 
@@ -411,7 +411,7 @@ pub async fn mcp_setup_builtin(
 
     let npm_build = std::process::Command::new("npm")
         .args(["run", "build"])
-        .current_dir(tool_dir)
+        .current_dir(&tool_dir)
         .output()
         .map_err(|e| format!("Failed to run npm run build: {}", e))?;
 
@@ -423,21 +423,11 @@ pub async fn mcp_setup_builtin(
         });
     }
 
-    tracing::info!(
-        "[mcp] Built-in server '{}' setup complete, attempting connect",
-        server_name
-    );
-
-    let manager_guard = state.manager.read().await;
-    if let Some(manager) = manager_guard.as_ref() {
-        let _ = manager.connect(&server_name).await;
-        drop(manager_guard);
-        refresh_all_bridge_mcp_tools(&app_state).await;
-    }
+    tracing::info!("[mcp] Built-in server '{}' setup complete", server_name);
 
     Ok(McpSetupResult {
         success: true,
-        message: "Setup complete. Server is now connecting.".to_string(),
+        message: "Setup complete. Restart Golish to load this server.".to_string(),
     })
 }
 
@@ -456,5 +446,35 @@ async fn refresh_all_bridge_mcp_tools(state: &AppState) {
     for (session_id, bridge) in bridges.iter() {
         crate::ai::commands::setup_bridge_mcp_tools(bridge, &agent_state).await;
         tracing::debug!("[mcp] Refreshed MCP tools for session {}", session_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn classify_mcp_server_source_uses_real_merge_precedence() {
+        let project = HashSet::from(["shared".to_string()]);
+        let user = HashSet::from(["shared".to_string(), "user-only".to_string()]);
+        let builtin = HashSet::from([
+            "shared".to_string(),
+            "user-only".to_string(),
+            "builtin-only".to_string(),
+        ]);
+
+        assert_eq!(
+            classify_mcp_server_source("shared", &project, &user, &builtin),
+            "project"
+        );
+        assert_eq!(
+            classify_mcp_server_source("user-only", &project, &user, &builtin),
+            "user"
+        );
+        assert_eq!(
+            classify_mcp_server_source("builtin-only", &project, &user, &builtin),
+            "builtin"
+        );
     }
 }

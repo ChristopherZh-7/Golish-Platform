@@ -19,6 +19,7 @@
 
 use anyhow::Result;
 use rig::message::UserContent;
+use std::future::Future;
 
 use golish_core::events::AiEvent;
 use golish_sub_agents::{SubAgentContext, MAX_AGENT_DEPTH};
@@ -35,6 +36,10 @@ impl AgentBridge {
     // ========================================================================
 
     /// Execute a text prompt with the default sub-agent context.
+    ///
+    /// Production top-level callers must hold a [`super::TopLevelRequestLease`]
+    /// acquired from `begin_top_level_request`. This raw seam deliberately does
+    /// not reset cancellation; nested fallback execution shares its owner.
     pub async fn execute(&self, prompt: &str) -> Result<String> {
         self.execute_with_context(prompt, SubAgentContext::default())
             .await
@@ -48,13 +53,8 @@ impl AgentBridge {
         prompt: &str,
         turn_instructions: &str,
     ) -> Result<String> {
-        self.execute_with_context_inner(
-            prompt,
-            SubAgentContext::default(),
-            true,
-            Some(turn_instructions),
-        )
-        .await
+        self.execute_with_context_inner(prompt, SubAgentContext::default(), Some(turn_instructions))
+            .await
     }
 
     /// Execute a prompt in an isolated conversation context.
@@ -63,28 +63,92 @@ impl AgentBridge {
     /// (empty) history, then restores the original history afterward. This
     /// prevents context leakage between Task-mode subtasks.
     pub async fn execute_isolated(&self, prompt: &str) -> Result<String> {
-        let saved_history = {
-            let mut guard = self.session.conversation_history.write().await;
-            std::mem::take(&mut *guard)
-        };
+        self.execute_isolated_with_context(prompt, SubAgentContext::default())
+            .await
+    }
 
+    /// Execute a Task-mode prompt with fresh history while preserving explicit
+    /// top-level request context for loop-dispatched specialist workers.
+    ///
+    /// `BridgeAgentExecutor` uses this to carry `ExecutionContext.task_input`
+    /// into `SubAgentContext.original_request`; `stage_run` may quote a bounded,
+    /// lower-priority excerpt into its per-org worker objective. Isolation and
+    /// history restoration remain identical to [`Self::execute_isolated`].
+    pub async fn execute_isolated_with_context(
+        &self,
+        prompt: &str,
+        context: SubAgentContext,
+    ) -> Result<String> {
         // Use depth=0 so Task-mode primary executes with the same restricted
-        // orchestration-only tool set as PentAGI's primary agent.
-        let subtask_ctx = SubAgentContext::default();
-
-        let result = self
-            .execute_with_context_inner(prompt, subtask_ctx, false, None)
-            .await;
-
-        {
-            let mut guard = self.session.conversation_history.write().await;
-            *guard = saved_history;
+        // orchestration-only tool set as PentAGI's primary agent. Callers must
+        // keep the supplied context at depth=0; a non-zero depth would select a
+        // different tool surface and is therefore rejected rather than silently
+        // changing Task-mode policy.
+        if context.depth != 0 {
+            return Err(anyhow::anyhow!(
+                "isolated Task-mode execution requires depth=0 context"
+            ));
         }
 
+        self.run_with_isolated_history(self.execute_with_context_inner(prompt, context, None))
+            .await
+    }
+
+    /// Restore a backup left by an aborted/panicked isolated execution.
+    ///
+    /// Acquire the async history lock *before* taking the synchronous backup.
+    /// If this future is itself cancelled while waiting, the backup remains in
+    /// the recovery slot for the next owner.
+    pub(super) async fn restore_isolated_history_recovery(&self) -> bool {
+        let mut history = self.session.conversation_history.write().await;
+        let mut recovery = self
+            .isolated_history_recovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(saved_history) = recovery.take() else {
+            return false;
+        };
+        *history = saved_history;
+        true
+    }
+
+    /// Run one future with a fresh Task history while preserving durable chat
+    /// history across success, ordinary error/Stop, future abort, and panic.
+    ///
+    /// The backup is synchronously published immediately after `mem::take`, with
+    /// no await between those operations. Normal completion restores it here;
+    /// abort/panic leaves it for `begin_top_level_request` to recover before the
+    /// next execution.
+    async fn run_with_isolated_history<F, T>(&self, future: F) -> T
+    where
+        F: Future<Output = T>,
+    {
+        // A panic caught by an outer caller may re-enter under the same owner.
+        // Recover that prior scope before starting another isolated scope.
+        self.restore_isolated_history_recovery().await;
+
+        let saved_history = {
+            let mut history = self.session.conversation_history.write().await;
+            std::mem::take(&mut *history)
+        };
+        {
+            let mut recovery = self
+                .isolated_history_recovery
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            debug_assert!(recovery.is_none());
+            *recovery = Some(saved_history);
+        }
+
+        let result = future.await;
+        self.restore_isolated_history_recovery().await;
         result
     }
 
     /// Execute with rich content (text + images).
+    ///
+    /// Production top-level callers must already hold the bridge's universal
+    /// request lease. Cancellation is reset only by successful acquisition.
     ///
     /// Multi-modal prompts route through this entry point for vision-capable
     /// models. See [`AgentBridge::execute_with_content_and_context`] for the
@@ -133,10 +197,6 @@ impl AgentBridge {
                 "Maximum agent recursion depth ({}) exceeded",
                 MAX_AGENT_DEPTH
             ));
-        }
-
-        if context.depth == 0 {
-            self.reset_cancelled();
         }
 
         let turn_id = uuid::Uuid::new_v4().to_string();
@@ -225,15 +285,13 @@ impl AgentBridge {
         prompt: &str,
         context: SubAgentContext,
     ) -> Result<String> {
-        self.execute_with_context_inner(prompt, context, true, None)
-            .await
+        self.execute_with_context_inner(prompt, context, None).await
     }
 
     async fn execute_with_context_inner(
         &self,
         prompt: &str,
         context: SubAgentContext,
-        reset_top_level_cancel: bool,
         turn_instructions: Option<&str>,
     ) -> Result<String> {
         if context.depth >= MAX_AGENT_DEPTH {
@@ -241,13 +299,6 @@ impl AgentBridge {
                 "Maximum agent recursion depth ({}) exceeded",
                 MAX_AGENT_DEPTH
             ));
-        }
-
-        // Only reset at the top level; sub-agents share the same `cancelled`
-        // flag and must not clear a cancellation the user triggered
-        // mid-execution.
-        if reset_top_level_cancel && context.depth == 0 {
-            self.reset_cancelled();
         }
 
         let turn_id = uuid::Uuid::new_v4().to_string();
@@ -530,5 +581,190 @@ impl AgentBridge {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod isolated_history_tests {
+    use std::any::Any;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use golish_core::runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
+
+    use super::AgentBridge;
+
+    #[derive(Debug)]
+    struct MockRuntime;
+
+    #[async_trait]
+    impl GolishRuntime for MockRuntime {
+        fn emit(&self, _event: RuntimeEvent) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+
+        async fn request_approval(
+            &self,
+            _request_id: String,
+            _tool_name: String,
+            _args: serde_json::Value,
+            _risk_level: String,
+        ) -> Result<ApprovalResult, RuntimeError> {
+            Err(RuntimeError::ApprovalTimeout(0))
+        }
+
+        fn is_interactive(&self) -> bool {
+            false
+        }
+
+        fn auto_approve(&self) -> bool {
+            false
+        }
+
+        async fn shutdown(&self) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    async fn real_bridge() -> (tempfile::TempDir, Arc<AgentBridge>) {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let bridge = AgentBridge::new_openrouter_with_runtime(
+            workspace.path().to_path_buf(),
+            "test-model",
+            "test-key",
+            None,
+            Arc::new(MockRuntime),
+        )
+        .await
+        .expect("test bridge");
+        (workspace, Arc::new(bridge))
+    }
+
+    async fn seed_history(bridge: &AgentBridge) -> String {
+        bridge
+            .restore_conversation_history(vec![
+                ("user".to_string(), "durable user".to_string()),
+                ("assistant".to_string(), "durable assistant".to_string()),
+            ])
+            .await;
+        format!("{:?}", *bridge.session.conversation_history.read().await)
+    }
+
+    async fn overwrite_with_temporary_history(bridge: &AgentBridge) {
+        bridge
+            .restore_conversation_history(vec![(
+                "user".to_string(),
+                "temporary isolated content".to_string(),
+            )])
+            .await;
+    }
+
+    #[tokio::test]
+    async fn isolated_history_restores_on_success_error_and_stop() {
+        let (_workspace, bridge) = real_bridge().await;
+        let baseline = seed_history(&bridge).await;
+        let request = bridge.begin_top_level_request().await.unwrap();
+
+        let inner = bridge.clone();
+        let success = bridge
+            .run_with_isolated_history(async move {
+                overwrite_with_temporary_history(&inner).await;
+                Ok::<_, &'static str>("ok")
+            })
+            .await;
+        assert_eq!(success, Ok("ok"));
+        assert_eq!(
+            format!("{:?}", *bridge.session.conversation_history.read().await),
+            baseline
+        );
+
+        let inner = bridge.clone();
+        let failed = bridge
+            .run_with_isolated_history(async move {
+                overwrite_with_temporary_history(&inner).await;
+                Err::<(), _>("ordinary error")
+            })
+            .await;
+        assert_eq!(failed, Err("ordinary error"));
+        assert_eq!(
+            format!("{:?}", *bridge.session.conversation_history.read().await),
+            baseline
+        );
+
+        let inner = bridge.clone();
+        let stopped = bridge
+            .run_with_isolated_history(async move {
+                overwrite_with_temporary_history(&inner).await;
+                inner.cancel();
+                Err::<(), _>("stopped")
+            })
+            .await;
+        assert_eq!(stopped, Err("stopped"));
+        assert!(bridge.is_cancelled());
+        assert_eq!(
+            format!("{:?}", *bridge.session.conversation_history.read().await),
+            baseline
+        );
+
+        bridge
+            .clear_top_level_request_state(&request)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn next_owner_recovers_history_after_real_future_abort() {
+        let (_workspace, bridge) = real_bridge().await;
+        let baseline = seed_history(&bridge).await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task_bridge = bridge.clone();
+        let task = tokio::spawn(async move {
+            let _request = task_bridge.begin_top_level_request().await.unwrap();
+            task_bridge
+                .run_with_isolated_history(async move {
+                    let _ = started_tx.send(());
+                    std::future::pending::<()>().await;
+                })
+                .await;
+        });
+
+        started_rx.await.unwrap();
+        assert_eq!(bridge.conversation_history_len().await, 0);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+
+        let next = bridge.begin_top_level_request().await.unwrap();
+        assert_eq!(
+            format!("{:?}", *bridge.session.conversation_history.read().await),
+            baseline
+        );
+        bridge.clear_top_level_request_state(&next).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn next_owner_recovers_history_after_async_panic() {
+        let (_workspace, bridge) = real_bridge().await;
+        let baseline = seed_history(&bridge).await;
+        let task_bridge = bridge.clone();
+        let task = tokio::spawn(async move {
+            let _request = task_bridge.begin_top_level_request().await.unwrap();
+            task_bridge
+                .run_with_isolated_history(async move {
+                    panic!("simulated isolated execution panic");
+                })
+                .await;
+        });
+
+        assert!(task.await.unwrap_err().is_panic());
+        let next = bridge.begin_top_level_request().await.unwrap();
+        assert_eq!(
+            format!("{:?}", *bridge.session.conversation_history.read().await),
+            baseline
+        );
+        bridge.clear_top_level_request_state(&next).await.unwrap();
     }
 }

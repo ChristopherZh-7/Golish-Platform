@@ -21,7 +21,7 @@
 
 | 子模块 | 说明 |
 |---|---|
-| `recon` | recon 出站端口（`ReconTargetsPort`/`ReconScansPort`/`ReconDirectoryPort`/… + `Pg*Adapter`）；`ReconTargetsPort::in_scope_values_created_before` 用 `targets.created_at <= cutoff` 给 wave-aware stage 冻结资产轴；`ReconDirectoryPort` 提供 `directory_entries` list / exists / insert；`ReconScansPort` 提供 `api_endpoints` insert / list / count + `api_endpoints_upsert_merge_params`（`ON CONFLICT (target_id,url,method)` 并集合并 params，给 js_extract AI param recipe 用）/ js_analysis / fingerprints / passive_scans |
+| `recon` | recon 出站端口（`ReconTargetsPort`/`ReconScansPort`/`ReconDirectoryPort`/… + `Pg*Adapter`）；`ReconTargetsPort::in_scope_values_created_before` 用 `targets.created_at <= cutoff` 给 wave-aware stage 冻结资产轴；`ReconDirectoryPort` 的 target-bound list 与 `ReconAssetsPort` / `ReconScansPort` 的 target-bound list/count/stats adapter 都走 repo current-owner reads，只返回 child project 仍匹配 current in-scope target 的行；`ReconDirectoryPort` 另提供显式 project list / exists / insert，`ReconScansPort` 另提供 `api_endpoints` insert + params merge / js_analysis / fingerprints / passive_scans。Active Enumeration 的 JS/browser/route producer 必须调用 `*_guarded` 变体并传 `TargetWriteGuard`，让 adapter 在同一短事务锁 target raw snapshot 后写业务行，不能用旧的 unguarded 方法替代。长时 route producer 进一步使用 `directory_entry_add_guarded_if_attempt_current`，同时传 `TechniqueOutcomeAttemptGuard + run/origin/DIR`；adapter 返回 `Applied|Superseded`，并在同一短事务锁 target、operation epoch、engagement subtree 与 current generation 后才写 `directory_entries`。 |
 | `pentest` / `vuln` / `agent` / `platform` | 各服务出站端口 + adapter |
 
 ## 关键文件
@@ -39,6 +39,7 @@
 
 - **铁律**：app 服务**横向**读写必须走端口（`Arc<dyn *Port>`），**禁止**直接 `golish_db::repo::<别家>`；这是 ALLOWLIST 从 28→0 的成果，别开倒车。
 - `*Port` trait 必须 object-safe（remote-ready）：只序列化参数，无 `PgPool`/闭包/泛型。
+- `TargetWriteGuard` 是可序列化的 DB-layer ownership witness；guarded recon port 只负责一次短 DB transaction，严禁把浏览器/HTTP/LLM 等长耗操作包进 target row lock。
 
 ## 测试入口
 

@@ -264,7 +264,10 @@ impl TaskOrchestrator {
                         self.fetch_in_scope_assets_for_gate(planned, task_id).await;
                     let asset_types = self.fetch_in_scope_typed_assets_for_gate(planned).await;
                     let web_capable_assets = self
-                        .fetch_enumeration_web_capable_assets_for_gate(planned)
+                        .fetch_web_capable_assets_for_gate(planned, task_id)
+                        .await;
+                    let not_applicable_coverage = self
+                        .fetch_not_applicable_coverage_for_gate(planned, task_id)
                         .await;
                     let in_scope_target_types =
                         self.fetch_in_scope_target_types_for_gate(planned).await;
@@ -292,6 +295,7 @@ impl TaskOrchestrator {
                             in_scope_assets,
                             asset_types,
                             web_capable_assets,
+                            not_applicable_coverage,
                             in_scope_target_types,
                             evidence_facts,
                             source_queries,
@@ -465,7 +469,10 @@ impl TaskOrchestrator {
         let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned, task_id).await;
         let asset_types = self.fetch_in_scope_typed_assets_for_gate(planned).await;
         let web_capable_assets = self
-            .fetch_enumeration_web_capable_assets_for_gate(planned)
+            .fetch_web_capable_assets_for_gate(planned, task_id)
+            .await;
+        let not_applicable_coverage = self
+            .fetch_not_applicable_coverage_for_gate(planned, task_id)
             .await;
         let in_scope_target_types = self.fetch_in_scope_target_types_for_gate(planned).await;
         let evidence_facts = self
@@ -489,6 +496,7 @@ impl TaskOrchestrator {
                 in_scope_assets,
                 asset_types,
                 web_capable_assets,
+                not_applicable_coverage,
                 in_scope_target_types,
                 evidence_facts,
                 source_queries,
@@ -678,6 +686,7 @@ impl TaskOrchestrator {
         queue: &[PlannedSubtask],
         executor: &dyn AgentExecutor,
         resume: bool,
+        request_input_override: Option<&str>,
     ) -> anyhow::Result<String> {
         use crate::harness::operation_flow::{
             build_runner_graph, ChannelStageRunner, OperationFlowState, StageRunRequest,
@@ -692,12 +701,20 @@ impl TaskOrchestrator {
                 _ => (None, None),
             };
 
-        let task_input = crate::db_shim::tasks::get(&*self.repo, task_id)
+        let durable_task_input = crate::db_shim::tasks::get(&*self.repo, task_id)
             .await
             .ok()
             .flatten()
             .map(|t| t.input)
             .unwrap_or_default();
+        // Keep the task row as the durable original operation objective, but let
+        // a resumed top-level request steer this one execution. This is the seam
+        // that later becomes Bridge `SubAgentContext.original_request` and the
+        // bounded operator-constraint block in each stage_run worker objective.
+        // Blank continuation input deliberately preserves the historical
+        // behavior by falling back to the durable original.
+        let task_input =
+            resolve_request_local_task_input(durable_task_input, request_input_override);
         // Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): bind
         // this operation to its scoping-confirmed engagement root org. Prefer the
         // explicitly-set id (CLI seed path) and persist it to operation_state for
@@ -1416,17 +1433,20 @@ impl TaskOrchestrator {
 
     /// Phase 2 ①③ seam: fetch the authoritative in-scope asset set
     /// (recon-populated `targets.scope='in'`) for the harness coverage gate.
-    /// Returns `None` when the subtask carries no harness stage, the DB has no
-    /// in-scope assets, or the lookup errors — so `coverage_complete` keeps its
-    /// self-reported fallback. An empty set must NEVER be injected (it would
-    /// vacuously satisfy coverage), hence the explicit non-empty guard.
+    /// Returns `None` when the subtask carries no harness stage, the lookup
+    /// errors, or no authoritative Enumeration coverage snapshot exists. A
+    /// successful Enumeration snapshot preserves `Some([])`: it proves the
+    /// stage denominator is genuinely empty and therefore vacuously complete.
     async fn fetch_in_scope_assets_for_gate(
         &self,
         planned: &PlannedSubtask,
         task_id: Uuid,
     ) -> Option<Vec<String>> {
         // Only stage-tagged subtasks run a gate; skip the DB hit otherwise.
-        planned.harness_stage.as_ref()?;
+        let stage = planned.harness_stage.as_ref()?.stage_kind;
+        let stage_started_at = self
+            .active_stage_started_at_for_gate(planned, task_id)
+            .await;
         let wave_cutoff = self.asset_wave_cutoff_for_gate(planned, task_id).await;
         let result = match wave_cutoff {
             Some(cutoff) => {
@@ -1437,8 +1457,41 @@ impl TaskOrchestrator {
             None => self.repo.in_scope_assets(self.harness_org_id).await,
         };
         match result {
-            Ok(v) if !v.is_empty() => {
+            Ok(v) => {
                 let v = self.exclude_dead_assets_if_opted_in(planned, v).await;
+                if stage == crate::harness::StageKind::Enumeration {
+                    if let (Some(org_id), Some(session_id)) =
+                        (self.harness_org_id, self.chat_session_id.as_deref())
+                    {
+                        if let Ok(snapshot) = self
+                            .repo
+                            .stage_asset_coverage(
+                                org_id,
+                                stage.as_str(),
+                                Some(session_id),
+                                stage_started_at,
+                                None,
+                                None,
+                            )
+                            .await
+                        {
+                            if snapshot
+                                .get("assets")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some()
+                            {
+                                let (origins, _) = crate::harness::org_gate::enumeration_axis_from_coverage_snapshot(&snapshot);
+                                tracing::info!(
+                                    target: "harness::hook",
+                                    asset_count = origins.len(),
+                                    org_id = %org_id,
+                                    "injecting exact Web Origin axis into Enumeration gate"
+                                );
+                                return Some(origins);
+                            }
+                        }
+                    }
+                }
                 tracing::info!(
                     target: "harness::hook",
                     asset_count = v.len(),
@@ -1448,7 +1501,6 @@ impl TaskOrchestrator {
                 );
                 Some(v)
             }
-            Ok(_) => None,
             Err(e) => {
                 tracing::warn!(
                     target: "harness::hook",
@@ -1464,9 +1516,9 @@ impl TaskOrchestrator {
     /// state §5.2), subtask-gate path (mirrors `org_gate`). When the subtask's
     /// stage spec opts in via `skip_dead_assets` (enumeration onward — never EAS),
     /// drop assets EAS confirmed dead so a dead host no longer forces a probe /
-    /// `checked_empty`. Guarded so it never empties a non-empty set (all dead ⇒
-    /// keep them, else the gate would see an empty axis and fall back to
-    /// self-reported). Only `'dead'` is dropped (`'unreachable'` may be transient).
+    /// `checked_empty`. All-dead is an authoritative zero denominator, distinct
+    /// from a failed asset lookup. Only `'dead'` is dropped (`'unreachable'` may
+    /// be transient).
     async fn exclude_dead_assets_if_opted_in(
         &self,
         planned: &PlannedSubtask,
@@ -1496,7 +1548,7 @@ impl TaskOrchestrator {
             .filter(|a| !dead.contains(*a))
             .cloned()
             .collect();
-        if survivors.is_empty() || survivors.len() == assets.len() {
+        if survivors.len() == assets.len() {
             return assets;
         }
         tracing::info!(
@@ -1519,6 +1571,16 @@ impl TaskOrchestrator {
         if !spec.asset_wave_barrier {
             return None;
         }
+        self.active_stage_started_at_for_gate(planned, task_id)
+            .await
+    }
+
+    async fn active_stage_started_at_for_gate(
+        &self,
+        planned: &PlannedSubtask,
+        task_id: Uuid,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let stage = planned.harness_stage.as_ref()?.stage_kind;
         let state = crate::db_shim::operation_state::get(&*self.repo, task_id)
             .await
             .ok()
@@ -1551,36 +1613,93 @@ impl TaskOrchestrator {
         }
     }
 
-    /// Enumeration IP-web seam (design 2026-07-01): fetch IP/CIDR assets that
-    /// EAS/httpx has proven are HTTP services. Empty/failed lookup keeps the old
-    /// bare-IP exclusion behavior.
-    async fn fetch_enumeration_web_capable_assets_for_gate(
+    /// Web-capable seam: for EAS, fetch assets that now require WhatWeb
+    /// web-stack coverage; for Enumeration, fetch IP/CIDR web roots proven by
+    /// EAS/httpx. Empty/failed lookup keeps the previous denominator behavior.
+    async fn fetch_web_capable_assets_for_gate(
         &self,
         planned: &PlannedSubtask,
+        task_id: Uuid,
     ) -> Option<Vec<String>> {
         let stage = planned.harness_stage.as_ref()?.stage_kind;
-        if stage != crate::harness::StageKind::Enumeration {
-            return None;
-        }
         let spec = crate::harness::load_embedded_stage_spec(stage).ok()?;
-        if !spec.enum_ip_web_coverage {
-            return None;
-        }
-        match self
-            .repo
-            .enumeration_web_capable_assets(self.harness_org_id)
-            .await
-        {
-            Ok(v) if !v.is_empty() => Some(v),
-            Ok(_) => None,
-            Err(e) => {
-                tracing::warn!(
-                    target: "harness::hook",
-                    error = %e,
-                    "web-capable IP lookup failed; enumeration gate keeps bare-IP exclusion"
-                );
-                None
+        match stage {
+            crate::harness::StageKind::Enumeration if spec.enum_ip_web_coverage => match self
+                .repo
+                .enumeration_web_capable_assets(self.harness_org_id)
+                .await
+            {
+                Ok(v) if !v.is_empty() => Some(v),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        error = %e,
+                        "web-capable IP lookup failed; enumeration gate keeps bare-IP exclusion"
+                    );
+                    None
+                }
+            },
+            crate::harness::StageKind::ExternalAttackSurface => {
+                let run_start = if spec.freshness_window {
+                    crate::db_shim::operation_state::get(&*self.repo, task_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|s| s.stage_started_at)
+                } else {
+                    None
+                };
+                match self
+                    .repo
+                    .eas_web_capable_assets(self.harness_org_id, run_start)
+                    .await
+                {
+                    Ok(v) if !v.is_empty() => Some(v),
+                    Ok(_) => None,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "harness::hook",
+                            error = %e,
+                            "EAS web-capable lookup failed; web fingerprint coverage stays evidence-gated"
+                        );
+                        None
+                    }
+                }
             }
+            _ => None,
+        }
+    }
+
+    async fn fetch_not_applicable_coverage_for_gate(
+        &self,
+        planned: &PlannedSubtask,
+        task_id: Uuid,
+    ) -> Option<Vec<(String, String)>> {
+        let stage = planned.harness_stage.as_ref()?.stage_kind;
+        let org_id = self.harness_org_id?;
+        match stage {
+            crate::harness::StageKind::ExternalAttackSurface => {
+                let sid = self.chat_session_id.as_deref()?;
+                let spec = crate::harness::load_embedded_stage_spec(stage).ok()?;
+                let run_start = if spec.freshness_window {
+                    crate::db_shim::operation_state::get(&*self.repo, task_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|s| s.stage_started_at)
+                } else {
+                    None
+                };
+                let rows = self
+                    .repo
+                    .technique_outcome_facts_fresh(org_id, sid, run_start)
+                    .await;
+                let pairs =
+                    crate::harness::org_gate::eas_service_not_applicable_from_port_outcomes(&rows);
+                (!pairs.is_empty()).then_some(pairs)
+            }
+            _ => None,
         }
     }
 
@@ -1738,7 +1857,9 @@ impl TaskOrchestrator {
                 false,
                 vec![format!(
                     "stage not complete: {} of {} in-scope orgs have not freshly passed this \
-                     stage's per-org gate — re-run stage_run for the missing org(s): {:?}",
+                     stage's per-org gate — re-run stage_run for the missing org(s) only while \
+                     its prior result has retry_budget_exhausted=false. If it returned true, stop \
+                     this request BLOCKED and resume from a separate user continuation. Missing: {:?}",
                     missing.len(),
                     org_ids.len(),
                     missing
@@ -1753,13 +1874,16 @@ impl TaskOrchestrator {
             }
             Some(_) => vec![
                 "stage_run pass_token mismatch (stale or wrong stage) — re-run \
-                             stage_run for this stage and submit the fresh pass_token it returns"
+                             stage_run for this stage and submit the fresh pass_token it returns; \
+                             if its prior result had retry_budget_exhausted=true, stop this request \
+                             BLOCKED instead of re-entering it"
                     .to_string(),
             ],
             None => vec![
                 "missing stage_run pass_token — call stage_run for this stage, then \
                           submit a claim {kind:\"stage_run_pass_token\", summary:<pass_token>} \
-                          from its result"
+                          from its result. If stage_run already returned \
+                          retry_budget_exhausted=true in this request, stop BLOCKED instead"
                     .to_string(),
             ],
         };
@@ -1785,8 +1909,9 @@ impl TaskOrchestrator {
         // Per-dimension freshness window (design 2026-06-22 §3.2): when this stage's
         // spec opts in (`freshness_window`), anchor the DB-truth org-intel facts to
         // this stage-run start (`operation_state.stage_started_at`) so a stale row
-        // from a previous run can't satisfy a cell this run. Spec off / unresolved /
-        // missing operation_state ⇒ None = presence-only (gray-switch safe).
+        // from a previous run can't satisfy a cell this run. For Enumeration, a
+        // missing cutoff later disables outcome projection entirely; other stages
+        // retain their historical presence-only fallback.
         let run_start = if crate::harness::load_embedded_stage_spec(stage)
             .map(|s| s.freshness_window)
             .unwrap_or(false)
@@ -1801,7 +1926,19 @@ impl TaskOrchestrator {
         };
 
         // ① 账本派生（现有路径）：audit_log 三列齐全的行 → EvidenceFact。
-        let mut facts: Vec<EvidenceFact> = match self.repo.evidence_facts_for_session(sid).await {
+        let ledger_rows = if stage == crate::harness::StageKind::ExternalAttackSurface {
+            match (self.harness_org_id, run_start) {
+                (Some(organization_id), Some(since)) => {
+                    self.repo
+                        .eas_evidence_facts_for_session_org_fresh(sid, organization_id, since)
+                        .await
+                }
+                _ => Ok(Vec::new()),
+            }
+        } else {
+            self.repo.evidence_facts_for_session(sid).await
+        };
+        let mut facts: Vec<EvidenceFact> = match ledger_rows {
             Ok(rows) => rows
                 .into_iter()
                 .filter_map(|(asset, technique, outcome, evidence_id)| {
@@ -1809,6 +1946,7 @@ impl TaskOrchestrator {
                     let outcome = match outcome.as_str() {
                         "found" => EvidenceOutcome::Found,
                         "empty" => EvidenceOutcome::Empty,
+                        "blocked" => EvidenceOutcome::Blocked,
                         // T2：失败检查（gray-switch GOLISH_FAILURE_OUTCOME_ERROR）记 error。
                         "error" => EvidenceOutcome::Error,
                         _ => return None,
@@ -1833,8 +1971,9 @@ impl TaskOrchestrator {
 
         // ② DB 业务表真值派生（设计 2026-06-12 §5.3）：org 已隔离的 in-scope 资产集上，
         // 业务表真有数据的 (asset × technique) 作为 Found 合并（只产 Found，哨兵 id=0）。
-        // in_scope_assets 缺失（GUI/chat 路径 org_id=None 且无注入）→ 跳过，退回纯账本
-        // 投影（零回归）。
+        // Enumeration 的四个内容轴会在 apply_technique_outcome_rows 中先清掉这些兼容
+        // facts，只认当前 exact-origin outcome；其他阶段保持原有 DB truth 语义。
+        // in_scope_assets 缺失（GUI/chat 路径 org_id=None 且无注入）→ 跳过。
         if let Some(assets) = in_scope_assets {
             match self
                 .repo
@@ -1871,46 +2010,36 @@ impl TaskOrchestrator {
             project_org_level_subsidiary_facts(&mut facts, assets);
         }
 
-        // #4/E3 (设计 2026-06-23-technique-outcomes-provenance): **始终**从
-        // technique_outcomes 物化表投影 EvidenceFact 并 **union** 进 facts（dual-read：
-        // 与现有 ledger + coverage_truth 并存；additive + fail-safe 到空，无灰度开关）。
-        // run_id = chat session；org 绑定才读（表 org NOT NULL）。outcome `blocked`→Error
-        // （与 error 同终态语义；gate 的 EvidenceOutcome 无 Blocked 变体）。
+        // #4/E3 (设计 2026-06-23-technique-outcomes-provenance): 从
+        // technique_outcomes 物化表投影 EvidenceFact。普通 stage 仍与 ledger/DB facts
+        // additive union；Enumeration 会先移除四个内容轴的兼容 facts，再以当前 exact-origin
+        // rows 覆盖。run_id = chat session；org 绑定才读（表 org NOT NULL）。
         //
         // 护栏 4 (2026-07-02-gate-capability-ledger Phase 1)：套 `run_start` freshness
         // cutoff（与上面 db_truth_facts 同源），避免同 session 旧 stage-run 采集的
-        // technique_outcomes 行泄漏进本 stage-run 的 coverage 判定。spec 未开
-        // freshness_window 时 run_start=None → presence-only（零回归）。
-        if let Some(org_id) = self.harness_org_id {
-            let projected: Vec<EvidenceFact> = self
-                .repo
-                .technique_outcome_facts_fresh(org_id, sid, run_start)
-                .await
-                .into_iter()
-                .filter_map(|(asset, technique, outcome, evidence_id)| {
-                    let outcome = match outcome.as_str() {
-                        "found" => EvidenceOutcome::Found,
-                        "empty" => EvidenceOutcome::Empty,
-                        "error" | "blocked" => EvidenceOutcome::Error,
-                        _ => return None,
-                    };
-                    Some(EvidenceFact {
-                        asset,
-                        technique,
-                        outcome,
-                        evidence_id,
-                    })
-                })
-                .collect();
-            if !projected.is_empty() {
-                tracing::info!(
-                    target: "harness::hook",
-                    technique_outcome_facts = projected.len(),
-                    "#4: merged technique_outcomes projection into coverage gate (dual-read union)"
-                );
-                facts.extend(projected);
+        // technique_outcomes 行泄漏进本 stage-run 的 coverage 判定。Enumeration 缺
+        // run_start 时 fail-closed，不读旧行；未开启 freshness 的其他 stage 仍 presence-only。
+        let outcome_rows = match self.harness_org_id {
+            Some(org_id)
+                if crate::harness::org_gate::stage_accepts_outcome_projection(
+                    stage,
+                    run_start.is_some(),
+                ) =>
+            {
+                self.repo
+                    .technique_outcome_facts_fresh(org_id, sid, run_start)
+                    .await
             }
+            _ => Vec::new(),
+        };
+        if !outcome_rows.is_empty() {
+            tracing::info!(
+                target: "harness::hook",
+                technique_outcome_facts = outcome_rows.len(),
+                "#4: applying current technique_outcomes projection to coverage gate"
+            );
         }
+        crate::harness::org_gate::apply_technique_outcome_rows(stage, &mut facts, &outcome_rows);
 
         if facts.is_empty() {
             return None;
@@ -1927,7 +2056,10 @@ impl TaskOrchestrator {
         &self,
         planned: &PlannedSubtask,
     ) -> Option<Vec<crate::harness::SourceQueryFact>> {
-        planned.harness_stage.as_ref()?;
+        let stage = planned.harness_stage.as_ref()?.stage_kind;
+        if !crate::harness::org_gate::stage_accepts_source_query_completion(stage) {
+            return None;
+        }
         let org_id = self.harness_org_id?;
         let sid = self.chat_session_id.as_deref()?;
         let rows = self.repo.source_query_facts(org_id, sid).await;
@@ -2420,7 +2552,7 @@ fn gate_expected_techniques(
 ) -> Option<Vec<String>> {
     // 委托共享 helper（设计 2026-06-23-submit-preview-authoritative-context）：
     // stage-close 与 submit 预检共用同一派生，保证两路期望技术口径一致。
-    crate::harness::sprint_contract::expected_techniques_for_target_types(stage, target_types)
+    crate::harness::org_gate::stage_gate_expected_techniques(stage, target_types)
 }
 
 /// Phase 2 (2026-06-12-redteam-phase2) · org 级 SUBSIDIARY 事实展开: 账本里
@@ -2496,6 +2628,7 @@ fn apply_harness_gate_hook(
     in_scope_assets: Option<Vec<String>>,
     asset_types: Option<std::collections::HashMap<String, String>>,
     web_capable_assets: Option<Vec<String>>,
+    not_applicable_coverage: Option<Vec<(String, String)>>,
     in_scope_target_types: Vec<String>,
     evidence_facts: Option<Vec<crate::harness::gate::rule_engine::EvidenceFact>>,
     source_queries: Option<Vec<crate::harness::SourceQueryFact>>,
@@ -2661,9 +2794,10 @@ fn apply_harness_gate_hook(
     // Option（fetch helper 预归一）+ source rows → unwrap_or_default 喂 builder、build() 再归一，
     // 与手搓 GateContext{} 逐字节同构（行为保持）。
     let gate_ctx = crate::harness::GateContextBuilder::new()
-        .in_scope_assets(in_scope_assets.unwrap_or_default())
+        .authoritative_in_scope_assets(in_scope_assets)
         .asset_types_map(asset_types.unwrap_or_default())
         .web_capable_assets(web_capable_assets.unwrap_or_default())
+        .not_applicable_coverage(not_applicable_coverage.unwrap_or_default())
         .extend_evidence_facts(evidence_facts.unwrap_or_default())
         .extend_source_queries(source_queries.unwrap_or_default())
         .expected_techniques(expected_techniques)
@@ -3100,7 +3234,7 @@ fn synthesize_stage_subtask(
                 );
             } else {
                 steps.push_str(
-                    "This stage is per-org specialist work. Do NOT call recon_list_providers, recon_discover_subsidiaries, recon_map_assets, recon_lookup_whois, or any sub_agent_* directly from the primary stage agent. Instead call stage_run with the confirmed root org plus subsidiaries from scoping; the recon worker receives the provider-survey methodology and submits each per-org deliverable. Re-run stage_run only for blocked orgs until all pass, then submit the stage_run pass token via submit_stage_deliverable to close target_intel.",
+                    "This stage is per-org specialist work. Do NOT call recon_list_providers, recon_discover_subsidiaries, recon_map_assets, recon_lookup_whois, or any sub_agent_* directly from the primary stage agent. Instead call stage_run with the confirmed root org plus subsidiaries from scoping; the recon worker receives the provider-survey methodology and submits each per-org deliverable. Re-run stage_run only for blocked orgs while retry_budget_exhausted=false. If retry_budget_exhausted=true, stop this request BLOCKED; a separate user continuation may resume the saved worker with a fresh bounded budget. After all orgs pass, submit the stage_run pass token via submit_stage_deliverable to close target_intel.",
                 );
             }
             (
@@ -3205,10 +3339,55 @@ fn paused_disposition(
     }
 }
 
+/// Resolve the input exposed to agents for this top-level execution without
+/// mutating the task's durable original input.
+///
+/// Fresh runs pass no override and therefore use `durable_task_input`. Resume
+/// runs pass the current user message; a non-blank message becomes the
+/// request-local operator input, while an empty/whitespace-only continuation
+/// explicitly falls back to the durable original.
+fn resolve_request_local_task_input(
+    durable_task_input: String,
+    request_input_override: Option<&str>,
+) -> String {
+    request_input_override
+        .filter(|input| !input.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or(durable_task_input)
+}
+
 #[cfg(test)]
 mod dag_driven_helper_tests {
     use super::*;
     use crate::harness::StageKind;
+
+    #[test]
+    fn request_local_resume_input_overrides_durable_original_without_merging() {
+        let durable = "A: run Enumeration over the original exact-origin set".to_string();
+        let resumed = "B: do not call producers for the five unreachable exact origins";
+
+        let resolved = resolve_request_local_task_input(durable, Some(resumed));
+
+        assert_eq!(resolved, resumed);
+        assert!(
+            !resolved.contains("A:"),
+            "the worker must see current request B, not stale A"
+        );
+    }
+
+    #[test]
+    fn request_local_resume_input_fresh_and_blank_fall_back_to_durable_original() {
+        let durable = "A: original operation objective".to_string();
+
+        assert_eq!(
+            resolve_request_local_task_input(durable.clone(), None),
+            durable
+        );
+        assert_eq!(
+            resolve_request_local_task_input(durable.clone(), Some("  \n\t")),
+            durable
+        );
+    }
 
     #[test]
     fn missing_deliverable_outcome_carries_facts_for_the_refiner() {
@@ -3394,6 +3573,8 @@ mod dag_driven_helper_tests {
         assert!(s.description.contains("recon_map_assets"));
         assert!(s.description.contains("submit the stage_run pass token"));
         assert!(s.description.contains("recon worker"));
+        assert!(s.description.contains("retry_budget_exhausted=true"));
+        assert!(s.description.contains("separate user continuation"));
         assert!(!s
             .description
             .contains("Call recon_map_assets(organization_id=<org>)"));
@@ -3416,20 +3597,31 @@ mod dag_driven_helper_tests {
     // ── P3 ③ seam: dynamic expected_techniques in the gate hook ───────────────
 
     #[test]
-    fn gate_expected_techniques_ip_only_enumeration_drops_param() {
-        // IP-only scope → enumeration coverage matrix drops the web-only PARAM
-        // technique (parameter discovery is meaningless without a web service).
+    fn gate_expected_techniques_ip_only_enumeration_keeps_exact_origin_four_axes() {
         let t = super::gate_expected_techniques(StageKind::Enumeration, &["ip_address".into()])
             .expect("ip scope yields a technique set for enumeration");
-        assert!(!t.contains(&"GOLISH-ENUM-PARAM".to_string()));
-        assert!(t.contains(&"GOLISH-ENUM-DIR".to_string()));
+        assert_eq!(
+            t,
+            vec![
+                "GOLISH-ENUM-JS".to_string(),
+                "GOLISH-ENUM-DIR".to_string(),
+                "GOLISH-ENUM-PARAM".to_string(),
+                "GOLISH-ENUM-JSAPI".to_string(),
+            ]
+        );
     }
 
     #[test]
-    fn gate_expected_techniques_none_when_no_target_types() {
-        // No asset-type info → None → coverage_complete keeps spec.expected_techniques
-        // (zero behavior change vs. the pre-P3 hardcoded None).
-        assert!(super::gate_expected_techniques(StageKind::Enumeration, &[]).is_none());
+    fn gate_expected_techniques_enumeration_stays_four_axes_without_target_types() {
+        assert_eq!(
+            super::gate_expected_techniques(StageKind::Enumeration, &[]).unwrap(),
+            vec![
+                "GOLISH-ENUM-JS".to_string(),
+                "GOLISH-ENUM-DIR".to_string(),
+                "GOLISH-ENUM-PARAM".to_string(),
+                "GOLISH-ENUM-JSAPI".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -3592,6 +3784,7 @@ mod harness_gate_hook_tests {
                 None,
                 None,
                 None,
+                None,
                 vec![],
                 None,
                 None,
@@ -3612,6 +3805,7 @@ mod harness_gate_hook_tests {
                 &p,
                 &ctx,
                 content.clone(),
+                None,
                 None,
                 None,
                 None,
@@ -4068,6 +4262,7 @@ mod missing_deliverable_fail_closed_tests {
                 None,
                 None,
                 None,
+                None,
                 vec![],
                 Some(facts),
                 None,
@@ -4099,6 +4294,7 @@ mod missing_deliverable_fail_closed_tests {
             &p,
             &ctx,
             "prose".to_string(),
+            None,
             None,
             None,
             None,

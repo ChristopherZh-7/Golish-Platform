@@ -31,6 +31,7 @@
 | `harness`（`gate` / `graph_engine`） | stage harness gate（Phase 1c） |
 | `db_traits` / `db_tracking` / `db_shim` / `memory_*` | repo/tracking 抽象 + 长期记忆；`OrgScopeUnit` / `org_subtree_units` 给 stage fan-out 提供 root subtree 权威组织集合 |
 | `SharedComponentsConfig` / `ExecutionMode` / `AgentMode`（re-export） | llm-client 配置 / 执行模式 |
+| `SessionCaptureBackend` | per-bridge sidecar lifecycle/capture；restore 支持 end/find/resume/start，禁止回退到 app-global sidecar |
 
 ## 依赖
 
@@ -69,6 +70,7 @@
 - 与 `golish-agent-runtime` 是**有意分家**（A2）：底层基础设施在此，流式 loop 在那；改这层会触发下游重编。
 - `db_traits::DbRepoProvider::org_subtree_units` 是 root-bound `stage_run` 的 scope truth 入口；默认实现只能给测试 double 兜底，生产实现必须返回 DB root+descendants 的 id/name/parent_id，避免续跑时靠模型重建 org 列表漏资产。
 - crate 级 `#![allow(too_many_arguments / needless_borrow / manual_async_fn)]` 是有意保留（宽 context 透传 / object-safe trait）。
+- `SessionCaptureBackend` 是 bridge-owned session truth；新增实现必须实现 legacy match + resume，full restore 不能绕过 trait 操作另一个全局实例。
 
 ## 测试入口
 

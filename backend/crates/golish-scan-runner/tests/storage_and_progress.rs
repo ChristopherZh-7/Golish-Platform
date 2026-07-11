@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use golish_db::repo::scoped::TargetWriteGuard;
 use golish_scan_runner::{ScanRunnerResult, ScanStorage, NUCLEI_CANCELLED};
 
 #[derive(Default)]
@@ -25,14 +26,13 @@ impl ScanStorage for MockScanStorage {
     async fn store_directory_entry(
         &self,
         _pool: &PgPool,
-        _target_id: Option<Uuid>,
+        _guard: &TargetWriteGuard,
         url: &str,
         status_code: Option<i32>,
         _content_length: Option<i32>,
         _lines: Option<i32>,
         _words: Option<i32>,
         tool: &str,
-        _project_path: Option<&str>,
     ) -> ScanRunnerResult<()> {
         self.calls.lock().push(format!(
             "{}|{}|{}",
@@ -43,6 +43,18 @@ impl ScanStorage for MockScanStorage {
                 .unwrap_or_else(|| "?".into())
         ));
         Ok(())
+    }
+}
+
+fn guard() -> TargetWriteGuard {
+    TargetWriteGuard {
+        target_id: Uuid::new_v4(),
+        organization_id: Some(Uuid::new_v4()),
+        project_path: "/workspace".to_string(),
+        scope: "in".to_string(),
+        name: "https://example.com/".to_string(),
+        value: "https://example.com/".to_string(),
+        ports: serde_json::json!([]),
     }
 }
 
@@ -59,18 +71,18 @@ async fn mock_storage_records_directory_entry() {
     let mock = MockScanStorage::default();
     let calls = mock.calls.clone();
     let storage: &dyn ScanStorage = &mock;
+    let guard = guard();
 
     storage
         .store_directory_entry(
             &pool,
-            None,
+            &guard,
             "https://example.com/admin",
             Some(200),
             Some(1024),
             Some(50),
             Some(120),
             "feroxbuster",
-            None,
         )
         .await
         .expect("mock cannot fail");
@@ -99,19 +111,19 @@ async fn mock_storage_records_multiple_calls_in_order() {
     let mock = MockScanStorage::default();
     let calls = mock.calls.clone();
     let storage: &dyn ScanStorage = &mock;
+    let guard = guard();
 
     for (i, url) in ["a", "b", "c"].iter().enumerate() {
         storage
             .store_directory_entry(
                 &pool,
-                None,
+                &guard,
                 url,
                 Some(200 + i as i32),
                 None,
                 None,
                 None,
                 "ferox",
-                None,
             )
             .await
             .unwrap();

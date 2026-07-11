@@ -24,10 +24,15 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use golish_agent_kit::harness::org_gate::extract_pass_token;
+use golish_agent_kit::db_traits::{StageAssetWaveView, TechniqueOutcomeFact};
+use golish_agent_kit::harness::org_gate::{
+    apply_technique_outcome_rows, eas_service_not_applicable_from_port_outcomes,
+    extract_pass_token, stage_accepts_outcome_projection, stage_accepts_source_query_completion,
+    stage_gate_expected_techniques, validated_enumeration_axis_from_coverage_snapshot,
+};
 use golish_agent_kit::harness::{
     load_embedded_stage_spec, validate_stage_gate_with_context, AttackCandidate, EvidenceFact,
-    EvidenceOutcome, GateContext, GateContextBuilder, SourceQueryFact, StageDeliverable, StageKind,
+    GateContext, GateContextBuilder, SourceQueryFact, StageDeliverable, StageKind,
 };
 use golish_core::Tool;
 
@@ -88,6 +93,19 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         Vec::new()
     }
 
+    /// Strict EAS projection for submit preview. No default fallback to
+    /// session-wide facts: providers that cannot prove producer org, current
+    /// target ownership and stage freshness return no authoritative EAS facts.
+    async fn eas_evidence_facts_for_session_org_fresh(
+        &self,
+        session_id: &str,
+        organization_id: Uuid,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<EvidenceFact> {
+        let _ = (session_id, organization_id, since);
+        Vec::new()
+    }
+
     /// DB business-table truth facts (`organizations.asns/.certificates/.intel`
     /// → ASN/CT/OSINT, projected per in-scope asset) for `org_id`. Found-only
     /// (coverage_truth never infers checked_empty). This is the HALF of the gate
@@ -132,6 +150,26 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         self.in_scope_assets(org_id).await
     }
 
+    async fn stage_asset_coverage(
+        &self,
+        organization_id: Uuid,
+        stage: StageKind,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
+    ) -> Result<Option<Value>> {
+        let _ = (
+            organization_id,
+            stage,
+            session_id,
+            stage_started_at,
+            current_wave_target_ids,
+            current_wave_asset_values,
+        );
+        Ok(None)
+    }
+
     /// In-scope typed assets `(value, targets.type)` for `org_id`. Feeds the
     /// submit preview's host-aware `asset_types` so coverage_complete classifies
     /// assets by AUTHORITATIVE type (matching the stage-close gate) instead of
@@ -172,8 +210,20 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         Vec::new()
     }
 
-    /// EAS SERVICE-FINGERPRINT not_applicable assets from DB truth: IP/CIDR rows
-    /// where only DNS/53 is open and no strong service/version surface exists.
+    /// EAS web-stack coverage denominator: all assets with a confirmed HTTP(S)
+    /// surface in the current EAS freshness window.
+    async fn eas_web_capable_assets(
+        &self,
+        org_id: Option<Uuid>,
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<String> {
+        let _ = (org_id, run_start);
+        Vec::new()
+    }
+
+    /// Legacy DNS/53-only projection seam retained for repository compatibility.
+    /// Exact-origin Enumeration excludes non-Web hosts from its denominator, and
+    /// therefore must not turn raw host rows into origin-level not_applicable cells.
     async fn eas_service_not_applicable_assets(
         &self,
         org_id: Option<Uuid>,
@@ -191,9 +241,19 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         &self,
         org_id: Uuid,
         run_id: &str,
-    ) -> Vec<(String, String, String, i64)> {
+    ) -> Vec<TechniqueOutcomeFact> {
         let _ = (org_id, run_id);
         Vec::new()
+    }
+
+    async fn technique_outcome_facts_fresh(
+        &self,
+        org_id: Uuid,
+        run_id: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<TechniqueOutcomeFact> {
+        let _ = since;
+        self.technique_outcome_facts(org_id, run_id).await
     }
 
     /// #5 source/provider terminal rows for source coverage. Default empty so
@@ -209,6 +269,19 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     ) -> Option<(StageKind, chrono::DateTime<chrono::Utc>)> {
         let _ = operation_id;
         None
+    }
+
+    /// Trusted durable running-wave context for submit preview. The concrete DB
+    /// bridge scopes this by `(operation, organization, stage)` and returns only
+    /// the cutoff and original target values needed by the coverage projection.
+    async fn stage_asset_wave_current_running(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage: StageKind,
+    ) -> Result<Option<StageAssetWaveView>> {
+        let _ = (operation_id, organization_id, stage);
+        Ok(None)
     }
 }
 
@@ -632,24 +705,46 @@ impl SubmitStageDeliverableTool {
         }
     }
 
-    async fn asset_wave_cutoff(
+    async fn active_stage_coverage_context(
         &self,
         repo: &Arc<dyn EvidenceLedgerQuery>,
         stage: StageKind,
-    ) -> Option<chrono::DateTime<chrono::Utc>> {
-        let spec = load_embedded_stage_spec(stage).ok()?;
-        if !spec.asset_wave_barrier {
-            return None;
-        }
+        organization_id: Option<Uuid>,
+    ) -> Result<
+        (
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<StageAssetWaveView>,
+        ),
+        String,
+    > {
         let operation_id = {
-            let src = self.operation_id_source.as_ref()?;
+            let Some(src) = self.operation_id_source.as_ref() else {
+                return Ok((None, None));
+            };
             *src.read().await
-        }?;
-        let (active_stage, started_at) = repo.operation_stage_started_at(operation_id).await?;
+        };
+        let Some(operation_id) = operation_id else {
+            return Ok((None, None));
+        };
+        let Some((active_stage, started_at)) = repo.operation_stage_started_at(operation_id).await
+        else {
+            return Ok((None, None));
+        };
         if active_stage != stage {
-            return None;
+            return Ok((None, None));
         }
-        Some(started_at)
+        if let Some(organization_id) = organization_id {
+            let wave = repo
+                .stage_asset_wave_current_running(operation_id, organization_id, stage)
+                .await
+                .map_err(|error| format!("failed to read current asset wave: {error}"))?;
+            if let Some(wave) = wave {
+                wave.validate_membership()
+                    .map_err(|error| format!("invalid current asset wave: {error}"))?;
+                return Ok((Some(wave.started_at), Some(wave)));
+            }
+        }
+        Ok((Some(started_at), None))
     }
 
     /// Build the gate context for the submit-time preview by projecting the
@@ -665,15 +760,43 @@ impl SubmitStageDeliverableTool {
     /// ALSO feed host-aware `asset_types` + dynamic `expected_techniques` so the
     /// preview matches the stage-close gate口径. Passed in (not read from env here)
     /// to keep the method deterministically testable.
-    async fn gate_context(&self, stage: StageKind, authoritative: bool) -> GateContext {
+    async fn gate_context(
+        &self,
+        stage: StageKind,
+        authoritative: bool,
+    ) -> Result<GateContext, String> {
+        let active_session_id = if stage == StageKind::Enumeration {
+            Some(
+                self.session_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|session_id| !session_id.is_empty())
+                    .ok_or_else(|| {
+                        "enumeration submit preview requires the active non-empty run/session id"
+                            .to_string()
+                    })?,
+            )
+        } else {
+            self.session_id.as_deref()
+        };
         let Some(repo) = self.evidence_repo.as_ref() else {
-            return GateContext::default();
+            if stage == StageKind::Enumeration {
+                return Err(
+                    "enumeration submit preview requires the trusted DB coverage repository"
+                        .to_string(),
+                );
+            }
+            return Ok(GateContext::default());
         };
         // (1) command-path ledger facts (DNS/WHOIS/SUBDOMAIN from dig/whois/
         //     subfinder), keyed by chat session.
-        let mut facts: Vec<EvidenceFact> = match self.session_id.as_deref() {
-            Some(sid) => repo.evidence_facts(sid).await,
-            None => Vec::new(),
+        let mut facts: Vec<EvidenceFact> = if stage == StageKind::ExternalAttackSurface {
+            Vec::new()
+        } else {
+            match active_session_id {
+                Some(sid) => repo.evidence_facts(sid).await,
+                None => Vec::new(),
+            }
         };
         // (2) org-keyed DB business-table truth (ASN/CT/OSINT) + authoritative
         //     asset axis — ONLY when a bound org is present. Techniques with no
@@ -693,24 +816,65 @@ impl SubmitStageDeliverableTool {
             Some(src) => *src.read().await,
             None => None,
         };
-        let wave_cutoff = self.asset_wave_cutoff(repo, stage).await;
+        if stage == StageKind::Enumeration && org_id.is_none() {
+            return Err(
+                "enumeration submit preview requires the active bound organization".to_string(),
+            );
+        }
+        let stage_spec = load_embedded_stage_spec(stage).ok();
+        let (stage_started_at, current_wave) = self
+            .active_stage_coverage_context(repo, stage, org_id)
+            .await?;
+        let current_wave_target_ids = current_wave.as_ref().map(|wave| wave.target_ids.clone());
+        let current_wave_asset_values = current_wave.as_ref().map(|wave| wave.asset_values.clone());
+        let wave_cutoff = stage_spec
+            .as_ref()
+            .is_some_and(|spec| spec.asset_wave_barrier)
+            .then_some(stage_started_at)
+            .flatten();
+        let freshness_cutoff = stage_spec
+            .as_ref()
+            .is_some_and(|spec| spec.freshness_window)
+            .then_some(stage_started_at)
+            .flatten();
+        if stage == StageKind::Enumeration && freshness_cutoff.is_none() {
+            return Err(
+                "enumeration submit preview requires the current stage_started_at freshness cutoff"
+                    .to_string(),
+            );
+        }
         let mut in_scope_assets: Vec<String> = Vec::new();
         let mut typed_assets: Vec<(String, String)> = Vec::new();
         let mut expected_techniques: Option<Vec<String>> = None;
         let mut source_queries: Vec<SourceQueryFact> = Vec::new();
         let mut web_capable_assets: Vec<String> = Vec::new();
         let mut not_applicable_coverage: Vec<(String, String)> = Vec::new();
+        let mut outcome_rows: Vec<TechniqueOutcomeFact> = Vec::new();
+        let mut authoritative_coverage_axis = false;
         if let Some(org_id) = org_id {
-            let assets = match wave_cutoff {
-                Some(cutoff) => {
-                    repo.in_scope_assets_created_before(Some(org_id), cutoff)
-                        .await
+            if stage == StageKind::ExternalAttackSurface {
+                if let (Some(session_id), Some(since)) =
+                    (self.session_id.as_deref(), freshness_cutoff)
+                {
+                    facts.extend(
+                        repo.eas_evidence_facts_for_session_org_fresh(session_id, org_id, since)
+                            .await,
+                    );
                 }
-                None => repo.in_scope_assets(Some(org_id)).await,
+            }
+            let assets = match current_wave_asset_values.as_ref() {
+                Some(assets) => assets.clone(),
+                None => match wave_cutoff {
+                    Some(cutoff) => {
+                        repo.in_scope_assets_created_before(Some(org_id), cutoff)
+                            .await
+                    }
+                    None => repo.in_scope_assets(Some(org_id)).await,
+                },
             };
             if !assets.is_empty() {
                 facts.extend(
-                    repo.db_truth_facts_with_run_start(Some(org_id), &assets, wave_cutoff)
+                    repo.db_truth_facts_with_run_start(Some(org_id), &assets, freshness_cutoff)
                         .await,
                 );
                 if let Some(cutoff) = wave_cutoff {
@@ -733,38 +897,60 @@ impl SubmitStageDeliverableTool {
             //     持有；authoritative stage-close 仍强制该维）。
             if authoritative {
                 typed_assets = repo.in_scope_typed_assets(Some(org_id)).await;
+                if let Some(current_wave_assets) = current_wave_asset_values.as_ref() {
+                    let current_wave_assets = current_wave_assets
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<HashSet<_>>();
+                    typed_assets.retain(|(asset, _)| current_wave_assets.contains(asset.as_str()));
+                }
                 let target_types = repo.in_scope_target_types(Some(org_id)).await;
-                expected_techniques =
-                    golish_agent_kit::harness::expected_techniques_for_target_types(
+                expected_techniques = stage_gate_expected_techniques(stage, &target_types);
+            }
+            if stage == StageKind::Enumeration {
+                let snapshot = repo
+                    .stage_asset_coverage(
+                        org_id,
                         stage,
-                        &target_types,
-                    );
+                        active_session_id,
+                        freshness_cutoff,
+                        current_wave_target_ids.clone(),
+                        current_wave_asset_values.clone(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        format!("enumeration exact-origin coverage snapshot failed: {error}")
+                    })?;
+                let snapshot = snapshot.ok_or_else(|| {
+                    "enumeration exact-origin coverage snapshot is unavailable".to_string()
+                })?;
+                (in_scope_assets, typed_assets) =
+                    validated_enumeration_axis_from_coverage_snapshot(
+                        &snapshot,
+                        org_id,
+                        active_session_id,
+                    )
+                    .map_err(|error| {
+                        format!("enumeration exact-origin coverage snapshot is invalid: {error}")
+                    })?;
+                authoritative_coverage_axis = true;
             }
             // (4) #4/E3: **始终**从 technique_outcomes union 进 facts（submit 预检；与
             //     execute.rs/org_gate 同源 dual-read）。additive + fail-safe，无灰度开关。
             //     run_id = chat session；outcome blocked→Error（gate 无 Blocked outcome）。
-            if let Some(sid) = self.session_id.as_deref() {
-                let projected: Vec<EvidenceFact> = repo
-                    .technique_outcome_facts(org_id, sid)
-                    .await
-                    .into_iter()
-                    .filter_map(|(asset, technique, outcome, evidence_id)| {
-                        let outcome = match outcome.as_str() {
-                            "found" => EvidenceOutcome::Found,
-                            "empty" => EvidenceOutcome::Empty,
-                            "error" | "blocked" => EvidenceOutcome::Error,
-                            _ => return None,
-                        };
-                        Some(EvidenceFact {
-                            asset,
-                            technique,
-                            outcome,
-                            evidence_id,
-                        })
-                    })
-                    .collect();
-                facts.extend(projected);
-                source_queries = repo.source_query_facts(org_id, sid).await;
+            if let Some(sid) = active_session_id {
+                if stage_accepts_outcome_projection(stage, freshness_cutoff.is_some()) {
+                    outcome_rows = repo
+                        .technique_outcome_facts_fresh(org_id, sid, freshness_cutoff)
+                        .await;
+                }
+                if stage == StageKind::ExternalAttackSurface {
+                    not_applicable_coverage
+                        .extend(eas_service_not_applicable_from_port_outcomes(&outcome_rows));
+                }
+                if stage_accepts_source_query_completion(stage) {
+                    source_queries = repo.source_query_facts(org_id, sid).await;
+                }
             }
             // (5) Enumeration IP-web coverage (设计 2026-07-01 §5.3): mirror the
             //     stage-close gate (org_gate) — when the enumeration spec opts into
@@ -780,39 +966,12 @@ impl SubmitStageDeliverableTool {
                 web_capable_assets = repo.enumeration_web_capable_assets(Some(org_id)).await;
             }
             if stage == StageKind::ExternalAttackSurface {
-                not_applicable_coverage = repo
-                    .eas_service_not_applicable_assets(Some(org_id), wave_cutoff)
-                    .await
-                    .into_iter()
-                    .map(|asset| {
-                        (
-                            asset,
-                            golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP.to_string(),
-                        )
-                    })
-                    .collect();
-            }
-            // Enumeration content not_applicable (design 2026-07-03): mirror the
-            // stage-close gate (org_gate) — a DNS/53-only IP with no web surface
-            // is not a content-enumeration root, so mark all four ENUM axes
-            // not_applicable in the submit preview too (preview must match
-            // close, else preview-PASS then close-BLOCK).
-            if stage == StageKind::Enumeration {
-                not_applicable_coverage = repo
-                    .eas_service_not_applicable_assets(Some(org_id), wave_cutoff)
-                    .await
-                    .into_iter()
-                    .flat_map(|asset| {
-                        [
-                            golish_db::repo::coverage_truth::TECH_ENUM_JS,
-                            golish_db::repo::coverage_truth::TECH_ENUM_DIR,
-                            golish_db::repo::coverage_truth::TECH_ENUM_PARAM,
-                            golish_db::repo::coverage_truth::TECH_ENUM_JSAPI,
-                        ]
-                        .into_iter()
-                        .map(move |tech| (asset.clone(), tech.to_string()))
-                    })
-                    .collect();
+                // EAS SERVICE is strict per confirmed-open port. PORT empty rows
+                // were already converted to SERVICE not_applicable above; DNS/53
+                // alone still needs the DB truth/worker terminal path.
+                web_capable_assets = repo
+                    .eas_web_capable_assets(Some(org_id), freshness_cutoff)
+                    .await;
             }
             // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS host-aware
             // alias exclusion — drop assets whose resolved IP is already an
@@ -831,16 +990,24 @@ impl SubmitStageDeliverableTool {
                 }
             }
         }
+        // Always apply the stage projection, even without org/session/cutoff. For
+        // Enumeration an empty row set deliberately clears legacy/business facts.
+        apply_technique_outcome_rows(stage, &mut facts, &outcome_rows);
         // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）。
-        GateContextBuilder::new()
-            .in_scope_assets(in_scope_assets)
+        let builder = GateContextBuilder::new()
             .typed_assets(typed_assets)
             .web_capable_assets(web_capable_assets)
             .not_applicable_coverage(not_applicable_coverage)
             .extend_evidence_facts(facts)
             .extend_source_queries(source_queries)
-            .expected_techniques(expected_techniques)
-            .build()
+            .expected_techniques(expected_techniques);
+        let context = if authoritative_coverage_axis {
+            builder.authoritative_in_scope_assets(Some(in_scope_assets))
+        } else {
+            builder.in_scope_assets(in_scope_assets)
+        }
+        .build();
+        Ok(context)
     }
 }
 
@@ -915,7 +1082,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "coverage": {
                     "type": "array",
-                    "description": "Coverage matrix: ONE cell per (asset × technique) you took to a terminal state when the DB cannot derive that terminal state. If the stage charter says coverage is auto-adjudicated from the DATABASE (for example target_intel, external_attack_surface, or enumeration found cells), submit [] for DB-derived found cells and include only terminal cells the DB cannot derive yet. In enumeration, DB-derived found cells come from directory_entries and api_endpoints; submit only checked_empty/blocked/not_applicable exceptions after check_stage_asset_coverage says the EAS-confirmed web-root worklist is closed. STAGES THAT RUN NO TOOLS (e.g. scoping, reporting) produce no coverage matrix — submit [] and do NOT invent cells. For non-DB-truth tool stages: for EACH in-scope asset, give EVERY expected technique a cell — a MISSING (asset × technique) means not_attempted and FAILS the gate. Evidence ids are optional internal ledger refs; do not hunt for them. 'blocked'/'not_applicable' MUST give a `note`. \"checked-empty\" is NOT \"unchecked\". For found/checked_empty cells with an enumerated denominator ALSO set tested_units/total_units; the gate requires full coverage (tested_units==total_units) unless you set sampling_rationale. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted, total_units = open ports discovered; if no ports are open, submit not_applicable+note rather than checked_empty total_units=0. Omit optional fields you don't use — never pass null.",
+                    "description": "Coverage matrix for stages whose contract still requires model-authored terminal cells. Call check_stage_asset_coverage before submit. ENUMERATION IS FULLY AUTHORITATIVE: always submit coverage=[]; current-run producer evidence owns found/checked_empty, while current-target blocked evidence is limited to enum_preflight_web_origins on all four axes, route_probe_paths recovery on DIR, and browser_collect_js_api recovery on JS/JSAPI/PARAM. Non-web/rootless hosts are excluded before the exact-origin denominator is built. Enumeration model-authored coverage cannot close a cell. Other DB-truth stages should omit DB-derived found cells and include only contract-permitted terminal exceptions. Stages that run no tools submit []. For non-DB-truth stages, missing expected asset × technique cells fail the gate. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted and total_units = open ports discovered. Evidence ids are optional internal refs; never invent them. Omit optional fields you do not use and never pass null.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -1018,6 +1185,15 @@ impl Tool for SubmitStageDeliverableTool {
                     ),
                 }));
             }
+            if kind == StageKind::Enumeration && !deliverable.coverage.is_empty() {
+                return Ok(json!({
+                    "status": "needs_fix",
+                    "reasons": [
+                        "Enumeration coverage is fully authoritative. Model-authored found/checked_empty/blocked/not_applicable cells are forbidden; resubmit with coverage: []. Trusted blocked truth comes only from transport preflight or bounded route/browser producer recovery."
+                    ],
+                    "note": "remove every coverage cell and call submit_stage_deliverable again"
+                }));
+            }
             // Piece 3 · closeout reconciliation barrier: if this session still has
             // backgrounded scans in flight, don't grade the stage against
             // half-landed evidence. Default behavior is a fast deferral that tells
@@ -1052,7 +1228,16 @@ impl Tool for SubmitStageDeliverableTool {
                 self.backfill_required_checks_done_from_evidence(&mut deliverable, &spec)
                     .await;
                 let authoritative = golish_agent_kit::harness::feature_flags::submit_preview_authoritative_context_enabled();
-                let ctx = self.gate_context(kind, authoritative).await;
+                let ctx = match self.gate_context(kind, authoritative).await {
+                    Ok(ctx) => ctx,
+                    Err(reason) => {
+                        return Ok(json!({
+                            "status": "needs_fix",
+                            "reasons": [reason],
+                            "note": "the trusted current-wave context is invalid; repair/reset the wave before resubmitting."
+                        }));
+                    }
+                };
                 if spec.specialist.is_some() && extract_pass_token(&deliverable).is_some() {
                     if let Ok(json_str) = serde_json::to_string(&deliverable) {
                         *self.last_deliverable.write().await = Some(json_str);
@@ -1232,8 +1417,11 @@ mod tests {
         assert!(params.contains("web_root_enumerated"));
         assert!(params.contains("api_endpoints_discovered"));
         assert!(params.contains("check_stage_asset_coverage"));
-        assert!(params.contains("directory_entries"));
-        assert!(params.contains("api_endpoints"));
+        assert!(params.contains("ENUMERATION IS FULLY AUTHORITATIVE"));
+        assert!(params.contains("enum_preflight_web_origins"));
+        assert!(params.contains("route_probe_paths recovery on DIR"));
+        assert!(params.contains("browser_collect_js_api recovery on JS/JSAPI/PARAM"));
+        assert!(params.contains("coverage=[]"));
     }
 
     #[test]
@@ -1570,6 +1758,35 @@ mod tests {
             "must hint to resubmit with empty coverage: {reasons:?}"
         );
         assert!(sink.read().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn enumeration_rejects_model_authored_terminal_coverage() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Enumeration);
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
+        for status in ["blocked", "not_applicable"] {
+            let out = tool
+                .execute(
+                    json!({
+                        "stage_id": "enumeration",
+                        "claims": [],
+                        "findings": [],
+                        "coverage": [{
+                            "asset": "https://app.example.com:443",
+                            "technique": "GOLISH-ENUM-DIR",
+                            "status": status,
+                            "note": "model-authored terminal assertion"
+                        }]
+                    }),
+                    Path::new("/tmp"),
+                )
+                .await
+                .unwrap();
+            assert_eq!(out["status"], "needs_fix");
+            assert!(out["reasons"][0].as_str().unwrap().contains("coverage: []"));
+        }
+        assert!(sink.read().await.is_none());
     }
 
     #[tokio::test]
@@ -2169,6 +2386,186 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn enumeration_submit_preview_requires_non_empty_session() {
+        use golish_agent_kit::harness::EvidenceOutcome;
+
+        let (stage, sink) = handles();
+        let origin = "https://app.example.com:443".to_string();
+        let repo = DbTruthMock {
+            existing: HashSet::new(),
+            db_facts: vec![EvidenceFact {
+                asset: origin.clone(),
+                technique: "GOLISH-ENUM-DIR".to_string(),
+                outcome: EvidenceOutcome::Found,
+                evidence_id: 0,
+            }],
+            assets: vec![origin],
+            source_queries: Vec::new(),
+        };
+        let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(repo))
+            .with_org_id_source(org_src);
+
+        let error = tool
+            .gate_context(StageKind::Enumeration, true)
+            .await
+            .expect_err("Enumeration preview must not run without a current session");
+
+        assert!(error.contains("non-empty run/session id"), "{error}");
+    }
+
+    struct StaleEnumerationOutcomeMock;
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for StaleEnumerationOutcomeMock {
+        async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(HashSet::new())
+        }
+
+        async fn in_scope_assets(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
+            vec!["https://app.example.com:443".to_string()]
+        }
+
+        async fn technique_outcome_facts(
+            &self,
+            _org_id: uuid::Uuid,
+            _run_id: &str,
+        ) -> Vec<TechniqueOutcomeFact> {
+            vec![TechniqueOutcomeFact::new(
+                "https://app.example.com:443".to_string(),
+                "GOLISH-ENUM-DIR".to_string(),
+                "found".to_string(),
+                91,
+                Some("route_probe_paths".to_string()),
+            )]
+        }
+    }
+
+    #[tokio::test]
+    async fn enumeration_submit_preview_requires_freshness_cutoff() {
+        let (stage, sink) = handles();
+        let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(StaleEnumerationOutcomeMock))
+            .with_session_id("reused-session")
+            .with_org_id_source(org_src);
+
+        let error = tool
+            .gate_context(StageKind::Enumeration, true)
+            .await
+            .expect_err("Enumeration preview must not run without a stage cutoff");
+
+        assert!(
+            error.contains("stage_started_at freshness cutoff"),
+            "{error}"
+        );
+    }
+
+    struct EnumerationCoverageBoundaryMock {
+        operation_id: uuid::Uuid,
+        snapshot_present: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for EnumerationCoverageBoundaryMock {
+        async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(HashSet::new())
+        }
+
+        async fn operation_stage_started_at(
+            &self,
+            operation_id: uuid::Uuid,
+        ) -> Option<(StageKind, chrono::DateTime<chrono::Utc>)> {
+            assert_eq!(operation_id, self.operation_id);
+            Some((StageKind::Enumeration, chrono::Utc::now()))
+        }
+
+        async fn stage_asset_coverage(
+            &self,
+            organization_id: uuid::Uuid,
+            _stage: StageKind,
+            session_id: Option<&str>,
+            _stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+            _current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+            _current_wave_asset_values: Option<Vec<String>>,
+        ) -> Result<Option<serde_json::Value>> {
+            Ok(self.snapshot_present.then(|| {
+                json!({
+                    "stage": "enumeration",
+                    "organization_id": organization_id,
+                    "session_id": session_id,
+                    "assets": []
+                })
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn enumeration_submit_preserves_authoritative_empty_coverage_axis() {
+        let (stage, sink) = handles();
+        let operation_id = uuid::Uuid::new_v4();
+        let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(EnumerationCoverageBoundaryMock {
+                operation_id,
+                snapshot_present: true,
+            }))
+            .with_session_id("authoritative-zero-run")
+            .with_org_id_source(org_src)
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))));
+
+        let ctx = tool
+            .gate_context(StageKind::Enumeration, true)
+            .await
+            .unwrap();
+
+        assert_eq!(ctx.in_scope_assets, Some(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn enumeration_submit_preview_requires_bound_organization() {
+        let (stage, sink) = handles();
+        let operation_id = uuid::Uuid::new_v4();
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(EnumerationCoverageBoundaryMock {
+                operation_id,
+                snapshot_present: true,
+            }))
+            .with_session_id("missing-org-run")
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))));
+
+        let error = tool
+            .gate_context(StageKind::Enumeration, true)
+            .await
+            .expect_err("Enumeration preview must require its bound organization");
+
+        assert!(error.contains("bound organization"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn enumeration_submit_preview_rejects_absent_snapshot() {
+        let (stage, sink) = handles();
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(EnumerationCoverageBoundaryMock {
+                operation_id,
+                snapshot_present: false,
+            }))
+            .with_session_id("missing-snapshot-run")
+            .with_org_id_source(Arc::new(RwLock::new(Some(organization_id))))
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))));
+
+        let error = tool
+            .gate_context(StageKind::Enumeration, true)
+            .await
+            .expect_err("Enumeration preview must distinguish no snapshot from an empty axis");
+
+        assert!(error.contains("snapshot is unavailable"), "{error}");
+    }
+
     // T3 (2026-06-23 · 设计 submit-preview-authoritative-context) · the submit
     // preview gate context feeds host-aware `asset_types` + dynamic
     // `expected_techniques` (matching the stage-close口径) ONLY when the
@@ -2211,7 +2608,10 @@ mod tests {
 
         // flag OFF = prior behaviour: asset axis still fed, but asset_types /
         // expected_techniques stay None (preview keeps value-inference + static spec).
-        let off = tool.gate_context(StageKind::TargetIntel, false).await;
+        let off = tool
+            .gate_context(StageKind::TargetIntel, false)
+            .await
+            .unwrap();
         assert!(
             off.in_scope_assets.is_some(),
             "asset axis still fed when off"
@@ -2226,7 +2626,10 @@ mod tests {
         );
 
         // flag ON = authoritative口径: both populated (matches stage-close gate).
-        let on = tool.gate_context(StageKind::TargetIntel, true).await;
+        let on = tool
+            .gate_context(StageKind::TargetIntel, true)
+            .await
+            .unwrap();
         assert!(on.asset_types.is_some(), "asset_types fed when flag on");
         assert!(
             on.expected_techniques.is_some(),
@@ -2239,6 +2642,7 @@ mod tests {
     // enum_ip_web_coverage), so a web-capable IP is held to the four content axes
     // by the preview instead of previewing PASS then blocking at stage-close.
     struct WebCapableMock {
+        operation_id: uuid::Uuid,
         web_capable: Vec<String>,
     }
 
@@ -2250,6 +2654,33 @@ mod tests {
         async fn in_scope_assets(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
             vec!["1.2.3.4".to_string()]
         }
+        async fn operation_stage_started_at(
+            &self,
+            operation_id: uuid::Uuid,
+        ) -> Option<(StageKind, chrono::DateTime<chrono::Utc>)> {
+            assert_eq!(operation_id, self.operation_id);
+            Some((StageKind::Enumeration, chrono::Utc::now()))
+        }
+        async fn stage_asset_coverage(
+            &self,
+            organization_id: uuid::Uuid,
+            _stage: StageKind,
+            session_id: Option<&str>,
+            _stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+            _current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+            _current_wave_asset_values: Option<Vec<String>>,
+        ) -> Result<Option<Value>> {
+            Ok(Some(json!({
+                "stage": "enumeration",
+                "organization_id": organization_id,
+                "session_id": session_id,
+                "assets": [{
+                    "value": "https://1.2.3.4:443",
+                    "target_type": "url",
+                    "exact_web_origin": true
+                }]
+            })))
+        }
         async fn enumeration_web_capable_assets(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
             self.web_capable.clone()
         }
@@ -2258,28 +2689,590 @@ mod tests {
     #[tokio::test]
     async fn submit_preview_feeds_enumeration_web_capable_ip_roots() {
         let (stage, sink) = handles();
+        let operation_id = uuid::Uuid::new_v4();
         let repo = WebCapableMock {
+            operation_id,
             web_capable: vec!["1.2.3.4".to_string()],
         };
         let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
         let tool = SubmitStageDeliverableTool::new(stage, sink)
             .with_evidence_repo(Arc::new(repo))
             .with_session_id("pentest-chat-1")
-            .with_org_id_source(org_src);
+            .with_org_id_source(org_src)
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))));
 
         // Enumeration spec opts into enum_ip_web_coverage ⇒ the proven IP web root
         // is fed into web_capable_assets (matches org_gate / stage-close口径).
-        let en = tool.gate_context(StageKind::Enumeration, true).await;
+        let en = tool
+            .gate_context(StageKind::Enumeration, true)
+            .await
+            .unwrap();
         let web = en
             .web_capable_assets
             .expect("web_capable_assets fed for enumeration");
         assert!(web.contains("1.2.3.4"));
 
         // Non-enumeration stage ⇒ never injected (stays None = prior behaviour).
-        let ti = tool.gate_context(StageKind::TargetIntel, true).await;
+        let ti = tool
+            .gate_context(StageKind::TargetIntel, true)
+            .await
+            .unwrap();
         assert!(
             ti.web_capable_assets.is_none(),
             "web_capable only injected for enumeration"
+        );
+    }
+
+    struct EnumerationOriginAxisMock {
+        operation_id: uuid::Uuid,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for EnumerationOriginAxisMock {
+        async fn existing_evidence_ids(&self, ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(ids.iter().copied().collect())
+        }
+
+        async fn in_scope_assets(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
+            vec!["app.example.com".to_string()]
+        }
+
+        async fn operation_stage_started_at(
+            &self,
+            operation_id: uuid::Uuid,
+        ) -> Option<(StageKind, chrono::DateTime<chrono::Utc>)> {
+            assert_eq!(operation_id, self.operation_id);
+            Some((StageKind::Enumeration, chrono::Utc::now()))
+        }
+
+        async fn stage_asset_coverage(
+            &self,
+            organization_id: uuid::Uuid,
+            _stage: StageKind,
+            session_id: Option<&str>,
+            _stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+            _current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+            _current_wave_asset_values: Option<Vec<String>>,
+        ) -> Result<Option<Value>> {
+            Ok(Some(json!({
+                "stage": "enumeration",
+                "organization_id": organization_id,
+                "session_id": session_id,
+                "assets": [
+                    {"value": "http://app.example.com:80", "target_type": "url", "exact_web_origin": true},
+                    {"value": "https://app.example.com:443", "target_type": "url", "exact_web_origin": true},
+                    {"value": "https://203.0.113.10:443", "target_type": "url", "exact_web_origin": true}
+                ]
+            })))
+        }
+    }
+
+    type CapturedWaveCoverageCall = (
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<Vec<uuid::Uuid>>,
+        Option<Vec<String>>,
+    );
+
+    struct CurrentWavePreviewMock {
+        operation_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+        operation_started_at: chrono::DateTime<chrono::Utc>,
+        wave_started_at: chrono::DateTime<chrono::Utc>,
+        target_id: uuid::Uuid,
+        coverage_call: Arc<std::sync::Mutex<Option<CapturedWaveCoverageCall>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for CurrentWavePreviewMock {
+        async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(HashSet::new())
+        }
+
+        async fn operation_stage_started_at(
+            &self,
+            operation_id: uuid::Uuid,
+        ) -> Option<(StageKind, chrono::DateTime<chrono::Utc>)> {
+            assert_eq!(operation_id, self.operation_id);
+            Some((StageKind::Enumeration, self.operation_started_at))
+        }
+
+        async fn stage_asset_wave_current_running(
+            &self,
+            operation_id: uuid::Uuid,
+            organization_id: uuid::Uuid,
+            stage: StageKind,
+        ) -> Result<Option<StageAssetWaveView>> {
+            assert_eq!(operation_id, self.operation_id);
+            assert_eq!(organization_id, self.organization_id);
+            assert_eq!(stage, StageKind::Enumeration);
+            Ok(Some(StageAssetWaveView {
+                id: uuid::Uuid::from_u128(100),
+                operation_id,
+                organization_id,
+                stage_kind: stage.as_str().to_string(),
+                wave_index: 1,
+                started_at: self.wave_started_at,
+                parent_wave_id: Some(uuid::Uuid::from_u128(99)),
+                asset_hash: "wave-hash".to_string(),
+                target_ids: vec![self.target_id],
+                asset_values: vec!["wave.example.com".to_string()],
+            }))
+        }
+
+        async fn stage_asset_coverage(
+            &self,
+            organization_id: uuid::Uuid,
+            stage: StageKind,
+            session_id: Option<&str>,
+            stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+            current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+            current_wave_asset_values: Option<Vec<String>>,
+        ) -> Result<Option<Value>> {
+            assert_eq!(organization_id, self.organization_id);
+            assert_eq!(stage, StageKind::Enumeration);
+            *self.coverage_call.lock().unwrap() = Some((
+                stage_started_at,
+                current_wave_target_ids,
+                current_wave_asset_values,
+            ));
+            Ok(Some(json!({
+                "stage": "enumeration",
+                "organization_id": organization_id,
+                "session_id": session_id,
+                "assets": [{
+                    "value": "https://wave.example.com:443",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": []
+                }]
+            })))
+        }
+
+        async fn in_scope_assets_created_before(
+            &self,
+            _org_id: Option<uuid::Uuid>,
+            cutoff: chrono::DateTime<chrono::Utc>,
+        ) -> Vec<String> {
+            assert_eq!(cutoff, self.wave_started_at);
+            vec![
+                "wrong-cutoff-only.example.com".to_string(),
+                "wave.example.com".to_string(),
+            ]
+        }
+
+        async fn in_scope_typed_assets(
+            &self,
+            _org_id: Option<uuid::Uuid>,
+        ) -> Vec<(String, String)> {
+            vec![
+                (
+                    "wrong-cutoff-only.example.com".to_string(),
+                    "domain".to_string(),
+                ),
+                ("wave.example.com".to_string(), "domain".to_string()),
+            ]
+        }
+
+        async fn in_scope_target_types(&self, _org_id: Option<uuid::Uuid>) -> Vec<String> {
+            vec!["domain".to_string()]
+        }
+    }
+
+    #[tokio::test]
+    async fn enumeration_submit_preview_forwards_same_wave_cutoff_ids_and_values() {
+        let (stage, sink) = handles();
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let operation_started_at = chrono::Utc::now() - chrono::Duration::minutes(10);
+        let wave_started_at = chrono::Utc::now() - chrono::Duration::minutes(2);
+        let target_id = uuid::Uuid::new_v4();
+        let coverage_call = Arc::new(std::sync::Mutex::new(None));
+        let repo = CurrentWavePreviewMock {
+            operation_id,
+            organization_id,
+            operation_started_at,
+            wave_started_at,
+            target_id,
+            coverage_call: Arc::clone(&coverage_call),
+        };
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(repo))
+            .with_session_id("wave-preview-run")
+            .with_org_id_source(Arc::new(RwLock::new(Some(organization_id))))
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))));
+
+        let ctx = tool
+            .gate_context(StageKind::Enumeration, true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ctx.in_scope_assets,
+            Some(vec!["https://wave.example.com:443".to_string()]),
+            "Enumeration submit preview must use the exact-origin axis produced from the durable wave"
+        );
+        let captured = coverage_call
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("Enumeration coverage projection must be called");
+        assert_eq!(captured.0, Some(wave_started_at));
+        assert_eq!(captured.1, Some(vec![target_id]));
+        assert_eq!(captured.2, Some(vec!["wave.example.com".to_string()]));
+    }
+
+    struct EnumerationBlockedPreviewMock {
+        operation_id: uuid::Uuid,
+        outcome_source: &'static str,
+        technique: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for EnumerationBlockedPreviewMock {
+        async fn existing_evidence_ids(&self, ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(ids.iter().copied().collect())
+        }
+
+        async fn operation_stage_started_at(
+            &self,
+            operation_id: uuid::Uuid,
+        ) -> Option<(StageKind, chrono::DateTime<chrono::Utc>)> {
+            assert_eq!(operation_id, self.operation_id);
+            Some((StageKind::Enumeration, chrono::Utc::now()))
+        }
+
+        async fn stage_asset_coverage(
+            &self,
+            organization_id: uuid::Uuid,
+            _stage: StageKind,
+            session_id: Option<&str>,
+            _stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+            _current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+            _current_wave_asset_values: Option<Vec<String>>,
+        ) -> Result<Option<Value>> {
+            Ok(Some(json!({
+                "stage": "enumeration",
+                "organization_id": organization_id,
+                "session_id": session_id,
+                "assets": [{
+                    "value": "https://203.0.113.10:443",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": []
+                }]
+            })))
+        }
+
+        async fn evidence_facts(&self, _session_id: &str) -> Vec<EvidenceFact> {
+            vec![EvidenceFact {
+                asset: "https://203.0.113.10:443".to_string(),
+                technique: self.technique.to_string(),
+                outcome: golish_agent_kit::harness::EvidenceOutcome::Blocked,
+                evidence_id: 73,
+            }]
+        }
+
+        async fn technique_outcome_facts_fresh(
+            &self,
+            _org_id: uuid::Uuid,
+            _run_id: &str,
+            _since: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Vec<TechniqueOutcomeFact> {
+            vec![TechniqueOutcomeFact::new(
+                "https://203.0.113.10:443",
+                self.technique,
+                "blocked",
+                73,
+                Some(self.outcome_source.to_string()),
+            )]
+        }
+    }
+
+    #[tokio::test]
+    async fn enumeration_submit_preview_requires_trusted_blocked_source_and_axis() {
+        for (source, technique, expected) in [
+            ("enum_preflight_web_origins", "GOLISH-ENUM-JS", true),
+            ("enum_preflight_web_origins", "GOLISH-ENUM-DIR", true),
+            ("enum_preflight_web_origins", "GOLISH-ENUM-PARAM", true),
+            ("enum_preflight_web_origins", "GOLISH-ENUM-JSAPI", true),
+            ("route_probe_paths", "GOLISH-ENUM-DIR", true),
+            ("route_probe_paths", "GOLISH-ENUM-JS", false),
+            ("browser_collect_js_api", "GOLISH-ENUM-JS", true),
+            ("browser_collect_js_api", "GOLISH-ENUM-JSAPI", true),
+            ("browser_collect_js_api", "GOLISH-ENUM-PARAM", true),
+            ("browser_collect_js_api", "GOLISH-ENUM-DIR", false),
+            ("untrusted_probe", "GOLISH-ENUM-DIR", false),
+        ] {
+            let (stage, sink) = handles();
+            let operation_id = uuid::Uuid::new_v4();
+            let repo = EnumerationBlockedPreviewMock {
+                operation_id,
+                outcome_source: source,
+                technique,
+            };
+            let tool = SubmitStageDeliverableTool::new(stage, sink)
+                .with_evidence_repo(Arc::new(repo))
+                .with_session_id("blocked-preview-run")
+                .with_org_id_source(Arc::new(RwLock::new(Some(uuid::Uuid::new_v4()))))
+                .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))));
+
+            let context = tool
+                .gate_context(StageKind::Enumeration, true)
+                .await
+                .unwrap();
+            let projected = context.evidence_facts.unwrap_or_default();
+            assert_eq!(
+                projected.iter().any(|fact| {
+                    fact.technique == technique
+                        && fact.outcome == golish_agent_kit::harness::EvidenceOutcome::Blocked
+                }),
+                expected,
+                "submit preview source/axis trust mismatch for {source}/{technique}"
+            );
+        }
+    }
+
+    struct InvalidWavePreviewMock {
+        operation_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for InvalidWavePreviewMock {
+        async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(HashSet::new())
+        }
+
+        async fn operation_stage_started_at(
+            &self,
+            operation_id: uuid::Uuid,
+        ) -> Option<(StageKind, chrono::DateTime<chrono::Utc>)> {
+            assert_eq!(operation_id, self.operation_id);
+            Some((StageKind::Enumeration, chrono::Utc::now()))
+        }
+
+        async fn stage_asset_wave_current_running(
+            &self,
+            operation_id: uuid::Uuid,
+            organization_id: uuid::Uuid,
+            stage: StageKind,
+        ) -> Result<Option<StageAssetWaveView>> {
+            assert_eq!(operation_id, self.operation_id);
+            assert_eq!(organization_id, self.organization_id);
+            Ok(Some(StageAssetWaveView {
+                id: uuid::Uuid::from_u128(200),
+                operation_id,
+                organization_id,
+                stage_kind: stage.as_str().to_string(),
+                wave_index: 0,
+                started_at: chrono::Utc::now(),
+                parent_wave_id: None,
+                asset_hash: "empty".to_string(),
+                target_ids: Vec::new(),
+                asset_values: Vec::new(),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_preview_returns_needs_fix_for_present_empty_wave() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Enumeration);
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(InvalidWavePreviewMock {
+                operation_id,
+                organization_id,
+            }))
+            .with_session_id("empty-wave-run")
+            .with_org_id_source(Arc::new(RwLock::new(Some(organization_id))))
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))));
+
+        let out = tool
+            .execute(
+                json!({
+                    "stage_id": "enumeration",
+                    "claims": [],
+                    "coverage": []
+                }),
+                Path::new("/tmp"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["status"], "needs_fix");
+        assert!(out["reasons"][0]
+            .as_str()
+            .is_some_and(|reason| reason.contains("has no items")));
+    }
+
+    struct SnapshotErrorPreviewMock {
+        operation_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+        target_id: uuid::Uuid,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for SnapshotErrorPreviewMock {
+        async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(HashSet::new())
+        }
+
+        async fn operation_stage_started_at(
+            &self,
+            operation_id: uuid::Uuid,
+        ) -> Option<(StageKind, chrono::DateTime<chrono::Utc>)> {
+            assert_eq!(operation_id, self.operation_id);
+            Some((StageKind::Enumeration, chrono::Utc::now()))
+        }
+
+        async fn stage_asset_wave_current_running(
+            &self,
+            operation_id: uuid::Uuid,
+            organization_id: uuid::Uuid,
+            stage: StageKind,
+        ) -> Result<Option<StageAssetWaveView>> {
+            assert_eq!(operation_id, self.operation_id);
+            assert_eq!(organization_id, self.organization_id);
+            Ok(Some(StageAssetWaveView {
+                id: uuid::Uuid::from_u128(201),
+                operation_id,
+                organization_id,
+                stage_kind: stage.as_str().to_string(),
+                wave_index: 0,
+                started_at: chrono::Utc::now(),
+                parent_wave_id: None,
+                asset_hash: "snapshot-error".to_string(),
+                target_ids: vec![self.target_id],
+                asset_values: vec!["moved.example.com".to_string()],
+            }))
+        }
+
+        async fn stage_asset_coverage(
+            &self,
+            _organization_id: uuid::Uuid,
+            _stage: StageKind,
+            _session_id: Option<&str>,
+            _stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+            _current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+            _current_wave_asset_values: Option<Vec<String>>,
+        ) -> Result<Option<Value>> {
+            Err(anyhow::anyhow!(
+                "current wave target was deleted, moved, or left scope"
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn enumeration_submit_preview_surfaces_running_wave_snapshot_error() {
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::Enumeration);
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(SnapshotErrorPreviewMock {
+                operation_id,
+                organization_id,
+                target_id: uuid::Uuid::new_v4(),
+            }))
+            .with_session_id("snapshot-error-run")
+            .with_org_id_source(Arc::new(RwLock::new(Some(organization_id))))
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))));
+
+        let out = tool
+            .execute(
+                json!({
+                    "stage_id": "enumeration",
+                    "claims": [],
+                    "coverage": []
+                }),
+                Path::new("/tmp"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["status"], "needs_fix");
+        assert!(out["reasons"][0]
+            .as_str()
+            .is_some_and(|reason| reason.contains("exact-origin coverage snapshot failed")));
+        assert!(out["reasons"][0]
+            .as_str()
+            .is_some_and(|reason| reason.contains("deleted, moved, or left scope")));
+    }
+
+    #[tokio::test]
+    async fn submit_preview_uses_exact_enumeration_origin_axis() {
+        let (stage, sink) = handles();
+        let operation_id = uuid::Uuid::new_v4();
+        let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(EnumerationOriginAxisMock { operation_id }))
+            .with_session_id("pentest-chat-1")
+            .with_org_id_source(org_src)
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))));
+
+        let ctx = tool
+            .gate_context(StageKind::Enumeration, true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ctx.in_scope_assets.as_ref().unwrap(),
+            &vec![
+                "http://app.example.com:80".to_string(),
+                "https://app.example.com:443".to_string(),
+                "https://203.0.113.10:443".to_string(),
+            ]
+        );
+        let types = ctx.asset_types.as_ref().unwrap();
+        assert_eq!(
+            types.get("http://app.example.com:80"),
+            Some(&"url".to_string())
+        );
+        assert_eq!(
+            types.get("https://app.example.com:443"),
+            Some(&"url".to_string())
+        );
+        assert_eq!(
+            types.get("https://203.0.113.10:443"),
+            Some(&"url".to_string())
+        );
+
+        let deliverable = StageDeliverable {
+            stage_id: StageKind::Enumeration.as_str().to_string(),
+            stage_run_id: uuid::Uuid::new_v4(),
+            claims: Vec::new(),
+            evidence_refs: Vec::new(),
+            skipped_checks: Vec::new(),
+            findings: Vec::new(),
+            required_checks_done: Vec::new(),
+            coverage: Vec::new(),
+            candidates: Vec::new(),
+        };
+        let spec = load_embedded_stage_spec(StageKind::Enumeration).unwrap();
+        let result = validate_stage_gate_with_context(&deliverable, &spec, None, None, &ctx);
+        let ip_gaps = result
+            .recovery_actions
+            .as_ref()
+            .map(|recovery| {
+                recovery
+                    .coverage_gap_actions
+                    .iter()
+                    .filter(|gap| gap.asset == "https://203.0.113.10:443")
+                    .map(|gap| gap.technique.as_str())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            ip_gaps,
+            HashSet::from([
+                "GOLISH-ENUM-JS",
+                "GOLISH-ENUM-DIR",
+                "GOLISH-ENUM-PARAM",
+                "GOLISH-ENUM-JSAPI",
+            ]),
+            "submit preview must expose four actionable gaps for an exact IP origin"
         );
     }
 

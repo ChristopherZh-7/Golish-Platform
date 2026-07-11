@@ -25,7 +25,15 @@ pub async fn clear_ai_conversation(
         .get_session_bridge(&session_id)
         .await
         .ok_or_else(|| super::ai_session_not_initialized_error(&session_id))?;
+    let request = bridge
+        .begin_top_level_request()
+        .await
+        .map_err(|error| GolishError::Internal(error.to_string()))?;
     bridge.clear_conversation_history().await;
+    bridge
+        .clear_top_level_request_state(&request)
+        .await
+        .map_err(|error| GolishError::Internal(error.to_string()))?;
     tracing::info!("AI conversation history cleared for session {}", session_id);
     Ok(())
 }
@@ -53,8 +61,16 @@ pub async fn restore_ai_conversation(
             )
         })?;
 
+    let request = bridge
+        .begin_top_level_request()
+        .await
+        .map_err(|error| GolishError::Internal(error.to_string()))?;
     let count = messages.len();
     bridge.restore_conversation_history(messages).await;
+    bridge
+        .clear_top_level_request_state(&request)
+        .await
+        .map_err(|error| GolishError::Internal(error.to_string()))?;
     tracing::info!(
         "[restore] Restored {} messages for session '{}'",
         count,
@@ -272,6 +288,10 @@ pub async fn restore_ai_session(
                 session_id
             )
         })?;
+    let request = bridge
+        .begin_top_level_request()
+        .await
+        .map_err(|error| GolishError::Internal(error.to_string()))?;
 
     // Convert session messages to rig messages and restore
     let rig_messages: Vec<rig::completion::Message> = session
@@ -306,22 +326,40 @@ pub async fn restore_ai_session(
         .map(|m| m.content.clone())
         .unwrap_or_else(|| format!("Restored session: {}", identifier));
 
-    // End any existing sidecar session first
-    if let Err(e) = state.sidecar_state.end_session() {
-        tracing::debug!("No existing sidecar session to end: {}", e);
+    if let Some(sidecar) = bridge.session_capture_backend() {
+        restore_bridge_sidecar_session(sidecar.as_ref(), &session, &initial_request).await;
+    } else {
+        tracing::debug!("No per-bridge sidecar backend configured for restored session");
     }
 
-    // Try to resume the original sidecar session if it exists, otherwise start a new one
+    bridge
+        .clear_top_level_request_state(&request)
+        .await
+        .map_err(|error| GolishError::Internal(error.to_string()))?;
+
+    // Return the session so the frontend can display the restored messages
+    Ok(session)
+}
+
+async fn restore_bridge_sidecar_session(
+    sidecar: &dyn golish_agent_kit::sidecar_trait::SessionCaptureBackend,
+    session: &GolishSessionSnapshot,
+    initial_request: &str,
+) {
+    // The backend belongs to the exact bridge generation guarded by the caller's
+    // top-level lease. Never mutate AgentState's legacy global SidecarState here.
+    if let Err(error) = sidecar.end_session() {
+        tracing::debug!("No existing per-bridge sidecar session to end: {}", error);
+    }
+
     let sidecar_session_id = if let Some(ref id) = session.sidecar_session_id {
         Some(id.clone())
     } else {
-        // Legacy session without explicit sidecar ID - try to find a matching session
         tracing::debug!(
             "No sidecar session ID in restored session, searching for matching session by workspace and timestamp"
         );
         let workspace_path = std::path::Path::new(&session.workspace_path);
-        match state
-            .sidecar_state
+        match sidecar
             .find_matching_session(workspace_path, session.started_at, Some(120))
             .await
         {
@@ -336,55 +374,187 @@ pub async fn restore_ai_session(
                 tracing::debug!("No matching sidecar session found for legacy session");
                 None
             }
-            Err(e) => {
-                tracing::warn!("Error searching for matching sidecar session: {}", e);
+            Err(error) => {
+                tracing::warn!("Error searching for matching sidecar session: {}", error);
                 None
             }
         }
     };
 
     if let Some(ref sidecar_session_id) = sidecar_session_id {
-        // Attempt to resume the original sidecar session
-        match state.sidecar_state.resume_session(sidecar_session_id) {
-            Ok(_) => {
+        match sidecar.resume_session(sidecar_session_id) {
+            Ok(()) => {
                 tracing::info!(
                     "Resumed original sidecar session {} for restored AI session",
                     sidecar_session_id
                 );
+                return;
             }
-            Err(e) => {
+            Err(error) => {
                 tracing::warn!(
                     "Could not resume original sidecar session {}: {}. Starting new session.",
                     sidecar_session_id,
-                    e
+                    error
                 );
-                // Fall back to starting a new sidecar session. The sidecar
-                // can be intentionally disabled — degrade gracefully and
-                // log at info level so it doesn't pollute startup with
-                // WARNs that look like real failures.
-                match state.sidecar_state.start_session(&initial_request) {
-                    Ok(sid) => {
-                        tracing::info!("Started new sidecar session {} for restored session", sid);
-                    }
-                    Err(e) => {
-                        tracing::info!("Sidecar session not started for restored session: {}", e);
-                    }
-                }
             }
         }
     } else {
-        // No sidecar session found - start a new one
         tracing::debug!("No sidecar session to resume, starting new session");
-        match state.sidecar_state.start_session(&initial_request) {
-            Ok(sid) => {
-                tracing::info!("Started new sidecar session {} for restored session", sid);
-            }
-            Err(e) => {
-                tracing::info!("Sidecar session not started for restored session: {}", e);
-            }
+    }
+
+    // Sidecar can be intentionally disabled; degrade gracefully.
+    match sidecar.start_session(initial_request) {
+        Ok(session_id) => {
+            tracing::info!(
+                "Started new sidecar session {} for restored session",
+                session_id
+            );
+        }
+        Err(error) => {
+            tracing::info!(
+                "Sidecar session not started for restored session: {}",
+                error
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod sidecar_restore_tests {
+    use std::sync::Mutex;
+
+    use golish_agent_kit::sidecar_trait::{
+        AiEventProcessor, EndedSessionInfo, SessionCaptureBackend,
+    };
+    use golish_core::events::AiEvent;
+
+    use super::{restore_bridge_sidecar_session, GolishSessionSnapshot};
+
+    struct NoopProcessor;
+
+    impl AiEventProcessor for NoopProcessor {
+        fn process(&mut self, _event: &AiEvent) {}
+    }
+
+    struct RecordingSidecar {
+        calls: Mutex<Vec<String>>,
+        resume_succeeds: bool,
+    }
+
+    impl RecordingSidecar {
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
         }
     }
 
-    // Return the session so the frontend can display the restored messages
-    Ok(session)
+    #[async_trait::async_trait]
+    impl SessionCaptureBackend for RecordingSidecar {
+        fn current_session_id(&self) -> Option<String> {
+            None
+        }
+
+        fn start_session(&self, initial_request: &str) -> anyhow::Result<String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("start:{initial_request}"));
+            Ok("new-sidecar".to_string())
+        }
+
+        fn end_session(&self) -> anyhow::Result<Option<EndedSessionInfo>> {
+            self.calls.lock().unwrap().push("end".to_string());
+            Ok(None)
+        }
+
+        fn resume_session(&self, session_id: &str) -> anyhow::Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("resume:{session_id}"));
+            if self.resume_succeeds {
+                Ok(())
+            } else {
+                anyhow::bail!("resume failed")
+            }
+        }
+
+        async fn find_matching_session(
+            &self,
+            _workspace_path: &std::path::Path,
+            _started_at: chrono::DateTime<chrono::Utc>,
+            _tolerance_secs: Option<i64>,
+        ) -> anyhow::Result<Option<String>> {
+            self.calls.lock().unwrap().push("find".to_string());
+            Ok(Some("legacy-sidecar".to_string()))
+        }
+
+        fn capture_user_prompt(&self, _session_id: &str, _text: &str) {}
+        fn capture_ai_response(&self, _session_id: &str, _text: &str) {}
+        fn capture_event(&self, _event: &AiEvent) {}
+
+        fn create_event_processor(&self) -> Box<dyn AiEventProcessor> {
+            Box::new(NoopProcessor)
+        }
+
+        async fn get_injectable_context(&self) -> anyhow::Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    fn snapshot(sidecar_session_id: Option<&str>) -> GolishSessionSnapshot {
+        let now = chrono::Utc::now();
+        GolishSessionSnapshot {
+            workspace_label: "workspace".to_string(),
+            workspace_path: "/tmp/workspace".to_string(),
+            model: "model".to_string(),
+            provider: "provider".to_string(),
+            started_at: now,
+            ended_at: now,
+            total_messages: 0,
+            distinct_tools: Vec::new(),
+            transcript: Vec::new(),
+            messages: Vec::new(),
+            sidecar_session_id: sidecar_session_id.map(str::to_string),
+            total_tokens: None,
+            agent_mode: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_uses_supplied_bridge_backend_and_falls_back_locally() {
+        let selected = RecordingSidecar {
+            calls: Mutex::new(Vec::new()),
+            resume_succeeds: false,
+        };
+        let unrelated = RecordingSidecar {
+            calls: Mutex::new(Vec::new()),
+            resume_succeeds: true,
+        };
+
+        restore_bridge_sidecar_session(&selected, &snapshot(Some("saved")), "initial").await;
+
+        assert_eq!(
+            selected.calls(),
+            vec!["end", "resume:saved", "start:initial"]
+        );
+        assert!(
+            unrelated.calls().is_empty(),
+            "another session's backend must remain untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_restore_finds_then_resumes_on_same_backend() {
+        let selected = RecordingSidecar {
+            calls: Mutex::new(Vec::new()),
+            resume_succeeds: true,
+        };
+
+        restore_bridge_sidecar_session(&selected, &snapshot(None), "initial").await;
+
+        assert_eq!(
+            selected.calls(),
+            vec!["end", "find", "resume:legacy-sidecar"]
+        );
+    }
 }

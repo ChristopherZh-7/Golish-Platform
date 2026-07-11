@@ -22,8 +22,8 @@ use golish_agent_kit::task_orchestrator::stage_refiner::{
 use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_core::utils::truncate_str;
 use golish_sub_agents::{
-    execute_sub_agent, SubAgentContext, SubAgentDefinition, SubAgentExecutorContext,
-    SubAgentToolObservation, SubmitRepairMode,
+    execute_sub_agent, SubAgentChainError, SubAgentContext, SubAgentDefinition,
+    SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairMode,
 };
 
 use super::super::super::llm_helpers::runtime_supervisor_one_shot;
@@ -36,6 +36,86 @@ use golish_agent_kit::tool_provider_impl::DefaultToolProvider;
 
 fn sub_agent_runtime_agent_path(agent_id: &str) -> String {
     format!("main>{agent_id}")
+}
+
+fn sub_agent_execution_error_result(error: anyhow::Error) -> ToolExecutionResult {
+    let chain_failure_contract =
+        error
+            .downcast_ref::<SubAgentChainError>()
+            .map(|error| match error {
+                SubAgentChainError::ExactResumeUnavailable { .. } => (
+                    "sub_agent_chain_exact_resume_unavailable",
+                    "restore_exact",
+                    None,
+                ),
+                SubAgentChainError::LatestResumeUnavailable { .. } => (
+                    "sub_agent_chain_latest_resume_unavailable",
+                    "restore_latest",
+                    None,
+                ),
+                SubAgentChainError::CreateFreshFailed { .. } => {
+                    ("sub_agent_chain_create_fresh_failed", "create_fresh", None)
+                }
+                SubAgentChainError::FinalizeFailed {
+                    checkpointed_chain_id,
+                    ..
+                } => (
+                    "sub_agent_chain_finalize_failed",
+                    "finalize",
+                    *checkpointed_chain_id,
+                ),
+                SubAgentChainError::ProviderContextLimitExceeded { chain_id, .. } => (
+                    "sub_agent_provider_context_limit_exceeded",
+                    "context_limit",
+                    *chain_id,
+                ),
+            });
+    let error = error.to_string();
+    let value = match chain_failure_contract {
+        Some((error_code, chain_failure_kind, chain_id)) => {
+            let mut value = json!({
+                "error": error,
+                "error_code": error_code,
+                "chain_failure_kind": chain_failure_kind,
+            });
+            if let Some(chain_id) = chain_id {
+                value["chain_id"] = json!(chain_id.to_string());
+            }
+            value
+        }
+        None => json!({ "error": error }),
+    };
+    ToolExecutionResult {
+        value,
+        success: false,
+    }
+}
+
+fn dispatch_status_for_sub_agent_success(
+    success: bool,
+) -> golish_agent_kit::db_traits::DispatchStatus {
+    if success {
+        golish_agent_kit::db_traits::DispatchStatus::Completed
+    } else {
+        golish_agent_kit::db_traits::DispatchStatus::Failed
+    }
+}
+
+fn sub_agent_tool_execution_result(
+    result: golish_sub_agents::SubAgentResult,
+) -> ToolExecutionResult {
+    let success = result.success;
+    let mut value = json!({
+        "agent_id": result.agent_id,
+        "response": result.response,
+        "success": result.success,
+        "duration_ms": result.duration_ms,
+        "files_modified": result.files_modified,
+    });
+    if let Some(chain_id) = result.chain_id {
+        value["chain_id"] = json!(chain_id.to_string());
+    }
+    ToolExecutionResult { value, success }
 }
 
 fn sub_agent_checkpoint_agent_path(
@@ -782,7 +862,12 @@ where
                 sub_tool_router: sub_tool_router.clone(),
                 active_org_id_source: ctx.harness_org_id_source.clone(),
                 active_org_id_override: effective_harness_org_id,
+                operation_id: ctx.harness_operation_id,
                 session_id: ctx.events.session_id,
+                persistence_session_id: ctx
+                    .events
+                    .db_tracker
+                    .map(golish_agent_kit::db_tracking::DbTracker::session_uuid),
                 transcript_base_dir: ctx.events.transcript_base_dir,
                 api_request_stats: Some(ctx.api_request_stats),
                 cancelled: ctx.cancelled,
@@ -826,7 +911,12 @@ where
                 sub_tool_router: sub_tool_router.clone(),
                 active_org_id_source: ctx.harness_org_id_source.clone(),
                 active_org_id_override: effective_harness_org_id,
+                operation_id: ctx.harness_operation_id,
                 session_id: ctx.events.session_id,
+                persistence_session_id: ctx
+                    .events
+                    .db_tracker
+                    .map(golish_agent_kit::db_tracking::DbTracker::session_uuid),
                 transcript_base_dir: ctx.events.transcript_base_dir,
                 api_request_stats: Some(ctx.api_request_stats),
                 cancelled: ctx.cancelled,
@@ -871,7 +961,12 @@ where
             sub_tool_router: sub_tool_router.clone(),
             active_org_id_source: ctx.harness_org_id_source.clone(),
             active_org_id_override: effective_harness_org_id,
+            operation_id: ctx.harness_operation_id,
             session_id: ctx.events.session_id,
+            persistence_session_id: ctx
+                .events
+                .db_tracker
+                .map(golish_agent_kit::db_tracking::DbTracker::session_uuid),
             transcript_base_dir: ctx.events.transcript_base_dir,
             api_request_stats: Some(ctx.api_request_stats),
             cancelled: ctx.cancelled,
@@ -907,14 +1002,14 @@ where
         if let Some(repo) = tracker.repo() {
             let (status, result_json, err_msg) = match &result {
                 Ok(r) => (
-                    golish_agent_kit::db_traits::DispatchStatus::Completed,
+                    dispatch_status_for_sub_agent_success(r.success),
                     Some(serde_json::json!({
                         "agent_id": r.agent_id,
                         "response": truncate_str(&r.response, 1000),
                         "success": r.success,
                         "duration_ms": r.duration_ms,
                     })),
-                    None,
+                    (!r.success).then(|| truncate_str(&r.response, 1000).to_string()),
                 ),
                 Err(e) => (
                     golish_agent_kit::db_traits::DispatchStatus::Failed,
@@ -985,21 +1080,9 @@ where
                 });
             }
 
-            Ok(ToolExecutionResult {
-                value: json!({
-                    "agent_id": result.agent_id,
-                    "response": result.response,
-                    "success": result.success,
-                    "duration_ms": result.duration_ms,
-                    "files_modified": result.files_modified
-                }),
-                success: result.success,
-            })
+            Ok(sub_agent_tool_execution_result(result))
         }
-        Err(e) => Ok(ToolExecutionResult {
-            value: json!({ "error": e.to_string() }),
-            success: false,
-        }),
+        Err(error) => Ok(sub_agent_execution_error_result(error)),
     }
 }
 
@@ -1011,14 +1094,142 @@ fn stage_run_org_id_from_request_id(request_id: &str) -> Option<uuid::Uuid> {
 #[cfg(test)]
 mod tests {
     use super::{
-        stage_run_org_id_from_request_id, sub_agent_checkpoint_agent_path,
-        submit_repair_mode_from_agent_run,
+        dispatch_status_for_sub_agent_success, stage_run_org_id_from_request_id,
+        sub_agent_checkpoint_agent_path, sub_agent_execution_error_result,
+        sub_agent_tool_execution_result, submit_repair_mode_from_agent_run,
     };
     use golish_agent_kit::harness::StageKind;
     use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
         AgentRunCheckpoint, AgentRunStatus,
     };
-    use golish_sub_agents::{SubmitRepairKind, SubmitRepairMode};
+    use golish_sub_agents::{SubAgentContext, SubAgentResult, SubmitRepairKind, SubmitRepairMode};
+
+    #[test]
+    fn unsuccessful_sub_agent_result_is_tracked_as_failed_dispatch() {
+        assert_eq!(
+            dispatch_status_for_sub_agent_success(false),
+            golish_agent_kit::db_traits::DispatchStatus::Failed
+        );
+        assert_eq!(
+            dispatch_status_for_sub_agent_success(true),
+            golish_agent_kit::db_traits::DispatchStatus::Completed
+        );
+    }
+
+    #[test]
+    fn chain_errors_map_to_stable_runtime_failure_contract() {
+        let chain_id = uuid::Uuid::new_v4();
+        let cases = [
+            (
+                golish_sub_agents::SubAgentChainError::ExactResumeUnavailable {
+                    chain_id,
+                    reason: "load failed".to_string(),
+                },
+                "sub_agent_chain_exact_resume_unavailable",
+                "restore_exact",
+            ),
+            (
+                golish_sub_agents::SubAgentChainError::LatestResumeUnavailable {
+                    agent_id: "enumerator".to_string(),
+                    reason: "not found".to_string(),
+                },
+                "sub_agent_chain_latest_resume_unavailable",
+                "restore_latest",
+            ),
+            (
+                golish_sub_agents::SubAgentChainError::CreateFreshFailed {
+                    agent_id: "enumerator".to_string(),
+                    reason: "insert failed".to_string(),
+                },
+                "sub_agent_chain_create_fresh_failed",
+                "create_fresh",
+            ),
+            (
+                golish_sub_agents::SubAgentChainError::FinalizeFailed {
+                    chain_id,
+                    checkpointed_chain_id: None,
+                    reason: "update failed".to_string(),
+                },
+                "sub_agent_chain_finalize_failed",
+                "finalize",
+            ),
+            (
+                golish_sub_agents::SubAgentChainError::ProviderContextLimitExceeded {
+                    chain_id: Some(chain_id),
+                    reason: "Request body has 1325879 weighted tokens; limit is 1048565"
+                        .to_string(),
+                },
+                "sub_agent_provider_context_limit_exceeded",
+                "context_limit",
+            ),
+        ];
+
+        for (error, expected_code, expected_kind) in cases {
+            let result = sub_agent_execution_error_result(anyhow::Error::new(error));
+            assert!(!result.success);
+            assert_eq!(result.value["error_code"], expected_code);
+            assert_eq!(result.value["chain_failure_kind"], expected_kind);
+            assert!(result.value["error"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty()));
+        }
+
+        let generic = sub_agent_execution_error_result(anyhow::anyhow!("ordinary failure"));
+        assert_eq!(generic.value["error"], "ordinary failure");
+        assert!(generic.value.get("error_code").is_none());
+        assert!(generic.value.get("chain_failure_kind").is_none());
+    }
+
+    #[test]
+    fn sub_agent_chain_provider_context_limit_error_preserves_checkpointed_chain_id() {
+        let chain_id = uuid::Uuid::new_v4();
+        let result = sub_agent_execution_error_result(anyhow::Error::new(
+            golish_sub_agents::SubAgentChainError::ProviderContextLimitExceeded {
+                chain_id: Some(chain_id),
+                reason: "Request body exceeds the model context limit".to_string(),
+            },
+        ));
+
+        assert!(!result.success);
+        assert_eq!(result.value["chain_id"], chain_id.to_string());
+    }
+
+    #[test]
+    fn sub_agent_chain_finalize_error_publishes_only_previous_checkpoint_id() {
+        let checkpoint_id = uuid::Uuid::new_v4();
+        let failed_update_id = uuid::Uuid::new_v4();
+        let result = sub_agent_execution_error_result(anyhow::Error::new(
+            golish_sub_agents::SubAgentChainError::FinalizeFailed {
+                chain_id: failed_update_id,
+                checkpointed_chain_id: Some(checkpoint_id),
+                reason: "synthetic later update failure".to_string(),
+            },
+        ));
+
+        assert!(!result.success);
+        assert_eq!(result.value["chain_failure_kind"], "finalize");
+        assert_eq!(result.value["chain_id"], checkpoint_id.to_string());
+        assert_ne!(result.value["chain_id"], failed_update_id.to_string());
+    }
+
+    #[test]
+    fn sub_agent_chain_failed_result_preserves_checkpointed_chain_id() {
+        let chain_id = uuid::Uuid::new_v4();
+        let result = SubAgentResult {
+            agent_id: "enumerator".to_string(),
+            response: "provider failed after the initial snapshot".to_string(),
+            context: SubAgentContext::default(),
+            success: false,
+            duration_ms: 42,
+            files_modified: Vec::new(),
+            chain_id: Some(chain_id),
+        };
+
+        let tool_result = sub_agent_tool_execution_result(result);
+
+        assert!(!tool_result.success);
+        assert_eq!(tool_result.value["chain_id"], chain_id.to_string());
+    }
 
     #[test]
     fn stage_run_org_id_parses_per_org_request_id() {
@@ -1138,6 +1349,9 @@ mod tests {
         let restored = submit_repair_mode_from_agent_run(&checkpoint).expect("mode restores");
         assert_eq!(restored.kind, SubmitRepairKind::CoverageGap);
         assert_eq!(restored.coverage_gap_actions.len(), 1);
-        assert!(restored.block_result("pentest_run").is_none());
+        assert!(
+            restored.block_result("pentest_run").is_some(),
+            "EAS coverage repair must keep raw pentest_run blocked after checkpoint restore"
+        );
     }
 }

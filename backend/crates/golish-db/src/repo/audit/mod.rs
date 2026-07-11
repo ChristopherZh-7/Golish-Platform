@@ -9,7 +9,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::models::AuditEntry;
@@ -167,6 +167,51 @@ pub async fn log_operation_with_lineage(
     Ok(row)
 }
 
+/// Transaction-owned counterpart of [`log_operation_with_lineage`]. Active
+/// target producers use this after locking a [`crate::repo::scoped::TargetWriteGuard`]
+/// so the timeline row cannot cross an ownership/scope change between a Rust
+/// revalidation and the actual insert.
+#[allow(clippy::too_many_arguments)]
+pub async fn log_operation_with_lineage_in_transaction(
+    connection: &mut PgConnection,
+    action: &str,
+    category: &str,
+    details: &str,
+    project_path: Option<&str>,
+    source: &str,
+    target_id: Option<Uuid>,
+    session_id: Option<&str>,
+    tool_name: Option<&str>,
+    status: &str,
+    detail: &Value,
+    parent_id: Option<i64>,
+    run_id: Option<Uuid>,
+) -> Result<AuditEntry> {
+    let row = sqlx::query_as::<_, AuditEntry>(
+        r#"INSERT INTO audit_log
+               (action, category, details, project_path, source,
+                target_id, session_id, tool_name, status, detail,
+                parent_id, run_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           RETURNING *"#,
+    )
+    .bind(action)
+    .bind(category)
+    .bind(details)
+    .bind(audit_project_path(project_path))
+    .bind(source)
+    .bind(target_id)
+    .bind(session_id)
+    .bind(tool_name)
+    .bind(status)
+    .bind(detail)
+    .bind(parent_id)
+    .bind(run_id)
+    .fetch_one(connection)
+    .await?;
+    Ok(row)
+}
+
 /// 写一条 evidence 行 (`audit_role='evidence'`). 返回带 id 的 [`AuditEntry`],
 /// 调用方 (`EvidenceLedger::append`) 取 `.id` 包成 `EvidenceAuditId`.
 ///
@@ -217,6 +262,61 @@ pub async fn log_evidence(
     .bind(asset)
     .bind(outcome)
     .fetch_one(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Write an evidence row on an existing caller-owned transaction, persisting
+/// the exact timestamp used by the evidence hash.
+///
+/// `EvidenceLedger::append` holds a transaction-scoped advisory lock for the
+/// operation while it reads the predecessor hash and calls this function. The
+/// explicit `created_at` is required because PostgreSQL's implicit `NOW()` is
+/// not the same timestamp that the caller hashed and therefore cannot be used
+/// to reconstruct the chain after a DB round trip.
+#[allow(clippy::too_many_arguments)]
+pub async fn log_evidence_in_transaction(
+    connection: &mut PgConnection,
+    action: &str,
+    category: &str,
+    details: &str,
+    project_path: Option<&str>,
+    source: &str,
+    target_id: Option<Uuid>,
+    session_id: Option<&str>,
+    tool_name: Option<&str>,
+    detail: &Value,
+    run_id: Option<Uuid>,
+    technique: Option<&str>,
+    asset: Option<&str>,
+    outcome: Option<&str>,
+    created_at: DateTime<Utc>,
+) -> Result<AuditEntry> {
+    let row = sqlx::query_as::<_, AuditEntry>(
+        r#"INSERT INTO audit_log
+               (action, category, details, project_path, source,
+                target_id, session_id, tool_name, status, detail,
+                run_id, audit_role, evidence_technique, evidence_asset,
+                evidence_outcome, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9, $10,
+                   'evidence', $11, $12, $13, $14)
+           RETURNING *"#,
+    )
+    .bind(action)
+    .bind(category)
+    .bind(details)
+    .bind(audit_project_path(project_path))
+    .bind(source)
+    .bind(target_id)
+    .bind(session_id)
+    .bind(tool_name)
+    .bind(detail)
+    .bind(run_id)
+    .bind(technique)
+    .bind(asset)
+    .bind(outcome)
+    .bind(created_at)
+    .fetch_one(connection)
     .await?;
     Ok(row)
 }
@@ -340,6 +440,71 @@ pub async fn evidence_facts_for_session(
     .bind(session_id)
     .fetch_all(pool)
     .await?;
+    Ok(rows)
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct TargetBoundEvidenceFactRow {
+    pub evidence_asset: String,
+    pub evidence_technique: String,
+    pub evidence_outcome: String,
+    pub evidence_id: i64,
+    pub evidence_organization_id: String,
+    pub tool_name: Option<String>,
+    pub evidence_kind: Option<String>,
+    pub target_id: Uuid,
+    pub target_organization_id: Option<Uuid>,
+    pub target_type: String,
+    pub target_name: String,
+    pub target_value: String,
+    pub target_ports: Value,
+}
+
+const EVIDENCE_FACTS_FOR_SESSION_ORG_FRESH_SQL: &str = r#"SELECT al.evidence_asset,
+              al.evidence_technique,
+              al.evidence_outcome,
+              al.id AS evidence_id,
+              al.detail->>'organization_id' AS evidence_organization_id,
+              al.tool_name,
+              al.detail->>'kind' AS evidence_kind,
+              t.id AS target_id,
+              t.organization_id AS target_organization_id,
+              t.target_type::text AS target_type,
+              t.name AS target_name,
+              t.value AS target_value,
+              COALESCE(t.ports, '[]'::jsonb) AS target_ports
+       FROM audit_log al
+       JOIN targets t ON t.id = al.target_id
+       WHERE al.audit_role = 'evidence'
+         AND al.session_id = $1
+         AND al.detail->>'organization_id' = $2::text
+         AND t.organization_id = $2
+         AND t.scope::text = 'in'
+         AND t.project_path IS NOT NULL
+         AND al.project_path = t.project_path
+         AND al.created_at >= $3
+         AND al.evidence_technique IS NOT NULL
+         AND al.evidence_asset IS NOT NULL
+         AND al.evidence_outcome IS NOT NULL
+       ORDER BY al.id ASC"#;
+
+/// Target-bound, organization-scoped and stage-fresh evidence facts for
+/// Enumeration terminal outcome validation. Unlike the legacy session-wide
+/// reader, this cannot reuse a prior stage attempt's evidence or a sibling
+/// organization's identical `(asset, technique, outcome)` tuple.
+pub async fn evidence_facts_for_session_org_fresh(
+    pool: &PgPool,
+    session_id: &str,
+    organization_id: Uuid,
+    since: DateTime<Utc>,
+) -> Result<Vec<TargetBoundEvidenceFactRow>> {
+    let rows =
+        sqlx::query_as::<_, TargetBoundEvidenceFactRow>(EVIDENCE_FACTS_FOR_SESSION_ORG_FRESH_SQL)
+            .bind(session_id)
+            .bind(organization_id)
+            .bind(since)
+            .fetch_all(pool)
+            .await?;
     Ok(rows)
 }
 

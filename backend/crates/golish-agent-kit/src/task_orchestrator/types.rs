@@ -60,7 +60,10 @@ pub struct ExecutionContext {
     pub operation_id: Option<uuid::Uuid>,
     /// Accumulated results from completed subtasks.
     pub completed_results: Vec<SubtaskResult>,
-    /// The original user input.
+    /// Request-local top-level input exposed to agents for this execution.
+    /// Fresh runs use the operation's original task input. A resumed run uses
+    /// the current non-blank continuation/steering message, falling back to the
+    /// durable original for an empty message; the durable task row is unchanged.
     pub task_input: String,
     /// Current subtask being executed (if any).
     pub current_subtask: Option<CurrentSubtask>,

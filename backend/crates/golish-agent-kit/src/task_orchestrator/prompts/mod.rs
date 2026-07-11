@@ -85,9 +85,10 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
         let db_truth_action = if spec.kind == StageKind::ExternalAttackSurface {
             "Run the EAS active mapping tools so their data LANDS in the database \
              (stage_run -> prober -> list_attack_surface_seeds/list_in_scope_targets -> \
-             batch-first pentest_run: httpx for domain/URL liveness, naabu/masscan for fast \
-             port discovery, nmap -sV for confirmed open ports, and whatweb only for confirmed \
-             HTTP(S) endpoints -> \
+             batch-first wrapper calls: eas_discover_ports first for concrete IP/CIDR hosts, \
+             eas_fingerprint_services/nmap -sV for every confirmed open port, \
+             eas_probe_http_liveness/httpx for domain/URL/web-origin liveness, and \
+             eas_fingerprint_web_stack/whatweb for each confirmed HTTP(S) web origin -> \
              manage_targets/targets.ports/fingerprints/technique_outcomes)."
         } else {
             "Run the target_intel registry tools so their data LANDS in the database \
@@ -99,7 +100,9 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
              for active negatives use checked_empty when a scan/probe really ran and found nothing, \
              or blocked/not_applicable+note when the technique cannot apply or was blocked. \
              If no ports are open, mark SERVICE-FINGERPRINT not_applicable with a note; do NOT invent \
-             a found service from HTTP liveness alone."
+             a found service from HTTP liveness alone. If a web origin is confirmed, run WhatWeb once \
+             for that origin; if multiple domains share one IP:port, each confirmed origin still needs \
+             WEB-FINGERPRINT because Host/SNI can change the stack."
         } else {
             "ONLY add a `coverage` cell when a technique genuinely has no data source or is blocked \
              for an asset: mark it `blocked` or `not_applicable` with a `note` naming the failed/absent source."
@@ -120,8 +123,9 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
         format!(
             "\n- **Coverage (per in-scope asset)** — EAS asset/port contract: give EACH applicable \
              technique a terminal status for EVERY asset via the `coverage` field: {}. \
-             domain/URL assets require LIVENESS only; IP/CIDR-discovered IP assets require \
-             LIVENESS + PORT + SERVICE-FINGERPRINT. Host-level PORT/SERVICE belongs to the \
+             domain/URL assets require LIVENESS and WEB-FINGERPRINT once HTTP(S) is confirmed; \
+             IP/CIDR-discovered IP assets require PORT first, then LIVENESS + SERVICE-FINGERPRINT \
+             and WEB-FINGERPRINT if the open service is HTTP(S). Host-level PORT/SERVICE belongs to the \
              concrete IP target, never to an unresolved domain string. Per cell: found / checked_empty / \
              blocked|not_applicable+note. A missing (asset × technique) = not_attempted = gate \
              BLOCK (\"checked-empty\" is NOT \"unchecked\").\n\
@@ -131,7 +135,9 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
              `tested_units = open ports fingerprinted` and `total_units = open ports discovered`. \
              If no ports are open, mark SERVICE-FINGERPRINT `not_applicable` with a note; do NOT \
              submit checked_empty with total_units=0. HTTP liveness alone is never PORT or \
-             SERVICE-FINGERPRINT coverage. Before submit, call `check_stage_asset_coverage`; if \
+             SERVICE-FINGERPRINT coverage. If a later port discovery expands the open-port set, \
+             fingerprint the newly discovered ports before submit. Before submit, call \
+             `check_stage_asset_coverage`; if \
              `ready_to_submit=false`, close the reported `gap_examples` instead of submitting.",
             spec.expected_techniques.join(", ")
         )
@@ -343,7 +349,8 @@ pub fn stage_methodology(spec: &StageSpec) -> String {
 /// 与 [`stage_methodology`] 互斥：方法论 playbook（这个阶段「怎么做」的脏活）属于
 /// **干活的 worker**（由 `stage_run` 的 `build_org_objective` 注入到 specialist 子
 /// agent），主 agent 不再重复携带。主 agent 只需要这份编排提示：用 `stage_run` 按
-/// org 扇出 → gap 循环 → 全过后收口交付。无 `specialist` 的阶段返回空串（主 agent
+/// org 扇出 → 有界 gap closure → 全过后收口，或预算耗尽后结束本请求 BLOCKED；新的
+/// 用户 continuation 才能取得下一份有界预算。无 `specialist` 的阶段返回空串（主 agent
 /// 自己干，仍走 [`stage_methodology`]）。
 pub fn stage_specialist_orchestration(spec: &StageSpec) -> String {
     let Some(specialist) = spec
@@ -360,10 +367,12 @@ pub fn stage_specialist_orchestration(spec: &StageSpec) -> String {
          intelligence yourself: call `stage_run` with your full in-scope organization \
          tree (the parent + subsidiaries you built in scoping). It runs `{specialist}` \
          once per org — each isolated and gated on its own evidence — and returns \
-         `{{ passed, gaps[] }}`. If `passed` is false, call `stage_run` again with \
-         `orgs` set to ONLY the blocked org(s) and repeat until every org passes (the \
-         gate-closure loop); ask the human only if an org keeps failing. Once every org \
-         passes, submit the `{stage}` StageDeliverable to close — coverage is read from \
+         `{{ passed, gaps[], retry_budget_exhausted }}`. If `passed` is false and \
+         `retry_budget_exhausted=false`, call `stage_run` again with `orgs` set to ONLY \
+         the blocked org(s). If `retry_budget_exhausted=true`, do not call `stage_run` \
+         again in this request: stop and report the stage BLOCKED. A separate user \
+         continuation receives a fresh bounded retry budget and resumes the saved worker \
+         chain. Once every org passes, submit the `{stage}` StageDeliverable to close — coverage is read from \
          the DB the specialists populated, so you do not re-collect or hand-build it.\n\n",
         stage = spec.id,
         specialist = specialist,
@@ -522,7 +531,7 @@ When the task involves testing a target, follow this standard methodology:
 
 ### Phase 2: Service Enumeration
 - HTTP service probing (httpx) for web services
-- HTTP technology fingerprinting (whatweb, wappalyzer) only for confirmed HTTP(S) services
+- HTTP technology fingerprinting (whatweb, wappalyzer) only for confirmed HTTP(S) services; if several domains/vhosts share one IP:port, fingerprint each confirmed web origin separately because Host/SNI can change the stack
 - Web crawling (katana) for content discovery
 - JavaScript collection and analysis for SPAs
 
@@ -847,6 +856,19 @@ mod tests {
     }
 
     #[test]
+    fn specialist_orchestration_stops_after_stage_run_budget_exhaustion() {
+        let spec = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::types::StageKind::Enumeration,
+        )
+        .expect("load enumeration spec");
+        let prompt = stage_specialist_orchestration(&spec);
+
+        assert!(prompt.contains("retry_budget_exhausted=true"));
+        assert!(prompt.contains("do not call `stage_run` again in this request"));
+        assert!(prompt.contains("separate user continuation"));
+    }
+
+    #[test]
     fn mentor_prompt_renders_stage_boundary_context() {
         let context = MentorPromptContext {
             stage: Some("external_attack_surface".to_string()),
@@ -1001,8 +1023,10 @@ mod tests {
             "EAS charter must surface the liveness technique to the agent"
         );
         assert!(charter.contains("auto-adjudicated from the DATABASE"));
-        assert!(charter.contains("naabu/masscan"));
-        assert!(charter.contains("whatweb only for confirmed HTTP(S) endpoints"));
+        assert!(charter.contains("eas_discover_ports first"));
+        assert!(charter.contains("nmap -sV for every confirmed open port"));
+        assert!(charter.contains("eas_fingerprint_web_stack/whatweb"));
+        assert!(charter.contains("WEB-FINGERPRINT"));
         assert!(charter.contains("SERVICE-FINGERPRINT not_applicable"));
         assert!(charter.contains("HTTP liveness alone"));
         assert!(!charter.contains("Coverage (per in-scope asset)"));

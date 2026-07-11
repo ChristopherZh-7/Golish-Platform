@@ -113,7 +113,6 @@ pub struct BridgeToolSelection {
     pub record_finding: bool,
     pub vault: bool,
     pub browser_collect_js_api: bool,
-    pub js_collect: bool,
     pub js_extract_apis: bool,
     pub auth_probe: bool,
     /// `submit_stage_deliverable` — the deterministic harness deliverable
@@ -147,7 +146,6 @@ impl BridgeToolSelection {
             record_finding: true,
             vault: true,
             browser_collect_js_api: true,
-            js_collect: true,
             js_extract_apis: true,
             auth_probe: true,
             // Harness-stage-only; opted into per-mode (task) rather than via the
@@ -172,7 +170,6 @@ impl BridgeToolSelection {
             record_finding: false,
             vault: false,
             browser_collect_js_api: false,
-            js_collect: false,
             js_extract_apis: false,
             auth_probe: false,
             submit_stage_deliverable: false,
@@ -216,9 +213,6 @@ impl BridgeToolSelection {
         }
         if self.browser_collect_js_api {
             out.push("browser_collect_js_api");
-        }
-        if self.js_collect {
-            out.push("js_collect");
         }
         if self.js_extract_apis {
             out.push("js_extract_apis");
@@ -315,7 +309,6 @@ mod tests {
                 "record_finding",
                 "vault",
                 "browser_collect_js_api",
-                "js_collect",
                 "js_extract_apis",
                 "auth_probe",
                 "wait_for_background_jobs",

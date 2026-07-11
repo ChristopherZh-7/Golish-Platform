@@ -8,9 +8,62 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
+use std::sync::LazyLock;
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const JS_SIGNAL_RULES_YAML: &str =
     include_str!("../../../../resources/js-analysis/js-signal-rules.yml");
+const SIGNAL_CONTEXT_RADIUS_BYTES: usize = 2_048;
+
+const SECRET_ASSIGNMENT_PATTERN: &str =
+    r#"(?im)["']?([A-Za-z_$][A-Za-z0-9_$-]*)["']?\s*[:=]\s*["'`]([^"'`\n]{6,})["'`]"#;
+const SECRET_PATTERNS: [(SecretKind, &str, f32); 6] = [
+    (
+        SecretKind::Jwt,
+        r#"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"#,
+        0.9,
+    ),
+    (
+        SecretKind::CloudAccessKey,
+        r#"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"#,
+        0.92,
+    ),
+    (
+        SecretKind::BearerToken,
+        r#"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{16,})"#,
+        0.82,
+    ),
+    (
+        SecretKind::PrivateKey,
+        r#"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"#,
+        0.98,
+    ),
+    (
+        SecretKind::BasicAuthUrl,
+        r#"https?://[^/\s"'`:@]+:[^@\s"'`]+@[^/\s"'`)]+"#,
+        0.86,
+    ),
+    (
+        SecretKind::InternalUrl,
+        r#"(?i)\bhttps?://(?:localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|[A-Za-z0-9.-]+\.(?:internal|local|corp|lan))(?::\d+)?(?:/[^\s"'`<>)]*)?"#,
+        0.72,
+    ),
+];
+const CONFIG_PATTERN: &str =
+    r#"(?im)["']?([A-Za-z_$][A-Za-z0-9_$]*)["']?\s*[:=]\s*["'`]([^"'`\n]{1,220})["'`]"#;
+const REDACTION_ASSIGNMENT_PATTERNS: [&str; 2] = [
+    r#"(?i)(["']?[A-Za-z0-9_.-]*(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|secret|password|passwd|pwd)["']?\s*[:=]\s*["'`])([^"'`\n]{4,})(["'`])"#,
+    r#"(?i)(authorization["']?\s*[:=]\s*["'`]\s*(?:bearer|basic)\s+)([^"'`\n]{4,})(["'`])"#,
+];
+const REDACTION_TOKEN_PATTERNS: [&str; 5] = [
+    r#"(?i)\b(bearer|basic)\s+[A-Za-z0-9_.=:+/\-]{5,160}"#,
+    r#"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._/-]{10,}(?:\.[A-Za-z0-9._/-]{8,})?\b"#,
+    r#"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"#,
+    r#"\bLTAI[a-zA-Z0-9]{12,20}\b"#,
+    r#"\bsk_(?:live|test)_[A-Za-z0-9_-]{8,}\b"#,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -152,13 +205,59 @@ impl JsSignalReport {
     }
 }
 
+/// Byte-offset index for source line lookup.
+///
+/// Regex match offsets are byte offsets, so indexing only `\n` byte positions
+/// preserves the existing Unicode behavior while avoiding a source-prefix scan
+/// for every signal match.
+#[derive(Debug)]
+struct SourceLineIndex {
+    newline_offsets: Vec<usize>,
+}
+
+impl SourceLineIndex {
+    fn new(source: &str) -> Self {
+        Self {
+            newline_offsets: source
+                .match_indices('\n')
+                .map(|(offset, _)| offset)
+                .collect(),
+        }
+    }
+
+    fn line_of(&self, source_len: usize, offset: usize) -> usize {
+        let offset = offset.min(source_len);
+        self.newline_offsets
+            .partition_point(|newline_offset| *newline_offset < offset)
+            + 1
+    }
+
+    fn line_text_with_offset<'a>(&self, source: &'a str, offset: usize) -> (&'a str, usize) {
+        let offset = offset.min(source.len());
+        let line_index = self
+            .newline_offsets
+            .partition_point(|newline_offset| *newline_offset < offset);
+        let start = line_index
+            .checked_sub(1)
+            .map(|index| self.newline_offsets[index] + 1)
+            .unwrap_or(0);
+        let end = self
+            .newline_offsets
+            .get(line_index)
+            .copied()
+            .unwrap_or(source.len());
+        (&source[start..end], offset.saturating_sub(start))
+    }
+}
+
 pub fn analyze_signals_from_source(source_file: &str, source: &str) -> JsSignalReport {
+    let line_index = SourceLineIndex::new(source);
     let mut report = JsSignalReport {
-        secrets: extract_secrets(source_file, source),
-        configs: extract_configs(source_file, source),
-        frameworks: detect_frameworks(source_file, source),
-        libraries: detect_libraries(source_file, source),
-        rule_matches: extract_rule_matches(source_file, source),
+        secrets: extract_secrets(source_file, source, &line_index),
+        configs: extract_configs(source_file, source, &line_index),
+        frameworks: detect_frameworks(source_file, source, &line_index),
+        libraries: detect_libraries(source_file, source, &line_index),
+        rule_matches: extract_rule_matches(source_file, source, &line_index),
     };
 
     report.secrets.sort_by_key(|c| {
@@ -288,6 +387,59 @@ struct SignalRuleDefinition {
     ai_review: bool,
 }
 
+#[derive(Debug)]
+struct CompiledSignalRule {
+    definition: SignalRuleDefinition,
+    regex: Regex,
+}
+
+static COMPILED_SIGNAL_RULES: LazyLock<Vec<CompiledSignalRule>> = LazyLock::new(|| {
+    signal_rules()
+        .into_iter()
+        .map(|definition| {
+            let regex = compile_signal_rule_regex(&definition);
+            CompiledSignalRule { definition, regex }
+        })
+        .collect()
+});
+
+static SECRET_ASSIGNMENT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    compile_fixed_regex(SECRET_ASSIGNMENT_PATTERN, "secret assignment regex valid")
+});
+static SECRET_REGEXES: LazyLock<Vec<(SecretKind, Regex, f32)>> = LazyLock::new(|| {
+    SECRET_PATTERNS
+        .iter()
+        .map(|(kind, pattern, confidence)| {
+            (
+                *kind,
+                compile_fixed_regex(pattern, "secret regex valid"),
+                *confidence,
+            )
+        })
+        .collect()
+});
+static CONFIG_RE: LazyLock<Regex> =
+    LazyLock::new(|| compile_fixed_regex(CONFIG_PATTERN, "config regex valid"));
+static REDACTION_ASSIGNMENT_RES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    REDACTION_ASSIGNMENT_PATTERNS
+        .iter()
+        .map(|pattern| compile_redaction_regex(pattern))
+        .collect()
+});
+static REDACTION_TOKEN_RES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    REDACTION_TOKEN_PATTERNS
+        .iter()
+        .map(|pattern| compile_redaction_regex(pattern))
+        .collect()
+});
+
+#[cfg(test)]
+static SIGNAL_RULE_REGEX_COMPILE_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static FIXED_REGEX_COMPILE_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static REDACTION_REGEX_COMPILE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 fn default_true() -> bool {
     true
 }
@@ -298,16 +450,51 @@ fn signal_rules() -> Vec<SignalRuleDefinition> {
     ruleset.rules
 }
 
-fn extract_rule_matches(source_file: &str, source: &str) -> Vec<RuleMatchCandidate> {
+fn compile_signal_rule_regex(rule: &SignalRuleDefinition) -> Regex {
+    #[cfg(test)]
+    SIGNAL_RULE_REGEX_COMPILE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    RegexBuilder::new(&rule.regex)
+        .case_insensitive(!rule.case_sensitive)
+        .multi_line(true)
+        .build()
+        .unwrap_or_else(|e| panic!("embedded JS signal regex `{}` is valid: {e}", rule.name))
+}
+
+fn compile_fixed_regex(pattern: &str, error_message: &str) -> Regex {
+    #[cfg(test)]
+    FIXED_REGEX_COMPILE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    Regex::new(pattern).unwrap_or_else(|error| panic!("{error_message}: {error}"))
+}
+
+fn compile_redaction_regex(pattern: &str) -> Regex {
+    #[cfg(test)]
+    REDACTION_REGEX_COMPILE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    Regex::new(pattern).expect("redaction regex is valid")
+}
+
+fn extract_rule_matches(
+    source_file: &str,
+    source: &str,
+    line_index: &SourceLineIndex,
+) -> Vec<RuleMatchCandidate> {
+    extract_rule_matches_with_rules(source_file, source, line_index, &COMPILED_SIGNAL_RULES)
+}
+
+fn extract_rule_matches_with_rules(
+    source_file: &str,
+    source: &str,
+    line_index: &SourceLineIndex,
+    compiled_rules: &[CompiledSignalRule],
+) -> Vec<RuleMatchCandidate> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
 
-    for rule in signal_rules() {
-        let re = RegexBuilder::new(&rule.regex)
-            .case_insensitive(!rule.case_sensitive)
-            .multi_line(true)
-            .build()
-            .unwrap_or_else(|e| panic!("embedded JS signal regex `{}` is valid: {e}", rule.name));
+    for compiled_rule in compiled_rules {
+        let rule = &compiled_rule.definition;
+        let re = &compiled_rule.regex;
 
         for cap in re.captures_iter(source) {
             let value_match = cap.get(1).or_else(|| cap.get(0));
@@ -320,12 +507,12 @@ fn extract_rule_matches(source_file: &str, source: &str) -> Vec<RuleMatchCandida
             }
 
             let hash = sha256_hex(value);
-            let line = line_of(source, value_match.start());
+            let line = line_index.line_of(source.len(), value_match.start());
             let dedupe_key = (rule.name.clone(), hash.clone(), line);
             if !seen.insert(dedupe_key) {
                 continue;
             }
-            let color = rule_color(&rule);
+            let color = rule_color(rule);
             let severity = rule
                 .severity
                 .unwrap_or_else(|| rule_severity(&color, rule.kind, rule.confidence));
@@ -336,7 +523,7 @@ fn extract_rule_matches(source_file: &str, source: &str) -> Vec<RuleMatchCandida
                 source_rule: rule.source_rule.clone(),
                 kind: rule.kind,
                 color,
-                scope: rule_scope(&rule),
+                scope: rule_scope(rule),
                 severity,
                 source_file: source_file.to_string(),
                 line,
@@ -344,7 +531,7 @@ fn extract_rule_matches(source_file: &str, source: &str) -> Vec<RuleMatchCandida
                 match_sha256: hash,
                 confidence: rule.confidence,
                 ai_review: rule.ai_review,
-                context: redacted_line_context(source, value_match.start(), value),
+                context: redacted_line_context(source, value_match.start(), value, line_index),
             });
         }
     }
@@ -390,15 +577,15 @@ fn rule_severity(color: &str, kind: RuleMatchKind, confidence: f32) -> RuleMatch
     }
 }
 
-fn extract_secrets(source_file: &str, source: &str) -> Vec<SecretCandidate> {
+fn extract_secrets(
+    source_file: &str,
+    source: &str,
+    line_index: &SourceLineIndex,
+) -> Vec<SecretCandidate> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
 
-    let assignment_re = Regex::new(
-        r#"(?im)["']?([A-Za-z_$][A-Za-z0-9_$-]*)["']?\s*[:=]\s*["'`]([^"'`\n]{6,})["'`]"#,
-    )
-    .expect("secret assignment regex valid");
-    for cap in assignment_re.captures_iter(source) {
+    for cap in SECRET_ASSIGNMENT_RE.captures_iter(source) {
         let Some(key_match) = cap.get(1) else {
             continue;
         };
@@ -421,6 +608,7 @@ fn extract_secrets(source_file: &str, source: &str) -> Vec<SecretCandidate> {
                 kind,
                 source_file,
                 source,
+                line_index,
                 offset: value_match.start(),
                 key: Some(key.to_string()),
                 value,
@@ -429,41 +617,9 @@ fn extract_secrets(source_file: &str, source: &str) -> Vec<SecretCandidate> {
         );
     }
 
-    let patterns: [(SecretKind, &str, f32); 6] = [
-        (
-            SecretKind::Jwt,
-            r#"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"#,
-            0.9,
-        ),
-        (
-            SecretKind::CloudAccessKey,
-            r#"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"#,
-            0.92,
-        ),
-        (
-            SecretKind::BearerToken,
-            r#"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{16,})"#,
-            0.82,
-        ),
-        (
-            SecretKind::PrivateKey,
-            r#"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"#,
-            0.98,
-        ),
-        (
-            SecretKind::BasicAuthUrl,
-            r#"https?://[^/\s"'`:@]+:[^@\s"'`]+@[^/\s"'`)]+"#,
-            0.86,
-        ),
-        (
-            SecretKind::InternalUrl,
-            r#"(?i)\bhttps?://(?:localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|[A-Za-z0-9.-]+\.(?:internal|local|corp|lan))(?::\d+)?(?:/[^\s"'`<>)]*)?"#,
-            0.72,
-        ),
-    ];
-
-    for (kind, pattern, confidence) in patterns {
-        let re = Regex::new(pattern).expect("secret regex valid");
+    for (kind, re, confidence) in SECRET_REGEXES.iter() {
+        let kind = *kind;
+        let confidence = *confidence;
         for cap in re.captures_iter(source) {
             let value_match = cap.get(1).or_else(|| cap.get(0));
             let Some(value_match) = value_match else {
@@ -480,6 +636,7 @@ fn extract_secrets(source_file: &str, source: &str) -> Vec<SecretCandidate> {
                     kind,
                     source_file,
                     source,
+                    line_index,
                     offset: value_match.start(),
                     key: None,
                     value,
@@ -496,6 +653,7 @@ struct SecretBuild<'a> {
     kind: SecretKind,
     source_file: &'a str,
     source: &'a str,
+    line_index: &'a SourceLineIndex,
     offset: usize,
     key: Option<String>,
     value: &'a str,
@@ -508,7 +666,7 @@ fn push_secret(
     build: SecretBuild<'_>,
 ) {
     let hash = sha256_hex(build.value);
-    let line = line_of(build.source, build.offset);
+    let line = build.line_index.line_of(build.source.len(), build.offset);
     if !seen.insert((build.kind, hash.clone(), line)) {
         return;
     }
@@ -527,19 +685,18 @@ fn push_secret(
         value_sha256: hash,
         confidence,
         is_likely_test_value,
-        context: redacted_line_context(build.source, build.offset, build.value),
+        context: redacted_line_context(build.source, build.offset, build.value, build.line_index),
     });
 }
 
-fn extract_configs(source_file: &str, source: &str) -> Vec<ConfigCandidate> {
-    let config_re = Regex::new(
-        r#"(?im)["']?([A-Za-z_$][A-Za-z0-9_$]*)["']?\s*[:=]\s*["'`]([^"'`\n]{1,220})["'`]"#,
-    )
-    .expect("config regex valid");
-
+fn extract_configs(
+    source_file: &str,
+    source: &str,
+    line_index: &SourceLineIndex,
+) -> Vec<ConfigCandidate> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    for cap in config_re.captures_iter(source) {
+    for cap in CONFIG_RE.captures_iter(source) {
         let Some(key_match) = cap.get(1) else {
             continue;
         };
@@ -559,7 +716,7 @@ fn extract_configs(source_file: &str, source: &str) -> Vec<ConfigCandidate> {
         }
 
         let hash = sha256_hex(value);
-        let line = line_of(source, value_match.start());
+        let line = line_index.line_of(source.len(), value_match.start());
         let dedupe_key = (key.to_ascii_lowercase(), hash.clone(), line);
         if !seen.insert(dedupe_key) {
             continue;
@@ -572,14 +729,18 @@ fn extract_configs(source_file: &str, source: &str) -> Vec<ConfigCandidate> {
             value_preview: config_preview(value),
             value_sha256: hash,
             confidence: config_confidence(value),
-            context: redacted_line_context(source, value_match.start(), value),
+            context: redacted_line_context(source, value_match.start(), value, line_index),
         });
     }
 
     out
 }
 
-fn detect_frameworks(source_file: &str, source: &str) -> Vec<FrameworkCandidate> {
+fn detect_frameworks(
+    source_file: &str,
+    source: &str,
+    line_index: &SourceLineIndex,
+) -> Vec<FrameworkCandidate> {
     let rules = [
         (
             "Next.js",
@@ -614,7 +775,7 @@ fn detect_frameworks(source_file: &str, source: &str) -> Vec<FrameworkCandidate>
             0.84,
         ),
     ];
-    detect_named(source_file, source, &rules)
+    detect_named(source_file, source, &rules, line_index)
         .into_iter()
         .map(|(name, line, confidence, evidence)| FrameworkCandidate {
             name,
@@ -627,7 +788,11 @@ fn detect_frameworks(source_file: &str, source: &str) -> Vec<FrameworkCandidate>
         .collect()
 }
 
-fn detect_libraries(source_file: &str, source: &str) -> Vec<LibraryCandidate> {
+fn detect_libraries(
+    source_file: &str,
+    source: &str,
+    line_index: &SourceLineIndex,
+) -> Vec<LibraryCandidate> {
     let rules = [
         ("axios", &["axios.", "axios("][..], 0.86),
         ("jQuery", &["jQuery.", "$.ajax"][..], 0.82),
@@ -640,7 +805,7 @@ fn detect_libraries(source_file: &str, source: &str) -> Vec<LibraryCandidate> {
         ("Element Plus", &["element-plus", "ElMessage"][..], 0.76),
         ("Ant Design", &["antd/", "ant-design", "Antd"][..], 0.74),
     ];
-    detect_named(source_file, source, &rules)
+    detect_named(source_file, source, &rules, line_index)
         .into_iter()
         .map(|(name, line, confidence, evidence)| LibraryCandidate {
             name,
@@ -657,6 +822,7 @@ fn detect_named(
     source_file: &str,
     source: &str,
     rules: &[(&str, &[&str], f32)],
+    line_index: &SourceLineIndex,
 ) -> Vec<(String, usize, f32, String)> {
     let mut by_name = BTreeMap::new();
     let lower = source.to_ascii_lowercase();
@@ -664,7 +830,7 @@ fn detect_named(
         for needle in *needles {
             let needle_lower = needle.to_ascii_lowercase();
             if let Some(offset) = lower.find(&needle_lower) {
-                let line = line_of(source, offset);
+                let line = line_index.line_of(source.len(), offset);
                 by_name.entry((*name).to_string()).or_insert_with(|| {
                     (
                         (*name).to_string(),
@@ -871,48 +1037,51 @@ fn rule_match_preview(kind: RuleMatchKind, value: &str) -> String {
     }
 }
 
-fn redacted_line_context(source: &str, offset: usize, value: &str) -> String {
-    let line = line_text(source, offset);
-    let redacted = line.replace(value, &redacted_preview(value));
+fn redacted_line_context(
+    source: &str,
+    offset: usize,
+    value: &str,
+    line_index: &SourceLineIndex,
+) -> String {
+    let (line, offset_in_line) = line_index.line_text_with_offset(source, offset);
+    let context = bounded_signal_context(line, offset_in_line, value.len());
+    let redacted = context.replace(value, &redacted_preview(value));
     redact_sensitive_context(&collapse_ws(&redacted))
+}
+
+/// Keep signal context work bounded even when a minified bundle is one giant
+/// line. The final rendered context is only 180 characters, so scanning and
+/// redacting megabytes around every regex hit adds no evidence and turns the
+/// analyzer into O(matches × source_len).
+fn bounded_signal_context(line: &str, offset: usize, match_len: usize) -> &str {
+    let offset = offset.min(line.len());
+    let mut start = offset.saturating_sub(SIGNAL_CONTEXT_RADIUS_BYTES);
+    while start > 0 && !line.is_char_boundary(start) {
+        start -= 1;
+    }
+
+    let desired_end = offset
+        .saturating_add(match_len)
+        .saturating_add(SIGNAL_CONTEXT_RADIUS_BYTES)
+        .min(line.len());
+    let mut end = desired_end;
+    while end < line.len() && !line.is_char_boundary(end) {
+        end += 1;
+    }
+    &line[start..end]
 }
 
 fn redact_sensitive_context(context: &str) -> String {
     let mut redacted = context.to_string();
-    let assignment_patterns = [
-        r#"(?i)(["']?[A-Za-z0-9_.-]*(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|secret|password|passwd|pwd)["']?\s*[:=]\s*["'`])([^"'`\n]{4,})(["'`])"#,
-        r#"(?i)(authorization["']?\s*[:=]\s*["'`]\s*(?:bearer|basic)\s+)([^"'`\n]{4,})(["'`])"#,
-    ];
-    for pattern in assignment_patterns {
-        let re = Regex::new(pattern).expect("redaction regex is valid");
+    for re in REDACTION_ASSIGNMENT_RES.iter() {
         redacted = re.replace_all(&redacted, "$1***REDACTED***$3").to_string();
     }
 
-    let token_patterns = [
-        r#"(?i)\b(bearer|basic)\s+[A-Za-z0-9_.=:+/\-]{5,160}"#,
-        r#"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._/-]{10,}(?:\.[A-Za-z0-9._/-]{8,})?\b"#,
-        r#"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"#,
-        r#"\bLTAI[a-zA-Z0-9]{12,20}\b"#,
-        r#"\bsk_(?:live|test)_[A-Za-z0-9_-]{8,}\b"#,
-    ];
-    for pattern in token_patterns {
-        let re = Regex::new(pattern).expect("redaction regex is valid");
+    for re in REDACTION_TOKEN_RES.iter() {
         redacted = re.replace_all(&redacted, "***REDACTED***").to_string();
     }
 
     redacted
-}
-
-fn line_text(source: &str, offset: usize) -> &str {
-    let start = source[..offset.min(source.len())]
-        .rfind('\n')
-        .map(|idx| idx + 1)
-        .unwrap_or(0);
-    let end = source[offset.min(source.len())..]
-        .find('\n')
-        .map(|idx| offset.min(source.len()) + idx)
-        .unwrap_or(source.len());
-    &source[start..end]
 }
 
 fn collapse_ws(value: &str) -> String {
@@ -925,17 +1094,44 @@ fn collapse_ws(value: &str) -> String {
     }
 }
 
-fn line_of(source: &str, offset: usize) -> usize {
-    source[..offset.min(source.len())]
-        .bytes()
-        .filter(|b| *b == b'\n')
-        .count()
-        + 1
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_line_index_matches_reference_for_unicode_and_boundaries() {
+        let source = "first\n第二行🚀\nthird\n";
+        let lines = SourceLineIndex::new(source);
+        let mut offsets = source
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .collect::<Vec<_>>();
+        offsets.extend([source.len(), source.len() + 17]);
+
+        for offset in offsets {
+            let clamped = offset.min(source.len());
+            let expected_line = source[..clamped]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count()
+                + 1;
+            let expected_start = source[..clamped]
+                .rfind('\n')
+                .map(|newline| newline + 1)
+                .unwrap_or(0);
+            let expected_end = source[clamped..]
+                .find('\n')
+                .map(|newline| clamped + newline)
+                .unwrap_or(source.len());
+            let expected_text = &source[expected_start..expected_end];
+
+            assert_eq!(lines.line_of(source.len(), offset), expected_line);
+            assert_eq!(
+                lines.line_text_with_offset(source, offset),
+                (expected_text, clamped.saturating_sub(expected_start))
+            );
+        }
+    }
 
     #[test]
     fn extracts_redacted_secret_and_config_candidates() {
@@ -997,13 +1193,103 @@ mod tests {
     fn embedded_signal_rules_parse_and_compile() {
         let rules = signal_rules();
         assert!(rules.len() >= 35);
+        let compiled = LazyLock::force(&COMPILED_SIGNAL_RULES);
 
-        for rule in rules {
-            RegexBuilder::new(&rule.regex)
-                .case_insensitive(!rule.case_sensitive)
-                .multi_line(true)
-                .build()
-                .unwrap_or_else(|e| panic!("rule `{}` should compile: {e}", rule.name));
+        assert_eq!(compiled.len(), rules.len());
+        assert!(compiled
+            .iter()
+            .zip(rules)
+            .all(|(compiled, rule)| compiled.definition.name == rule.name));
+    }
+
+    #[test]
+    fn compiles_each_cached_regex_exactly_once() {
+        let signal_rules = LazyLock::force(&COMPILED_SIGNAL_RULES);
+        let signal_rules_again = LazyLock::force(&COMPILED_SIGNAL_RULES);
+        assert!(std::ptr::eq(
+            signal_rules.as_slice(),
+            signal_rules_again.as_slice()
+        ));
+        assert_eq!(
+            SIGNAL_RULE_REGEX_COMPILE_COUNT.load(Ordering::Relaxed),
+            signal_rules.len()
+        );
+
+        let assignment = LazyLock::force(&SECRET_ASSIGNMENT_RE);
+        let assignment_again = LazyLock::force(&SECRET_ASSIGNMENT_RE);
+        assert!(std::ptr::eq(assignment, assignment_again));
+        LazyLock::force(&SECRET_REGEXES);
+        LazyLock::force(&CONFIG_RE);
+        assert_eq!(FIXED_REGEX_COMPILE_COUNT.load(Ordering::Relaxed), 8);
+
+        let redaction_assignment = LazyLock::force(&REDACTION_ASSIGNMENT_RES);
+        let redaction_assignment_again = LazyLock::force(&REDACTION_ASSIGNMENT_RES);
+        assert!(std::ptr::eq(
+            redaction_assignment.as_slice(),
+            redaction_assignment_again.as_slice()
+        ));
+        LazyLock::force(&REDACTION_TOKEN_RES);
+        assert_eq!(REDACTION_REGEX_COMPILE_COUNT.load(Ordering::Relaxed), 7);
+    }
+
+    #[test]
+    fn cached_signal_rules_preserve_uncached_match_order_and_values() {
+        let uncached = signal_rules()
+            .into_iter()
+            .map(|definition| {
+                let regex = RegexBuilder::new(&definition.regex)
+                    .case_insensitive(!definition.case_sensitive)
+                    .multi_line(true)
+                    .build()
+                    .unwrap_or_else(|error| {
+                        panic!("rule `{}` should compile: {error}", definition.name)
+                    });
+                CompiledSignalRule { definition, regex }
+            })
+            .collect::<Vec<_>>();
+        let source = r#"
+            fetch('/api/users?page=1');
+            const headers = { Authorization: 'Bearer runtime-token-12345' };
+            router.$router.push('/admin');
+            const internal = 'http://192.168.1.20/admin';
+        "#;
+        let line_index = SourceLineIndex::new(source);
+
+        let cached = extract_rule_matches_with_rules(
+            "bundle.js",
+            source,
+            &line_index,
+            LazyLock::force(&COMPILED_SIGNAL_RULES).as_slice(),
+        );
+        let fresh = extract_rule_matches_with_rules("bundle.js", source, &line_index, &uncached);
+
+        assert_eq!(cached, fresh);
+    }
+
+    #[test]
+    fn cached_redaction_regexes_preserve_uncached_replacement_order() {
+        fn uncached_reference(context: &str) -> String {
+            let mut redacted = context.to_string();
+            for pattern in REDACTION_ASSIGNMENT_PATTERNS {
+                let re = Regex::new(pattern).expect("redaction regex is valid");
+                redacted = re.replace_all(&redacted, "$1***REDACTED***$3").to_string();
+            }
+            for pattern in REDACTION_TOKEN_PATTERNS {
+                let re = Regex::new(pattern).expect("redaction regex is valid");
+                redacted = re.replace_all(&redacted, "***REDACTED***").to_string();
+            }
+            redacted
+        }
+
+        for context in [
+            r#"api_key = "sk_live_1234567890"; Authorization: "Bearer runtime-token-12345""#,
+            "AKIA1234567890ABCDEF and LTAIabcdefghijklmnop",
+            "plain context without a sensitive value",
+        ] {
+            assert_eq!(
+                redact_sensitive_context(context),
+                uncached_reference(context)
+            );
         }
     }
 
@@ -1128,5 +1414,20 @@ mod tests {
             .rule_matches
             .iter()
             .all(|hit| !hit.context.contains("runtime-token-12345")));
+    }
+
+    #[test]
+    fn minified_signal_context_is_bounded_and_utf8_safe() {
+        let prefix = format!("{}界", "x".repeat(100_000));
+        let value = "/api/users?page=1";
+        let suffix = format!("界{}", "y".repeat(100_000));
+        let line = format!("{prefix}{value}{suffix}");
+        let offset = prefix.len();
+
+        let context = bounded_signal_context(&line, offset, value.len());
+
+        assert!(context.contains(value));
+        assert!(context.len() <= SIGNAL_CONTEXT_RADIUS_BYTES * 2 + value.len() + 6);
+        assert!(std::str::from_utf8(context.as_bytes()).is_ok());
     }
 }

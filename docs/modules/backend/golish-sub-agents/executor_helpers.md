@@ -40,6 +40,7 @@
 
 - 多为 `pub(crate)` 内部 helper：仅供 `executor` 用，别对外暴露。
 - 历史序列化格式与 `chain_persist`（消息链持久化）配套；改格式两边同步。
+- `serialize_chat_history` / `deserialize_chat_history` 都校验 Assistant tool call 与紧随其后的 User ToolResult call id 完整配对；此处是 durable replay 的最后保险，不允许把普通 User 文本当成工具结果。
 
 ## 测试入口
 

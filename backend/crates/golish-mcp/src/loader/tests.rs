@@ -69,8 +69,90 @@ fn test_interpolate_env_vars_empty_braces() {
 #[test]
 fn test_load_mcp_config_empty_dir() {
     let temp = TempDir::new().unwrap();
-    let config = load_mcp_config_inner(None, temp.path()).unwrap();
+    let config = load_mcp_config_inner(None, temp.path(), false).unwrap();
     assert!(config.mcp_servers.is_empty());
+}
+
+#[test]
+fn test_load_mcp_config_does_not_activate_untrusted_project_servers() {
+    let temp = TempDir::new().unwrap();
+    let golish_dir = temp.path().join(".golish");
+    fs::create_dir_all(&golish_dir).unwrap();
+    fs::write(
+        golish_dir.join("mcp.json"),
+        r#"{
+            "mcpServers": {
+                "untrusted-project-server": {
+                    "command": "malicious-command"
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let config = load_mcp_config(temp.path()).unwrap();
+
+    assert!(!config.mcp_servers.contains_key("untrusted-project-server"));
+}
+
+#[test]
+fn test_js_reverse_entry_point_requires_generated_devtools_runtime() {
+    let temp = TempDir::new().unwrap();
+    let tool_root = temp.path().join("js-reverse-mcp");
+    let entry_point = tool_root.join("src/index.js");
+    fs::create_dir_all(entry_point.parent().unwrap()).unwrap();
+    fs::write(&entry_point, "await import('./main.js');").unwrap();
+
+    assert!(!js_reverse_entry_point_has_generated_devtools_runtime(
+        &entry_point
+    ));
+
+    let runtime = tool_root.join("node_modules/chrome-devtools-frontend/mcp/mcp.js");
+    fs::create_dir_all(runtime.parent().unwrap()).unwrap();
+    fs::write(runtime, "export {};").unwrap();
+
+    assert!(!js_reverse_entry_point_has_generated_devtools_runtime(
+        &entry_point
+    ));
+
+    let transitive_runtime =
+        tool_root.join("node_modules/chrome-devtools-frontend/front_end/core/common/common.js");
+    fs::create_dir_all(transitive_runtime.parent().unwrap()).unwrap();
+    fs::write(transitive_runtime, "export {};").unwrap();
+
+    assert!(js_reverse_entry_point_has_generated_devtools_runtime(
+        &entry_point
+    ));
+}
+
+#[test]
+fn test_js_reverse_build_entry_point_requires_generated_devtools_runtime() {
+    let temp = TempDir::new().unwrap();
+    let build_root = temp.path().join("js-reverse-mcp/build");
+    let entry_point = build_root.join("src/index.js");
+    fs::create_dir_all(entry_point.parent().unwrap()).unwrap();
+    fs::write(&entry_point, "await import('./main.js');").unwrap();
+
+    assert!(!js_reverse_entry_point_has_generated_devtools_runtime(
+        &entry_point
+    ));
+
+    let runtime = build_root.join("node_modules/chrome-devtools-frontend/mcp/mcp.js");
+    fs::create_dir_all(runtime.parent().unwrap()).unwrap();
+    fs::write(runtime, "export {};").unwrap();
+
+    assert!(!js_reverse_entry_point_has_generated_devtools_runtime(
+        &entry_point
+    ));
+
+    let transitive_runtime =
+        build_root.join("node_modules/chrome-devtools-frontend/front_end/core/common/common.js");
+    fs::create_dir_all(transitive_runtime.parent().unwrap()).unwrap();
+    fs::write(transitive_runtime, "export {};").unwrap();
+
+    assert!(js_reverse_entry_point_has_generated_devtools_runtime(
+        &entry_point
+    ));
 }
 
 #[test]
@@ -90,7 +172,7 @@ fn test_load_mcp_config_project_only() {
         }"#;
     fs::write(golish_dir.join("mcp.json"), config_json).unwrap();
 
-    let config = load_mcp_config_inner(None, temp.path()).unwrap();
+    let config = load_mcp_config_inner(None, temp.path(), true).unwrap();
     assert_eq!(config.mcp_servers.len(), 1);
     assert!(config.mcp_servers.contains_key("test-server"));
 
@@ -108,8 +190,20 @@ fn test_load_mcp_config_invalid_json() {
 
     fs::write(golish_dir.join("mcp.json"), "{ invalid json }").unwrap();
 
-    let result = load_mcp_config(temp.path());
+    let result = load_mcp_config_inner(None, temp.path(), true);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_untrusted_project_config_is_not_parsed() {
+    let temp = TempDir::new().unwrap();
+    let golish_dir = temp.path().join(".golish");
+    fs::create_dir_all(&golish_dir).unwrap();
+    fs::write(golish_dir.join("mcp.json"), "{ invalid json }").unwrap();
+
+    let config = load_mcp_config_inner(None, temp.path(), false).unwrap();
+
+    assert!(!config.mcp_servers.contains_key("project-only"));
 }
 
 #[test]
@@ -165,7 +259,7 @@ fn test_load_mcp_config_merges_project_over_user() {
     fs::write(project_golish_dir.join("mcp.json"), project_config).unwrap();
 
     let user_config_path = user_golish_dir.join("mcp.json");
-    let config = load_mcp_config_inner(Some(user_config_path), project_dir.path()).unwrap();
+    let config = load_mcp_config_inner(Some(user_config_path), project_dir.path(), true).unwrap();
 
     // 3 servers: user-only + shared-server (overridden by project) + project-only
     assert_eq!(config.mcp_servers.len(), 3);
@@ -208,7 +302,7 @@ fn test_load_mcp_config_all_fields() {
         }"#;
     fs::write(golish_dir.join("mcp.json"), config_json).unwrap();
 
-    let config = load_mcp_config_inner(None, temp.path()).unwrap();
+    let config = load_mcp_config_inner(None, temp.path(), true).unwrap();
     let server = &config.mcp_servers["full-config"];
 
     assert!(matches!(
@@ -224,6 +318,68 @@ fn test_load_mcp_config_all_fields() {
     assert_eq!(server.headers.get("X-Custom"), Some(&"value".to_string()));
     assert!(!server.enabled);
     assert_eq!(server.timeout, 60);
+}
+
+#[test]
+fn test_untrusted_project_config_cannot_override_user_config() {
+    let user_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    let user_config_path = user_dir.path().join("mcp.json");
+    fs::write(
+        &user_config_path,
+        r#"{
+            "mcpServers": {
+                "shared-server": { "command": "user-command" }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let project_golish_dir = project_dir.path().join(".golish");
+    fs::create_dir_all(&project_golish_dir).unwrap();
+    fs::write(
+        project_golish_dir.join("mcp.json"),
+        r#"{
+            "mcpServers": {
+                "shared-server": { "command": "project-command" },
+                "project-only": { "command": "project-only-command" }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let config = load_mcp_config_inner(Some(user_config_path), project_dir.path(), false).unwrap();
+
+    assert_eq!(
+        config.mcp_servers["shared-server"].command.as_deref(),
+        Some("user-command")
+    );
+    assert!(!config.mcp_servers.contains_key("project-only"));
+}
+
+#[test]
+fn test_builtin_setup_directory_rejects_non_registry_server_names() {
+    assert!(builtin_setup_directory("project-controlled-name").is_none());
+}
+
+#[test]
+fn test_builtin_resolution_never_reads_qbit_workspace() {
+    let temp = TempDir::new().unwrap();
+    let attacker_entry = temp
+        .path()
+        .join("tools/attacker-controlled-builtin/entry.js");
+    fs::create_dir_all(attacker_entry.parent().unwrap()).unwrap();
+    fs::write(&attacker_entry, "malicious();").unwrap();
+
+    let previous = env::var_os("QBIT_WORKSPACE");
+    env::set_var("QBIT_WORKSPACE", temp.path());
+    let resolved = resolve_builtin_tool_path("attacker-controlled-builtin/entry.js");
+    match previous {
+        Some(value) => env::set_var("QBIT_WORKSPACE", value),
+        None => env::remove_var("QBIT_WORKSPACE"),
+    }
+
+    assert!(resolved.is_none());
 }
 
 #[test]

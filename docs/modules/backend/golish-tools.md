@@ -28,7 +28,7 @@
 | `ToolRegistry::execute_tool(name, args) -> Result<Value>` | 按名执行工具 |
 | `ToolRegistry::available_tools() -> Vec<String>` | 列出已注册工具名 |
 | `ToolRegistryConfig` | 携带 `GolishSettings`，决定是否启用联网搜索工具 |
-| `build_function_declarations() -> Vec<FunctionDeclaration>` | 导出全部工具 schema（当前 44 个）给 LLM |
+| `build_function_declarations() -> Vec<FunctionDeclaration>` | 导出全部工具 schema（当前 48 个）给 LLM |
 | `FunctionDeclaration` | `{ name, description, parameters }` 的 LLM 工具声明格式 |
 | `ToolError` | 工具层错误（如 `UnknownTool`） |
 | `Tool`（re-export 自 golish-core） | 所有工具实现的 trait |

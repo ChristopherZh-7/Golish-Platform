@@ -1,5 +1,27 @@
 use super::common::{error_result, extract_string_param, ToolResult};
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
+
+fn in_scope_rows_own_target(rows: &[Value], target_id: uuid::Uuid) -> bool {
+    rows.iter().any(|row| {
+        row.get("target_id")
+            .and_then(Value::as_str)
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            == Some(target_id)
+    })
+}
+
+async fn mutation_target_is_owned(
+    repo: &dyn crate::db_traits::DbRepoProvider,
+    target_id: uuid::Uuid,
+    harness_org_id: Option<uuid::Uuid>,
+) -> std::result::Result<bool, String> {
+    repo.in_scope_targets(harness_org_id)
+        .await
+        .map(|rows| in_scope_rows_own_target(&rows, target_id))
+        .map_err(|error| format!("could not verify target ownership: {error}"))
+}
 
 pub async fn execute_security_analysis_tool(
     tool_name: &str,
@@ -34,6 +56,21 @@ pub async fn execute_security_analysis_tool(
         return None;
     }
 
+    if harness_stage.is_some()
+        && matches!(
+            tool_name,
+            "log_operation"
+                | "discover_apis"
+                | "save_js_analysis"
+                | "fingerprint_target"
+                | "log_scan_result"
+        )
+    {
+        return Some(error_result(format!(
+            "legacy mutation tool '{tool_name}' is disabled during harness stages; use the stage-specific guarded producer"
+        )));
+    }
+
     let repo = match db_tracker.and_then(|t| t.repo()) {
         Some(r) => r,
         None => {
@@ -53,6 +90,15 @@ pub async fn execute_security_analysis_tool(
             let tool = extract_string_param(args, &["tool_name"]);
             let target_id = extract_string_param(args, &["target_id"])
                 .and_then(|s| uuid::Uuid::parse_str(&s).ok());
+            if let Some(target_id) = target_id {
+                match mutation_target_is_owned(repo, target_id, harness_org_id).await {
+                    Ok(true) => {}
+                    Ok(false) => return Some(error_result(
+                        "log_operation target is not in the current workspace/organization scope",
+                    )),
+                    Err(error) => return Some(error_result(error)),
+                }
+            }
             let status =
                 extract_string_param(args, &["status"]).unwrap_or_else(|| "completed".to_string());
             let detail = args.get("detail").cloned().unwrap_or_else(|| json!({}));
@@ -95,6 +141,15 @@ pub async fn execute_security_analysis_tool(
                     ))
                 }
             };
+            match mutation_target_is_owned(repo, target_id, harness_org_id).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Some(error_result(
+                        "discover_apis target is not in the current workspace/organization scope",
+                    ))
+                }
+                Err(error) => return Some(error_result(error)),
+            }
             let source =
                 extract_string_param(args, &["source"]).unwrap_or_else(|| "ai".to_string());
             let endpoints = match args.get("endpoints").and_then(|v| v.as_array()) {
@@ -157,6 +212,13 @@ pub async fn execute_security_analysis_tool(
                     ))
                 }
             };
+            match mutation_target_is_owned(repo, target_id, harness_org_id).await {
+                Ok(true) => {}
+                Ok(false) => return Some(error_result(
+                    "save_js_analysis target is not in the current workspace/organization scope",
+                )),
+                Err(error) => return Some(error_result(error)),
+            }
             let url = match extract_string_param(args, &["url"]) {
                 Some(u) if !u.is_empty() => u,
                 _ => return Some(error_result("save_js_analysis requires a 'url' parameter")),
@@ -237,6 +299,13 @@ pub async fn execute_security_analysis_tool(
                     ))
                 }
             };
+            match mutation_target_is_owned(repo, target_id, harness_org_id).await {
+                Ok(true) => {}
+                Ok(false) => return Some(error_result(
+                    "fingerprint_target target is not in the current workspace/organization scope",
+                )),
+                Err(error) => return Some(error_result(error)),
+            }
             let _source =
                 extract_string_param(args, &["source"]).unwrap_or_else(|| "ai".to_string());
             let fps = match args.get("fingerprints").and_then(|v| v.as_array()) {
@@ -302,6 +371,15 @@ pub async fn execute_security_analysis_tool(
                     ))
                 }
             };
+            match mutation_target_is_owned(repo, target_id, harness_org_id).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Some(error_result(
+                        "log_scan_result target is not in the current workspace/organization scope",
+                    ))
+                }
+                Err(error) => return Some(error_result(error)),
+            }
             let test_type = match extract_string_param(args, &["test_type"]) {
                 Some(t) if !t.is_empty() => t,
                 _ => {
@@ -377,6 +455,22 @@ pub async fn execute_security_analysis_tool(
                 }
             };
 
+            if let Some(org_id) = harness_org_id {
+                let in_scope_rows = match repo.in_scope_targets(Some(org_id)).await {
+                    Ok(rows) => rows,
+                    Err(err) => {
+                        return Some(error_result(format!(
+                            "Failed to verify query_target_data target ownership: {err}"
+                        )))
+                    }
+                };
+                if !in_scope_rows_own_target(&in_scope_rows, target_id) {
+                    return Some(error_result(
+                        "query_target_data target_id is not in scope for the active organization",
+                    ));
+                }
+            }
+
             let sections: Vec<String> = args
                 .get("sections")
                 .and_then(|v| v.as_array())
@@ -395,6 +489,18 @@ pub async fn execute_security_analysis_tool(
         }
 
         "list_in_scope_targets" => {
+            let wave_filter = current_wave_asset_filter(
+                repo,
+                harness_operation_id,
+                harness_org_id,
+                harness_stage,
+                "list_in_scope_targets",
+            )
+            .await;
+            let wave_filter = match wave_filter {
+                Ok(filter) => filter,
+                Err(error) => return Some(error_result(error)),
+            };
             let rows = match repo.in_scope_targets(harness_org_id).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -404,8 +510,13 @@ pub async fn execute_security_analysis_tool(
                     )))
                 }
             };
+            let rows = filter_rows_to_current_wave(rows, wave_filter.as_ref());
             let count = rows.len();
-            let data = json!({ "in_scope_targets": rows, "count": count });
+            let data = json!({
+                "in_scope_targets": rows,
+                "count": count,
+                "current_wave_filtered": wave_filter.is_some()
+            });
             Some((data, true))
         }
 
@@ -417,7 +528,20 @@ pub async fn execute_security_analysis_tool(
                 .or_else(|| args.get("cap"))
                 .and_then(|v| v.as_u64())
                 .map(|n| n as usize);
-            let rows = match repo.attack_surface_seeds(harness_org_id, cap).await {
+            let wave_filter = current_wave_asset_filter(
+                repo,
+                harness_operation_id,
+                harness_org_id,
+                harness_stage,
+                "list_attack_surface_seeds",
+            )
+            .await;
+            let wave_filter = match wave_filter {
+                Ok(filter) => filter,
+                Err(error) => return Some(error_result(error)),
+            };
+            let repo_cap = if wave_filter.is_some() { None } else { cap };
+            let mut rows = match repo.attack_surface_seeds(harness_org_id, repo_cap).await {
                 Ok(r) => r,
                 Err(e) => {
                     return Some(error_result(format!(
@@ -426,15 +550,26 @@ pub async fn execute_security_analysis_tool(
                     )))
                 }
             };
+            rows = filter_rows_to_current_wave(rows, wave_filter.as_ref());
+            if let Some(cap) = cap {
+                rows.truncate(cap);
+            }
             let count = rows.len();
-            let data = json!({ "attack_surface_seeds": rows, "count": count });
+            let data = json!({
+                "attack_surface_seeds": rows,
+                "count": count,
+                "current_wave_filtered": wave_filter.is_some()
+            });
             Some((data, true))
         }
 
         "list_enumeration_web_roots" => {
-            let org_id = extract_string_param(args, &["organization_id"])
-                .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-                .or(harness_org_id);
+            let requested_org_id = extract_string_param(args, &["organization_id"])
+                .and_then(|s| uuid::Uuid::parse_str(&s).ok());
+            let org_id = match resolve_coverage_org_id(requested_org_id, harness_org_id) {
+                Ok(org_id) => org_id,
+                Err(error) => return Some(error_result(error)),
+            };
             let Some(org_id) = org_id else {
                 return Some(error_result(
                     "list_enumeration_web_roots requires an organization_id when no active harness organization is bound",
@@ -443,30 +578,35 @@ pub async fn execute_security_analysis_tool(
             let limit = args
                 .get("limit")
                 .and_then(|v| v.as_u64())
-                .map(|n| n.clamp(1, 500) as usize)
-                .unwrap_or(100);
+                .map(|n| n.clamp(1, 50) as usize)
+                .unwrap_or(25);
             let include_coverage = args
                 .get("include_coverage")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
             let stage = crate::harness::StageKind::Enumeration.as_str();
-            let stage_started_at = match harness_operation_id {
-                Some(operation_id) => match repo.operation_state_get(operation_id).await {
-                    Ok(Some(state)) if state.current_stage == stage => Some(state.stage_started_at),
-                    Ok(_) => None,
-                    Err(err) => {
-                        tracing::warn!(
-                            target: "harness::enumeration_worklist",
-                            error = %err,
-                            "failed to read operation_state; enumeration web-root worklist falls back to presence-only freshness"
-                        );
-                        None
-                    }
-                },
-                None => None,
-            };
+            let coverage_context = stage_coverage_read_context(
+                repo,
+                harness_operation_id,
+                org_id,
+                stage,
+                "enumeration_web_roots",
+            )
+            .await;
+            if let Err(error) =
+                validate_stage_coverage_read_context(stage, session_id, &coverage_context)
+            {
+                return Some(error_result(error));
+            }
             let snapshot = match repo
-                .stage_asset_coverage(org_id, stage, session_id, stage_started_at)
+                .stage_asset_coverage(
+                    org_id,
+                    stage,
+                    session_id,
+                    coverage_context.stage_started_at,
+                    coverage_context.current_wave_target_ids,
+                    coverage_context.current_wave_asset_values,
+                )
                 .await
             {
                 Ok(snapshot) => snapshot,
@@ -490,31 +630,39 @@ pub async fn execute_security_analysis_tool(
                     "stage worklist requires a 'stage' parameter when no harness stage is active",
                 ));
             };
-            let org_id = extract_string_param(args, &["organization_id"])
-                .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-                .or(harness_org_id);
+            let requested_org_id = extract_string_param(args, &["organization_id"])
+                .and_then(|s| uuid::Uuid::parse_str(&s).ok());
+            let org_id = match resolve_coverage_org_id(requested_org_id, harness_org_id) {
+                Ok(org_id) => org_id,
+                Err(error) => return Some(error_result(error)),
+            };
             let Some(org_id) = org_id else {
                 return Some(error_result(
                     "stage worklist requires an organization_id when no active harness organization is bound",
                 ));
             };
-            let stage_started_at = match harness_operation_id {
-                Some(operation_id) => match repo.operation_state_get(operation_id).await {
-                    Ok(Some(state)) if state.current_stage == stage => Some(state.stage_started_at),
-                    Ok(_) => None,
-                    Err(err) => {
-                        tracing::warn!(
-                            target: "harness::stage_worklist",
-                            error = %err,
-                            "failed to read operation_state; stage worklist falls back to presence-only freshness"
-                        );
-                        None
-                    }
-                },
-                None => None,
-            };
+            let coverage_context = stage_coverage_read_context(
+                repo,
+                harness_operation_id,
+                org_id,
+                &stage,
+                "stage_worklist",
+            )
+            .await;
+            if let Err(error) =
+                validate_stage_coverage_read_context(&stage, session_id, &coverage_context)
+            {
+                return Some(error_result(error));
+            }
             let snapshot = match repo
-                .stage_asset_coverage(org_id, &stage, session_id, stage_started_at)
+                .stage_asset_coverage(
+                    org_id,
+                    &stage,
+                    session_id,
+                    coverage_context.stage_started_at,
+                    coverage_context.current_wave_target_ids,
+                    coverage_context.current_wave_asset_values,
+                )
                 .await
             {
                 Ok(snapshot) => snapshot,
@@ -524,8 +672,19 @@ pub async fn execute_security_analysis_tool(
                     )))
                 }
             };
+            let (snapshot, terminal_exception_preview) =
+                match preview_terminal_exceptions(snapshot, args.get("terminal_exceptions")) {
+                    Ok(preview) => preview,
+                    Err(error) => return Some(error_result(error)),
+                };
             if tool_name == "stage_worklist_status" {
-                return Some((stage_worklist_status(snapshot), true));
+                return Some((
+                    attach_terminal_exception_preview(
+                        stage_worklist_status(snapshot),
+                        terminal_exception_preview,
+                    ),
+                    true,
+                ));
             }
             let limit = args
                 .get("limit")
@@ -542,9 +701,18 @@ pub async fn execute_security_analysis_tool(
                         .collect::<Vec<_>>()
                 })
                 .filter(|states| !states.is_empty())
-                .unwrap_or_else(|| vec!["pending".to_string(), "error".to_string()]);
+                .unwrap_or_else(|| {
+                    vec![
+                        "pending".to_string(),
+                        "error".to_string(),
+                        "partial".to_string(),
+                    ]
+                });
             Some((
-                stage_worklist_next(snapshot, limit, &preferred_states),
+                attach_terminal_exception_preview(
+                    stage_worklist_next(snapshot, limit, &preferred_states),
+                    terminal_exception_preview,
+                ),
                 true,
             ))
         }
@@ -557,9 +725,12 @@ pub async fn execute_security_analysis_tool(
                     "check_stage_asset_coverage requires a 'stage' parameter when no harness stage is active",
                 ));
             };
-            let org_id = extract_string_param(args, &["organization_id"])
-                .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-                .or(harness_org_id);
+            let requested_org_id = extract_string_param(args, &["organization_id"])
+                .and_then(|s| uuid::Uuid::parse_str(&s).ok());
+            let org_id = match resolve_coverage_org_id(requested_org_id, harness_org_id) {
+                Ok(org_id) => org_id,
+                Err(error) => return Some(error_result(error)),
+            };
             let Some(org_id) = org_id else {
                 return Some(error_result(
                     "check_stage_asset_coverage requires an organization_id when no active harness organization is bound",
@@ -580,23 +751,28 @@ pub async fn execute_security_analysis_tool(
                     "check_stage_asset_coverage ignores include_assets=true; agent preflight stays summary-only"
                 );
             }
-            let stage_started_at = match harness_operation_id {
-                Some(operation_id) => match repo.operation_state_get(operation_id).await {
-                    Ok(Some(state)) if state.current_stage == stage => Some(state.stage_started_at),
-                    Ok(_) => None,
-                    Err(err) => {
-                        tracing::warn!(
-                            target: "harness::coverage_preflight",
-                            error = %err,
-                            "failed to read operation_state; coverage preflight falls back to presence-only freshness"
-                        );
-                        None
-                    }
-                },
-                None => None,
-            };
+            let coverage_context = stage_coverage_read_context(
+                repo,
+                harness_operation_id,
+                org_id,
+                &stage,
+                "coverage_preflight",
+            )
+            .await;
+            if let Err(error) =
+                validate_stage_coverage_read_context(&stage, session_id, &coverage_context)
+            {
+                return Some(error_result(error));
+            }
             let snapshot = match repo
-                .stage_asset_coverage(org_id, &stage, session_id, stage_started_at)
+                .stage_asset_coverage(
+                    org_id,
+                    &stage,
+                    session_id,
+                    coverage_context.stage_started_at,
+                    coverage_context.current_wave_target_ids,
+                    coverage_context.current_wave_asset_values,
+                )
                 .await
             {
                 Ok(snapshot) => snapshot,
@@ -606,8 +782,16 @@ pub async fn execute_security_analysis_tool(
                     )))
                 }
             };
+            let (snapshot, terminal_exception_preview) =
+                match preview_terminal_exceptions(snapshot, args.get("terminal_exceptions")) {
+                    Ok(preview) => preview,
+                    Err(error) => return Some(error_result(error)),
+                };
             Some((
-                compact_stage_asset_coverage(snapshot, max_gaps, include_assets_requested),
+                attach_terminal_exception_preview(
+                    compact_stage_asset_coverage(snapshot, max_gaps, include_assets_requested),
+                    terminal_exception_preview,
+                ),
                 true,
             ))
         }
@@ -644,6 +828,259 @@ pub async fn execute_security_analysis_tool(
     }
 }
 
+#[derive(Debug, Default)]
+struct StageCoverageReadContext {
+    stage_started_at: Option<DateTime<Utc>>,
+    current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+    current_wave_asset_values: Option<Vec<String>>,
+    wave_error: Option<String>,
+}
+
+fn resolve_coverage_org_id(
+    requested_org_id: Option<uuid::Uuid>,
+    harness_org_id: Option<uuid::Uuid>,
+) -> Result<Option<uuid::Uuid>, String> {
+    if let (Some(requested), Some(bound)) = (requested_org_id, harness_org_id) {
+        if requested != bound {
+            return Err(format!(
+                "stage coverage organization_id {requested} does not match the active harness organization {bound}"
+            ));
+        }
+    }
+    Ok(harness_org_id.or(requested_org_id))
+}
+
+fn validate_stage_coverage_read_context(
+    stage: &str,
+    session_id: Option<&str>,
+    context: &StageCoverageReadContext,
+) -> Result<(), String> {
+    if let Some(error) = context.wave_error.as_ref() {
+        return Err(error.clone());
+    }
+    if stage != crate::harness::StageKind::Enumeration.as_str() {
+        return Ok(());
+    }
+    if session_id.is_none_or(|run_id| run_id.trim().is_empty()) {
+        return Err(
+            "Enumeration worklist requires the active run/session; latest or unscoped outcome fallback is forbidden"
+                .to_string(),
+        );
+    }
+    if !crate::harness::org_gate::stage_accepts_outcome_projection(
+        crate::harness::StageKind::Enumeration,
+        context.stage_started_at.is_some(),
+    ) {
+        return Err(
+            "Enumeration worklist requires an active Enumeration operation with a current stage_started_at freshness cutoff"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+async fn stage_coverage_read_context(
+    repo: &dyn crate::db_traits::DbRepoProvider,
+    harness_operation_id: Option<uuid::Uuid>,
+    org_id: uuid::Uuid,
+    stage: &str,
+    log_context: &'static str,
+) -> StageCoverageReadContext {
+    let Some(operation_id) = harness_operation_id else {
+        return StageCoverageReadContext::default();
+    };
+
+    if crate::harness::StageKind::try_parse(stage).is_some() {
+        match repo
+            .stage_asset_wave_current_running(operation_id, org_id, stage)
+            .await
+        {
+            Ok(Some(wave)) => {
+                if let Err(error) = wave.validate_membership() {
+                    return StageCoverageReadContext {
+                        stage_started_at: Some(wave.started_at),
+                        wave_error: Some(format!(
+                            "invalid current asset wave for {stage}: {error}"
+                        )),
+                        ..StageCoverageReadContext::default()
+                    };
+                }
+                return StageCoverageReadContext {
+                    stage_started_at: Some(wave.started_at),
+                    current_wave_target_ids: Some(wave.target_ids),
+                    current_wave_asset_values: Some(wave.asset_values),
+                    wave_error: None,
+                };
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    target: "harness::stage_worklist",
+                    context = log_context,
+                    error = %err,
+                    "failed to read current asset wave; stage coverage fails closed"
+                );
+                return StageCoverageReadContext {
+                    wave_error: Some(format!(
+                        "failed to read current asset wave for {stage}: {err}"
+                    )),
+                    ..StageCoverageReadContext::default()
+                };
+            }
+        }
+    }
+
+    let stage_started_at = match repo.operation_state_get(operation_id).await {
+        Ok(Some(state)) if state.current_stage == stage => Some(state.stage_started_at),
+        Ok(_) => None,
+        Err(err) => {
+            let freshness_behavior = if stage == "enumeration" {
+                "Enumeration remains fail-closed without a freshness cutoff"
+            } else {
+                "stage coverage continues without an operation-state freshness cutoff"
+            };
+            tracing::warn!(
+                target: "harness::stage_worklist",
+                context = log_context,
+                error = %err,
+                freshness_behavior,
+                "failed to read operation_state; no operation-state freshness cutoff is available"
+            );
+            None
+        }
+    };
+
+    StageCoverageReadContext {
+        stage_started_at,
+        current_wave_target_ids: None,
+        current_wave_asset_values: None,
+        wave_error: None,
+    }
+}
+
+async fn current_wave_asset_filter(
+    repo: &dyn crate::db_traits::DbRepoProvider,
+    harness_operation_id: Option<uuid::Uuid>,
+    harness_org_id: Option<uuid::Uuid>,
+    harness_stage: Option<crate::harness::StageKind>,
+    log_context: &'static str,
+) -> Result<Option<BTreeSet<uuid::Uuid>>, String> {
+    let Some(org_id) = harness_org_id else {
+        return Ok(None);
+    };
+    let Some(stage) = harness_stage else {
+        return Ok(None);
+    };
+    let context = stage_coverage_read_context(
+        repo,
+        harness_operation_id,
+        org_id,
+        stage.as_str(),
+        log_context,
+    )
+    .await;
+    validate_stage_coverage_read_context(stage.as_str(), Some("wave-filter"), &context)?;
+    Ok(context
+        .current_wave_target_ids
+        .map(|target_ids| target_ids.into_iter().collect()))
+}
+
+fn filter_rows_to_current_wave(
+    rows: Vec<Value>,
+    current_wave_target_ids: Option<&BTreeSet<uuid::Uuid>>,
+) -> Vec<Value> {
+    let Some(current_wave_target_ids) = current_wave_target_ids else {
+        return rows;
+    };
+    rows.into_iter()
+        .filter(|row| {
+            row.get("id")
+                .or_else(|| row.get("target_id"))
+                .and_then(Value::as_str)
+                .and_then(|value| uuid::Uuid::parse_str(value).ok())
+                .is_some_and(|target_id| current_wave_target_ids.contains(&target_id))
+        })
+        .collect()
+}
+
+fn port_state_is_open_json(entry: &Value) -> bool {
+    entry
+        .get("state")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|state| !state.is_empty())
+        .map(|state| state.eq_ignore_ascii_case("open"))
+        .unwrap_or(true)
+}
+
+fn port_number_from_json(entry: &Value) -> Option<u16> {
+    let value = entry.get("port")?;
+    let raw = value
+        .as_u64()
+        .map(|n| n.to_string())
+        .or_else(|| value.as_str().map(|s| s.trim().to_string()))?;
+    let port = raw.parse::<u16>().ok()?;
+    (port > 0).then_some(port)
+}
+
+fn port_service_hint(entry: &Value) -> String {
+    [
+        "service",
+        "name",
+        "proto",
+        "protocol",
+        "scheme",
+        "webserver",
+    ]
+    .iter()
+    .filter_map(|key| entry.get(*key).and_then(Value::as_str))
+    .filter(|value| !value.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_ascii_lowercase()
+}
+
+fn web_origin_from_port_url(raw: &str) -> Option<(String, String, Option<u16>)> {
+    let parsed = url::Url::parse(raw.trim()).ok()?;
+    let scheme = parsed.scheme();
+    if !matches!(scheme, "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    let port = parsed.port_or_known_default();
+    let port_suffix = match (scheme, port) {
+        ("http", Some(80)) | ("https", Some(443)) | (_, None) => String::new(),
+        (_, Some(port)) => format!(":{port}"),
+    };
+    Some((
+        format!("{scheme}://{host}{port_suffix}/"),
+        scheme.to_string(),
+        port,
+    ))
+}
+
+fn web_origin_score(scheme: &str, port: Option<u16>) -> i32 {
+    let mut score = 0;
+    if scheme == "https" {
+        score += 200;
+    }
+    if !matches!((scheme, port), ("http", Some(80)) | ("https", Some(443))) {
+        score += 50;
+    }
+    if port == Some(443) {
+        score += 20;
+    }
+    if matches!(port, Some(8443 | 9443 | 10443)) {
+        score += 15;
+    }
+    score
+}
+
 /// Derive a full `scheme://host:port/` web root URL from an in-scope asset's EAS
 /// metadata (design 2026-07-03-enumeration-throughput-optimization PR-A). The
 /// final scheme/port suffix rule mirrors `golish_app_core::domain::targets::web_root_url`;
@@ -655,38 +1092,40 @@ fn web_root_url_from_meta(
     ports: &Value,
     webserver: &str,
 ) -> (String, String, Option<u16>) {
-    // If the asset value already carries a scheme, normalise it as-is.
-    if host.starts_with("http://") || host.starts_with("https://") {
-        let scheme = if host.starts_with("https://") {
-            "https"
-        } else {
-            "http"
-        };
-        let normalized = host.trim_end_matches('/').to_string();
-        return (format!("{normalized}/"), scheme.to_string(), None);
+    // Exact Enumeration rows already carry normalized Web Origin identity.
+    // Re-normalize through the shared domain helper so default ports remain
+    // explicit and scheme/port cannot collapse in downstream work items.
+    if let Some(origin) = golish_pentest_domain::canonical_web_origin(host) {
+        return (origin.root_url, origin.scheme, Some(origin.port));
     }
 
-    // Pick the most web-like port from the ports array (prefer an explicit https
-    // hint, else the first web-ish port); fall back to scheme inference from
-    // http_status/webserver.
+    // Prefer confirmed open HTTP(S) origins carried by EAS/httpx/whatweb rows.
+    // `ports[].url` is the least ambiguous source because it preserves scheme and
+    // non-default port. Filtered/closed rows must not become enumeration roots.
+    if let Some(best) = ports
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| port_state_is_open_json(entry))
+        .filter_map(|entry| entry.get("url").and_then(Value::as_str))
+        .filter_map(web_origin_from_port_url)
+        .max_by_key(|(_, scheme, port)| web_origin_score(scheme, *port))
+    {
+        return best;
+    }
+
+    // Pick the most web-like confirmed-open port from the ports array (prefer an
+    // explicit https hint, else the first web-ish port); fall back to scheme
+    // inference from http_status/webserver.
     let mut chosen_port: Option<u16> = None;
     let mut chosen_https = false;
     if let Some(arr) = ports.as_array() {
         for p in arr {
-            let port = p
-                .get("port")
-                .and_then(|v| {
-                    v.as_u64()
-                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-                })
-                .map(|n| n as u16);
-            let service = p
-                .get("service")
-                .or_else(|| p.get("name"))
-                .or_else(|| p.get("proto"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_ascii_lowercase();
+            if !port_state_is_open_json(p) {
+                continue;
+            }
+            let port = port_number_from_json(p);
+            let service = port_service_hint(p);
             let is_https = service.contains("https")
                 || service.contains("ssl")
                 || matches!(port, Some(443 | 8443 | 9443));
@@ -720,6 +1159,106 @@ fn web_root_url_from_meta(
     )
 }
 
+fn exact_enumeration_root_from_asset(asset: &Value) -> Option<(String, String, Option<u16>)> {
+    let value = asset.get("value").and_then(Value::as_str).unwrap_or("");
+    let exact = asset
+        .get("exact_web_origin")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !exact {
+        return None;
+    }
+    let http_status = asset.get("http_status").and_then(Value::as_i64);
+    let ports = asset.get("ports").cloned().unwrap_or(Value::Null);
+    let webserver = asset.get("webserver").and_then(Value::as_str).unwrap_or("");
+    Some(web_root_url_from_meta(
+        value,
+        http_status,
+        &ports,
+        webserver,
+    ))
+}
+
+fn normalize_enumeration_snapshot(mut snapshot: Value) -> Value {
+    if snapshot.get("stage").and_then(Value::as_str) != Some("enumeration") {
+        return snapshot;
+    }
+    let raw_assets = snapshot
+        .get_mut("assets")
+        .and_then(Value::as_array_mut)
+        .map(std::mem::take)
+        .unwrap_or_default();
+    let mut assets = Vec::new();
+    for mut asset in raw_assets {
+        if asset.get("exact_web_origin").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let Some(origin) = asset
+            .get("value")
+            .and_then(Value::as_str)
+            .and_then(golish_pentest_domain::canonical_web_origin)
+        else {
+            continue;
+        };
+        asset["value"] = json!(origin.key);
+        asset["target_type"] = json!("url");
+        assets.push(asset);
+    }
+
+    let mut total_assets = 0usize;
+    let mut seed_assets = 0usize;
+    let mut new_assets = 0usize;
+    let mut done_assets = 0usize;
+    let mut pending_assets = 0usize;
+    let mut blocked_assets = 0usize;
+    for asset in &assets {
+        let coverage = asset
+            .get("coverage")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if coverage
+            .iter()
+            .any(|cell| cell.get("state").and_then(Value::as_str) == Some("next_wave_pending"))
+        {
+            continue;
+        }
+        total_assets += 1;
+        if asset.get("discovered_phase").and_then(Value::as_str) == Some("new_in_stage") {
+            new_assets += 1;
+        } else {
+            seed_assets += 1;
+        }
+        if coverage.iter().any(|cell| {
+            matches!(
+                cell.get("state").and_then(Value::as_str),
+                Some("blocked" | "error")
+            )
+        }) {
+            blocked_assets += 1;
+        } else if coverage.iter().any(|cell| {
+            matches!(
+                cell.get("state").and_then(Value::as_str),
+                Some("pending" | "partial")
+            )
+        }) {
+            pending_assets += 1;
+        } else {
+            done_assets += 1;
+        }
+    }
+    snapshot["summary"] = json!({
+        "total_assets": total_assets,
+        "seed_assets": seed_assets,
+        "new_assets": new_assets,
+        "done_assets": done_assets,
+        "pending_assets": pending_assets,
+        "blocked_assets": blocked_assets,
+    });
+    snapshot["assets"] = Value::Array(assets);
+    snapshot
+}
+
 /// Web-root priority for a coverage-snapshot asset (design 2026-07-03-enumeration-
 /// throughput-optimization PR-C, mirrors `domain::targets::rank_enumeration_web_
 /// roots`): EAS-proven-alive (has `http_status`) first, then those with open
@@ -727,6 +1266,24 @@ fn web_root_url_from_meta(
 /// survive and a cut-short pass spends its budget on them first. Higher = sooner.
 fn enum_worklist_asset_priority(asset: &Value) -> i32 {
     let mut score = 0;
+    let pending_or_error_cells = asset
+        .get("coverage")
+        .and_then(Value::as_array)
+        .map(|coverage| {
+            coverage
+                .iter()
+                .filter(|cell| {
+                    matches!(
+                        cell.get("state")
+                            .and_then(Value::as_str)
+                            .unwrap_or("pending"),
+                        "pending" | "error" | "partial"
+                    )
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    score += (pending_or_error_cells as i32) * 1_000;
     if asset.get("http_status").and_then(Value::as_i64).is_some() {
         score += 100;
     }
@@ -742,11 +1299,13 @@ fn enum_worklist_asset_priority(asset: &Value) -> i32 {
 }
 
 fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverage: bool) -> Value {
+    let snapshot = normalize_enumeration_snapshot(snapshot);
     let mut assets = snapshot
         .get("assets")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    assets.retain(|asset| exact_enumeration_root_from_asset(asset).is_some());
     let total = assets.len();
     // PR-C: alive/high-value roots first (stable) so the `limit` truncation keeps
     // the roots worth enumerating; ties keep the snapshot's created_at order.
@@ -768,7 +1327,7 @@ fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverag
                 .get("state")
                 .and_then(Value::as_str)
                 .unwrap_or("pending");
-            if matches!(state, "pending" | "error") {
+            if matches!(state, "pending" | "error" | "partial") {
                 pending_techniques.push(technique.to_string());
                 extend_unique_capabilities(&mut suggested_capabilities, cell);
                 if let Some(tools) = cell.get("suggested_tools").and_then(Value::as_array) {
@@ -793,18 +1352,21 @@ fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverag
         let http_status = asset.get("http_status").and_then(Value::as_i64);
         let ports = asset.get("ports").cloned().unwrap_or(Value::Null);
         let webserver = asset.get("webserver").and_then(Value::as_str).unwrap_or("");
-        let (root_url, scheme, port) =
-            web_root_url_from_meta(&host, http_status, &ports, webserver);
-        let needs_probe = http_status.is_none()
-            && ports.as_array().map(|a| a.is_empty()).unwrap_or(true)
-            && webserver.is_empty();
+        let exact_web_origin = asset
+            .get("exact_web_origin")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let origin =
+            exact_web_origin.then(|| web_root_url_from_meta(&host, http_status, &ports, webserver));
+        let needs_probe = !exact_web_origin;
 
         let mut root = json!({
             "target_id": asset.get("target_id").cloned().unwrap_or(Value::Null),
-            "root_url": root_url,
-            "scheme": scheme,
-            "port": port,
+            "root_url": origin.as_ref().map(|(root_url, _, _)| root_url),
+            "scheme": origin.as_ref().map(|(_, scheme, _)| scheme),
+            "port": origin.as_ref().and_then(|(_, _, port)| *port),
             "needs_probe": needs_probe,
+            "exact_web_origin": exact_web_origin,
             "asset": asset.get("value").cloned().unwrap_or(Value::Null),
             "target_type": asset.get("target_type").cloned().unwrap_or(Value::Null),
             "organization_id": asset.get("organization_id").cloned().unwrap_or(Value::Null),
@@ -831,42 +1393,60 @@ fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverag
         "count": count,
         "total": total,
         "truncated": truncated,
-        "worklist_semantics": "This list is derived from check_stage_asset_coverage and is narrowed to EAS-confirmed live web roots when DB truth exists. Enumerate only these roots for this org.",
+        "recommended_batch_size": 25,
+        "max_page_size": 50,
+        "worklist_semantics": "This list is derived from check_stage_asset_coverage and narrowed to EAS-confirmed exact web origins. Pending/error/partial roots are unfinished. Run enum_preflight_web_origins once on each page before producers. Fresh exact-origin producer evidence owns found/empty. Blocked requires current-target evidence from preflight on all four axes, route recovery on DIR, or browser recovery on JS/JSAPI/PARAM. Business rows remain discovery context.",
         "execution_order": [
-            "browser_collect_js_api",
+            "enum_preflight_web_origins once for the page; exclude only trusted blocked roots from producers",
+            "enum_crawl_same_origin_urls once as bounded same-origin browser seed discovery",
+            "browser_collect_js_api for GOLISH-ENUM-JS plus runtime API/parameter outcomes",
             "js_extract_apis",
-            "route_probe_paths once after JS/API landing, using DB seeds and the full local/built-in wordlist",
+            "route_probe_paths once after JS/API landing, using DB seeds and the full local/built-in wordlist with batch_concurrency=4; resume ordinary partials but do not retry a persisted recovery-exhausted blocked DIR cell",
             "parameter extraction from observed requests, query strings, forms, and targeted param_hints",
             "check_stage_asset_coverage before submit_stage_deliverable"
         ],
-        "tool_boundary": "Call browser_collect_js_api/js_collect/js_extract_apis/route_probe_paths directly. Directory discovery must use route_probe_paths after JS/API landing; pass target_id + base_url so it reads DB seeds and runs the full local/built-in recursive wordlist queue. Do not use external directory tools such as ffuf/gobuster/feroxbuster in enumeration. Bounded crawler CLIs such as katana must be called through pentest_run(tool_name=...) and used only as URL sources. Do not call manage_targets in enumeration.",
+        "tool_boundary": "Call enum_preflight_web_origins first with target_id + exact target_url, then call browser_collect_js_api/js_extract_apis/route_probe_paths only for reachable/pending roots; use enum_crawl_same_origin_urls for bounded crawler supplements. Model-authored terminal_exceptions and coverage are forbidden. A direct producer may publish blocked only after its bounded backend recovery breaker exhausts; do not retry a persisted recovery_exhausted blocked cell. Directory discovery must use route_probe_paths. Do not use ffuf/gobuster/feroxbuster, raw katana/pentest_run, or manage_targets in enumeration.",
     })
 }
 
 fn enumeration_web_root_next_steps(coverage: &[Value]) -> Vec<&'static str> {
     let mut steps = Vec::new();
+    if coverage.iter().any(|cell| {
+        matches!(
+            cell.get("state").and_then(Value::as_str),
+            Some("pending" | "error" | "partial")
+        )
+    }) {
+        steps.push(
+            "run enum_preflight_web_origins once for this exact root before content producers; trusted transport failure may block all axes, while bounded route/browser recovery may block only their owned axes",
+        );
+    }
     for cell in coverage {
         let state = cell
             .get("state")
             .and_then(Value::as_str)
             .unwrap_or("pending");
-        if !matches!(state, "pending" | "error") {
+        if !matches!(state, "pending" | "error" | "partial") {
             continue;
         }
         match cell.get("technique").and_then(Value::as_str).unwrap_or("") {
+            "GOLISH-ENUM-JS" => steps.push(
+                "close GOLISH-ENUM-JS with browser_collect_js_api and require a fresh exact-origin outcome",
+            ),
             "GOLISH-ENUM-JSAPI" => {
-                steps.push("run browser_collect_js_api first, then js_extract_apis on saved JS")
+                steps.push("close GOLISH-ENUM-JSAPI with browser_collect_js_api first, then js_extract_apis on saved JS; require a fresh exact-origin outcome")
             }
             "GOLISH-ENUM-DIR" => steps.push(
-                "run route_probe_paths after JS/API landing with target_id + base_url so it reads DB seeds and completes the recursive wordlist queue",
+                "close GOLISH-ENUM-DIR with route_probe_paths after JS/API landing using target_id + base_url; resume ordinary partials, but a persisted recovery_exhausted blocked result is terminal",
             ),
             "GOLISH-ENUM-PARAM" => {
                 steps.push(
-                    "derive parameters from observed requests/query strings/forms and targeted js_extract_apis param_hints",
+                    "close GOLISH-ENUM-PARAM from observed requests/query strings/forms and targeted js_extract_apis param_hints; require a fresh exact-origin outcome",
                 )
             }
-            _ => steps
-                .push("close this pending/error coverage cell with a real run or terminal note"),
+            _ => steps.push(
+                "run enum_preflight_web_origins for the pending root, then close reachable cells with their direct producer",
+            ),
         }
     }
     steps.sort();
@@ -892,12 +1472,55 @@ fn extend_unique_capabilities(out: &mut Vec<Value>, cell: &Value) {
     }
 }
 
+const MAX_ENUMERATION_WORKLIST_ROOTS: usize = 50;
+
+fn terminal_exception_preview_value() -> Value {
+    json!({
+        "preview_only": true,
+        "persisted": false,
+        "provided_cells": 0,
+        "accepted_cells": 0,
+        "blocked_cells": 0,
+        "not_applicable_cells": 0,
+        "coverage_to_submit": [],
+        "contract": "Model-authored Enumeration terminal exceptions are disabled. Omit terminal_exceptions or pass []; any non-empty array is rejected. Current-run producer evidence owns found/empty. Current-target blocked evidence is accepted only from enum_preflight_web_origins on all four axes, route_probe_paths recovery on DIR, or browser_collect_js_api recovery on JS/JSAPI/PARAM. Non-web/rootless hosts are excluded before the exact-origin denominator is built. Submit coverage must be []."
+    })
+}
+
+fn attach_terminal_exception_preview(mut output: Value, preview: Value) -> Value {
+    output["terminal_exceptions_preview"] = preview;
+    output
+}
+
+/// Preserve the legacy wire property without letting it alter DB truth. Strict
+/// providers may serialize an omitted optional property as null; null and [] are
+/// accepted, while any non-empty array is rejected fail-closed.
+fn preview_terminal_exceptions(
+    snapshot: Value,
+    raw_exceptions: Option<&Value>,
+) -> Result<(Value, Value), String> {
+    let snapshot = normalize_enumeration_snapshot(snapshot);
+    let Some(raw_exceptions) = raw_exceptions.filter(|value| !value.is_null()) else {
+        return Ok((snapshot, terminal_exception_preview_value()));
+    };
+    let entries = raw_exceptions
+        .as_array()
+        .ok_or_else(|| "terminal_exceptions must be an array".to_string())?;
+    if entries.is_empty() {
+        return Ok((snapshot, terminal_exception_preview_value()));
+    }
+    Err("terminal_exceptions is disabled; blocked is backend-authored by enum_preflight_web_origins or bounded route/browser recovery, and submit coverage=[]".to_string())
+}
+
 fn stage_worklist_status(snapshot: Value) -> Value {
+    let is_enumeration = snapshot.get("stage").and_then(Value::as_str) == Some("enumeration");
     let mut out = compact_stage_asset_coverage(snapshot, 10, false);
     out["tool"] = json!("stage_worklist_status");
-    out["worklist_contract"] = json!(
-        "Status is DB/gate truth. pending/error cells are unfinished work; checked_empty/found/blocked/not_applicable are terminal when backed by evidence or a concrete note."
-    );
+    out["worklist_contract"] = if is_enumeration {
+        json!("Status is current-run fresh exact-origin evidence truth. pending/error/partial cells are unfinished; found/checked_empty come from their direct producers. Blocked requires current-target evidence from enum_preflight_web_origins on all axes, route_probe_paths recovery on DIR, or browser_collect_js_api recovery on JS/JSAPI/PARAM. Raw non-Web hosts are excluded from the denominator instead of becoming not_applicable cells. Submit coverage=[].")
+    } else {
+        json!("Status is DB/gate truth. pending/error/partial cells are unfinished work; checked_empty/found/blocked/not_applicable are terminal when backed by evidence or a concrete note.")
+    };
     out["next_tool"] = if out
         .get("ready_to_submit")
         .and_then(Value::as_bool)
@@ -911,6 +1534,7 @@ fn stage_worklist_status(snapshot: Value) -> Value {
 }
 
 fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String]) -> Value {
+    let snapshot = normalize_enumeration_snapshot(snapshot);
     let stage = snapshot.get("stage").and_then(Value::as_str).unwrap_or("");
     let is_enumeration = stage == "enumeration";
     let is_eas = stage == "external_attack_surface";
@@ -923,8 +1547,11 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
     let mut total_cells = 0usize;
     let mut pending_cells = 0usize;
     let mut error_cells = 0usize;
+    let mut partial_cells = 0usize;
     let mut terminal_cells = 0usize;
     let mut matching_cells = 0usize;
+    let mut matching_roots = BTreeSet::new();
+    let mut selected_roots = BTreeSet::new();
 
     for asset in &assets {
         let asset_value = asset.get("value").and_then(Value::as_str).unwrap_or("");
@@ -933,6 +1560,9 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
             .get("target_type")
             .and_then(Value::as_str)
             .unwrap_or("");
+        let enumeration_root = is_enumeration
+            .then(|| exact_enumeration_root_from_asset(asset))
+            .flatten();
         for cell in asset
             .get("coverage")
             .and_then(Value::as_array)
@@ -947,18 +1577,38 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
             match state {
                 "pending" => pending_cells += 1,
                 "error" => error_cells += 1,
+                "partial" => partial_cells += 1,
                 _ => terminal_cells += 1,
+            }
+            if cell
+                .get("planned_terminal_exception")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                continue;
             }
             if !preferred_states.iter().any(|s| s == state) {
                 continue;
             }
             matching_cells += 1;
+            if is_enumeration {
+                matching_roots.insert(asset_value.to_string());
+            }
             if items.len() >= limit {
                 continue;
             }
+            if is_enumeration
+                && !selected_roots.contains(asset_value)
+                && selected_roots.len() >= MAX_ENUMERATION_WORKLIST_ROOTS
+            {
+                continue;
+            }
+            if is_enumeration {
+                selected_roots.insert(asset_value.to_string());
+            }
             let technique = cell.get("technique").and_then(Value::as_str).unwrap_or("");
             let mut item = json!({
-                "work_item_id": format!("{target_id}:{technique}"),
+                "work_item_id": format!("{target_id}:{asset_value}:{technique}"),
                 "target_id": target_id,
                 "asset": asset_value,
                 "target_type": target_type,
@@ -974,6 +1624,15 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
             if is_enumeration {
                 item["worklist_source"] = json!("EAS-confirmed live web root");
                 item["enumeration_focus"] = json!(enumeration_gap_focus(technique));
+                if let Some((root_url, scheme, port)) = &enumeration_root {
+                    item["root_url"] = json!(root_url);
+                    item["base_url"] = json!(root_url);
+                    item["scheme"] = json!(scheme);
+                    item["port"] = json!(port);
+                    item["origin_resolution"] = json!("exact");
+                } else {
+                    item["origin_resolution"] = json!("missing_exact_web_origin");
+                }
             } else if is_eas {
                 item["eas_focus"] = json!(eas_gap_focus(technique));
             }
@@ -982,9 +1641,12 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
     }
 
     let missing_vuln_triage_denominator = stage == "vuln_triage" && total_cells == 0;
-    let ready_to_submit =
-        !missing_vuln_triage_denominator && pending_cells == 0 && error_cells == 0;
+    let ready_to_submit = !missing_vuln_triage_denominator
+        && pending_cells == 0
+        && error_cells == 0
+        && partial_cells == 0;
     let omitted_item_count = matching_cells.saturating_sub(items.len());
+    let omitted_root_count = matching_roots.len().saturating_sub(selected_roots.len());
     json!({
         "tool": "stage_worklist_next",
         "stage": snapshot.get("stage").cloned().unwrap_or(Value::Null),
@@ -999,22 +1661,33 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
             "total_cells": total_cells,
             "pending_cells": pending_cells,
             "error_cells": error_cells,
+            "partial_cells": partial_cells,
             "terminal_cells": terminal_cells,
             "matching_cells": matching_cells,
         },
         "items": items,
         "omitted_item_count": omitted_item_count,
+        "root_limit": is_enumeration.then_some(MAX_ENUMERATION_WORKLIST_ROOTS),
+        "root_count": selected_roots.len(),
+        "matching_root_count": matching_roots.len(),
+        "omitted_root_count": omitted_root_count,
         "worklist_contract": if is_eas {
-            "Items are derived from DB/gate truth. Close each suggested_capabilities item for the named asset x technique cell; suggested_tools are implementation hints. EAS tool split: httpx for domain/URL liveness, naabu/masscan for fast port discovery, nmap -sV for confirmed open ports, and whatweb only for confirmed HTTP(S) endpoints. Refresh this worklist after tools land DB evidence; do not mark work complete by natural-language assertion."
+            "Items are derived from DB/gate truth. Close each suggested_capabilities item for the named asset x technique cell; suggested_tools are implementation hints. EAS tool split: httpx only for domain/URL/web-origin liveness, naabu/masscan for concrete IP/CIDR port discovery and alive-by-port, nmap -sV for every confirmed open port including newly discovered ports, and whatweb once per confirmed HTTP(S) web origin. Refresh this worklist after tools land DB evidence; do not mark work complete by natural-language assertion."
+        } else if is_enumeration {
+            "Items are derived from current-run fresh exact-origin technique_outcomes. One response contains at most 200 cells and at most 50 distinct exact-origin roots; deduplicate items by asset, call enum_preflight_web_origins once for those roots, then send only reachable/pending roots to content producers. Resume ordinary partial/error results, but do not retry a producer cell after a persisted recovery_exhausted blocked outcome. Non-empty terminal_exceptions are rejected. Business rows and deliverable prose cannot create terminal outcomes."
         } else {
             "Items are derived from DB/gate truth. Close the suggested_capabilities for each asset x technique cell; suggested_tools are implementation hints. Then call stage_worklist_next/status again; do not mark work complete by natural-language assertion."
         },
         "next_action": if missing_vuln_triage_denominator {
             "Do not submit: vuln_triage returned an empty asset x technique denominator. Refresh the stage coverage snapshot/worklist before submitting; the gate requires formulaic scan cells for each in-scope asset."
+        } else if ready_to_submit && is_enumeration {
+            "No pending/error/partial Enumeration work items remain. Submit summary claims, findings: [], and coverage: []; current-run producer/preflight/recovery evidence and trusted context own every terminal cell."
         } else if ready_to_submit {
             "No pending/error work items remain. Build a slim StageDeliverable with real evidence refs and submit."
         } else if is_eas {
-            "Close the returned EAS cells by technique: LIVENESS with httpx, PORT with naabu/masscan, SERVICE with nmap -sV only after open ports are known; run whatweb only for confirmed HTTP(S) endpoints."
+            "Close the returned EAS cells by technique: domain/URL/web-origin LIVENESS with httpx; concrete IP/CIDR LIVENESS by running PORT discovery first; PORT with naabu/masscan; SERVICE with nmap -sV for every confirmed open port after ports are known; run whatweb once per confirmed HTTP(S) web origin."
+        } else if is_enumeration {
+            "Close all four exact-origin axes on this returned page: JS with browser_collect_js_api; JSAPI with browser_collect_js_api then js_extract_apis; PARAM from observed requests/forms/query strings and targeted param_hints; DIR with route_probe_paths batch_concurrency=4 after JS/API landing. Refresh the worklist and resume ordinary partials; do not retry a persisted recovery_exhausted blocked cell or infer completion from business rows."
         } else {
             "Close the returned items in order, refresh this worklist, and submit only after ready_to_submit=true."
         }
@@ -1022,6 +1695,7 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
 }
 
 fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets: bool) -> Value {
+    let snapshot = normalize_enumeration_snapshot(snapshot);
     let stage = snapshot.get("stage").and_then(Value::as_str).unwrap_or("");
     let is_enumeration = stage == "enumeration";
     let is_eas = stage == "external_attack_surface";
@@ -1033,6 +1707,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
     let mut total_cells = 0usize;
     let mut pending_cells = 0usize;
     let mut error_cells = 0usize;
+    let mut partial_cells = 0usize;
     let mut blocked_cells = 0usize;
     let mut done_cells = 0usize;
     let mut next_wave_cells = 0usize;
@@ -1045,6 +1720,9 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
             .and_then(Value::as_str)
             .unwrap_or("");
         let target_id = asset.get("target_id").and_then(Value::as_str).unwrap_or("");
+        let enumeration_root = is_enumeration
+            .then(|| exact_enumeration_root_from_asset(asset))
+            .flatten();
         for cell in asset
             .get("coverage")
             .and_then(Value::as_array)
@@ -1059,6 +1737,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
             match state {
                 "pending" => pending_cells += 1,
                 "error" => error_cells += 1,
+                "partial" => partial_cells += 1,
                 "next_wave_pending" => next_wave_cells += 1,
                 "blocked" => {
                     blocked_cells += 1;
@@ -1066,7 +1745,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
                 }
                 _ => done_cells += 1,
             }
-            if matches!(state, "pending" | "error") && gaps.len() < max_gaps {
+            if matches!(state, "pending" | "error" | "partial") && gaps.len() < max_gaps {
                 let technique = cell.get("technique").and_then(Value::as_str).unwrap_or("");
                 let mut gap = json!({
                     "target_id": target_id,
@@ -1078,12 +1757,22 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
                     "source": cell.get("source").cloned().unwrap_or(Value::Null),
                     "evidence_refs": cell.get("evidence_refs").cloned().unwrap_or_else(|| json!([])),
                     "note": cell.get("note").cloned().unwrap_or(Value::Null),
+                    "details": cell.get("details").cloned().unwrap_or(Value::Null),
                     "suggested_capabilities": cell.get("suggested_capabilities").cloned().unwrap_or_else(|| json!([])),
                     "suggested_tools": cell.get("suggested_tools").cloned().unwrap_or_else(|| json!([])),
                 });
                 if is_enumeration {
                     gap["worklist_source"] = json!("EAS-confirmed live web root");
                     gap["enumeration_focus"] = json!(enumeration_gap_focus(technique));
+                    if let Some((root_url, scheme, port)) = &enumeration_root {
+                        gap["root_url"] = json!(root_url);
+                        gap["base_url"] = json!(root_url);
+                        gap["scheme"] = json!(scheme);
+                        gap["port"] = json!(port);
+                        gap["origin_resolution"] = json!("exact");
+                    } else {
+                        gap["origin_resolution"] = json!("missing_exact_web_origin");
+                    }
                 } else if is_eas {
                     gap["eas_focus"] = json!(eas_gap_focus(technique));
                 }
@@ -1092,27 +1781,33 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
         }
     }
 
-    let omitted_gap_count = pending_cells + error_cells;
+    let omitted_gap_count = pending_cells + error_cells + partial_cells;
     let omitted_gap_count = omitted_gap_count.saturating_sub(gaps.len());
     let missing_vuln_triage_denominator = stage == "vuln_triage" && total_cells == 0;
-    let ready_to_submit =
-        !missing_vuln_triage_denominator && pending_cells == 0 && error_cells == 0;
+    let ready_to_submit = !missing_vuln_triage_denominator
+        && pending_cells == 0
+        && error_cells == 0
+        && partial_cells == 0;
     let next_action = if missing_vuln_triage_denominator {
         "Do not submit: vuln_triage returned an empty asset x technique denominator. Refresh the stage coverage snapshot/worklist before submitting; the gate requires formulaic scan cells for each in-scope asset."
     } else if ready_to_submit {
         if next_wave_cells > 0 {
-            "Current wave has no pending/error cells. Submit this wave's StageDeliverable with real evidence ids; next_wave_pending assets are newly discovered and should be handled by the next stage_run wave after this wave passes."
+            if is_enumeration {
+                "Current wave has no pending/error/partial cells. Submit summary claims with findings: [] and coverage: []; current-run evidence owns terminal cells. next_wave_pending assets belong to the next stage_run wave."
+            } else {
+                "Current wave has no pending/error cells. Submit this wave's StageDeliverable with real evidence ids; next_wave_pending assets are newly discovered and should be handled by the next stage_run wave after this wave passes."
+            }
         } else if is_enumeration {
-            "Enumeration preflight has no pending/error cells on the EAS-confirmed web-root worklist. Submit a slim StageDeliverable: summary claims plus only DB-nonderivable checked_empty/blocked/not_applicable coverage; do not hand-write found cells."
+            "Enumeration has no pending/error/partial cells on the exact-origin worklist. Submit a slim StageDeliverable: summary claims, findings: [], coverage: []. Producer/preflight/recovery evidence and trusted context own every terminal state."
         } else {
             "Coverage has no pending/error/blocked cells in this preflight. Build the final StageDeliverable with real evidence ids and submit_stage_deliverable."
         }
     } else if is_enumeration {
-        "Do not submit yet. Treat gap_examples as the exact EAS-confirmed live web-root worklist for this org: close JSAPI with browser_collect_js_api/js_extract_apis, DIR with one route_probe_paths call after JS/API landing using target_id + base_url so it reads DB seeds and completes the recursive wordlist queue, and PARAM from observed browser requests, query strings, forms, and targeted js_extract_apis param_hints. Do not re-port-scan, default to external directory tools, or hand-write found cells."
+        "Do not submit yet. Treat gap_examples as the current exact-origin page for this org: close JS with browser_collect_js_api, JSAPI with browser_collect_js_api/js_extract_apis, DIR with route_probe_paths after JS/API landing using target_id + base_url plus batch_concurrency=4, and PARAM from observed browser requests, query strings, forms, and targeted js_extract_apis param_hints. Refresh after outcomes land, resume ordinary partials, and do not retry a persisted recovery_exhausted blocked cell or infer completion from business rows or hand-write found/empty. Do not re-port-scan or default to external directory tools."
     } else if is_eas {
-        "Do not submit yet. Close EAS gap_examples by the tool boundary: domain/URL LIVENESS uses httpx; concrete IP/CIDR PORT uses naabu/masscan first; SERVICE uses nmap -sV only for confirmed open host:port sets. WhatWeb is HTTP(S)-only technology fingerprinting, not a generic service-fingerprint fallback."
+        "Do not submit yet. Close EAS gap_examples by the tool boundary: domain/URL/web-origin LIVENESS uses httpx; concrete IP/CIDR LIVENESS uses naabu/masscan PORT discovery first; SERVICE uses eas_fingerprint_services/nmap -sV for every confirmed open host:port set (use details.missing_open_ports when present). WhatWeb is HTTP(S)-only technology fingerprinting, not a generic service-fingerprint fallback."
     } else {
-        "Do not submit yet. Close the pending/error cells first: run the suggested tools, wait for background jobs to land evidence, or mark truly blocked/not_applicable cells with concrete notes."
+        "Do not submit yet. Close pending/error/partial cells with the suggested tools. For pending Enumeration roots, run enum_preflight_web_origins first; never hand-author blocked/not_applicable coverage, and honor persisted producer recovery-exhausted blocked outcomes as terminal."
     };
     let mut out = json!({
         "ready_to_submit": ready_to_submit,
@@ -1126,6 +1821,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
             "done_cells": done_cells,
             "pending_cells": pending_cells,
             "error_cells": error_cells,
+            "partial_cells": partial_cells,
             "blocked_cells": blocked_cells
             ,"next_wave_cells": next_wave_cells
         },
@@ -1134,11 +1830,11 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
         "next_action": next_action
     });
     if is_enumeration {
-        out["worklist_semantics"] = json!("Enumeration assets are narrowed to EAS-confirmed live web roots when that DB truth exists; no EAS live truth keeps the denominator fail-safe instead of passing empty.");
-        out["deliverable_contract"] = json!("Submit no findings. DB-derived found cells come from directory_entries/api_endpoints; coverage should only contain checked_empty, blocked, or not_applicable terminal cells the DB cannot derive.");
+        out["worklist_semantics"] = json!("Enumeration assets are narrowed to EAS-confirmed live web roots and keyed by exact Web Origin. Only current-run fresh exact-origin technique_outcomes close JS/JSAPI/DIR/PARAM as found or checked_empty; directory_entries/api_endpoints/js_analysis_results are discovery context and cannot close a cell.");
+        out["deliverable_contract"] = json!("Submit findings: [] and coverage: []. Fresh exact-origin producer outcomes own found/empty. enum_preflight_web_origins evidence owns all-axis transport blocked; route_probe_paths recovery evidence owns DIR blocked; browser_collect_js_api recovery evidence owns JS/JSAPI/PARAM blocked. Non-web/rootless hosts never enter the denominator, and business rows or prose cannot close cells.");
     } else if is_eas {
-        out["worklist_semantics"] = json!("EAS cells are split by asset and technique: domain/URL assets need HTTP liveness; concrete IP/CIDR assets need port discovery and service fingerprinting. Port discovery should be batch-first with naabu/masscan; service fingerprinting is nmap -sV on confirmed open ports.");
-        out["deliverable_contract"] = json!("Submit only slim terminal coverage the DB cannot derive. DB-derived found cells come from httpx/naabu/masscan/nmap/whatweb output-store writes; HTTP liveness alone is never PORT or SERVICE-FINGERPRINT.");
+        out["worklist_semantics"] = json!("EAS cells are split by asset and technique: domain/URL assets need HTTP liveness; concrete IP/CIDR assets need port discovery first, and fresh open-port/no-open-port evidence closes their LIVENESS. Port discovery should be batch-first with naabu/masscan; service fingerprinting is eas_fingerprint_services/nmap -sV on every confirmed open port, including details.missing_open_ports when present; WEB-FINGERPRINT is WhatWeb per confirmed HTTP(S) origin.");
+        out["deliverable_contract"] = json!("Submit only slim terminal coverage the DB cannot derive. DB-derived found domain/URL LIVENESS comes from httpx; concrete IP/CIDR LIVENESS and PORT come from naabu/masscan output-store writes; SERVICE-FINGERPRINT found comes from nmap/port-level service landing for every confirmed open port; WEB-FINGERPRINT comes from WhatWeb web-origin fingerprints. WhatWeb does not replace IP:port SERVICE-FINGERPRINT.");
     }
     if include_assets {
         let asset_count = snapshot
@@ -1157,6 +1853,9 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
 
 fn enumeration_gap_focus(technique: &str) -> &'static str {
     match technique {
+        "GOLISH-ENUM-JS" => {
+            "Collect JavaScript assets with browser_collect_js_api and require a fresh exact-origin JS outcome."
+        }
         "GOLISH-ENUM-JSAPI" => {
             "Collect browser-observed JS/API first, then run js_extract_apis on saved JS."
         }
@@ -1173,13 +1872,13 @@ fn enumeration_gap_focus(technique: &str) -> &'static str {
 fn eas_gap_focus(technique: &str) -> &'static str {
     match technique {
         "GOLISH-EAS-LIVENESS" => {
-            "Use httpx for domain/URL web liveness; a concrete IP can also become live when port discovery proves an open service."
+            "Use httpx only for domain/URL/web-origin liveness; a concrete IP becomes live through port discovery evidence, so run PORT first for IP/CIDR gaps."
         }
         "GOLISH-EAS-PORT" => {
             "Use naabu or masscan first for fast concrete IP/CIDR port discovery; nmap is fallback/verification."
         }
         "GOLISH-EAS-SERVICE-FINGERPRINT" => {
-            "Inspect confirmed open ports first, then run nmap -sV grouped by shared port set. Use WhatWeb only for confirmed HTTP(S) endpoints, never for DNS/MySQL/SSH/non-HTTP service gaps."
+            "Inspect confirmed open ports first, then run nmap -sV grouped by shared port set until every open port has a fingerprint attempt. Use WhatWeb once per confirmed HTTP(S) web origin, never for DNS/MySQL/SSH/non-HTTP service gaps."
         }
         _ => "Close this EAS cell with the matching probe and real evidence, or an honest terminal note.",
     }
@@ -1188,10 +1887,251 @@ fn eas_gap_focus(technique: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_stage_asset_coverage, enumeration_web_roots_worklist, stage_worklist_next,
-        stage_worklist_status, web_root_url_from_meta,
+        compact_stage_asset_coverage, enumeration_web_roots_worklist, filter_rows_to_current_wave,
+        in_scope_rows_own_target, preview_terminal_exceptions, resolve_coverage_org_id,
+        stage_worklist_next, stage_worklist_status, validate_stage_coverage_read_context,
+        web_root_url_from_meta, StageCoverageReadContext,
     };
+
+    #[test]
+    fn coverage_org_resolution_rejects_cross_org_override() {
+        let bound = uuid::Uuid::new_v4();
+        let foreign = uuid::Uuid::new_v4();
+
+        assert_eq!(
+            resolve_coverage_org_id(None, Some(bound)).unwrap(),
+            Some(bound)
+        );
+        assert_eq!(
+            resolve_coverage_org_id(Some(bound), Some(bound)).unwrap(),
+            Some(bound)
+        );
+        assert!(resolve_coverage_org_id(Some(foreign), Some(bound)).is_err());
+        assert_eq!(
+            resolve_coverage_org_id(Some(foreign), None).unwrap(),
+            Some(foreign)
+        );
+    }
+    use chrono::Utc;
     use serde_json::{json, Value};
+    use std::collections::BTreeSet;
+
+    fn terminal_exception_snapshot() -> Value {
+        json!({
+            "stage": "enumeration",
+            "organization_id": "org-current",
+            "session_id": "run-current",
+            "summary": {"total_assets": 2},
+            "assets": [
+                {
+                    "target_id": "target-a",
+                    "value": "https://a.example.com:443",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-JS", "label": "JS", "state": "pending"},
+                        {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "pending"}
+                    ]
+                },
+                {
+                    "target_id": "target-b",
+                    "value": "https://b.example.com:443",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "pending"}
+                    ]
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn terminal_exception_preview_rejects_nonempty_arrays_without_projection() {
+        let original = terminal_exception_snapshot();
+        let exceptions = json!([
+            {
+                "asset": "https://a.example.com:443",
+                "technique": "GOLISH-ENUM-JS",
+                "status": "blocked",
+                "note": "TLS connection times out from the current execution environment"
+            },
+            {
+                "asset": "https://a.example.com:443",
+                "technique": "GOLISH-ENUM-DIR",
+                "status": "not_applicable",
+                "note": "This origin exposes no routable HTTP path in the authorized environment"
+            }
+        ]);
+
+        let error = preview_terminal_exceptions(original.clone(), Some(&exceptions)).unwrap_err();
+        assert!(error.contains("disabled"));
+        assert_eq!(original["assets"][0]["coverage"][0]["state"], "pending");
+    }
+
+    #[test]
+    fn terminal_exception_preview_treats_strict_provider_null_as_omitted() {
+        let original = terminal_exception_snapshot();
+        let missing = preview_terminal_exceptions(original.clone(), None).unwrap();
+        let strict_null = preview_terminal_exceptions(original, Some(&Value::Null)).unwrap();
+
+        assert_eq!(strict_null, missing);
+        assert_eq!(strict_null.1["provided_cells"], 0);
+        assert_eq!(strict_null.1["accepted_cells"], 0);
+        assert_eq!(strict_null.1["coverage_to_submit"], json!([]));
+
+        let non_enumeration = json!({"stage": "target_intel", "assets": []});
+        assert!(preview_terminal_exceptions(non_enumeration, Some(&Value::Null)).is_ok());
+    }
+
+    #[test]
+    fn enumeration_worklist_caps_one_page_at_fifty_distinct_roots_and_two_hundred_cells() {
+        let techniques = [
+            "GOLISH-ENUM-JS",
+            "GOLISH-ENUM-DIR",
+            "GOLISH-ENUM-PARAM",
+            "GOLISH-ENUM-JSAPI",
+        ];
+        let assets = (0..60)
+            .map(|index| {
+                json!({
+                    "target_id": format!("target-{index}"),
+                    "value": format!("https://host-{index}.example.com:443"),
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": techniques
+                        .iter()
+                        .map(|technique| json!({"technique": technique, "state": "pending"}))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let worklist = stage_worklist_next(
+            json!({
+                "stage": "enumeration",
+                "organization_id": "org-current",
+                "session_id": "run-current",
+                "assets": assets
+            }),
+            200,
+            &["pending".to_string()],
+        );
+
+        assert_eq!(worklist["items"].as_array().unwrap().len(), 200);
+        assert_eq!(worklist["cell_summary"]["matching_cells"], 240);
+        assert_eq!(worklist["omitted_item_count"], 40);
+        assert_eq!(worklist["root_limit"], 50);
+        assert_eq!(worklist["root_count"], 50);
+        assert_eq!(worklist["matching_root_count"], 60);
+        assert_eq!(worklist["omitted_root_count"], 10);
+        let returned_roots = worklist["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["asset"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(returned_roots.len(), 50);
+        assert!(worklist["worklist_contract"]
+            .as_str()
+            .unwrap()
+            .contains("at most 50 distinct exact-origin roots"));
+    }
+
+    #[test]
+    fn enumeration_worklist_includes_pending_exact_ip_origin_cells() {
+        let origin = "https://203.0.113.10:443";
+        let worklist = stage_worklist_next(
+            json!({
+                "stage": "enumeration",
+                "organization_id": "org-current",
+                "session_id": "run-current",
+                "assets": [{
+                    "target_id": "target-ip",
+                    "value": origin,
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-JS", "state": "pending"},
+                        {"technique": "GOLISH-ENUM-DIR", "state": "pending"},
+                        {"technique": "GOLISH-ENUM-PARAM", "state": "pending"},
+                        {"technique": "GOLISH-ENUM-JSAPI", "state": "pending"}
+                    ]
+                }]
+            }),
+            200,
+            &["pending".to_string()],
+        );
+
+        assert_eq!(worklist["ready_to_submit"], false);
+        let items = worklist["items"].as_array().unwrap();
+        assert_eq!(items.len(), 4);
+        assert!(items.iter().all(|item| item["asset"] == origin));
+        assert!(items
+            .iter()
+            .all(|item| item["root_url"] == "https://203.0.113.10:443/"));
+    }
+
+    #[test]
+    fn enumeration_worklists_require_active_current_run_context() {
+        let missing_cutoff = StageCoverageReadContext::default();
+        assert!(validate_stage_coverage_read_context(
+            "enumeration",
+            Some("run-current"),
+            &missing_cutoff,
+        )
+        .is_err());
+
+        let active = StageCoverageReadContext {
+            stage_started_at: Some(Utc::now()),
+            ..StageCoverageReadContext::default()
+        };
+        assert!(validate_stage_coverage_read_context("enumeration", None, &active).is_err());
+        assert!(validate_stage_coverage_read_context("enumeration", Some("   "), &active).is_err());
+        assert!(
+            validate_stage_coverage_read_context("enumeration", Some("run-current"), &active,)
+                .is_ok()
+        );
+
+        // This P0 only tightens Enumeration. Other stages retain their current
+        // read-context behaviour; in particular, do not silently alter EAS wave
+        // semantics while fixing the Enumeration worklist.
+        assert!(validate_stage_coverage_read_context(
+            "external_attack_surface",
+            None,
+            &missing_cutoff,
+        )
+        .is_ok());
+
+        let invalid_wave = StageCoverageReadContext {
+            wave_error: Some("running asset wave has no items".to_string()),
+            ..StageCoverageReadContext::default()
+        };
+        assert!(validate_stage_coverage_read_context(
+            "external_attack_surface",
+            None,
+            &invalid_wave,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn current_wave_filter_limits_listing_rows_to_target_ids() {
+        let seed_id = uuid::Uuid::from_u128(1);
+        let delta_id = uuid::Uuid::from_u128(2);
+        let same_value_other_id = uuid::Uuid::from_u128(3);
+        let rows = vec![
+            json!({"id": seed_id, "value": "seed.example.com"}),
+            json!({"id": delta_id, "value": "same.example.com"}),
+            json!({"id": same_value_other_id, "value": "same.example.com"}),
+        ];
+        let current = BTreeSet::from([delta_id]);
+
+        let filtered = filter_rows_to_current_wave(rows, Some(&current));
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0]["id"], delta_id.to_string());
+    }
 
     #[test]
     fn coverage_preflight_blocks_submit_when_cells_are_pending() {
@@ -1229,8 +2169,51 @@ mod tests {
         assert!(compact["worklist_semantics"]
             .as_str()
             .unwrap()
-            .contains("nmap -sV on confirmed open ports"));
+            .contains("nmap -sV on every confirmed open port"));
         assert!(compact.get("assets").is_none());
+    }
+
+    #[test]
+    fn coverage_preflight_preserves_gap_details() {
+        let compact = compact_stage_asset_coverage(
+            json!({
+                "stage": "external_attack_surface",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 1},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "222.186.129.58",
+                    "target_type": "ip",
+                    "coverage": [
+                        {
+                            "technique": "GOLISH-EAS-SERVICE-FINGERPRINT",
+                            "label": "Service Fingerprint",
+                            "state": "pending",
+                            "evidence_refs": [],
+                            "note": "confirmed open port(s) still need service fingerprinting: 82",
+                            "details": {
+                                "missing_open_ports": [82],
+                                "recommended_tool": "eas_fingerprint_services",
+                                "recommended_args": {"targets": ["222.186.129.58"], "ports": "82"}
+                            },
+                            "suggested_tools": ["eas_fingerprint_services"]
+                        }
+                    ]
+                }]
+            }),
+            10,
+            false,
+        );
+
+        assert_eq!(
+            compact["gap_examples"][0]["details"]["missing_open_ports"],
+            json!([82])
+        );
+        assert!(compact["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("details.missing_open_ports"));
     }
 
     #[test]
@@ -1367,6 +2350,7 @@ mod tests {
                     "target_id": "target-1",
                     "value": "https://app.example.com",
                     "target_type": "url",
+                    "exact_web_origin": true,
                     "coverage": [
                         {"technique": "GOLISH-ENUM-JSAPI", "label": "JS/API", "state": "pending", "evidence_refs": [], "suggested_tools": ["browser_collect_js_api", "js_extract_apis"]}
                     ]
@@ -1389,14 +2373,67 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("EAS-confirmed live web roots"));
+        assert!(compact["worklist_semantics"]
+            .as_str()
+            .unwrap()
+            .contains("exact Web Origin"));
         assert!(compact["deliverable_contract"]
             .as_str()
             .unwrap()
-            .contains("Submit no findings"));
+            .contains("Submit findings: [] and coverage: []"));
+        assert!(compact["deliverable_contract"]
+            .as_str()
+            .unwrap()
+            .contains("Fresh exact-origin producer outcomes"));
+        assert!(compact["deliverable_contract"]
+            .as_str()
+            .unwrap()
+            .contains("enum_preflight_web_origins evidence owns all-axis transport blocked"));
+        assert!(compact["deliverable_contract"]
+            .as_str()
+            .unwrap()
+            .contains("route_probe_paths recovery evidence owns DIR blocked"));
+        assert!(compact["deliverable_contract"]
+            .as_str()
+            .unwrap()
+            .contains("browser_collect_js_api recovery evidence owns JS/JSAPI/PARAM blocked"));
+        assert!(!compact["deliverable_contract"]
+            .as_str()
+            .unwrap()
+            .contains("DB-derived found cells come from directory_entries/api_endpoints"));
         assert!(compact["next_action"]
             .as_str()
             .unwrap()
             .contains("Do not re-port-scan"));
+        assert!(compact["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("close JS with browser_collect_js_api"));
+    }
+
+    #[test]
+    fn enumeration_preflight_keeps_partial_cell_unfinished() {
+        let compact = compact_stage_asset_coverage(
+            json!({
+                "stage": "enumeration",
+                "summary": {"total_assets": 1, "done_assets": 0, "pending_assets": 1, "blocked_assets": 0},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "https://app.example.com:443",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "partial", "evidence_refs": [], "suggested_tools": ["route_probe_paths"]}
+                    ]
+                }]
+            }),
+            10,
+            false,
+        );
+
+        assert_eq!(compact["ready_to_submit"], false);
+        assert_eq!(compact["cell_summary"]["partial_cells"], 1);
+        assert_eq!(compact["gap_examples"][0]["state"], "partial");
     }
 
     #[test]
@@ -1408,15 +2445,18 @@ mod tests {
                 "stage": "enumeration",
                 "organization_id": "org-1",
                 "assets": [
-                    {"target_id": "t-dead", "value": "dead.example.com", "target_type": "domain", "coverage": []},
-                    {"target_id": "t-alive", "value": "alive.example.com", "target_type": "domain", "http_status": 200, "coverage": []}
+                    {"target_id": "t-dead", "value": "https://dead.example.com:443", "target_type": "url", "exact_web_origin": true, "coverage": []},
+                    {"target_id": "t-alive", "value": "https://alive.example.com:443", "target_type": "url", "exact_web_origin": true, "http_status": 200, "coverage": []}
                 ]
             }),
             1,
             false,
         );
         assert_eq!(worklist["count"], 1);
-        assert_eq!(worklist["web_roots"][0]["asset"], "alive.example.com");
+        assert_eq!(
+            worklist["web_roots"][0]["asset"],
+            "https://alive.example.com:443"
+        );
         assert_eq!(worklist["truncated"], true);
     }
 
@@ -1447,13 +2487,40 @@ mod tests {
         // Value already carrying a scheme is normalised as-is.
         let (url, scheme, _) =
             web_root_url_from_meta("https://api.example.com", None, &Value::Null, "");
-        assert_eq!(url, "https://api.example.com/");
+        assert_eq!(url, "https://api.example.com:443/");
         assert_eq!(scheme, "https");
 
         // No metadata → http fallback, no port.
         let (url, _, port) = web_root_url_from_meta("bare.example.com", None, &json!([]), "");
         assert_eq!(url, "http://bare.example.com/");
         assert_eq!(port, None);
+    }
+
+    #[test]
+    fn web_root_url_from_meta_prefers_confirmed_open_url_over_filtered_default_port() {
+        let (url, scheme, port) = web_root_url_from_meta(
+            "43.248.78.209",
+            Some(200),
+            &json!([
+                {
+                    "port": 443,
+                    "service": "https",
+                    "state": "filtered",
+                    "url": "https://43.248.78.209/"
+                },
+                {
+                    "port": 8080,
+                    "service": "http",
+                    "state": "open",
+                    "url": "http://43.248.78.209:8080"
+                }
+            ]),
+            "",
+        );
+
+        assert_eq!(url, "http://43.248.78.209:8080/");
+        assert_eq!(scheme, "http");
+        assert_eq!(port, Some(8080));
     }
 
     #[test]
@@ -1466,10 +2533,12 @@ mod tests {
                 "assets": [
                     {
                         "target_id": "target-1",
-                        "value": "https://app.example.com",
+                        "value": "https://app.example.com:443",
                         "target_type": "url",
+                        "exact_web_origin": true,
                         "organization_id": "org-1",
                         "coverage": [
+                            {"technique": "GOLISH-ENUM-JS", "label": "JS", "state": "pending", "suggested_tools": ["browser_collect_js_api"]},
                             {"technique": "GOLISH-ENUM-JSAPI", "label": "JS/API", "state": "pending", "suggested_tools": ["browser_collect_js_api", "js_extract_apis"]},
                             {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "found", "suggested_tools": []}
                         ]
@@ -1483,22 +2552,190 @@ mod tests {
         assert_eq!(worklist["count"], 1);
         assert_eq!(
             worklist["web_roots"][0]["root_url"],
-            "https://app.example.com/"
+            "https://app.example.com:443/"
         );
         assert_eq!(worklist["web_roots"][0]["scheme"], "https");
-        assert_eq!(
-            worklist["web_roots"][0]["pending_techniques"][0],
-            "GOLISH-ENUM-JSAPI"
-        );
+        assert!(worklist["web_roots"][0]["pending_techniques"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|technique| technique == "GOLISH-ENUM-JS"));
+        assert!(worklist["web_roots"][0]["pending_techniques"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|technique| technique == "GOLISH-ENUM-JSAPI"));
         assert!(worklist["web_roots"][0]["suggested_tools"]
             .as_array()
             .unwrap()
             .iter()
             .any(|tool| tool == "browser_collect_js_api"));
+        assert!(worklist["execution_order"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step
+                .as_str()
+                .is_some_and(|text| text.contains("enum_crawl_same_origin_urls"))));
+        assert!(worklist["web_roots"][0]["next_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step
+                .as_str()
+                .is_some_and(|text| text.contains("GOLISH-ENUM-JS"))));
         assert!(worklist["tool_boundary"]
             .as_str()
             .unwrap()
-            .contains("pentest_run(tool_name=...)"));
+            .contains("raw katana/pentest_run"));
+    }
+
+    #[test]
+    fn enumeration_web_roots_never_return_rootless_non_denominator_assets() {
+        let worklist = enumeration_web_roots_worklist(
+            json!({
+                "stage": "enumeration",
+                "organization_id": "org-1",
+                "session_id": "run-current",
+                "assets": [
+                    {
+                        "target_id": "target-bare",
+                        "value": "alive-but-bare.example.com",
+                        "target_type": "domain",
+                        "exact_web_origin": false,
+                        "coverage": [
+                            {"technique": "GOLISH-ENUM-JS", "state": "pending"}
+                        ]
+                    },
+                    {
+                        "target_id": "target-origin",
+                        "value": "HTTPS://App.Example.com/login",
+                        "target_type": "url",
+                        "exact_web_origin": true,
+                        "coverage": [
+                            {"technique": "GOLISH-ENUM-JS", "state": "pending"}
+                        ]
+                    }
+                ]
+            }),
+            10,
+            true,
+        );
+
+        assert_eq!(worklist["total"], 1);
+        assert_eq!(worklist["count"], 1);
+        assert_eq!(
+            worklist["web_roots"][0]["root_url"],
+            "https://app.example.com:443/"
+        );
+        assert_eq!(worklist["web_roots"][0]["needs_probe"], false);
+    }
+
+    #[test]
+    fn enumeration_status_next_roots_and_gate_share_one_canonical_origin_axis() {
+        let snapshot = json!({
+            "stage": "enumeration",
+            "organization_id": "org-1",
+            "session_id": "run-current",
+            "summary": {"total_assets": 3, "done_assets": 1, "pending_assets": 2},
+            "assets": [
+                {
+                    "target_id": "target-http",
+                    "value": "http://App.Example.com/path",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": [{"technique": "GOLISH-ENUM-JS", "state": "pending"}]
+                },
+                {
+                    "target_id": "target-https",
+                    "value": "HTTPS://App.Example.com/login",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": [{"technique": "GOLISH-ENUM-DIR", "state": "pending"}]
+                },
+                {
+                    "target_id": "target-rootless",
+                    "value": "222.186.129.58",
+                    "target_type": "ip",
+                    "exact_web_origin": false,
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-JS", "state": "not_applicable"},
+                        {"technique": "GOLISH-ENUM-DIR", "state": "not_applicable"},
+                        {"technique": "GOLISH-ENUM-PARAM", "state": "not_applicable"},
+                        {"technique": "GOLISH-ENUM-JSAPI", "state": "not_applicable"}
+                    ]
+                }
+            ]
+        });
+
+        let status = stage_worklist_status(snapshot.clone());
+        let next = stage_worklist_next(snapshot.clone(), 10, &["pending".to_string()]);
+        let roots = enumeration_web_roots_worklist(snapshot.clone(), 10, true);
+        let (gate_assets, gate_typed_assets) =
+            crate::harness::org_gate::enumeration_axis_from_coverage_snapshot(&snapshot);
+
+        let expected = BTreeSet::from([
+            "http://app.example.com:80".to_string(),
+            "https://app.example.com:443".to_string(),
+        ]);
+        let next_assets = next["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["asset"].as_str().map(str::to_string))
+            .collect::<BTreeSet<_>>();
+        let root_assets = roots["web_roots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|root| root["asset"].as_str().map(str::to_string))
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(status["summary"]["total_assets"], 2);
+        assert_eq!(status["summary"]["done_assets"], 0);
+        assert_eq!(status["cell_summary"]["total_cells"], 2);
+        assert_eq!(next["cell_summary"]["total_cells"], 2);
+        assert_eq!(roots["total"], 2);
+        assert_eq!(next_assets, expected);
+        assert_eq!(root_assets, expected);
+        assert_eq!(gate_assets.into_iter().collect::<BTreeSet<_>>(), expected);
+        assert!(gate_typed_assets
+            .iter()
+            .all(|(_, target_type)| target_type == "url"));
+    }
+
+    #[test]
+    fn enumeration_preflight_gap_examples_include_base_url() {
+        let compact = compact_stage_asset_coverage(
+            json!({
+                "stage": "enumeration",
+                "summary": {"total_assets": 1, "done_assets": 0, "pending_assets": 1, "blocked_assets": 0},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "http://43.248.78.209:8080",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "ports": [
+                        {"port": 443, "service": "https", "state": "filtered", "url": "https://43.248.78.209/"},
+                        {"port": 8080, "service": "http", "state": "open", "url": "http://43.248.78.209:8080"}
+                    ],
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "error", "evidence_refs": [], "suggested_tools": ["route_probe_paths"]}
+                    ]
+                }]
+            }),
+            10,
+            false,
+        );
+
+        assert_eq!(
+            compact["gap_examples"][0]["base_url"],
+            "http://43.248.78.209:8080/"
+        );
+        assert_eq!(
+            compact["gap_examples"][0]["root_url"],
+            "http://43.248.78.209:8080/"
+        );
     }
 
     #[test]
@@ -1513,6 +2750,7 @@ mod tests {
                     "target_id": "target-1",
                     "value": "https://app.example.com",
                     "target_type": "url",
+                    "exact_web_origin": true,
                     "coverage": [
                         {"technique": "GOLISH-ENUM-JSAPI", "label": "API", "state": "pending", "suggested_tools": ["browser_collect_js_api"]},
                         {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "error", "suggested_tools": ["route_probe_paths"]},
@@ -1533,6 +2771,123 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("browser-observed JS/API"));
+    }
+
+    #[test]
+    fn enumeration_partial_origins_stay_unfinished_with_distinct_work_items() {
+        let worklist = stage_worklist_next(
+            json!({
+                "stage": "enumeration",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 2},
+                "assets": [
+                    {
+                        "target_id": "target-1",
+                        "value": "http://app.example.com:80",
+                        "target_type": "url",
+                        "exact_web_origin": true,
+                        "coverage": [
+                            {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "partial", "suggested_tools": ["route_probe_paths"]}
+                        ]
+                    },
+                    {
+                        "target_id": "target-1",
+                        "value": "https://app.example.com:443",
+                        "target_type": "url",
+                        "exact_web_origin": true,
+                        "coverage": [
+                            {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "partial", "suggested_tools": ["route_probe_paths"]}
+                        ]
+                    }
+                ]
+            }),
+            10,
+            &[
+                "pending".to_string(),
+                "error".to_string(),
+                "partial".to_string(),
+            ],
+        );
+
+        assert_eq!(worklist["ready_to_submit"], false);
+        assert_eq!(worklist["cell_summary"]["partial_cells"], 2);
+        let ids = worklist["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["work_item_id"].as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ids.len(), 2);
+        assert!(ids
+            .iter()
+            .any(|id| id.contains("http://app.example.com:80")));
+        assert!(ids
+            .iter()
+            .any(|id| id.contains("https://app.example.com:443")));
+    }
+
+    #[test]
+    fn stage_worklist_next_includes_base_url_for_enumeration_items() {
+        let worklist = stage_worklist_next(
+            json!({
+                "stage": "enumeration",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 1},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "http://43.248.78.209:8080",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "ports": [
+                        {"port": 443, "service": "https", "state": "filtered", "url": "https://43.248.78.209/"},
+                        {"port": 8080, "service": "http", "state": "open", "url": "http://43.248.78.209:8080"}
+                    ],
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "error", "suggested_tools": ["route_probe_paths"]}
+                    ]
+                }]
+            }),
+            10,
+            &["error".to_string()],
+        );
+
+        assert_eq!(
+            worklist["items"][0]["base_url"],
+            "http://43.248.78.209:8080/"
+        );
+        assert_eq!(
+            worklist["items"][0]["root_url"],
+            "http://43.248.78.209:8080/"
+        );
+    }
+
+    #[test]
+    fn unresolved_enumeration_asset_is_excluded_from_the_content_worklist() {
+        let worklist = stage_worklist_next(
+            json!({
+                "stage": "enumeration",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 1},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "unresolved.example.com",
+                    "target_type": "domain",
+                    "exact_web_origin": false,
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "pending", "suggested_tools": ["route_probe_paths"]}
+                    ]
+                }]
+            }),
+            10,
+            &["pending".to_string()],
+        );
+
+        assert_eq!(worklist["cell_summary"]["total_cells"], 0);
+        assert!(worklist["items"].as_array().unwrap().is_empty());
+        assert_eq!(worklist["ready_to_submit"], true);
     }
 
     #[test]
@@ -1560,11 +2915,19 @@ mod tests {
         assert!(worklist["items"][0]["eas_focus"]
             .as_str()
             .unwrap()
-            .contains("WhatWeb only for confirmed HTTP(S)"));
+            .contains("WhatWeb once per confirmed HTTP(S) web origin"));
         assert!(worklist["worklist_contract"]
             .as_str()
             .unwrap()
             .contains("naabu/masscan"));
+        assert!(worklist["worklist_contract"]
+            .as_str()
+            .unwrap()
+            .contains("httpx only for domain/URL/web-origin liveness"));
+        assert!(worklist["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("concrete IP/CIDR LIVENESS by running PORT discovery first"));
         assert!(worklist["next_action"]
             .as_str()
             .unwrap()
@@ -1594,5 +2957,109 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("DB/gate truth"));
+    }
+
+    #[test]
+    fn enumeration_ready_copy_keeps_outcome_only_deliverable_contract() {
+        let snapshot = json!({
+            "stage": "enumeration",
+            "organization_id": "org-1",
+            "session_id": "sess",
+            "summary": {"total_assets": 1},
+            "assets": [{
+                "target_id": "target-1",
+                "value": "https://app.example.com:443",
+                "target_type": "url",
+                "exact_web_origin": true,
+                "coverage": [
+                    {"technique": "GOLISH-ENUM-JS", "label": "JS", "state": "found"},
+                    {"technique": "GOLISH-ENUM-JSAPI", "label": "API", "state": "found"},
+                    {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "checked_empty"},
+                    {"technique": "GOLISH-ENUM-PARAM", "label": "Parameters", "state": "checked_empty"}
+                ]
+            }]
+        });
+
+        let status = stage_worklist_status(snapshot.clone());
+        let next = stage_worklist_next(
+            snapshot,
+            10,
+            &[
+                "pending".to_string(),
+                "error".to_string(),
+                "partial".to_string(),
+            ],
+        );
+
+        assert_eq!(status["ready_to_submit"], true);
+        assert!(status["worklist_contract"]
+            .as_str()
+            .unwrap()
+            .contains("current-run fresh exact-origin evidence truth"));
+        assert_eq!(next["ready_to_submit"], true);
+        assert!(next["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("No pending/error/partial"));
+        assert!(next["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("coverage: []"));
+    }
+
+    #[test]
+    fn enumeration_freshness_failure_log_does_not_promise_presence_only_fallback() {
+        let source = include_str!("security.rs");
+        let stale_copy = ["falls back to", " presence-only freshness"].concat();
+        assert!(!source.contains(&stale_copy));
+        assert!(source.contains("Enumeration remains fail-closed without a freshness cutoff"));
+    }
+
+    #[test]
+    fn enumeration_methodology_uses_outcome_only_completion_contract() {
+        let methodology =
+            include_str!("../../../../../resources/harness/stages/enumeration/methodology.md");
+
+        assert!(!methodology.contains("max_requests=1000"));
+        assert!(!methodology.contains("tested_units"));
+        assert!(!methodology.contains("total_units"));
+        assert!(!methodology.contains("each claim must cite real evidence ids"));
+        assert!(methodology.contains("fresh exact-origin `technique_outcomes`"));
+        assert!(methodology.contains("`coverage: []`"));
+        assert!(methodology
+            .contains("Do not hand-write `found`, `empty`, `blocked`, or `not_applicable`"));
+        assert!(methodology.contains("enum_preflight_web_origins"));
+        assert!(methodology.contains("any non-empty array is"));
+        assert!(methodology.contains("rejected and cannot turn pending work"));
+        assert!(methodology.contains("at most 200 cells"));
+        assert!(methodology.contains("at most 50 distinct"));
+        assert!(!methodology.contains("terminal_exceptions_preview.coverage_to_submit"));
+    }
+
+    #[test]
+    fn query_target_data_requires_active_org_target_ownership_guard() {
+        let source = include_str!("security.rs");
+        let rejection = [
+            "query_target_data target_id is not in scope",
+            " for the active organization",
+        ]
+        .concat();
+        let guard = ["in_scope_rows", "_own_target"].concat();
+        assert!(source.contains(&rejection));
+        assert!(source.contains(&guard));
+    }
+
+    #[test]
+    fn in_scope_target_ownership_rejects_foreign_target_id() {
+        let owned = uuid::Uuid::new_v4();
+        let foreign = uuid::Uuid::new_v4();
+        let rows = vec![json!({"target_id": owned.to_string()})];
+
+        assert!(in_scope_rows_own_target(&rows, owned));
+        assert!(!in_scope_rows_own_target(&rows, foreign));
+        assert!(!in_scope_rows_own_target(
+            &[json!({"target_id": "not-a-uuid"})],
+            owned
+        ));
     }
 }

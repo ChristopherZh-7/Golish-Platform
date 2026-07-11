@@ -1,10 +1,10 @@
 //! Developer-only harness checkpoint controls.
 //!
-//! These commands are intentionally narrow: they adjust resumability checkpoints
-//! in `operation_state` so local stage testing can restart from a chosen stage
-//! without deleting evidence, assets, or target facts.
+//! These commands are dev-only: the checkpoint modes adjust resumability state,
+//! while the explicit `restart_from_stage_purge` mode additionally removes the
+//! selected stage's affected facts through the scoped, transactional purge path.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -15,7 +15,7 @@ use crate::error::GolishError;
 use crate::state::AgentState;
 use golish_agent_kit::harness::operation_flow::OperationFlowState;
 use golish_agent_kit::harness::{
-    base_operation_graph, load_embedded_profile, AllowedDag, StageKind,
+    base_operation_graph, load_embedded_profile, load_embedded_stage_spec, AllowedDag, StageKind,
 };
 use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
     agent_run_from_state_blob, state_blob_without_agent_run, AgentRunCheckpoint,
@@ -270,7 +270,7 @@ async fn purge_stage_facts(
 > {
     use golish_db::repo::stage_purge;
 
-    let mut counts = stage_purge::StagePurgeCounts::default();
+    let counts = stage_purge::StagePurgeCounts::default();
     let Some(root_org) = engagement_org_id else {
         return Ok((
             counts,
@@ -288,37 +288,107 @@ async fn purge_stage_facts(
         .map(|org| org.project_path);
     let project_path = project_path.as_deref();
 
-    let stage_names: Vec<String> = affected.iter().map(|s| s.as_str().to_string()).collect();
+    let mut stage_names: Vec<String> = affected.iter().map(|s| s.as_str().to_string()).collect();
+    stage_names.sort();
+    let techniques = affected_stage_techniques(affected)?;
 
     let domains: HashSet<FactDomain> = affected.iter().copied().filter_map(fact_domain).collect();
-    for domain in domains {
+    let mut tx = pool.begin().await?;
+    let purge_result = purge_stage_facts_in_transaction(
+        tx.as_mut(),
+        operation_id,
+        &org_ids,
+        project_path,
+        &stage_names,
+        &techniques,
+        &domains,
+        selected_stage,
+    )
+    .await;
+    let counts = match purge_result {
+        Ok(counts) => {
+            tx.commit().await?;
+            counts
+        }
+        Err(error) => {
+            if let Err(rollback_error) = tx.rollback().await {
+                return Err(GolishError::Internal(format!(
+                    "stage fact purge failed ({error}); transaction rollback also failed: {rollback_error}"
+                )));
+            }
+            return Err(error);
+        }
+    };
+
+    Ok((counts, org_ids.len(), None))
+}
+
+fn affected_stage_techniques(affected: &HashSet<StageKind>) -> Result<Vec<String>, GolishError> {
+    let mut techniques = BTreeSet::new();
+    for stage in affected {
+        let spec = load_embedded_stage_spec(*stage).map_err(|error| {
+            GolishError::Internal(format!(
+                "load embedded stage spec for '{}': {error}",
+                stage.as_str()
+            ))
+        })?;
+        techniques.extend(spec.expected_techniques);
+    }
+    Ok(techniques.into_iter().collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn purge_stage_facts_in_transaction(
+    conn: &mut sqlx::PgConnection,
+    operation_id: Uuid,
+    org_ids: &[Uuid],
+    project_path: Option<&str>,
+    stage_names: &[String],
+    techniques: &[String],
+    domains: &HashSet<FactDomain>,
+    selected_stage: StageKind,
+) -> Result<golish_db::repo::stage_purge::StagePurgeCounts, GolishError> {
+    use golish_db::repo::stage_purge;
+
+    let mut counts = stage_purge::StagePurgeCounts::default();
+    for domain in [
+        FactDomain::TargetIntel,
+        FactDomain::Eas,
+        FactDomain::Enumeration,
+        FactDomain::Vuln,
+    ] {
+        if !domains.contains(&domain) {
+            continue;
+        }
         match domain {
             FactDomain::TargetIntel => {
-                stage_purge::purge_target_intel_domain(pool, &org_ids, &mut counts).await?
+                stage_purge::purge_target_intel_domain(conn, org_ids, &mut counts).await?
             }
             FactDomain::Eas => {
-                stage_purge::purge_eas_domain(pool, &org_ids, project_path, &mut counts).await?
+                stage_purge::purge_eas_domain(conn, org_ids, project_path, &mut counts).await?
             }
             FactDomain::Enumeration => {
-                stage_purge::purge_enumeration_domain(pool, &org_ids, &mut counts).await?
+                stage_purge::purge_enumeration_domain(conn, org_ids, &mut counts).await?
             }
             FactDomain::Vuln => {
-                stage_purge::purge_vuln_domain(pool, &org_ids, project_path, &mut counts).await?
+                stage_purge::purge_vuln_domain(conn, org_ids, project_path, &mut counts).await?
             }
         }
     }
 
+    counts.technique_outcomes +=
+        stage_purge::delete_technique_outcomes(conn, org_ids, techniques).await?;
     counts.org_stage_completions +=
-        stage_purge::delete_org_stage_completions(pool, &org_ids, &stage_names).await?;
+        stage_purge::delete_org_stage_completions(conn, org_ids, stage_names).await?;
     counts.stage_asset_waves +=
-        stage_purge::delete_stage_asset_waves(pool, operation_id, &org_ids, &stage_names).await?;
+        stage_purge::delete_stage_asset_waves(conn, operation_id, org_ids, stage_names).await?;
 
     if let Some(floor) = target_status_floor(selected_stage) {
         counts.target_status_rolled_back +=
-            stage_purge::rollback_target_status(pool, &org_ids, floor).await?;
+            stage_purge::rollback_target_status(conn, org_ids, floor).await?;
     }
 
-    Ok((counts, org_ids.len(), None))
+    Ok(counts)
 }
 
 fn ensure_dev_checkpoint_reset_allowed() -> Result<(), GolishError> {
@@ -763,5 +833,30 @@ mod tests {
         assert_eq!(stats.cleared_agent_run_checkpoints, 1);
         assert_eq!(stats.cleared_stage_run_workers, 0);
         assert!(!stats.reset_graph_flow);
+    }
+
+    #[test]
+    fn affected_techniques_are_the_embedded_stage_spec_union_only() {
+        let affected = HashSet::from([StageKind::TargetIntel, StageKind::Enumeration]);
+        let techniques = affected_stage_techniques(&affected).expect("embedded stage specs");
+
+        assert_eq!(techniques.len(), 10);
+        for expected in [
+            "GOLISH-INTEL-DNS",
+            "GOLISH-INTEL-SUBDOMAIN",
+            "GOLISH-INTEL-ASN",
+            "GOLISH-INTEL-CT",
+            "GOLISH-INTEL-WHOIS",
+            "GOLISH-INTEL-OSINT",
+            "GOLISH-ENUM-JS",
+            "GOLISH-ENUM-DIR",
+            "GOLISH-ENUM-PARAM",
+            "GOLISH-ENUM-JSAPI",
+        ] {
+            assert!(techniques.iter().any(|technique| technique == expected));
+        }
+        assert!(!techniques
+            .iter()
+            .any(|technique| technique == "GOLISH-EAS-LIVENESS"));
     }
 }

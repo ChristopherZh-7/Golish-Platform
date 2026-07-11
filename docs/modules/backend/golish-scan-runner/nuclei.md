@@ -15,7 +15,7 @@
 
 ## 职责
 
-`runner` 起 `nuclei` 进程、解析输出、持久化结果；`poc_match` 用 target 指纹匹配缓存 PoC，为 runner 选种模板；`severity_rank` 两者共用（critical=4 … low=1）。
+`runner` 只在 `AuthorizedScanTarget` 的 raw witness 复核通过后起 `nuclei`，解析输出后用同 guard 原子写 finding + passive log；`poc_match` 用 current-owner target 指纹匹配缓存 PoC，为 runner 选种模板，并跨整个模板准备持有 immutable target guard，空指纹 backfill 也在 guarded batch transaction 中完成；`severity_rank` 两者共用（critical=4 … low=1）。
 
 ## 公开接口
 
@@ -41,6 +41,8 @@
 
 - 依赖系统装了 `nuclei`；缺二进制要优雅报错（非 panic）。
 - 指纹→PoC 匹配先于 runner（用匹配结果种模板），改顺序会变扫描范围。
+- 模板匹配不得调用裸 `fingerprints::list_by_target` / unguarded upsert：target move 后旧 project 指纹不能跟随 stable target id；guard 在模板查询前后都要复核，漂移直接返回错误。
+- targeted runner 要求 1..=512 个显式、安全的 exact template id；禁 wildcard/路径/positive tags/template_path/proxy/extra_args，固定禁 redirect、Interactsh 和 unsigned template。只有 template id 非空、安全且属于本次请求、`matched-at` 是 launch exact origin 上的绝对 URL、`info.name` 非空且 `info.severity` 合法的 JSONL 记录才算 finding；不得在 `matched-at` 缺失时回退 launch URL。畸形或语义无效 JSONL 必须让整次结果进入 partial，不能伪装 checked-empty；stdout/stderr pump 的 read/join 错误、stderr runtime/network failure及非零 exit 都是 scan failure。
 
 ## 测试入口
 

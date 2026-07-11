@@ -301,8 +301,9 @@ mod tests {
     }
 
     // 2026-06-09 verify-first + 阶段重排：EAS = 定义攻击面，必须对每个 in-scope 资产
-    // 把「存活 + 端口 + 服务指纹」纳入过关标准——声明 GOLISH-EAS-{LIVENESS,PORT,
-    // SERVICE-FINGERPRINT} expected techniques + 一条 coverage_complete gate_rule。
+    // 把「存活 + 端口 + 服务指纹 + Web 指纹」纳入过关标准——声明
+    // GOLISH-EAS-{LIVENESS,PORT,SERVICE-FINGERPRINT,WEB-FINGERPRINT}
+    // expected techniques + 一条 coverage_complete gate_rule。
     // 端口/服务从 enumeration 前移到此（先扫端口再去枚举内容）；JS/API 移交 enumeration。
     #[test]
     fn external_attack_surface_requires_per_asset_surface_coverage() {
@@ -311,6 +312,7 @@ mod tests {
             "GOLISH-EAS-LIVENESS",
             "GOLISH-EAS-PORT",
             "GOLISH-EAS-SERVICE-FINGERPRINT",
+            "GOLISH-EAS-WEB-FINGERPRINT",
         ] {
             assert!(
                 s.expected_techniques.contains(&tech.to_string()),
@@ -366,9 +368,14 @@ mod tests {
         assert!(
             s.gate_rules.iter().any(|r| matches!(
                 r,
-                crate::harness::gate::rule_engine::GateRule::CoverageComplete { .. }
+                crate::harness::gate::rule_engine::GateRule::CoverageComplete {
+                    error_is_terminal: false,
+                    authoritative_found: true,
+                    require_note_for_other: true,
+                    ..
+                }
             )),
-            "enumeration gate_rules must include a coverage_complete rule"
+            "enumeration coverage_complete must require current outcome truth, notes, and keep errors unfinished"
         );
     }
 
@@ -462,9 +469,10 @@ mod tests {
     // Phase 1 (2026-06-12-redteam-phase1 §5): active stages coverage 必须开
     // derive_from_evidence，让 coverage_truth 的主动维度（PORT/SERVICE/DIR/PARAM/
     // JSAPI…）DB 投影能补格。2026-06-25: EAS found coverage has been promoted to
-    // authoritative DB truth; enumeration remains non-authoritative.
+    // authoritative DB truth; 2026-07-10 promotes Enumeration too, using only
+    // current exact-origin technique_outcomes rather than business-table rows.
     #[test]
-    fn active_stages_derive_from_evidence_with_eas_authoritative_only() {
+    fn active_stages_derive_from_evidence_with_authoritative_outcomes() {
         for kind in [StageKind::ExternalAttackSurface, StageKind::Enumeration] {
             let s = crate::harness::resources::load_embedded_stage_spec(kind)
                 .unwrap_or_else(|_| panic!("load {kind:?} spec"));
@@ -487,10 +495,9 @@ mod tests {
                     }
                 )
             });
-            assert_eq!(
+            assert!(
                 has_authoritative,
-                kind == StageKind::ExternalAttackSurface,
-                "only EAS should use authoritative found DB truth among active stages"
+                "EAS and Enumeration must use authoritative completion truth"
             );
         }
     }
@@ -639,14 +646,14 @@ mod tests {
     // stage_run fan-out (2026-06-13-stage-run-fanout §3.2 · EAS rollout): EAS
     // declares its per-org specialist (`prober`, the active surface-mapper split
     // from Pentester, mirroring how `recon` was split for target_intel) + the
-    // display coverage axis (its 3 expected techniques: liveness / port /
-    // service-fingerprint). Without this, the chat `stage_run` tool refuses EAS
+    // display coverage axis (liveness / port / service-fingerprint /
+    // web-fingerprint). Without this, the chat `stage_run` tool refuses EAS
     // ("stage has no `specialist` configured") and EAS cannot fan out per org.
     #[test]
     fn external_attack_surface_declares_stage_run_specialist_and_axis() {
         let s = load_stage_spec_from_json(EXTERNAL_ATTACK_SURFACE_JSON).expect("parse");
         assert_eq!(s.specialist.as_deref(), Some("prober"));
-        assert_eq!(s.coverage_axis, vec!["LIVENESS", "PORT", "SERVICE"]);
+        assert_eq!(s.coverage_axis, vec!["LIVENESS", "PORT", "SERVICE", "WEB"]);
     }
 
     #[test]
@@ -700,10 +707,21 @@ mod tests {
     // `stage_run` tool refuses enumeration ("stage has no `specialist` configured").
     #[test]
     fn enumeration_declares_stage_run_specialist_and_axis() {
+        use crate::harness::gate::rule_engine::GateRule;
+
         let s = crate::harness::resources::load_embedded_stage_spec(StageKind::Enumeration)
             .expect("load enumeration spec");
         assert_eq!(s.specialist.as_deref(), Some("enumerator"));
         assert_eq!(s.coverage_axis, vec!["JS", "DIR", "PARAM", "JSAPI"]);
+        assert!(s.gate_rules.iter().any(|rule| matches!(
+            rule,
+            GateRule::CoverageComplete {
+                authoritative_found: true,
+                require_note_for_other: true,
+                error_is_terminal: false,
+                ..
+            }
+        )));
     }
 
     // Attack-stage split (design 2026-07-02 §3.2, P3 Task3.1): vuln_triage becomes

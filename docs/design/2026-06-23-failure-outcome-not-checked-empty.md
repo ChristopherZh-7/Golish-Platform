@@ -1,5 +1,9 @@
 # T2 · failure ≠ checked_empty：失败检查记 error（非「已查为空」）
 
+> Enumeration 例外已由
+> `docs/design/2026-07-10-enumeration-origin-terminal-closeout.md` 收敛：该阶段的
+> `error` 是可重试非终态；其它 stage 的本文合同保持不变。
+
 > 评审 claim #2。状态：进行中（2026-06-23）。
 
 ## 1. 问题

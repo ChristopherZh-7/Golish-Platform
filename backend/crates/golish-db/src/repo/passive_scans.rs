@@ -5,6 +5,38 @@ use uuid::Uuid;
 
 use crate::models::PassiveScanLog;
 
+fn build_list_by_current_target_owner_sql() -> &'static str {
+    r#"SELECT p.*
+       FROM passive_scan_logs p
+       JOIN targets t ON t.id = p.target_id
+       WHERE p.target_id = $1
+         AND t.scope::text = 'in'
+         AND p.project_path IS NOT DISTINCT FROM t.project_path
+       ORDER BY p.tested_at DESC
+       LIMIT $2"#
+}
+
+fn build_list_vulnerable_by_current_target_owner_sql() -> &'static str {
+    r#"SELECT p.*
+       FROM passive_scan_logs p
+       JOIN targets t ON t.id = p.target_id
+       WHERE p.target_id = $1
+         AND t.scope::text = 'in'
+         AND p.project_path IS NOT DISTINCT FROM t.project_path
+         AND p.result IN ('vulnerable', 'potential')
+       ORDER BY p.severity DESC, p.tested_at DESC"#
+}
+
+fn build_stats_by_current_target_owner_sql() -> &'static str {
+    r#"SELECT p.result, COUNT(*)
+       FROM passive_scan_logs p
+       JOIN targets t ON t.id = p.target_id
+       WHERE p.target_id = $1
+         AND t.scope::text = 'in'
+         AND p.project_path IS NOT DISTINCT FROM t.project_path
+       GROUP BY p.result"#
+}
+
 pub async fn insert(
     pool: &PgPool,
     target_id: Uuid,
@@ -61,6 +93,19 @@ pub async fn list_by_target(
     Ok(rows)
 }
 
+pub async fn list_by_current_target_owner(
+    pool: &PgPool,
+    target_id: Uuid,
+    limit: i64,
+) -> Result<Vec<PassiveScanLog>> {
+    let rows = sqlx::query_as::<_, PassiveScanLog>(build_list_by_current_target_owner_sql())
+        .bind(target_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
 pub async fn list_by_type(
     pool: &PgPool,
     target_id: Uuid,
@@ -97,6 +142,18 @@ pub async fn list_vulnerable(pool: &PgPool, target_id: Uuid) -> Result<Vec<Passi
     Ok(rows)
 }
 
+pub async fn list_vulnerable_by_current_target_owner(
+    pool: &PgPool,
+    target_id: Uuid,
+) -> Result<Vec<PassiveScanLog>> {
+    let rows =
+        sqlx::query_as::<_, PassiveScanLog>(build_list_vulnerable_by_current_target_owner_sql())
+            .bind(target_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows)
+}
+
 pub async fn stats_by_target(pool: &PgPool, target_id: Uuid) -> Result<serde_json::Value> {
     let rows: Vec<(String, i64)> = sqlx::query_as(
         "SELECT result, COUNT(*) FROM passive_scan_logs WHERE target_id = $1 GROUP BY result",
@@ -104,6 +161,21 @@ pub async fn stats_by_target(pool: &PgPool, target_id: Uuid) -> Result<serde_jso
     .bind(target_id)
     .fetch_all(pool)
     .await?;
+    let mut map = serde_json::Map::new();
+    for (result, count) in rows {
+        map.insert(result, serde_json::Value::from(count));
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
+pub async fn stats_by_current_target_owner(
+    pool: &PgPool,
+    target_id: Uuid,
+) -> Result<serde_json::Value> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(build_stats_by_current_target_owner_sql())
+        .bind(target_id)
+        .fetch_all(pool)
+        .await?;
     let mut map = serde_json::Map::new();
     for (result, count) in rows {
         map.insert(result, serde_json::Value::from(count));
@@ -153,5 +225,18 @@ mod tests {
             build_list_global_by_project_sql(),
             "SELECT id, target_id, test_type, payload, url, result, severity, tool_used, tested_at FROM passive_scan_logs WHERE project_path = $1 ORDER BY tested_at DESC LIMIT $2"
         );
+    }
+
+    #[test]
+    fn current_owner_reads_join_target_scope_and_project() {
+        for sql in [
+            build_list_by_current_target_owner_sql(),
+            build_list_vulnerable_by_current_target_owner_sql(),
+            build_stats_by_current_target_owner_sql(),
+        ] {
+            assert!(sql.contains("JOIN targets t ON t.id = p.target_id"));
+            assert!(sql.contains("t.scope::text = 'in'"));
+            assert!(sql.contains("p.project_path IS NOT DISTINCT FROM t.project_path"));
+        }
     }
 }

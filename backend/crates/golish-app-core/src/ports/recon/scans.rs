@@ -21,6 +21,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use golish_db::models::{ApiEndpoint, Fingerprint, JsAnalysisResult, PassiveScanLog};
+use golish_db::repo::scoped::TargetWriteGuard;
 use serde::{Deserialize, Serialize};
 
 /// Project-wide passive-scan log projection returned by
@@ -81,6 +82,30 @@ pub trait ReconScansPort: Send + Sync {
         risk_level: &str,
     ) -> anyhow::Result<ApiEndpoint>;
 
+    /// Atomic target-authorized variant for active Enumeration producers.
+    async fn api_endpoints_upsert_merge_params_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        url: &str,
+        method: &str,
+        path: &str,
+        params: &serde_json::Value,
+        headers: &serde_json::Value,
+        auth_type: Option<&str>,
+        source: &str,
+        risk_level: &str,
+    ) -> anyhow::Result<ApiEndpoint>;
+
+    async fn api_endpoints_update_response_evidence_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        id: Uuid,
+        headers: &serde_json::Value,
+        response_type: Option<&str>,
+        status_code: Option<i32>,
+        capture_path: Option<&str>,
+    ) -> anyhow::Result<()>;
+
     async fn js_analysis_insert(
         &self,
         target_id: Uuid,
@@ -99,7 +124,32 @@ pub trait ReconScansPort: Send + Sync {
         raw_analysis: &serde_json::Value,
     ) -> anyhow::Result<JsAnalysisResult>;
 
+    /// Atomic target-authorized variant for active Enumeration producers.
+    async fn js_analysis_insert_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        url: &str,
+        filename: &str,
+        size_bytes: Option<i64>,
+        hash_sha256: Option<&str>,
+        frameworks: &serde_json::Value,
+        libraries: &serde_json::Value,
+        endpoints_found: &serde_json::Value,
+        secrets_found: &serde_json::Value,
+        comments: &serde_json::Value,
+        source_maps: bool,
+        risk_summary: &str,
+        raw_analysis: &serde_json::Value,
+    ) -> anyhow::Result<JsAnalysisResult>;
+
     async fn js_analysis_update_file_path(&self, id: Uuid, file_path: &str) -> anyhow::Result<()>;
+
+    async fn js_analysis_update_file_path_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        id: Uuid,
+        file_path: &str,
+    ) -> anyhow::Result<()>;
 
     async fn js_analysis_list_by_target(
         &self,
@@ -171,7 +221,7 @@ pub trait ReconScansPort: Send + Sync {
         target_id: Uuid,
     ) -> anyhow::Result<Vec<PassiveScanLog>>;
 
-    // ── b3/b5 additions (pentest_bridge js_collect + platform audit) ──
+    // ── b3/b5 additions (pentest_bridge JS analysis + platform audit) ──
     async fn js_analysis_update_file_path_by_url(
         &self,
         target_id: Uuid,
@@ -257,11 +307,66 @@ impl ReconScansPort for PgReconScansAdapter {
         .await?)
     }
 
+    async fn api_endpoints_upsert_merge_params_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        url: &str,
+        method: &str,
+        path: &str,
+        params: &serde_json::Value,
+        headers: &serde_json::Value,
+        auth_type: Option<&str>,
+        source: &str,
+        risk_level: &str,
+    ) -> anyhow::Result<ApiEndpoint> {
+        Ok(golish_db::repo::api_endpoints::upsert_merge_params_guarded(
+            self.pool.as_ref(),
+            guard,
+            url,
+            method,
+            path,
+            params,
+            headers,
+            auth_type,
+            source,
+            risk_level,
+        )
+        .await?)
+    }
+
+    async fn api_endpoints_update_response_evidence_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        id: Uuid,
+        headers: &serde_json::Value,
+        response_type: Option<&str>,
+        status_code: Option<i32>,
+        capture_path: Option<&str>,
+    ) -> anyhow::Result<()> {
+        golish_db::repo::api_endpoints::update_response_evidence_guarded(
+            self.pool.as_ref(),
+            guard,
+            id,
+            headers,
+            response_type,
+            status_code,
+            capture_path,
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn api_endpoints_list_by_target(
         &self,
         target_id: Uuid,
     ) -> anyhow::Result<Vec<ApiEndpoint>> {
-        Ok(golish_db::repo::api_endpoints::list_by_target(self.pool.as_ref(), target_id).await?)
+        Ok(
+            golish_db::repo::api_endpoints::list_by_current_target_owner(
+                self.pool.as_ref(),
+                target_id,
+            )
+            .await?,
+        )
     }
 
     async fn js_analysis_insert(
@@ -301,8 +406,59 @@ impl ReconScansPort for PgReconScansAdapter {
         .await?)
     }
 
+    async fn js_analysis_insert_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        url: &str,
+        filename: &str,
+        size_bytes: Option<i64>,
+        hash_sha256: Option<&str>,
+        frameworks: &serde_json::Value,
+        libraries: &serde_json::Value,
+        endpoints_found: &serde_json::Value,
+        secrets_found: &serde_json::Value,
+        comments: &serde_json::Value,
+        source_maps: bool,
+        risk_summary: &str,
+        raw_analysis: &serde_json::Value,
+    ) -> anyhow::Result<JsAnalysisResult> {
+        Ok(golish_db::repo::js_analysis::insert_guarded(
+            self.pool.as_ref(),
+            guard,
+            url,
+            filename,
+            size_bytes,
+            hash_sha256,
+            frameworks,
+            libraries,
+            endpoints_found,
+            secrets_found,
+            comments,
+            source_maps,
+            risk_summary,
+            raw_analysis,
+        )
+        .await?)
+    }
+
     async fn js_analysis_update_file_path(&self, id: Uuid, file_path: &str) -> anyhow::Result<()> {
         golish_db::repo::js_analysis::update_file_path(self.pool.as_ref(), id, file_path).await?;
+        Ok(())
+    }
+
+    async fn js_analysis_update_file_path_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        id: Uuid,
+        file_path: &str,
+    ) -> anyhow::Result<()> {
+        golish_db::repo::js_analysis::update_file_path_guarded(
+            self.pool.as_ref(),
+            guard,
+            id,
+            file_path,
+        )
+        .await?;
         Ok(())
     }
 
@@ -310,7 +466,11 @@ impl ReconScansPort for PgReconScansAdapter {
         &self,
         target_id: Uuid,
     ) -> anyhow::Result<Vec<JsAnalysisResult>> {
-        Ok(golish_db::repo::js_analysis::list_by_target(self.pool.as_ref(), target_id).await?)
+        Ok(golish_db::repo::js_analysis::list_by_current_target_owner(
+            self.pool.as_ref(),
+            target_id,
+        )
+        .await?)
     }
 
     async fn fingerprints_upsert(
@@ -344,7 +504,11 @@ impl ReconScansPort for PgReconScansAdapter {
         &self,
         target_id: Uuid,
     ) -> anyhow::Result<Vec<Fingerprint>> {
-        Ok(golish_db::repo::fingerprints::list_by_target(self.pool.as_ref(), target_id).await?)
+        Ok(golish_db::repo::fingerprints::list_by_current_target_owner(
+            self.pool.as_ref(),
+            target_id,
+        )
+        .await?)
     }
 
     async fn passive_scans_insert(
@@ -388,8 +552,12 @@ impl ReconScansPort for PgReconScansAdapter {
         limit: i64,
     ) -> anyhow::Result<Vec<PassiveScanLog>> {
         Ok(
-            golish_db::repo::passive_scans::list_by_target(self.pool.as_ref(), target_id, limit)
-                .await?,
+            golish_db::repo::passive_scans::list_by_current_target_owner(
+                self.pool.as_ref(),
+                target_id,
+                limit,
+            )
+            .await?,
         )
     }
 
@@ -397,18 +565,36 @@ impl ReconScansPort for PgReconScansAdapter {
         &self,
         target_id: Uuid,
     ) -> anyhow::Result<serde_json::Value> {
-        Ok(golish_db::repo::passive_scans::stats_by_target(self.pool.as_ref(), target_id).await?)
+        Ok(
+            golish_db::repo::passive_scans::stats_by_current_target_owner(
+                self.pool.as_ref(),
+                target_id,
+            )
+            .await?,
+        )
     }
 
     async fn api_endpoints_list_untested(
         &self,
         target_id: Uuid,
     ) -> anyhow::Result<Vec<ApiEndpoint>> {
-        Ok(golish_db::repo::api_endpoints::list_untested(self.pool.as_ref(), target_id).await?)
+        Ok(
+            golish_db::repo::api_endpoints::list_untested_by_current_target_owner(
+                self.pool.as_ref(),
+                target_id,
+            )
+            .await?,
+        )
     }
 
     async fn api_endpoints_count_by_target(&self, target_id: Uuid) -> anyhow::Result<(i64, i64)> {
-        Ok(golish_db::repo::api_endpoints::count_by_target(self.pool.as_ref(), target_id).await?)
+        Ok(
+            golish_db::repo::api_endpoints::count_by_current_target_owner(
+                self.pool.as_ref(),
+                target_id,
+            )
+            .await?,
+        )
     }
 
     async fn passive_scans_list_by_url(
@@ -423,7 +609,13 @@ impl ReconScansPort for PgReconScansAdapter {
         &self,
         target_id: Uuid,
     ) -> anyhow::Result<Vec<PassiveScanLog>> {
-        Ok(golish_db::repo::passive_scans::list_vulnerable(self.pool.as_ref(), target_id).await?)
+        Ok(
+            golish_db::repo::passive_scans::list_vulnerable_by_current_target_owner(
+                self.pool.as_ref(),
+                target_id,
+            )
+            .await?,
+        )
     }
 
     async fn js_analysis_update_file_path_by_url(

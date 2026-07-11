@@ -28,7 +28,7 @@
 | HITL：`ApprovalDecision` / `ApprovalPattern` / `RiskLevel` / `ToolApprovalConfig` | 人类在环审批 |
 | `PromptContributor` / `PromptContext` / `PromptSection` | prompt 组装贡献机制 |
 | `EventEmitter` / `NullEmitter`、`DbReadyGate`、`SkillProvider` | 事件/就绪门/技能 |
-| `with_agent_session` / `with_agent_tool_context` / `with_agent_tool_output_sender` / `AgentToolContext` | agent loop 的 task-local session/tool/output attribution |
+| `with_agent_session` / `with_agent_tool_context` / `with_agent_tool_output_sender` / `AgentToolContext` | agent loop 的 task-local session/tool/output attribution；tool context 携带可信 operation/org 绑定 |
 | `emit_current_agent_tool_output_chunk` | bridge/direct tools 的 best-effort live output side-channel，发 `AiEvent::ToolOutputChunk` 给当前可见 tool card |
 | `web_fetch`、`vault`、`utils`、`time::now_ms` | 通用能力 |
 
@@ -55,7 +55,7 @@
 ## 注意事项 / 坑
 
 - 跨 IPC 的类型若在此定义，必须 `#[derive(ts_rs::TS)]` 同步前端（不变量 I5）。
-- `agent_session.rs` 的 task-local attribution 是 best-effort：只对 inline awaited work 生效，启动后台 job 时要立即 capture，不能等到 spawned task 里再读。`AgentToolContext.organization_id` 承载当前 harness org，后台 completion 用它把结构化扫描结果和 coverage outcome 写回正确 org。
+- `agent_session.rs` 的 task-local attribution 是 best-effort：只对 inline awaited work 生效，启动后台 job 时要立即 capture，不能等到 spawned task 里再读。`AgentToolContext.operation_id` 来自 runtime 的 active harness operation/stage attempt，不能从模型参数猜；`organization_id` 承载当前 harness org。后台 completion 用这些可信绑定把结构化扫描结果、证据和 coverage outcome 写回正确 run/org。
 - direct/bridge 工具如果要让前端实时看到“工具现在在看什么”，用 `emit_current_agent_tool_output_chunk` 发 chunk；主 loop / sub-agent executor 会注入 `with_agent_tool_output_sender`。如果工具自己 `tokio::spawn` 读子进程 stderr/stdout，必须先在 inline scope capture `current_agent_tool_context()` 和 `current_agent_tool_output_sender()`，spawn 里不能再读 task-local。
 - 改动牵一发动全身：优先在子模块内部小改，避免改公共 `pub` 签名。
 

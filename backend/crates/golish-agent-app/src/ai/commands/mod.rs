@@ -49,7 +49,10 @@ pub use workflow::*;
 // `pub(crate)`) because the main `golish` crate reaches them across the crate
 // boundary via its `crate::ai` shim (app/mcp_bootstrap, mcp/commands,
 // cli/bootstrap) now that the agent command surface lives here (M4-proper).
-pub use bridge_config::configure_bridge;
+pub(crate) use bridge_config::{
+    activate_bridge_background_listeners, prepare_bridge_background_listeners,
+};
+pub use bridge_config::{configure_bridge, configure_bridge_background_listeners};
 pub use bridge_config::{setup_bridge_mcp_tools, McpManagerToolExecutor};
 
 // `AiState` + the agent error helpers live in this crate's `state` module

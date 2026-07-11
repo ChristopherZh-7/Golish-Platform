@@ -16,8 +16,8 @@ pub mod tools;
 pub use client::{McpClientConnection, McpClientHandler};
 pub use config::{McpConfigFile, McpServerConfig, McpTransportType};
 pub use loader::{
-    builtin_server_names, interpolate_env_vars, is_project_config_trusted, load_mcp_config,
-    trust_project_config, TrustedMcpConfigs,
+    builtin_server_names, builtin_setup_directory, interpolate_env_vars, is_project_config_trusted,
+    load_mcp_config, trust_project_config, TrustedMcpConfigs,
 };
 pub use manager::{McpManager, McpToolResult, McpToolResultContent, ServerStatus};
 pub use tools::{convert_mcp_result_to_tool_result, parse_mcp_tool_name, sanitize_name, McpTool};

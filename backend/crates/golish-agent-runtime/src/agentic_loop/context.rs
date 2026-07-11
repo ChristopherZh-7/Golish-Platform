@@ -5,7 +5,7 @@ use golish_core::ApiRequestStats;
 use golish_sub_agents::SubAgentRegistry;
 use golish_tools::ToolRegistry;
 use rig::completion::Message;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
@@ -128,6 +128,44 @@ pub type PostShellHook = Arc<
 /// can skip it.
 pub type OutputClassifier = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 
+/// Request-scoped circuit breaker for `stage_run` retry exhaustion.
+///
+/// One instance is shared by every Primary-agent loop/reflector pass belonging
+/// to the same top-level Task request. A later user request receives a reset
+/// guard, so it can legitimately resume the saved worker chain with a fresh
+/// bounded retry budget.
+#[derive(Debug, Default)]
+pub struct StageRunReentryGuard {
+    exhausted_stages: std::sync::Mutex<HashSet<golish_agent_kit::harness::StageKind>>,
+}
+
+impl StageRunReentryGuard {
+    /// Whether this request already consumed the bounded per-org retry budget
+    /// for `stage`.
+    pub fn is_exhausted(&self, stage: golish_agent_kit::harness::StageKind) -> bool {
+        self.exhausted_stages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&stage)
+    }
+
+    /// Close the circuit for `stage` until the next top-level Task request.
+    pub fn mark_exhausted(&self, stage: golish_agent_kit::harness::StageKind) {
+        self.exhausted_stages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(stage);
+    }
+
+    /// Start a separate top-level Task request with a fresh bounded budget.
+    pub fn reset(&self) {
+        self.exhausted_stages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+}
+
 /// Context for the agentic loop execution.
 pub struct AgenticLoopContext<'a> {
     // -- Composed subsystems --------------------------------------------------
@@ -210,6 +248,10 @@ pub struct AgenticLoopContext<'a> {
     /// tools use this to update operation-scoped state such as
     /// `operation_state.state_blob` without guessing from the DB tracker session.
     pub harness_operation_id: Option<uuid::Uuid>,
+    /// Shared circuit breaker for this top-level Task request. `stage_run`
+    /// closes the stage entry after its bounded per-org retry budget is
+    /// exhausted; a separate user request resets it before resuming.
+    pub stage_run_reentry_guard: Arc<StageRunReentryGuard>,
 }
 
 /// Check cancellation flag; returns true when the user has requested a stop.
@@ -293,5 +335,24 @@ pub(super) fn emit_event(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
 
     if let Some(sidecar) = ctx.sidecar_state {
         sidecar.capture_event(&event);
+    }
+}
+
+#[cfg(test)]
+mod stage_run_reentry_guard_tests {
+    use super::StageRunReentryGuard;
+    use golish_agent_kit::harness::StageKind;
+
+    #[test]
+    fn exhaustion_is_stage_local_and_reset_opens_a_new_request_budget() {
+        let guard = StageRunReentryGuard::default();
+
+        assert!(!guard.is_exhausted(StageKind::Enumeration));
+        guard.mark_exhausted(StageKind::Enumeration);
+        assert!(guard.is_exhausted(StageKind::Enumeration));
+        assert!(!guard.is_exhausted(StageKind::ExternalAttackSurface));
+
+        guard.reset();
+        assert!(!guard.is_exhausted(StageKind::Enumeration));
     }
 }

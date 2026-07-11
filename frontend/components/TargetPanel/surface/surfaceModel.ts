@@ -157,6 +157,15 @@ function createSitemapTreeNode(
   };
 }
 
+function originWithExplicitPort(parsed: URL): string {
+  const port = parsed.port || (parsed.protocol === "http:" ? "80" : "443");
+  const host =
+    parsed.hostname.includes(":") && !parsed.hostname.startsWith("[")
+      ? `[${parsed.hostname}]`
+      : parsed.hostname;
+  return `${parsed.protocol}//${host}:${port}`;
+}
+
 function sitemapPathParts(rawUrl: string): { root: string; parts: string[] } {
   const trimmed = rawUrl.trim();
   if (!trimmed) return { root: "unknown", parts: [] };
@@ -166,7 +175,7 @@ function sitemapPathParts(rawUrl: string): { root: string; parts: string[] } {
       const parsed = new URL(trimmed);
       const parts = parsed.pathname.split("/").filter(Boolean);
       if (parsed.search) parts.push(parsed.search);
-      return { root: parsed.origin, parts };
+      return { root: originWithExplicitPort(parsed), parts };
     } catch {
       return { root: trimmed, parts: [] };
     }

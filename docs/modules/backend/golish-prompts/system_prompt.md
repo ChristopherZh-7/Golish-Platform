@@ -41,6 +41,7 @@
 
 - **三态分派是核心**：OpenAI→codex、task→多 agent、chat→单 agent；改分派条件要保证 chat 模式**不出现** `sub_agent_*` 引用（单 agent 纯净）。
 - 公开面对调用方稳定（拆分透明）；改内部模板别破坏对外签名。
+- `team_delegation.rs` 的 JS 路由必须与真实工具面一致：收集/分析 JS 时委派 pentester 先跑 `browser_collect_js_api`，再跑 `js_extract_apis`；legacy `js_collect` 已删除，不能在团队委派表或示例里重新出现。
 
 ## 测试入口
 

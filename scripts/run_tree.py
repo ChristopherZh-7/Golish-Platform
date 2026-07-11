@@ -658,7 +658,9 @@ def run_db_diagnosis(session_dir: Path, db_url: str | None, trunc: int) -> list[
     stage_outcomes = q(
         "SELECT technique, outcome, source, count(*), "
         "(array_agg(asset ORDER BY asset))[1:8], "
-        "(array_agg(evidence_ids ORDER BY updated_at DESC))[1:5] "
+        # Aggregate the array column as text: PostgreSQL cannot array_agg a mix
+        # of empty and non-empty arrays because their dimensions differ.
+        "(array_agg(evidence_ids::text ORDER BY updated_at DESC))[1:5] "
         "FROM technique_outcomes WHERE run_id=%s "
         "GROUP BY 1,2,3 ORDER BY 1,2,3",
         (session_id,),

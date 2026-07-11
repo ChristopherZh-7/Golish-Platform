@@ -46,6 +46,48 @@ pub async fn send_ai_prompt_session(
             super::super::ai_session_not_initialized_error(&session_id)
         })?;
 
+    // Universal per-bridge boundary: acquire before reading the mode or entering
+    // Chat/Task/profile/attachment execution. A busy contender cannot reset the
+    // shared cancellation flag or touch history/harness side-channels.
+    let request = bridge.begin_top_level_request().await.map_err(|error| {
+        tracing::warn!(
+            message = "[send_ai_prompt_session] Agent session is busy",
+            session_id = %session_id,
+            error = %error,
+        );
+        GolishError::Internal(error.to_string())
+    })?;
+
+    let result = execute_owned_prompt_request(
+        bridge.clone(),
+        &session_id,
+        &prompt,
+        state.inner(),
+        request.clone(),
+    )
+    .await;
+
+    if let Err(error) = bridge.clear_top_level_request_state(&request).await {
+        tracing::error!(
+            message = "[send_ai_prompt_session] Failed to clear request-local bridge state",
+            session_id = %session_id,
+            error = %error,
+        );
+        if result.is_ok() {
+            return Err(GolishError::Internal(error.to_string()));
+        }
+    }
+
+    result
+}
+
+async fn execute_owned_prompt_request(
+    bridge: Arc<AgentBridge>,
+    session_id: &str,
+    prompt: &str,
+    state: &AgentState,
+    request: golish_agent_bridge::TopLevelRequestLease,
+) -> Result<String, GolishError> {
     let mode = bridge.get_execution_mode().await;
 
     tracing::info!(
@@ -56,7 +98,7 @@ pub async fn send_ai_prompt_session(
 
     match mode {
         golish_agent_kit::execution_mode::ExecutionMode::Chat => {
-            bridge.execute(&prompt).await.map_err(|e| {
+            bridge.execute(prompt).await.map_err(|e| {
                 tracing::error!(
                     message = "[send_ai_prompt_session] Chat execution error",
                     session_id = %session_id,
@@ -66,13 +108,8 @@ pub async fn send_ai_prompt_session(
             })
         }
         golish_agent_kit::execution_mode::ExecutionMode::Task => {
-            match should_resume_existing_task_operation(
-                &state,
-                bridge.as_ref(),
-                &session_id,
-                &prompt,
-            )
-            .await
+            match should_resume_existing_task_operation(state, bridge.as_ref(), session_id, prompt)
+                .await
             {
                 Ok(true) => {
                     tracing::info!(
@@ -80,7 +117,7 @@ pub async fn send_ai_prompt_session(
                         session_id = %session_id,
                         "resume-like prompt matched a checkpointed task; entering task harness directly"
                     );
-                    return execute_task_mode(bridge, &session_id, &prompt, &state)
+                    return execute_task_mode(bridge, session_id, prompt, state, request.clone())
                         .await
                         .map_err(|e| {
                             let error = format!("{:#}", e);
@@ -103,10 +140,10 @@ pub async fn send_ai_prompt_session(
                 }
             }
 
-            let task_entry = explicit_task_prompt(&prompt)
+            let task_entry = explicit_task_prompt(prompt)
                 .map(|task_prompt| ("Explicit task prefix detected", task_prompt))
                 .or_else(|| {
-                    implicit_operation_prompt(&prompt)
+                    implicit_operation_prompt(prompt)
                         .map(|task_prompt| ("Task/profile operation intent detected", task_prompt))
                 });
 
@@ -116,7 +153,7 @@ pub async fn send_ai_prompt_session(
                     reason = entry_reason,
                     session_id = %session_id,
                 );
-                return execute_task_mode(bridge, &session_id, &task_prompt, &state)
+                return execute_task_mode(bridge, session_id, &task_prompt, state, request.clone())
                     .await
                     .map_err(|e| {
                         let error = format!("{:#}", e);
@@ -134,7 +171,7 @@ pub async fn send_ai_prompt_session(
             // `start_operation` handoff tool. If the model calls that tool, we
             // enter the heavyweight Scoping→Reporting harness; otherwise the
             // lead turn's reply is the final answer.
-            execute_task_profile_turn(bridge, &session_id, &prompt, &state)
+            execute_task_profile_turn(bridge, session_id, prompt, state, request)
                 .await
                 .map_err(|e| {
                     let error = format!("{:#}", e);
@@ -197,6 +234,7 @@ async fn execute_task_mode(
     _session_id: &str,
     prompt: &str,
     state: &AgentState,
+    request: golish_agent_bridge::TopLevelRequestLease,
 ) -> anyhow::Result<String> {
     execute_task_mode_with_continuity(
         bridge,
@@ -204,6 +242,7 @@ async fn execute_task_mode(
         prompt,
         state,
         golish_agent_kit::harness::ContinuityDecision::AskBeforeReuse,
+        request,
     )
     .await
 }
@@ -214,6 +253,7 @@ async fn execute_task_mode_with_continuity(
     prompt: &str,
     state: &AgentState,
     continuity_decision: golish_agent_kit::harness::ContinuityDecision,
+    request: golish_agent_bridge::TopLevelRequestLease,
 ) -> anyhow::Result<String> {
     use anyhow::Context;
     use golish_agent_bridge::bridge_executor::BridgeAgentExecutor;
@@ -221,6 +261,8 @@ async fn execute_task_mode_with_continuity(
     use golish_core::events::AiEvent;
     use golish_db::{models::NewSession, repo::sessions};
 
+    let executor = BridgeAgentExecutor::from_request(bridge.clone(), request.clone())
+        .context("upgrade owned request into Task execution")?;
     let task_input = extract_user_message_from_wrapped_prompt(prompt);
     let continuity_decision =
         continuity_decision_from_prompt(task_input).unwrap_or(continuity_decision);
@@ -302,8 +344,6 @@ async fn execute_task_mode_with_continuity(
     // leave the run stuck at "Waiting for approval" with no way to approve.
     orchestrator.set_approval_coordinator(bridge.coordinator().cloned());
 
-    let executor = BridgeAgentExecutor::new(bridge.clone());
-
     // Resume-aware entry (Task 断线恢复 · L2): if this chat session has a
     // non-terminal operation with a persisted harness checkpoint, resume it from
     // where it left off instead of starting a new run at scoping. The decision is
@@ -364,6 +404,14 @@ async fn execute_task_mode_with_continuity(
         None => orchestrator.run(task_input, &executor).await,
     };
 
+    // The executor (and outer GUI request) still hold ownership here. Clear the
+    // harness side-channels before any planner-declined Chat fallback can build a
+    // loop context, and before the top-level command releases the lease.
+    bridge
+        .clear_top_level_request_state(&request)
+        .await
+        .context("clear Task request-local bridge state")?;
+
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
     match &result {
@@ -422,6 +470,7 @@ async fn execute_task_profile_turn(
     session_id: &str,
     prompt: &str,
     state: &AgentState,
+    request: golish_agent_bridge::TopLevelRequestLease,
 ) -> anyhow::Result<String> {
     {
         let pending = bridge.pending_plan_request_handle();
@@ -448,8 +497,15 @@ async fn execute_task_profile_turn(
         session_id = %session_id,
         "start_operation requested by task/profile lead turn; entering task harness"
     );
-    execute_task_mode_with_continuity(bridge, session_id, &task_prompt, state, continuity_decision)
-        .await
+    execute_task_mode_with_continuity(
+        bridge,
+        session_id,
+        &task_prompt,
+        state,
+        continuity_decision,
+        request,
+    )
+    .await
 }
 
 fn task_profile_lead_instructions() -> &'static str {
@@ -1437,6 +1493,10 @@ pub async fn send_ai_prompt_with_attachments(
         .get_session_bridge(&session_id)
         .await
         .ok_or_else(|| super::super::ai_session_not_initialized_error(&session_id))?;
+    let request = bridge
+        .begin_top_level_request()
+        .await
+        .map_err(|error| GolishError::Internal(error.to_string()))?;
 
     // Check vision capabilities
     let caps = golish_llm_providers::VisionCapabilities::detect(
@@ -1497,10 +1557,13 @@ pub async fn send_ai_prompt_with_attachments(
         .collect();
 
     // Execute without holding the map lock - other sessions can init/shutdown
-    bridge
-        .execute_with_content(content_parts)
-        .await
-        .map_err(GolishError::from)
+    let result = bridge.execute_with_content(content_parts).await;
+    let cleanup = bridge.clear_top_level_request_state(&request).await;
+    match (result, cleanup) {
+        (Ok(response), Ok(())) => Ok(response),
+        (Err(error), _) => Err(GolishError::from(error)),
+        (Ok(_), Err(error)) => Err(GolishError::Internal(error.to_string())),
+    }
 }
 
 /// Clear the conversation history for a specific session.
@@ -1517,7 +1580,15 @@ pub async fn clear_ai_conversation_session(
         .get_session_bridge(&session_id)
         .await
         .ok_or_else(|| super::super::ai_session_not_initialized_error(&session_id))?;
+    let request = bridge
+        .begin_top_level_request()
+        .await
+        .map_err(|error| GolishError::Internal(error.to_string()))?;
     bridge.clear_conversation_history().await;
+    bridge
+        .clear_top_level_request_state(&request)
+        .await
+        .map_err(|error| GolishError::Internal(error.to_string()))?;
     tracing::info!("Conversation cleared for session {}", session_id);
     Ok(())
 }

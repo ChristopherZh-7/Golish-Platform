@@ -8,6 +8,11 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+const UPDATE_CHAIN_SQL: &str =
+    "UPDATE message_chains SET chain = $1, updated_at = NOW() WHERE id = $2";
+const LOAD_CHAIN_BY_ID_SQL: &str = "SELECT chain FROM message_chains \
+     WHERE id = $1 AND session_id = $2 AND agent = $3::agent_type";
+
 pub struct PgChainPersistence {
     pool: Arc<PgPool>,
 }
@@ -43,11 +48,17 @@ impl golish_sub_agents::SubAgentChainPersistence for PgChainPersistence {
     }
 
     async fn chain_update(&self, id: Uuid, chain_json: &serde_json::Value) -> anyhow::Result<()> {
-        sqlx::query("UPDATE message_chains SET chain = $1, updated_at = NOW() WHERE id = $2")
+        let result = sqlx::query(UPDATE_CHAIN_SQL)
             .bind(chain_json)
             .bind(id)
             .execute(self.pool.as_ref())
             .await?;
+        if result.rows_affected() != 1 {
+            anyhow::bail!(
+                "message chain {id} update affected {} rows",
+                result.rows_affected()
+            );
+        }
         Ok(())
     }
 
@@ -100,12 +111,18 @@ impl golish_sub_agents::SubAgentChainPersistence for PgChainPersistence {
         Ok(row.and_then(|(id, chain)| chain.map(|c| (id, c))))
     }
 
-    async fn chain_load_by_id(&self, chain_id: Uuid) -> anyhow::Result<Option<serde_json::Value>> {
-        let row: Option<(Option<serde_json::Value>,)> =
-            sqlx::query_as("SELECT chain FROM message_chains WHERE id = $1")
-                .bind(chain_id)
-                .fetch_optional(self.pool.as_ref())
-                .await?;
+    async fn chain_load_by_id(
+        &self,
+        chain_id: Uuid,
+        session_id: Uuid,
+        agent_type: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(LOAD_CHAIN_BY_ID_SQL)
+            .bind(chain_id)
+            .bind(session_id)
+            .bind(agent_type)
+            .fetch_optional(self.pool.as_ref())
+            .await?;
         Ok(row.and_then(|(chain,)| chain))
     }
 
@@ -116,5 +133,22 @@ impl golish_sub_agents::SubAgentChainPersistence for PgChainPersistence {
         .fetch_all(self.pool.as_ref())
         .await
         .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LOAD_CHAIN_BY_ID_SQL, UPDATE_CHAIN_SQL};
+
+    #[test]
+    fn exact_chain_load_is_scoped_to_id_session_and_agent() {
+        assert!(LOAD_CHAIN_BY_ID_SQL.contains("id = $1"));
+        assert!(LOAD_CHAIN_BY_ID_SQL.contains("session_id = $2"));
+        assert!(LOAD_CHAIN_BY_ID_SQL.contains("agent = $3::agent_type"));
+    }
+
+    #[test]
+    fn chain_update_sql_targets_one_exact_id() {
+        assert!(UPDATE_CHAIN_SQL.contains("WHERE id = $2"));
     }
 }

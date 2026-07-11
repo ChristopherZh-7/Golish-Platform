@@ -28,6 +28,7 @@ pub(super) struct StreamResult {
     pub has_tool_calls: bool,
     pub idle_timeout_hit: bool,
     pub cancelled: bool,
+    pub stream_error: Option<String>,
 }
 
 /// Process a streaming LLM response, accumulating text, thinking, and tool calls.
@@ -71,6 +72,7 @@ where
 
     let mut idle_timeout_hit = false;
     let mut cancelled_hit = false;
+    let mut stream_error = None;
     loop {
         let chunk_opt = if let Some(idle_dur) = idle_timeout {
             let last = last_activity.load(Ordering::Relaxed);
@@ -336,6 +338,8 @@ where
             },
             Err(e) => {
                 tracing::warn!("[sub-agent] Stream error: {}", e);
+                stream_error = Some(e.to_string());
+                break;
             }
         }
     }
@@ -433,6 +437,7 @@ where
         has_tool_calls,
         idle_timeout_hit,
         cancelled: cancelled_hit,
+        stream_error,
     }
 }
 
@@ -512,6 +517,37 @@ mod tests {
         assert!(!sr.has_tool_calls);
         assert!(sr.tool_calls.is_empty());
         assert_eq!(sr.text_content, "just a normal answer, no tool markup");
+    }
+
+    #[tokio::test]
+    async fn provider_stream_error_is_returned_to_the_executor() {
+        let mut stream =
+            futures::stream::iter(vec![Err::<StreamedAssistantContent<DummyResp>, String>(
+                "provider rejected invalid history".to_string(),
+            )]);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let last_activity = Arc::new(AtomicU64::new(epoch_secs()));
+        let quirks = golish_llm_providers::resolve_stream_quirks("openai", "gpt-4o", None);
+        let span = tracing::Span::none();
+
+        let sr = process_llm_stream(
+            &mut stream,
+            "enumerator",
+            "req-1",
+            &event_tx,
+            &last_activity,
+            None,
+            None,
+            &span,
+            &quirks,
+        )
+        .await;
+
+        assert_eq!(
+            sr.stream_error.as_deref(),
+            Some("provider rejected invalid history")
+        );
+        assert!(!sr.has_tool_calls);
     }
 
     #[tokio::test]

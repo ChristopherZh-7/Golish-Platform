@@ -146,6 +146,34 @@ fn test_sanitize_schema_nested_objects() {
 }
 
 #[test]
+fn strict_provider_preflight_terminal_exceptions_is_required_nullable() {
+    let tools = get_tool_definitions_with_config(&ToolSelectionConfig::main_agent());
+
+    for name in [
+        "check_stage_asset_coverage",
+        "stage_worklist_status",
+        "stage_worklist_next",
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("missing strict-provider tool schema for {name}"));
+        let required = tool.parameters["required"]
+            .as_array()
+            .expect("strict object schema has required fields");
+        assert!(required.contains(&json!("terminal_exceptions")));
+
+        let terminal_exceptions = &tool.parameters["properties"]["terminal_exceptions"];
+        let types = terminal_exceptions["type"]
+            .as_array()
+            .expect("optional strict-provider field is nullable");
+        assert!(types.contains(&json!("array")));
+        assert!(types.contains(&json!("null")));
+        assert_eq!(terminal_exceptions["items"]["additionalProperties"], false);
+    }
+}
+
+#[test]
 fn test_get_standard_tool_definitions() {
     let tools = get_standard_tool_definitions();
     assert!(!tools.is_empty());
@@ -347,6 +375,15 @@ fn test_tool_config_main_agent() {
     assert!(config.is_tool_enabled("poc_stats"));
 
     assert!(!config.is_tool_enabled("run_pty_cmd"));
+    for legacy_mutation in [
+        "log_operation",
+        "discover_apis",
+        "save_js_analysis",
+        "fingerprint_target",
+        "log_scan_result",
+    ] {
+        assert!(!config.is_tool_enabled(legacy_mutation));
+    }
 
     assert!(!config.is_tool_enabled("save_skill"));
     assert!(!config.is_tool_enabled("create_pty_session"));
@@ -371,6 +408,15 @@ fn test_main_agent_tool_definitions() {
     assert!(tool_names.contains(&"poc_stats"));
 
     assert!(!tool_names.contains(&"run_pty_cmd"));
+    for legacy_mutation in [
+        "log_operation",
+        "discover_apis",
+        "save_js_analysis",
+        "fingerprint_target",
+        "log_scan_result",
+    ] {
+        assert!(!tool_names.contains(&legacy_mutation));
+    }
 }
 
 #[tokio::test]

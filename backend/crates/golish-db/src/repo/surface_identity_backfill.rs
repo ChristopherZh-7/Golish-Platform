@@ -113,6 +113,11 @@ FROM target_assets ta
 JOIN targets t ON t.id = ta.target_id
 WHERE ($1::text IS NULL OR COALESCE(NULLIF(ta.project_path, ''), NULLIF(t.project_path, ''), '') = $1)
   AND ($2::uuid IS NULL OR t.organization_id = $2)
+  AND (
+      NULLIF(ta.project_path, '') IS NULL
+      OR NULLIF(t.project_path, '') IS NULL
+      OR ta.project_path = t.project_path
+  )
 ORDER BY ta.discovered_at, ta.id
 "#;
 
@@ -135,6 +140,11 @@ FROM api_endpoints ae
 JOIN targets t ON t.id = ae.target_id
 WHERE ($1::text IS NULL OR COALESCE(NULLIF(ae.project_path, ''), NULLIF(t.project_path, ''), '') = $1)
   AND ($2::uuid IS NULL OR t.organization_id = $2)
+  AND (
+      NULLIF(ae.project_path, '') IS NULL
+      OR NULLIF(t.project_path, '') IS NULL
+      OR ae.project_path = t.project_path
+  )
 ORDER BY ae.discovered_at, ae.id
 "#;
 
@@ -157,6 +167,11 @@ FROM js_analysis_results ja
 JOIN targets t ON t.id = ja.target_id
 WHERE ($1::text IS NULL OR COALESCE(NULLIF(ja.project_path, ''), NULLIF(t.project_path, ''), '') = $1)
   AND ($2::uuid IS NULL OR t.organization_id = $2)
+  AND (
+      NULLIF(ja.project_path, '') IS NULL
+      OR NULLIF(t.project_path, '') IS NULL
+      OR ja.project_path = t.project_path
+  )
 ORDER BY ja.analyzed_at, ja.id
 "#;
 
@@ -179,6 +194,11 @@ FROM directory_entries de
 JOIN targets t ON t.id = de.target_id
 WHERE ($1::text IS NULL OR COALESCE(NULLIF(de.project_path, ''), NULLIF(t.project_path, ''), '') = $1)
   AND ($2::uuid IS NULL OR t.organization_id = $2)
+  AND (
+      NULLIF(de.project_path, '') IS NULL
+      OR NULLIF(t.project_path, '') IS NULL
+      OR de.project_path = t.project_path
+  )
 ORDER BY de.created_at, de.id
 "#;
 
@@ -201,6 +221,11 @@ FROM passive_scan_logs ps
 JOIN targets t ON t.id = ps.target_id
 WHERE ($1::text IS NULL OR COALESCE(NULLIF(ps.project_path, ''), NULLIF(t.project_path, ''), '') = $1)
   AND ($2::uuid IS NULL OR t.organization_id = $2)
+  AND (
+      NULLIF(ps.project_path, '') IS NULL
+      OR NULLIF(t.project_path, '') IS NULL
+      OR ps.project_path = t.project_path
+  )
 ORDER BY ps.tested_at, ps.id
 "#;
 
@@ -1327,5 +1352,20 @@ mod tests {
             "proj-source"
         );
         assert_eq!(effective_project_path("", ""), "");
+    }
+
+    #[test]
+    fn legacy_child_queries_skip_known_project_conflicts() {
+        for (sql, alias) in [
+            (LIST_TARGET_ASSET_ROWS_SQL, "ta"),
+            (LIST_API_URL_ROWS_SQL, "ae"),
+            (LIST_JS_URL_ROWS_SQL, "ja"),
+            (LIST_DIRECTORY_URL_ROWS_SQL, "de"),
+            (LIST_PASSIVE_URL_ROWS_SQL, "ps"),
+        ] {
+            assert!(sql.contains(&format!("NULLIF({alias}.project_path, '') IS NULL")));
+            assert!(sql.contains("NULLIF(t.project_path, '') IS NULL"));
+            assert!(sql.contains(&format!("{alias}.project_path = t.project_path")));
+        }
     }
 }

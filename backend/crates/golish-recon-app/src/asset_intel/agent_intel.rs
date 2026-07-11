@@ -127,7 +127,7 @@ pub async fn run_passive_intel(
             .domain
             .as_deref()
             .map(str::trim)
-            .map_or(true, str::is_empty);
+            .is_none_or(str::is_empty);
 
     let mut summary = run_passive_intel_once(
         Arc::clone(&pool),

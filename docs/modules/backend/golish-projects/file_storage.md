@@ -40,7 +40,7 @@
 
 - 模块标 `#![allow(dead_code)]`（部分 API 为未来用）。
 - **混合架构约定**：原始 bytes 落文件、结构化进 DB（存 `file_path`）——别把大文件塞 DB。
-- 路径基于 `{project_root}/.golish/`；改布局要同步上层（recon-app `asset_intel`、pentest-app `pentest_bridge js_collect` 都往这里写）。
+- 路径基于 `{project_root}/.golish/`；改布局要同步上层（recon-app `asset_intel`、pentest-app 的 JS/API browser capture 路径都会消费这里的约定）。
 
 ## 测试入口
 

@@ -155,7 +155,12 @@ pub(crate) async fn maybe_run_reflector(
             sub_tool_router: None,
             active_org_id_source: None,
             active_org_id_override: None,
+            operation_id: ctx.harness_operation_id,
             session_id: ctx.events.session_id,
+            persistence_session_id: ctx
+                .events
+                .db_tracker
+                .map(golish_agent_kit::db_tracking::DbTracker::session_uuid),
             transcript_base_dir: ctx.events.transcript_base_dir,
             api_request_stats: Some(ctx.api_request_stats),
             cancelled: ctx.cancelled,

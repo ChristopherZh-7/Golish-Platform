@@ -1,5 +1,17 @@
 use super::FunctionDeclaration;
-use serde_json::json;
+use serde_json::{json, Value};
+
+fn enumeration_terminal_exceptions_schema() -> Value {
+    json!({
+        "type": "array",
+        "description": "Deprecated compatibility input. Enumeration completion is DB/evidence authoritative; omit this field or pass []. Any non-empty array is rejected and cannot project pending cells to terminal states.",
+        "items": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }
+    })
+}
 
 pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
     vec![
@@ -266,7 +278,7 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Optional cap: return only the first N live web roots. Default 100, max 500."
+                        "description": "Optional cap: return only the first N live web roots. Default 25, max 50."
                     },
                     "include_coverage": {
                         "type": "boolean",
@@ -277,8 +289,31 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
             }),
         },
         FunctionDeclaration {
+            name: "enum_preflight_web_origins".to_string(),
+            description: "Run the trusted, bounded, read-only transport preflight for current Enumeration roots. It first atomically refreshes all four cells to non-terminal partial markers so stale blocked state cannot survive recovery. Any HTTP response means reachable and writes no terminal coverage. Only all-strategy transport/TLS failure produces target-bound evidence and atomically closes JS/DIR/PARAM/JSAPI as blocked.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "origins": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "target_id": {"type": "string"},
+                                "target_url": {"type": "string"}
+                            },
+                            "required": ["target_id", "target_url"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["origins"],
+                "additionalProperties": false
+            }),
+        },
+        FunctionDeclaration {
             name: "check_stage_asset_coverage".to_string(),
-            description: "Read the current stage asset-coverage matrix from database truth before submitting. Use this after scans/probes land and BEFORE submit_stage_deliverable. It returns ready_to_submit=false when any asset×technique cell is still pending/error, with sample gaps and suggested tools. blocked/not_applicable are terminal when honestly recorded. Defaults to the active harness organization, current session, and current stage when available.".to_string(),
+            description: "Read the current stage asset-coverage matrix from database truth before submitting. It returns ready_to_submit=false when any asset×technique cell is still pending/error/partial. Enumeration blocked cells must come from enum_preflight_web_origins evidence; model-authored terminal_exceptions are disabled. Defaults to the active harness organization, current session, and current stage when available.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -298,14 +333,15 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                     "include_assets": {
                         "type": "boolean",
                         "description": "Set true only when you need the full asset matrix. Default false returns a compact preflight summary."
-                    }
+                    },
+                    "terminal_exceptions": enumeration_terminal_exceptions_schema()
                 },
                 "additionalProperties": false
             }),
         },
         FunctionDeclaration {
             name: "stage_worklist_status".to_string(),
-            description: "Read a compact DB-truth status view for the current stage-local worklist. Use this to see whether the active organization/stage still has pending/error asset×technique cells before choosing more tools or submitting. This is read-only and does not mark anything complete.".to_string(),
+            description: "Read a compact DB-truth status view for the current stage-local worklist. Enumeration terminal state comes only from current-run producer or trusted preflight evidence; non-empty terminal_exceptions are rejected.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -317,14 +353,15 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                     "organization_id": {
                         "type": "string",
                         "description": "Organization UUID to inspect. Omit to use the active per-org/root organization."
-                    }
+                    },
+                    "terminal_exceptions": enumeration_terminal_exceptions_schema()
                 },
                 "additionalProperties": false
             }),
         },
         FunctionDeclaration {
             name: "stage_worklist_next".to_string(),
-            description: "Return the next batch of unfinished DB-truth work items for the active stage. Each item is one asset×technique cell with state, suggested tools, evidence refs, and stage-specific focus. Use it instead of free-form planning: run the suggested tool(s), then call stage_worklist_next/status again. This is read-only and never marks cells complete.".to_string(),
+            description: "Return the next batch of unfinished DB-truth work items for the active stage. Each item is one asset×technique cell with state, suggested tools, evidence refs, and stage-specific focus. Enumeration returns at most 200 cells across at most 50 distinct exact-origin roots; deduplicate by asset, call enum_preflight_web_origins for the roots, then run producers only for roots still pending/reachable. Non-empty terminal_exceptions are rejected.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -339,16 +376,17 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum work items to return. Defaults to 25, max 200."
+                        "description": "Maximum work-item cells to return. Defaults to 25, max 200. Enumeration additionally caps one response at 50 distinct exact-origin roots."
                     },
                     "prefer": {
                         "type": "array",
                         "items": {
                             "type": "string",
-                            "enum": ["pending", "error", "blocked", "next_wave_pending"]
+                            "enum": ["pending", "error", "partial", "blocked", "next_wave_pending"]
                         },
-                        "description": "Cell states to include. Defaults to pending+error."
-                    }
+                        "description": "Cell states to include. Defaults to pending+error+partial."
+                    },
+                    "terminal_exceptions": enumeration_terminal_exceptions_schema()
                 },
                 "additionalProperties": false
             }),

@@ -14,6 +14,12 @@ use crate::harness::{
     load_embedded_stage_spec, suggested_capabilities_for_technique, CoverageGapAction, StageKind,
 };
 
+const MODEL_RECOVERY_ACTION_SAMPLE_LIMIT: usize = 20;
+const MODEL_RECOVERY_INSTRUCTION_MAX_BYTES: usize = 32 * 1024;
+const MODEL_RECOVERY_PROJECTION_MARKER: &str = "Recovery actions: total=";
+const MODEL_RECOVERY_TRUNCATION_SUFFIX: &str =
+    "\n[Recovery instruction truncated. Use stage_worklist_next for bounded DB-backed pages.]";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RepairKind {
@@ -124,54 +130,86 @@ impl RepairDirective {
         let mut out = format!(
             "STAGE REFINER DIRECTIVE (deterministic, DB-backed): {}\n\
              Stage: {}. Repair kind: {:?}. Do not restart the stage; perform only the actions below.",
-            self.root_cause, self.stage, self.repair_kind
+            bounded_model_field(&self.root_cause, 2_048),
+            bounded_model_field(&self.stage, 256),
+            self.repair_kind
         );
+        let sampled_actions = self
+            .actions
+            .iter()
+            .take(MODEL_RECOVERY_ACTION_SAMPLE_LIMIT)
+            .collect::<Vec<_>>();
+        if !self.actions.is_empty() {
+            let stable_hash = self
+                .gap_hash
+                .clone()
+                .unwrap_or_else(|| short_hash(&self.actions));
+            out.push_str(&format!(
+                "\n{MODEL_RECOVERY_PROJECTION_MARKER}{} stable_hash={} sample_count={}. \
+                 Only this bounded sample is shown; the complete ordered action set remains \
+                 enforced internally. Call stage_worklist_next for bounded DB-backed pages; \
+                 do not infer authorization from this sample.",
+                self.actions.len(),
+                stable_hash,
+                sampled_actions.len()
+            ));
+        }
         if !self.allowed_tools.is_empty() {
             out.push_str(&format!(
                 "\nAllowed next tools: [{}].",
-                self.allowed_tools.join(", ")
+                bounded_model_list(&self.allowed_tools, 64, 128).join(", ")
             ));
         }
         if !self.forbidden_tools.is_empty() {
             out.push_str(&format!(
                 "\nForbidden in this repair: [{}].",
-                self.forbidden_tools.join(", ")
+                bounded_model_list(&self.forbidden_tools, 64, 128).join(", ")
             ));
         }
-        if let Some(batch_hint) = self.eas_batch_instruction() {
+        if let Some(batch_hint) = self.eas_batch_instruction(&sampled_actions) {
             out.push_str(&batch_hint);
         }
-        if !self.actions.is_empty() {
-            out.push_str("\nActions:");
-            for (idx, action) in self.actions.iter().enumerate() {
-                let mut line = format!(" {}. {}", idx + 1, action.reason);
+        if !sampled_actions.is_empty() {
+            out.push_str("\nAction sample:");
+            for (idx, action) in sampled_actions.iter().enumerate() {
+                let mut line =
+                    format!(" {}. {}", idx + 1, bounded_model_field(&action.reason, 512));
                 if let Some(asset) = action.asset.as_deref() {
-                    line.push_str(&format!(" asset={asset}"));
+                    line.push_str(&format!(" asset={}", bounded_model_field(asset, 512)));
                 }
                 if let Some(technique) = action.technique.as_deref() {
-                    line.push_str(&format!(" technique={technique}"));
+                    line.push_str(&format!(
+                        " technique={}",
+                        bounded_model_field(technique, 256)
+                    ));
                 }
                 if let Some(capability_id) = action.capability_id.as_deref() {
-                    line.push_str(&format!(" capability={capability_id}"));
+                    line.push_str(&format!(
+                        " capability={}",
+                        bounded_model_field(capability_id, 256)
+                    ));
                 }
                 if let Some(tool) = action.tool.as_deref() {
-                    line.push_str(&format!(" tool={tool}"));
+                    line.push_str(&format!(" tool={}", bounded_model_field(tool, 256)));
                 }
                 if let Some(status) = action.expected_status.as_deref() {
-                    line.push_str(&format!(" submit_status={status}"));
+                    line.push_str(&format!(
+                        " submit_status={}",
+                        bounded_model_field(status, 256)
+                    ));
                 }
                 if let Some(hint) = action.command_hint.as_deref() {
-                    line.push_str(&format!(" hint={hint}"));
+                    line.push_str(&format!(" hint={}", bounded_model_field(hint, 1_024)));
                 }
                 out.push('\n');
                 out.push_str(&line);
             }
         }
         out.push_str("\nThen call submit_stage_deliverable once with terminal coverage/claims that cite real evidence ids when required.");
-        out
+        cap_recovery_model_text(out)
     }
 
-    fn eas_batch_instruction(&self) -> Option<String> {
+    fn eas_batch_instruction(&self, sampled_actions: &[&RepairAction]) -> Option<String> {
         if self.stage != StageKind::ExternalAttackSurface.as_str() {
             return None;
         }
@@ -182,52 +220,70 @@ impl RepairDirective {
             return None;
         }
 
-        let assets_for = |technique: &str| -> Vec<String> {
-            self.actions
+        let assets_for = |technique: &str| -> (usize, Vec<String>) {
+            let total = self
+                .actions
+                .iter()
+                .filter(|action| action.technique.as_deref() == Some(technique))
+                .count();
+            let sample = sampled_actions
                 .iter()
                 .filter(|action| action.technique.as_deref() == Some(technique))
                 .filter_map(|action| action.asset.clone())
-                .collect()
+                .take(5)
+                .collect();
+            (total, sample)
         };
-        let liveness = assets_for("GOLISH-EAS-LIVENESS");
-        let ports = assets_for("GOLISH-EAS-PORT");
-        let services = assets_for("GOLISH-EAS-SERVICE-FINGERPRINT");
-        if liveness.is_empty() && ports.is_empty() && services.is_empty() {
+        let (liveness_total, liveness) = assets_for("GOLISH-EAS-LIVENESS");
+        let (ports_total, ports) = assets_for("GOLISH-EAS-PORT");
+        let (services_total, services) = assets_for("GOLISH-EAS-SERVICE-FINGERPRINT");
+        let (web_total, web) = assets_for("GOLISH-EAS-WEB-FINGERPRINT");
+        if liveness_total == 0 && ports_total == 0 && services_total == 0 && web_total == 0 {
             return None;
         }
 
         let mut out = String::from(
             "\nBatching: EAS repair is batch-first. Group sibling gap actions by \
-             technique and use as few pentest_run calls as possible; do not run \
-             one foreground tool call per asset when httpx/naabu/masscan/nmap/whatweb/gowitness \
-             can consume batch input. For stdin-capable tools, pass newline-separated targets \
-             through `input_lines` or `stdin`; for list-file tools, put `{{input_file}}` in \
-             `args` and pass the actual targets through `input_lines`.",
+             technique and use as few EAS wrapper calls as possible; do not run \
+             one foreground tool call per asset. Use eas_probe_http_liveness, \
+             eas_discover_ports, eas_fingerprint_services, and \
+             eas_fingerprint_web_stack directly. Do not call raw pentest_run or \
+             raw whatweb/nmap/httpx in repair mode.",
         );
-        if !liveness.is_empty() {
+        if liveness_total > 0 {
             out.push_str(&format!(
-                "\n- LIVENESS/httpx: one pentest_run tool_name=httpx with args like \
-                 `-json -sc -title -td -server -silent` and input_lines like:\n{}",
-                sample_assets(&liveness)
+                "\n- LIVENESS/eas_probe_http_liveness: for domain/URL/vhost gaps, one wrapper \
+                 call with targets[] like below. For concrete IP/CIDR liveness gaps, run \
+                 PORT/eas_discover_ports first instead; port evidence closes IP liveness. \
+                 Sample targets:\n{}",
+                sample_assets(&liveness, liveness_total)
             ));
         }
-        if !ports.is_empty() {
+        if ports_total > 0 {
             out.push_str(&format!(
-                "\n- PORT/naabu: one pentest_run tool_name=naabu with args like \
-                 `-list {{{{input_file}}}} -top-ports 1000 -s c -silent` and input_lines like:\n{}",
-                sample_assets(&ports)
+                "\n- PORT/eas_discover_ports: one wrapper call with concrete IP/CIDR targets[] like:\n{}",
+                sample_assets(&ports, ports_total)
             ));
         }
-        if !services.is_empty() {
+        if services_total > 0 {
             out.push_str(&format!(
-                "\n- SERVICE/nmap: group hosts that share the same open-port set \
-                 and run one pentest_run tool_name=nmap with args like \
-                 `-Pn -sV -iL {{{{input_file}}}} -p <confirmed-open-ports> -T3 --open` per group. \
-                 Use whatweb only for confirmed HTTP(S) endpoints after httpx/port data says the \
-                 service is web; never use whatweb for DNS/MySQL/SSH/non-HTTP service gaps. \
+                "\n- SERVICE/eas_fingerprint_services: group hosts that share the same open-port set \
+                 and run one wrapper call per group with targets[] plus the confirmed ports[]. \
+                 Every confirmed open port, including ports discovered after the first pass, must \
+                 get one fingerprint attempt. Use eas_fingerprint_web_stack only for confirmed \
+                 HTTP(S) web origins; never use web fingerprinting for DNS/MySQL/SSH/non-HTTP \
+                 service gaps. \
                  Do not include unresolved hosts or assets with no confirmed open ports; close \
                  those cells as not_applicable/blocked with a concrete note instead. Sample targets:\n{}",
-                sample_assets(&services)
+                sample_assets(&services, services_total)
+            ));
+        }
+        if web_total > 0 {
+            out.push_str(&format!(
+                "\n- WEB-FINGERPRINT/eas_fingerprint_web_stack: one wrapper batch per confirmed \
+                 HTTP(S) origin set with target_urls[]. Use absolute scheme://host[:port] URLs, and run once per \
+                 confirmed vhost/origin even when several domains share one IP:port. Sample targets:\n{}",
+                sample_assets(&web, web_total)
             ));
         }
         Some(out)
@@ -416,12 +472,16 @@ fn repair_actions_for(ctx: &RefinerContext, repair_kind: RepairKind) -> Vec<Repa
                     let tool = gap
                         .suggested_tools
                         .first()
-                        .and_then(|tool| normalized_tool_hint(tool))
+                        .and_then(|tool| {
+                            normalized_stage_tool_hint(ctx.stage, &gap.technique, tool)
+                        })
                         .or_else(|| {
                             suggested_capabilities
                                 .iter()
                                 .flat_map(|capability| capability.tools.iter())
-                                .find_map(|tool| normalized_tool_hint(tool))
+                                .find_map(|tool| {
+                                    normalized_stage_tool_hint(ctx.stage, &gap.technique, tool)
+                                })
                         })
                         .or_else(|| suggested_tool_for(ctx.stage, &gap.technique));
                     RepairAction {
@@ -516,10 +576,15 @@ fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
                 "submit_stage_deliverable",
             ],
             StageKind::ExternalAttackSurface => vec![
-                "pentest_list_tools",
-                "pentest_run",
+                "stage_worklist_status",
+                "stage_worklist_next",
+                "list_recent_evidence",
                 "query_target_data",
                 "check_stage_asset_coverage",
+                "eas_probe_http_liveness",
+                "eas_discover_ports",
+                "eas_fingerprint_services",
+                "eas_fingerprint_web_stack",
                 "wait_for_background_jobs",
                 "check_job",
                 "kill_job",
@@ -530,11 +595,8 @@ fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
                 "stage_worklist_status",
                 "stage_worklist_next",
                 "list_recent_evidence",
-                "pentest_list_tools",
-                "pentest_run",
                 "enum_crawl_same_origin_urls",
                 "browser_collect_js_api",
-                "js_collect",
                 "js_extract_apis",
                 "route_probe_paths",
                 "query_target_data",
@@ -595,10 +657,17 @@ fn stage_allowed_tools(stage: StageKind) -> Vec<&'static str> {
 
 fn suggested_tool_for(stage: StageKind, technique: &str) -> Option<String> {
     match (stage, technique) {
-        (StageKind::ExternalAttackSurface, "GOLISH-EAS-LIVENESS") => Some("httpx".to_string()),
-        (StageKind::ExternalAttackSurface, "GOLISH-EAS-PORT") => Some("naabu".to_string()),
+        (StageKind::ExternalAttackSurface, "GOLISH-EAS-LIVENESS") => {
+            Some("eas_probe_http_liveness".to_string())
+        }
+        (StageKind::ExternalAttackSurface, "GOLISH-EAS-PORT") => {
+            Some("eas_discover_ports".to_string())
+        }
         (StageKind::ExternalAttackSurface, "GOLISH-EAS-SERVICE-FINGERPRINT") => {
-            Some("nmap".to_string())
+            Some("eas_fingerprint_services".to_string())
+        }
+        (StageKind::ExternalAttackSurface, "GOLISH-EAS-WEB-FINGERPRINT") => {
+            Some("eas_fingerprint_web_stack".to_string())
         }
         (StageKind::Enumeration, "GOLISH-ENUM-JSAPI") => Some("browser_collect_js_api".to_string()),
         (StageKind::Enumeration, "GOLISH-ENUM-DIR") => Some("route_probe_paths".to_string()),
@@ -616,19 +685,33 @@ fn suggested_tool_for(stage: StageKind, technique: &str) -> Option<String> {
 
 fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) -> String {
     match (stage, tool, technique) {
+        (StageKind::ExternalAttackSurface, "eas_probe_http_liveness", _) => format!(
+            "eas_probe_http_liveness wrapper: include {asset} in targets[] only when it is a domain, URL, or confirmed web-origin seed; concrete IP/CIDR liveness must be closed through eas_discover_ports first"
+        ),
+        (StageKind::ExternalAttackSurface, "eas_discover_ports", _) => format!(
+            "eas_discover_ports wrapper: include {asset} in targets[] only when it is a concrete IP/CIDR needing PORT coverage; the wrapper owns the naabu/masscan/nmap recipe and writes port outcomes"
+        ),
+        (StageKind::ExternalAttackSurface, "eas_fingerprint_services", _) => {
+            format!(
+                "eas_fingerprint_services wrapper: include {asset} in targets[] only after confirmed open ports exist; pass ports[] for the confirmed-open port set so every new IP:port gets an nmap service/version attempt"
+            )
+        }
+        (StageKind::ExternalAttackSurface, "eas_fingerprint_web_stack", _) => format!(
+            "eas_fingerprint_web_stack wrapper: include {asset} in target_urls[] only for GOLISH-EAS-WEB-FINGERPRINT after the origin is confirmed HTTP(S); use absolute scheme://host[:port] URLs and run once per confirmed Host/SNI origin"
+        ),
         (StageKind::ExternalAttackSurface, "httpx", _) => format!(
-            "httpx batch: include {asset} with sibling LIVENESS gaps in one JSONL run; use args `-json -sc -title -td -server -silent` plus pentest_run.input_lines"
+            "httpx batch: include {asset} with sibling domain/URL LIVENESS gaps in one JSONL run; use args `-json -sc -title -td -server -silent` plus pentest_run.input_lines. For concrete IP/CIDR liveness, prefer PORT/naabu first because port evidence closes IP liveness."
         ),
         (StageKind::ExternalAttackSurface, "naabu", _) => format!(
             "naabu batch: include {asset} with sibling PORT gaps in one pentest_run; use args `-list {{{{input_file}}}} -top-ports 1000 -s c -silent` plus pentest_run.input_lines"
         ),
         (StageKind::ExternalAttackSurface, "nmap", _) => {
             format!(
-                "nmap batch: fingerprint {asset} only if it has confirmed open ports; group sibling SERVICE gaps by shared port set and use args `-Pn -sV -iL {{{{input_file}}}} -p <confirmed-open-ports> -T3 --open` plus pentest_run.input_lines. Use whatweb only for confirmed HTTP(S) endpoints, not generic service gaps. Do not include unresolved/no-open-port assets in the nmap batch."
+                "nmap batch: fingerprint {asset} only if it has confirmed open ports; group sibling SERVICE gaps by shared port set and use args `-Pn -sV -iL {{{{input_file}}}} -p <confirmed-open-ports> -T3 --open` plus pentest_run.input_lines. Every confirmed open port must be in the port set; rerun only newly discovered ports if the port list expands. Use whatweb only once per confirmed HTTP(S) web origin, not generic service gaps. Do not include unresolved/no-open-port assets in the nmap batch."
             )
         }
         (StageKind::ExternalAttackSurface, "whatweb", _) => format!(
-            "whatweb batch: include {asset} only when the open service is already confirmed HTTP(S) and Ruby is ready; otherwise use nmap -sV/httpx evidence"
+            "whatweb batch: include {asset} only for GOLISH-EAS-WEB-FINGERPRINT after the origin is confirmed HTTP(S); use absolute scheme://host[:port] URLs and run once per confirmed Host/SNI origin"
         ),
         (StageKind::Enumeration, "browser_collect_js_api", _) => format!(
             "browser_collect_js_api direct call: target_url={asset}, crawl_mode=\"standard\", ai_assist=true; use a bounded recipe only for one same-mode JS closure follow-up"
@@ -664,6 +747,9 @@ fn expected_status_for(stage: StageKind, technique: &str) -> String {
             "found with tested_units=total_units for open ports; not_applicable if no open ports"
                 .to_string()
         }
+        (StageKind::ExternalAttackSurface, "GOLISH-EAS-WEB-FINGERPRINT") => {
+            "found when WhatWeb fingerprints the confirmed web origin; checked_empty if it ran and found no stack".to_string()
+        }
         _ => "terminal coverage status".to_string(),
     }
 }
@@ -671,11 +757,15 @@ fn expected_status_for(stage: StageKind, technique: &str) -> String {
 fn note_for(stage: StageKind, technique: &str) -> Option<String> {
     match (stage, technique) {
         (StageKind::ExternalAttackSurface, "GOLISH-EAS-LIVENESS") => Some(
-            "If the host cannot resolve or has no reachable endpoint after the targeted probe, use not_applicable with the probe failure note; do not loop on checked_empty without evidence."
+            "For concrete IP/CIDR assets, close liveness through port discovery first. For domain/URL assets, use httpx and terminalize only with real probe evidence."
                 .to_string(),
         ),
         (StageKind::ExternalAttackSurface, "GOLISH-EAS-SERVICE-FINGERPRINT") => Some(
-            "For every discovered open port, set tested_units=total_units after fingerprinting; if there are no open ports, use not_applicable with note."
+            "For every discovered open port, set tested_units=total_units after fingerprinting; if new ports appear, fingerprint the new ports too. If there are no open ports, use not_applicable with note."
+                .to_string(),
+        ),
+        (StageKind::ExternalAttackSurface, "GOLISH-EAS-WEB-FINGERPRINT") => Some(
+            "Run WhatWeb once per confirmed HTTP(S) origin. Do not use a WhatWeb result for one domain to cover another Host/SNI origin on the same IP:port."
                 .to_string(),
         ),
         _ => None,
@@ -689,6 +779,24 @@ fn normalized_tool_hint(tool: &str) -> Option<String> {
     } else {
         Some(token.to_string())
     }
+}
+
+fn normalized_stage_tool_hint(stage: StageKind, technique: &str, tool: &str) -> Option<String> {
+    let token = normalized_tool_hint(tool)?;
+    if stage != StageKind::ExternalAttackSurface {
+        return Some(token);
+    }
+    let mapped = match token.as_str() {
+        "httpx" => "eas_probe_http_liveness",
+        "naabu" | "masscan" => "eas_discover_ports",
+        "nmap" => match technique {
+            "GOLISH-EAS-PORT" => "eas_discover_ports",
+            _ => "eas_fingerprint_services",
+        },
+        "whatweb" | "wappalyzer" => "eas_fingerprint_web_stack",
+        other => other,
+    };
+    Some(mapped.to_string())
 }
 
 fn normalized_action_tools(action: &RepairAction) -> Vec<String> {
@@ -738,10 +846,17 @@ fn action_capability_suggestions(
         .collect()
 }
 
-fn sample_assets(assets: &[String]) -> String {
-    let mut sample: Vec<String> = assets.iter().take(5).cloned().collect();
-    if assets.len() > sample.len() {
-        sample.push(format!("# plus {} more", assets.len() - sample.len()));
+fn sample_assets(assets: &[String], total: usize) -> String {
+    let mut sample: Vec<String> = assets
+        .iter()
+        .take(5)
+        .map(|asset| bounded_model_field(asset, 512))
+        .collect();
+    if total > sample.len() {
+        sample.push(format!(
+            "# plus {} more; use stage_worklist_next",
+            total - sample.len()
+        ));
     }
     sample.join("\n")
 }
@@ -762,6 +877,8 @@ fn reasons_look_like_coverage(reasons: &[String]) -> bool {
             "liveness",
             "service-fingerprint",
             "service fingerprint",
+            "web-fingerprint",
+            "web fingerprint",
             "stage gate",
         ],
     )
@@ -773,9 +890,109 @@ fn short_hash<T: Serialize>(value: &T) -> String {
     digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
+fn bounded_model_list(values: &[String], limit: usize, field_max_bytes: usize) -> Vec<String> {
+    let mut sample = values
+        .iter()
+        .take(limit)
+        .map(|value| bounded_model_field(value, field_max_bytes))
+        .collect::<Vec<_>>();
+    if values.len() > sample.len() {
+        sample.push(format!("... +{} more", values.len() - sample.len()));
+    }
+    sample
+}
+
+fn bounded_model_field(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.replace(['\r', '\n'], " ");
+    }
+    const SUFFIX: &str = "...[truncated]";
+    let prefix_budget = max_bytes.saturating_sub(SUFFIX.len());
+    let end = utf8_boundary_at_or_before(value, prefix_budget);
+    format!("{}{}", value[..end].replace(['\r', '\n'], " "), SUFFIX)
+}
+
+fn cap_recovery_model_text(mut value: String) -> String {
+    if value.len() <= MODEL_RECOVERY_INSTRUCTION_MAX_BYTES {
+        return value;
+    }
+    let prefix_budget =
+        MODEL_RECOVERY_INSTRUCTION_MAX_BYTES.saturating_sub(MODEL_RECOVERY_TRUNCATION_SUFFIX.len());
+    let end = utf8_boundary_at_or_before(&value, prefix_budget);
+    value.truncate(end);
+    value.push_str(MODEL_RECOVERY_TRUNCATION_SUFFIX);
+    value
+}
+
+fn utf8_boundary_at_or_before(value: &str, max_bytes: usize) -> usize {
+    let mut end = max_bytes.min(value.len());
+    while !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    end
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn many_enumeration_gap_actions(count: usize) -> Vec<CoverageGapAction> {
+        (0..count)
+            .map(|idx| CoverageGapAction {
+                asset: format!("https://asset-{idx:04}.example.test:443"),
+                technique: "GOLISH-ENUM-DIR".to_string(),
+                reason: format!("missing-terminal-gap-{idx:04}"),
+                suggested_capabilities: Vec::new(),
+                suggested_tools: vec!["route_probe_paths".to_string()],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn recovery_projection_bounds_1176_actions_without_losing_internal_guard_data() {
+        let directive = refine_gate_block(RefinerContext {
+            stage: StageKind::Enumeration,
+            org_id: None,
+            agent_path: "main>stage_run:enumeration>org:o>enumerator".to_string(),
+            reasons: vec!["enumeration coverage has pending cells".to_string()],
+            coverage_gap_actions: many_enumeration_gap_actions(1_176),
+            available_evidence_ids: Vec::new(),
+            running_background_jobs: Vec::new(),
+        });
+
+        assert_eq!(directive.actions.len(), 1_176);
+        let gap_hash = directive.gap_hash.as_deref().expect("full gap hash");
+        let first = directive.model_instruction();
+        assert_eq!(
+            first,
+            directive.model_instruction(),
+            "projection is byte-stable"
+        );
+        assert!(first.contains("total=1176"));
+        assert!(first.contains(gap_hash));
+        assert!(first.contains("stage_worklist_next"));
+        assert!(first.contains("asset-0000.example.test"));
+        assert!(first.contains("asset-0019.example.test"));
+        assert!(!first.contains("asset-0020.example.test"));
+        assert!(!first.contains("asset-1175.example.test"));
+        assert!(first.len() <= 32 * 1024, "{} bytes", first.len());
+
+        let mode = directive
+            .to_submit_repair_mode()
+            .expect("coverage gap maps to repair mode");
+        assert_eq!(mode.coverage_gap_actions.len(), 1_176);
+        let mode_instruction = mode.model_instruction();
+        assert_eq!(mode_instruction, mode.model_instruction());
+        assert_eq!(
+            mode_instruction
+                .matches("missing-terminal-gap-0000")
+                .count(),
+            1,
+            "directive_message must not expand the same action list twice"
+        );
+        assert!(!mode_instruction.contains("asset-0020.example.test"));
+        assert!(mode_instruction.len() <= 32 * 1024);
+    }
 
     #[test]
     fn eas_coverage_gap_directive_converts_to_repair_lock() {
@@ -805,6 +1022,14 @@ mod tests {
             .expect("coverage maps to repair mode");
         assert_eq!(mode.kind, golish_sub_agents::SubmitRepairKind::CoverageGap);
         assert_eq!(mode.coverage_gap_actions.len(), 1);
+        assert!(d
+            .allowed_tools
+            .contains(&"eas_fingerprint_services".to_string()));
+        assert!(!d.allowed_tools.contains(&"pentest_run".to_string()));
+        assert_eq!(
+            mode.coverage_gap_actions[0].suggested_tools,
+            vec!["eas_fingerprint_services".to_string()]
+        );
         assert!(mode.model_instruction().contains("STAGE REFINER DIRECTIVE"));
     }
 
@@ -830,12 +1055,66 @@ mod tests {
         });
 
         assert_eq!(d.repair_kind, RepairKind::CoverageGap);
-        assert_eq!(d.actions[0].tool.as_deref(), Some("nmap"));
+        assert_eq!(
+            d.actions[0].tool.as_deref(),
+            Some("eas_fingerprint_services")
+        );
         let hint = d.actions[0].command_hint.as_deref().unwrap();
-        assert!(hint.contains("-Pn -sV"));
-        assert!(hint.contains("Use whatweb only for confirmed HTTP(S) endpoints"));
+        assert!(hint.starts_with("eas_fingerprint_services wrapper:"));
+        assert!(hint.contains("confirmed-open port set"));
         let mode = d.to_submit_repair_mode().unwrap();
-        assert_eq!(mode.coverage_gap_actions[0].suggested_tools, vec!["nmap"]);
+        assert!(mode.allows("eas_fingerprint_services"));
+        assert!(!mode.allows("pentest_run"));
+        assert_eq!(
+            mode.coverage_gap_actions[0].suggested_tools,
+            vec!["eas_fingerprint_services"]
+        );
+    }
+
+    #[test]
+    fn eas_web_fingerprint_repair_uses_wrapper_not_raw_whatweb() {
+        let d = refine_submit_needs_fix(RefinerContext {
+            stage: StageKind::ExternalAttackSurface,
+            org_id: None,
+            agent_path: "main>stage_run:external_attack_surface>org:o>prober".to_string(),
+            reasons: vec![
+                "external attack surface incomplete: GOLISH-EAS-WEB-FINGERPRINT never attempted"
+                    .to_string(),
+            ],
+            coverage_gap_actions: vec![CoverageGapAction {
+                asset: "https://app.example.com".to_string(),
+                technique: "GOLISH-EAS-WEB-FINGERPRINT".to_string(),
+                reason: "missing_terminal_coverage".to_string(),
+                suggested_capabilities: Vec::new(),
+                suggested_tools: vec!["whatweb".to_string()],
+            }],
+            available_evidence_ids: vec![14092],
+            running_background_jobs: Vec::new(),
+        });
+
+        assert_eq!(
+            d.actions[0].tool.as_deref(),
+            Some("eas_fingerprint_web_stack")
+        );
+        assert!(d
+            .allowed_tools
+            .contains(&"eas_fingerprint_web_stack".to_string()));
+        assert!(!d.allowed_tools.contains(&"pentest_run".to_string()));
+        let hint = d.actions[0].command_hint.as_deref().unwrap();
+        assert!(hint.starts_with("eas_fingerprint_web_stack wrapper:"));
+        let mode = d.to_submit_repair_mode().unwrap();
+        assert!(mode
+            .block_result_with_args(
+                "eas_fingerprint_web_stack",
+                &serde_json::json!({"target_urls": ["https://app.example.com"]})
+            )
+            .is_none());
+        assert!(mode.block_result("whatweb").is_some());
+        assert!(mode.block_result("pentest_run").is_some());
+        assert_eq!(
+            mode.coverage_gap_actions[0].suggested_tools,
+            vec!["eas_fingerprint_web_stack"]
+        );
     }
 
     #[test]
@@ -891,6 +1170,8 @@ mod tests {
         assert!(d
             .allowed_tools
             .contains(&"enum_crawl_same_origin_urls".to_string()));
+        assert!(!d.allowed_tools.contains(&"pentest_run".to_string()));
+        assert!(!d.allowed_tools.contains(&"pentest_list_tools".to_string()));
         let instruction = d.model_instruction();
         assert!(instruction.contains("stage_worklist_status"));
         assert!(instruction.contains("stage_worklist_next"));
@@ -900,6 +1181,7 @@ mod tests {
         assert!(mode.block_result("stage_worklist_next").is_none());
         assert!(mode.block_result("list_enumeration_web_roots").is_none());
         assert!(mode.block_result("list_recent_evidence").is_none());
+        assert!(mode.block_result("pentest_run").is_some());
         assert!(mode
             .block_result_with_args(
                 "enum_crawl_same_origin_urls",
@@ -986,6 +1268,13 @@ mod tests {
                     suggested_capabilities: Vec::new(),
                     suggested_tools: vec!["nmap".to_string()],
                 },
+                CoverageGapAction {
+                    asset: "https://a.example.com".to_string(),
+                    technique: "GOLISH-EAS-WEB-FINGERPRINT".to_string(),
+                    reason: "missing_terminal_coverage".to_string(),
+                    suggested_capabilities: Vec::new(),
+                    suggested_tools: vec!["whatweb".to_string()],
+                },
             ],
             available_evidence_ids: Vec::new(),
             running_background_jobs: Vec::new(),
@@ -993,30 +1282,33 @@ mod tests {
 
         let instruction = d.model_instruction();
         assert!(instruction.contains("EAS repair is batch-first"));
-        assert!(instruction.contains("tool_name=httpx"));
-        assert!(instruction.contains("tool_name=naabu"));
-        assert!(instruction.contains("tool_name=nmap"));
-        assert!(instruction.contains("{{input_file}}"));
-        assert!(instruction.contains("input_lines"));
+        assert!(instruction.contains("eas_probe_http_liveness"));
+        assert!(instruction.contains("eas_discover_ports"));
+        assert!(instruction.contains("eas_fingerprint_services"));
+        assert!(instruction.contains("WEB-FINGERPRINT/eas_fingerprint_web_stack"));
+        assert!(!instruction.contains("tool_name=httpx"));
+        assert!(!instruction.contains("{{input_file}}"));
+        assert!(!instruction.contains("input_lines"));
         assert!(instruction.contains("a.example.com"));
         assert!(instruction.contains("b.example.com"));
         assert!(d.actions[0]
             .command_hint
             .as_deref()
             .unwrap()
-            .starts_with("httpx batch:"));
+            .starts_with("eas_probe_http_liveness wrapper:"));
         assert!(d.actions[2]
             .command_hint
             .as_deref()
             .unwrap()
-            .contains("-list {{input_file}}"));
+            .starts_with("eas_discover_ports wrapper:"));
         assert!(d.actions[3]
             .command_hint
             .as_deref()
             .unwrap()
-            .contains("-iL {{input_file}}"));
-        assert!(instruction.contains("<confirmed-open-ports>"));
+            .starts_with("eas_fingerprint_services wrapper:"));
+        assert!(instruction.contains("confirmed ports[]"));
         assert!(instruction.contains("Do not include unresolved hosts"));
+        assert!(instruction.contains("run once per confirmed Host/SNI origin"));
         assert!(d.actions[3]
             .command_hint
             .as_deref()

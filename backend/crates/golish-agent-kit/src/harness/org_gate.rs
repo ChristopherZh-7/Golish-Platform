@@ -7,19 +7,29 @@
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 use super::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
 use super::gate::{validate_stage_gate_with_context, GateContextBuilder, GateResult};
 use super::stage_spec::StageSpec;
+#[cfg(test)]
 use super::technique_resolver::AssetClass;
 use super::types::{HarnessRecoveryActions, StageDeliverable};
 use super::{load_embedded_stage_spec, StageKind};
-use crate::db_traits::DbRepoProvider;
+use crate::db_traits::{DbRepoProvider, StageAssetWaveView, TechniqueOutcomeFact};
 
 const TECH_EAS_LIVENESS: &str = "GOLISH-EAS-LIVENESS";
+const TECH_EAS_PORT: &str = "GOLISH-EAS-PORT";
 const TECH_EAS_SERVICE_FP: &str = "GOLISH-EAS-SERVICE-FINGERPRINT";
+const TECH_EAS_WEB_FP: &str = "GOLISH-EAS-WEB-FINGERPRINT";
+const EAS_TECHNIQUES: [&str; 4] = [
+    TECH_EAS_LIVENESS,
+    TECH_EAS_PORT,
+    TECH_EAS_SERVICE_FP,
+    TECH_EAS_WEB_FP,
+];
 /// Content-enumeration axes (design 2026-07-03): an IP proven DNS/53-only with
 /// no web surface is not_applicable for all four.
 const ENUM_CONTENT_TECHNIQUES: [&str; 4] = [
@@ -28,6 +38,23 @@ const ENUM_CONTENT_TECHNIQUES: [&str; 4] = [
     "GOLISH-ENUM-PARAM",
     "GOLISH-ENUM-JSAPI",
 ];
+const TRUSTED_ENUM_BLOCKED_SOURCE: &str = "enum_preflight_web_origins";
+const TRUSTED_ENUM_ROUTE_RECOVERY_BLOCKED_SOURCE: &str = "route_probe_paths";
+const TRUSTED_ENUM_COLLECTION_RECOVERY_BLOCKED_SOURCE: &str = "browser_collect_js_api";
+
+fn trusted_enumeration_blocked_source(technique: &str, source: Option<&str>) -> bool {
+    match source {
+        Some(TRUSTED_ENUM_BLOCKED_SOURCE) => ENUM_CONTENT_TECHNIQUES.contains(&technique),
+        Some(TRUSTED_ENUM_ROUTE_RECOVERY_BLOCKED_SOURCE) => technique == "GOLISH-ENUM-DIR",
+        Some(TRUSTED_ENUM_COLLECTION_RECOVERY_BLOCKED_SOURCE) => matches!(
+            technique,
+            "GOLISH-ENUM-JS" | "GOLISH-ENUM-PARAM" | "GOLISH-ENUM-JSAPI"
+        ),
+        _ => false,
+    }
+}
+
+pub type EnumerationCoverageAxis = (Vec<String>, Vec<(String, String)>);
 
 /// 一个 org 在某 stage 的裁决。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,22 +82,29 @@ pub fn decide_org_verdict(gate: &GateResult) -> OrgVerdict {
 }
 
 /// `evidence_facts_for_session` 的 `(asset, technique, outcome, id)` 行 →
-/// `EvidenceFact`（纯函数，单测）。`outcome` 文本：`"found"` → Found，其余 → Empty
-/// （I8：只有显式 found 才算 Found，绝不把别的当 Found）。
+/// `EvidenceFact`（纯函数，单测）。`partial` 是非终态，不能伪装成 checked-empty；
+/// `found` / `blocked` / `error` 保留各自语义，其余历史终态兼容映射为 Empty（I8）。
 pub fn facts_from_rows(rows: Vec<(String, String, String, i64)>) -> Vec<EvidenceFact> {
     rows.into_iter()
-        .map(|(asset, technique, outcome, id)| EvidenceFact {
-            asset,
-            technique,
-            outcome: if outcome.eq_ignore_ascii_case("found") {
-                EvidenceOutcome::Found
-            } else if outcome.eq_ignore_ascii_case("error") {
-                // T2：失败检查（gray-switch）记 error，≠ checked_empty。
-                EvidenceOutcome::Error
-            } else {
-                EvidenceOutcome::Empty
-            },
-            evidence_id: id,
+        .filter_map(|(asset, technique, outcome, id)| {
+            if outcome.eq_ignore_ascii_case("partial") {
+                return None;
+            }
+            Some(EvidenceFact {
+                asset,
+                technique,
+                outcome: if outcome.eq_ignore_ascii_case("found") {
+                    EvidenceOutcome::Found
+                } else if outcome.eq_ignore_ascii_case("blocked") {
+                    EvidenceOutcome::Blocked
+                } else if outcome.eq_ignore_ascii_case("error") {
+                    // T2：失败检查（gray-switch）记 error，≠ checked_empty。
+                    EvidenceOutcome::Error
+                } else {
+                    EvidenceOutcome::Empty
+                },
+                evidence_id: id,
+            })
         })
         .collect()
 }
@@ -85,6 +119,236 @@ fn db_truth_to_facts(rows: Vec<(String, String)>) -> Vec<EvidenceFact> {
             outcome: EvidenceOutcome::Found,
             evidence_id: 0,
         })
+        .collect()
+}
+
+fn technique_outcome_to_fact(
+    asset: String,
+    technique: String,
+    outcome: String,
+    evidence_id: i64,
+) -> Option<EvidenceFact> {
+    let outcome = match outcome.as_str() {
+        "found" => EvidenceOutcome::Found,
+        "empty" => EvidenceOutcome::Empty,
+        // Enumeration projects `partial` as a non-terminal marker. Its spec sets
+        // `error_is_terminal=false`, so the marker can veto model-side terminal
+        // assertions without accidentally closing the cell.
+        "error" => EvidenceOutcome::Error,
+        "blocked" => EvidenceOutcome::Blocked,
+        _ => return None,
+    };
+    Some(EvidenceFact {
+        asset,
+        technique,
+        outcome,
+        evidence_id,
+    })
+}
+
+fn eas_fact_asset_key(asset: &str, technique: &str) -> String {
+    if technique == TECH_EAS_LIVENESS {
+        return super::evidence_facts::eas_liveness_asset_key(asset)
+            .unwrap_or_else(|| asset.trim().to_ascii_lowercase());
+    }
+    golish_pentest_domain::canonical_asset_key(asset)
+        .map(|key| key.key)
+        .unwrap_or_else(|| asset.trim().to_ascii_lowercase())
+}
+
+/// Merge the current run's provenance rows into gate facts. For Enumeration,
+/// current exact-origin `technique_outcomes` are the sole completion truth:
+/// legacy ledger/DB facts for all four axes are removed first, then this run's
+/// found/empty rows and non-terminal error/partial markers are projected. Partial
+/// reuses the Error sentinel, while the Enumeration spec makes Error non-terminal;
+/// missing/marker rows therefore cannot inherit a PASS from stale evidence.
+pub fn apply_technique_outcome_rows(
+    stage: StageKind,
+    facts: &mut Vec<EvidenceFact>,
+    rows: &[TechniqueOutcomeFact],
+) {
+    let enumeration_blocked_evidence: std::collections::HashSet<(String, String, i64)> =
+        if stage == StageKind::Enumeration {
+            facts
+                .iter()
+                .filter(|fact| {
+                    fact.outcome == EvidenceOutcome::Blocked
+                        && fact.evidence_id > 0
+                        && ENUM_CONTENT_TECHNIQUES.contains(&fact.technique.as_str())
+                })
+                .filter_map(|fact| {
+                    Some((
+                        golish_pentest_domain::canonical_web_origin(&fact.asset)?.key,
+                        fact.technique.clone(),
+                        fact.evidence_id,
+                    ))
+                })
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+    let eas_business_found: std::collections::HashSet<(String, String)> =
+        if stage == StageKind::ExternalAttackSurface {
+            facts
+                .iter()
+                .filter(|fact| {
+                    fact.outcome == EvidenceOutcome::Found
+                        && fact.evidence_id == 0
+                        && EAS_TECHNIQUES.contains(&fact.technique.as_str())
+                })
+                .map(|fact| {
+                    (
+                        eas_fact_asset_key(&fact.asset, &fact.technique),
+                        fact.technique.clone(),
+                    )
+                })
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+    let eas_guarded_evidence: std::collections::HashSet<(String, String, String, i64)> =
+        if stage == StageKind::ExternalAttackSurface {
+            facts
+                .iter()
+                .filter(|fact| {
+                    fact.evidence_id > 0 && EAS_TECHNIQUES.contains(&fact.technique.as_str())
+                })
+                .map(|fact| {
+                    (
+                        eas_fact_asset_key(&fact.asset, &fact.technique),
+                        fact.technique.clone(),
+                        match fact.outcome {
+                            EvidenceOutcome::Found => "found",
+                            EvidenceOutcome::Empty => "empty",
+                            EvidenceOutcome::Error => "error",
+                            EvidenceOutcome::Blocked => "blocked",
+                        }
+                        .to_string(),
+                        fact.evidence_id,
+                    )
+                })
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+    if stage == StageKind::Enumeration {
+        facts.retain(|fact| !ENUM_CONTENT_TECHNIQUES.contains(&fact.technique.as_str()));
+    } else if stage == StageKind::ExternalAttackSurface {
+        // Raw ledger and business-table EAS facts are corroboration inputs only.
+        // A terminal cell is re-added below solely from a fresh org/current-owner
+        // technique_outcome whose positive evidence id matched guarded audit.
+        facts.retain(|fact| !EAS_TECHNIQUES.contains(&fact.technique.as_str()));
+    }
+
+    facts.extend(rows.iter().filter_map(|row| {
+        let TechniqueOutcomeFact {
+            asset,
+            technique,
+            outcome,
+            evidence_id,
+            source,
+        } = row;
+        if stage == StageKind::Enumeration
+            && ENUM_CONTENT_TECHNIQUES.contains(&technique.as_str())
+            && matches!(outcome.as_str(), "found" | "empty" | "blocked")
+            && *evidence_id <= 0
+        {
+            return None;
+        }
+        if stage == StageKind::Enumeration
+            && outcome == "blocked"
+            && !trusted_enumeration_blocked_source(technique, source.as_deref())
+        {
+            return None;
+        }
+        if stage == StageKind::Enumeration
+            && outcome == "blocked"
+            && !golish_pentest_domain::canonical_web_origin(asset).is_some_and(|origin| {
+                enumeration_blocked_evidence.contains(&(
+                    origin.key,
+                    technique.clone(),
+                    *evidence_id,
+                ))
+            })
+        {
+            return None;
+        }
+        if stage == StageKind::ExternalAttackSurface && EAS_TECHNIQUES.contains(&technique.as_str())
+        {
+            if *evidence_id <= 0 || !matches!(outcome.as_str(), "found" | "empty") {
+                return None;
+            }
+            if !eas_guarded_evidence.contains(&(
+                eas_fact_asset_key(asset, technique),
+                technique.clone(),
+                outcome.clone(),
+                *evidence_id,
+            )) {
+                return None;
+            }
+            if outcome == "found"
+                && !eas_business_found
+                    .contains(&(eas_fact_asset_key(asset, technique), technique.clone()))
+            {
+                return None;
+            }
+        }
+        let asset = if stage == StageKind::Enumeration
+            && ENUM_CONTENT_TECHNIQUES.contains(&technique.as_str())
+        {
+            golish_pentest_domain::canonical_web_origin(asset)
+                .map(|origin| origin.key)
+                .unwrap_or_else(|| asset.clone())
+        } else {
+            asset.clone()
+        };
+        let outcome = if stage == StageKind::Enumeration && outcome == "partial" {
+            "error".to_string()
+        } else {
+            outcome.clone()
+        };
+        technique_outcome_to_fact(asset, technique.clone(), outcome, *evidence_id)
+    }));
+}
+
+/// Enumeration completion is origin-keyed and comes only from the current
+/// technique outcome rows; provider/source terminal rows are host/source-level
+/// compatibility data and cannot close one of its four cells.
+pub fn stage_accepts_source_query_completion(stage: StageKind) -> bool {
+    stage != StageKind::Enumeration
+}
+
+/// EAS and Enumeration have strict freshness contracts: without a concrete
+/// stage start, presence-only rows from an earlier attempt in the same chat
+/// session must not be projected. Other stages retain their historical fallback.
+pub fn stage_accepts_outcome_projection(stage: StageKind, has_freshness_cutoff: bool) -> bool {
+    !matches!(
+        stage,
+        StageKind::ExternalAttackSurface | StageKind::Enumeration
+    ) || has_freshness_cutoff
+}
+
+/// Gate-wide expected-technique contract. Exact Enumeration origins always carry
+/// all four content axes, even when their owning target row is typed as IP/CIDR.
+pub fn stage_gate_expected_techniques(
+    stage: StageKind,
+    target_types: &[String],
+) -> Option<Vec<String>> {
+    if stage == StageKind::Enumeration {
+        return Some(ENUM_CONTENT_TECHNIQUES.map(str::to_string).to_vec());
+    }
+    super::expected_techniques_for_target_types(stage, target_types)
+}
+
+pub fn eas_service_not_applicable_from_port_outcomes(
+    rows: &[TechniqueOutcomeFact],
+) -> Vec<(String, String)> {
+    rows.iter()
+        .filter(|row| {
+            row.technique == TECH_EAS_PORT
+                && matches!(row.outcome.as_str(), "empty" | "not_applicable")
+        })
+        .map(|row| (row.asset.clone(), TECH_EAS_SERVICE_FP.to_string()))
         .collect()
 }
 
@@ -182,6 +446,31 @@ pub fn extract_pass_token(deliverable: &StageDeliverable) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn current_wave_gate_error(
+    current_wave: Option<&StageAssetWaveView>,
+    org_id: Option<Uuid>,
+    stage: StageKind,
+) -> Option<String> {
+    let wave = current_wave?;
+    if let Err(error) = wave.validate_membership() {
+        return Some(format!("invalid current asset wave: {error}"));
+    }
+    if wave.stage_kind != stage.as_str() {
+        return Some(format!(
+            "current asset wave stage '{}' does not match gate stage '{}'",
+            wave.stage_kind,
+            stage.as_str()
+        ));
+    }
+    if org_id.is_some_and(|org_id| wave.organization_id != org_id) {
+        return Some(format!(
+            "current asset wave organization {} does not match gate organization {:?}",
+            wave.organization_id, org_id
+        ));
+    }
+    None
+}
+
 /// 对 `org_id` 的某 stage 交付跑一次注入了该 org DB 真值的权威 gate。
 ///
 /// 复用 orchestrator stage-close 的同一批 repo 查询（`in_scope_assets` /
@@ -198,7 +487,7 @@ pub async fn evaluate_org_stage_gate(
     stage: StageKind,
     deliverable: &StageDeliverable,
     wave_cutoff: Option<DateTime<Utc>>,
-    wave_assets: Option<&[String]>,
+    current_wave: Option<&StageAssetWaveView>,
 ) -> GateResult {
     let spec: StageSpec = match load_embedded_stage_spec(stage) {
         Ok(s) => s,
@@ -212,19 +501,33 @@ pub async fn evaluate_org_stage_gate(
             )
         }
     };
-    let effective_wave_cutoff = spec.asset_wave_barrier.then_some(wave_cutoff).flatten();
-    let wave_asset_override = spec
-        .asset_wave_barrier
-        .then_some(wave_assets)
-        .flatten()
-        .map(|assets| {
-            assets
-                .iter()
-                .filter(|asset| !asset.trim().is_empty())
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .filter(|assets| !assets.is_empty());
+    if let Some(error) = current_wave_gate_error(current_wave, org_id, stage) {
+        return GateResult::block(vec![error], Default::default());
+    }
+    let effective_cutoff = current_wave.map(|wave| wave.started_at).or(wave_cutoff);
+    let effective_wave_cutoff = (spec.asset_wave_barrier || current_wave.is_some())
+        .then_some(effective_cutoff)
+        .flatten();
+    let freshness_cutoff = spec.freshness_window.then_some(effective_cutoff).flatten();
+    if stage == StageKind::Enumeration {
+        if session_id.trim().is_empty() {
+            return GateResult::block(
+                vec!["enumeration gate requires a non-empty current run/session id".to_string()],
+                Default::default(),
+            );
+        }
+        if freshness_cutoff.is_none() {
+            return GateResult::block(
+                vec![
+                    "enumeration gate requires the current stage_started_at freshness cutoff; refusing an unscoped or stale denominator"
+                        .to_string(),
+                ],
+                Default::default(),
+            );
+        }
+    }
+    let wave_asset_override = current_wave.map(|wave| wave.asset_values.clone());
+    let wave_target_id_override = current_wave.map(|wave| wave.target_ids.clone());
 
     // 1) fabricated-ref 兜底（scoping 不要求账本证据，跳过）。
     if stage != StageKind::Scoping {
@@ -254,7 +557,7 @@ pub async fn evaluate_org_stage_gate(
 
     // 2) 资产轴 + 类型（org 隔离）。空资产集 → 不注入（gate 回退自报，coverage_complete
     //    自带「空矩阵但声明了期望技术 → BLOCK」保护）。
-    let mut in_scope_assets = match wave_asset_override {
+    let mut in_scope_assets = match wave_asset_override.clone() {
         Some(assets) => assets,
         None => match effective_wave_cutoff {
             Some(cutoff) => repo
@@ -273,10 +576,10 @@ pub async fn evaluate_org_stage_gate(
     // Dead-asset denominator exclusion (design 2026-07-02-dead-asset-liveness-
     // state §5.2): a stage that opts in (`skip_dead_assets`, enumeration onward —
     // never EAS) drops assets EAS confirmed dead so a dead host no longer forces a
-    // probe / `checked_empty`. Guarded so it never empties a non-empty axis (all
-    // assets dead ⇒ keep them, else `coverage_complete`'s "empty matrix but
-    // techniques expected → BLOCK" would spuriously fire); only `'dead'` is
-    // dropped (`'unreachable'` may be transient — see `dead_asset_values`).
+    // probe / `checked_empty`. An all-dead set is a real authoritative zero
+    // denominator; `authoritative_in_scope_assets(Some([]))` preserves that
+    // distinction from a failed/missing asset lookup. Only `'dead'` is dropped
+    // (`'unreachable'` may be transient — see `dead_asset_values`).
     if spec.skip_dead_assets && !in_scope_assets.is_empty() {
         let dead: std::collections::HashSet<String> = repo
             .dead_asset_values(org_id)
@@ -290,74 +593,83 @@ pub async fn evaluate_org_stage_gate(
                 .filter(|asset| !dead.contains(*asset))
                 .cloned()
                 .collect();
-            if !survivors.is_empty() {
-                let removed = in_scope_assets.len() - survivors.len();
-                if removed > 0 {
-                    tracing::info!(
-                        target: "harness::hook",
-                        stage = stage.as_str(),
-                        org_id = ?org_id,
-                        removed,
-                        "excluded confirmed-dead assets from coverage denominator"
-                    );
-                }
-                in_scope_assets = survivors;
-                let alive: std::collections::HashSet<&str> =
-                    in_scope_assets.iter().map(String::as_str).collect();
-                typed_assets.retain(|(asset, _)| alive.contains(asset.as_str()));
+            let removed = in_scope_assets.len() - survivors.len();
+            if removed > 0 {
+                tracing::info!(
+                    target: "harness::hook",
+                    stage = stage.as_str(),
+                    org_id = ?org_id,
+                    removed,
+                    "excluded confirmed-dead assets from coverage denominator"
+                );
             }
+            in_scope_assets = survivors;
+            let alive: std::collections::HashSet<&str> =
+                in_scope_assets.iter().map(String::as_str).collect();
+            typed_assets.retain(|(asset, _)| alive.contains(asset.as_str()));
         }
     }
-    let web_capable_assets: Vec<String> =
-        if stage == StageKind::Enumeration && spec.enum_ip_web_coverage {
-            repo.enumeration_web_capable_assets(org_id)
-                .await
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-    let not_applicable_coverage: Vec<(String, String)> = match stage {
+    let web_capable_assets: Vec<String> = match stage {
+        StageKind::Enumeration if spec.enum_ip_web_coverage => repo
+            .enumeration_web_capable_assets(org_id)
+            .await
+            .unwrap_or_default(),
         StageKind::ExternalAttackSurface => repo
-            .eas_service_not_applicable_assets(org_id, effective_wave_cutoff)
+            .eas_web_capable_assets(org_id, freshness_cutoff)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|asset| (asset, TECH_EAS_SERVICE_FP.to_string()))
-            .collect(),
-        // Enumeration content not_applicable (design 2026-07-03): an in-scope
-        // IP/CIDR that port truth proves is DNS/53-only with no web service
-        // surface is not a content-enumeration root. Reuse the same
-        // deterministic only-DNS判定 as EAS SERVICE and mark all four ENUM axes
-        // not_applicable, so a shared-DNS/CDN IP that slipped into the
-        // web-capable denominator (e.g. stale http_status) reaches a terminal
-        // state instead of wedging the gate. No-op for IPs that never entered
-        // the denominator.
-        StageKind::Enumeration => repo
-            .eas_service_not_applicable_assets(org_id, effective_wave_cutoff)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|asset| {
-                ENUM_CONTENT_TECHNIQUES
-                    .iter()
-                    .map(move |tech| (asset.clone(), (*tech).to_string()))
-            })
-            .collect(),
+            .unwrap_or_default(),
         _ => Vec::new(),
     };
-    if stage == StageKind::Enumeration && !in_scope_assets.is_empty() {
-        let inherited_truth = repo
-            .db_truth_facts(org_id, &in_scope_assets, None)
+    // EAS PORT-empty outcomes may deterministically close SERVICE below. The
+    // Enumeration denominator is already exact HTTP(S) origins, so raw-host
+    // DNS-only context must never synthesize origin-level not_applicable cells.
+    let mut not_applicable_coverage: Vec<(String, String)> = Vec::new();
+    let mut authoritative_coverage_axis = false;
+    if stage == StageKind::Enumeration {
+        let Some(oid) = org_id else {
+            return GateResult::block(
+                vec![
+                    "enumeration gate requires an organization-bound exact-origin coverage snapshot"
+                        .to_string(),
+                ],
+                Default::default(),
+            );
+        };
+        let snapshot = match repo
+            .stage_asset_coverage(
+                oid,
+                stage.as_str(),
+                Some(session_id),
+                freshness_cutoff,
+                wave_target_id_override.clone(),
+                wave_asset_override.clone(),
+            )
             .await
-            .unwrap_or_default();
-        if let Some(worklist) = enumeration_eas_live_web_worklist(
-            &in_scope_assets,
-            &typed_assets,
-            &inherited_truth,
-            &web_capable_assets,
-        ) {
-            in_scope_assets.retain(|asset| worklist.contains(asset));
-            typed_assets.retain(|(asset, _)| worklist.contains(asset));
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return GateResult::block(
+                    vec![format!(
+                        "enumeration exact-origin coverage snapshot failed: {error}"
+                    )],
+                    Default::default(),
+                )
+            }
+        };
+        match validated_enumeration_axis_from_coverage_snapshot(&snapshot, oid, Some(session_id)) {
+            Ok((assets, typed)) => {
+                authoritative_coverage_axis = true;
+                in_scope_assets = assets;
+                typed_assets = typed;
+            }
+            Err(error) => {
+                return GateResult::block(
+                    vec![format!(
+                        "enumeration exact-origin coverage snapshot is invalid: {error}"
+                    )],
+                    Default::default(),
+                )
+            }
         }
     }
 
@@ -379,71 +691,74 @@ pub async fn evaluate_org_stage_gate(
     }
 
     // 3) 证据事实：账本投影 + DB 业务表真值（Found）合并。
-    let mut facts: Vec<EvidenceFact> = repo
-        .evidence_facts_for_session(session_id)
-        .await
-        .map(facts_from_rows)
-        .unwrap_or_default();
+    let mut facts: Vec<EvidenceFact> = if stage == StageKind::ExternalAttackSurface {
+        match (org_id, freshness_cutoff) {
+            (Some(organization_id), Some(since)) => repo
+                .eas_evidence_facts_for_session_org_fresh(session_id, organization_id, since)
+                .await
+                .map(facts_from_rows)
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    } else {
+        repo.evidence_facts_for_session(session_id)
+            .await
+            .map(facts_from_rows)
+            .unwrap_or_default()
+    };
     if !in_scope_assets.is_empty() {
-        let run_start = spec
-            .freshness_window
-            .then_some(effective_wave_cutoff)
-            .flatten();
         if let Ok(truth) = repo
-            .db_truth_facts(org_id, &in_scope_assets, run_start)
+            .db_truth_facts(org_id, &in_scope_assets, freshness_cutoff)
             .await
         {
             facts.extend(db_truth_to_facts(truth));
         }
     }
 
-    // #4/E3 (设计 2026-06-23-technique-outcomes-provenance)：**始终**从
-    // technique_outcomes union 进 facts（per-org fan-out gate；与 execute.rs 主路径同
-    // 源）。org=None = 跳过（additive + fail-safe，无灰度开关）。outcome blocked→Error。
-    if let Some(oid) = org_id {
-        let projected: Vec<EvidenceFact> = repo
-            .technique_outcome_facts(oid, session_id)
-            .await
-            .into_iter()
-            .filter_map(|(asset, technique, outcome, evidence_id)| {
-                let outcome = match outcome.as_str() {
-                    "found" => EvidenceOutcome::Found,
-                    "empty" => EvidenceOutcome::Empty,
-                    "error" | "blocked" => EvidenceOutcome::Error,
-                    _ => return None,
-                };
-                Some(EvidenceFact {
-                    asset,
-                    technique,
-                    outcome,
-                    evidence_id,
-                })
-            })
-            .collect();
-        facts.extend(projected);
-    }
-
-    let source_queries = match org_id {
-        Some(oid) => repo.source_query_facts(oid, session_id).await,
+    // #4/E3 (设计 2026-06-23-technique-outcomes-provenance)：从当前
+    // technique_outcomes 投影 facts（per-org fan-out gate；与 execute.rs 主路径同源）。
+    // Enumeration 会先清掉四轴兼容 facts，且缺 freshness cutoff 时 fail-closed；其他
+    // stage 保持 additive union。org=None = 跳过。
+    let outcome_rows = match org_id {
+        Some(oid) if stage_accepts_outcome_projection(stage, freshness_cutoff.is_some()) => {
+            repo.technique_outcome_facts_fresh(oid, session_id, freshness_cutoff)
+                .await
+        }
         None => Vec::new(),
+        Some(_) => Vec::new(),
+    };
+    if stage == StageKind::ExternalAttackSurface {
+        not_applicable_coverage
+            .extend(eas_service_not_applicable_from_port_outcomes(&outcome_rows));
+    }
+    apply_technique_outcome_rows(stage, &mut facts, &outcome_rows);
+
+    let source_queries = match (stage_accepts_source_query_completion(stage), org_id) {
+        (true, Some(oid)) => repo.source_query_facts(oid, session_id).await,
+        _ => Vec::new(),
     };
 
     // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）：归一/合并收口到
     // GateContextBuilder。expected_techniques=None ⇒ 回退 spec.expected_techniques
     // （target_intel 已声明）。
-    let ctx = GateContextBuilder::new()
-        .in_scope_assets(in_scope_assets)
+    let ctx_builder = GateContextBuilder::new()
         .typed_assets(typed_assets)
         .web_capable_assets(web_capable_assets)
         .not_applicable_coverage(not_applicable_coverage)
         .extend_evidence_facts(facts)
         .extend_source_queries(source_queries)
-        .expected_techniques(None)
-        .build();
+        .expected_techniques(stage_gate_expected_techniques(stage, &[]));
+    let ctx = if authoritative_coverage_axis {
+        ctx_builder.authoritative_in_scope_assets(Some(in_scope_assets))
+    } else {
+        ctx_builder.in_scope_assets(in_scope_assets)
+    }
+    .build();
 
     validate_stage_gate_with_context(deliverable, &spec, None, None, &ctx)
 }
 
+#[cfg(test)]
 fn enumeration_eas_live_web_worklist(
     assets: &[String],
     typed_assets: &[(String, String)],
@@ -480,6 +795,94 @@ fn enumeration_eas_live_web_worklist(
     (!worklist.is_empty()).then_some(worklist)
 }
 
+pub fn enumeration_axis_from_coverage_snapshot(
+    snapshot: &serde_json::Value,
+) -> EnumerationCoverageAxis {
+    let mut assets = Vec::new();
+    let mut typed_assets = Vec::new();
+    for row in snapshot
+        .get("assets")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        // The read model intentionally keeps supplemental-wave rows visible as
+        // `next_wave_pending`, but the current gate/submit/pass-token denominator
+        // must contain only the active wave. Otherwise preflight can say ready
+        // while the close gate immediately re-adds the deferred origins.
+        if row
+            .get("coverage")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|cells| {
+                cells.iter().any(|cell| {
+                    cell.get("state").and_then(serde_json::Value::as_str)
+                        == Some("next_wave_pending")
+                })
+            })
+        {
+            continue;
+        }
+        if row
+            .get("exact_web_origin")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            continue;
+        }
+        let value = row
+            .get("value")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let Some(origin) = golish_pentest_domain::canonical_web_origin(value) else {
+            continue;
+        };
+        if assets.iter().any(|asset| asset == &origin.key) {
+            continue;
+        }
+        assets.push(origin.key.clone());
+        typed_assets.push((origin.key, "url".to_string()));
+    }
+    (assets, typed_assets)
+}
+
+/// Validate the trusted Enumeration snapshot envelope before deriving its exact
+/// origin axis. Submit preview and final per-org gate must reject the same
+/// stage/org/session mismatch or malformed assets payload.
+pub fn validated_enumeration_axis_from_coverage_snapshot(
+    snapshot: &serde_json::Value,
+    expected_org_id: Uuid,
+    expected_session_id: Option<&str>,
+) -> Result<EnumerationCoverageAxis, &'static str> {
+    if snapshot.get("stage").and_then(serde_json::Value::as_str) != Some("enumeration") {
+        return Err("stage is not enumeration");
+    }
+    if snapshot
+        .get("organization_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        != Some(expected_org_id)
+    {
+        return Err("organization_id does not match the gate organization");
+    }
+    if snapshot.get("session_id").is_none()
+        || snapshot
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            != expected_session_id
+    {
+        return Err("session_id does not match the current gate run");
+    }
+    if !snapshot
+        .get("assets")
+        .is_some_and(serde_json::Value::is_array)
+    {
+        return Err("assets is not an authoritative array");
+    }
+    Ok(enumeration_axis_from_coverage_snapshot(snapshot))
+}
+
+#[cfg(test)]
 fn eas_liveness_lookup_key(asset: &str) -> String {
     super::evidence_facts::eas_liveness_asset_key(asset).unwrap_or_else(|| asset.to_string())
 }
@@ -488,6 +891,176 @@ fn eas_liveness_lookup_key(asset: &str) -> String {
 mod tests {
     use super::*;
     use crate::harness::types::{CoverageGapAction, HarnessRecoveryActions};
+
+    fn outcome_fact(
+        asset: &str,
+        technique: &str,
+        state: &str,
+        evidence_id: i64,
+    ) -> TechniqueOutcomeFact {
+        TechniqueOutcomeFact::new(asset, technique, state, evidence_id, None)
+    }
+
+    #[test]
+    fn enumeration_gate_axis_uses_origin_rows_from_coverage_snapshot() {
+        let snapshot = serde_json::json!({
+            "stage": "enumeration",
+            "assets": [
+                {"value": "http://app.example.com:80/path", "target_type": "url", "exact_web_origin": true},
+                {"value": "HTTPS://APP.EXAMPLE.COM:443/login", "target_type": "url", "exact_web_origin": true},
+                {"value": "alive-but-bare.example.com", "target_type": "domain", "exact_web_origin": false},
+                {"value": "222.186.129.58", "target_type": "ip", "exact_web_origin": false},
+                {"value": "not a url", "target_type": "url", "exact_web_origin": true}
+            ]
+        });
+
+        let (assets, typed_assets) = enumeration_axis_from_coverage_snapshot(&snapshot);
+
+        assert_eq!(
+            assets,
+            vec![
+                "http://app.example.com:80".to_string(),
+                "https://app.example.com:443".to_string(),
+            ]
+        );
+        assert_eq!(
+            typed_assets,
+            vec![
+                ("http://app.example.com:80".to_string(), "url".to_string()),
+                ("https://app.example.com:443".to_string(), "url".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn enumeration_org_gate_axis_keeps_exact_ip_origin_four_axis_applicable() {
+        let origin = "https://203.0.113.10:443";
+        let snapshot = serde_json::json!({
+            "stage": "enumeration",
+            "assets": [{
+                "value": origin,
+                "target_type": "url",
+                "exact_web_origin": true,
+                "coverage": []
+            }]
+        });
+
+        let (assets, typed_assets) = enumeration_axis_from_coverage_snapshot(&snapshot);
+
+        assert_eq!(assets, vec![origin.to_string()]);
+        let class = AssetClass::classify(Some(&typed_assets[0].1), &assets[0]);
+        assert_eq!(class, AssetClass::Ip, "URL-wrapped IP keeps host class");
+        for technique in ENUM_CONTENT_TECHNIQUES {
+            assert!(
+                crate::harness::technique_resolver::technique_applies_web_aware(
+                    StageKind::Enumeration,
+                    class,
+                    &assets[0],
+                    technique,
+                    false,
+                ),
+                "org gate exact-origin axis must retain {technique}"
+            );
+        }
+    }
+
+    #[test]
+    fn enumeration_gate_axis_rejects_malformed_snapshot_instead_of_falling_back() {
+        let org_id = Uuid::new_v4();
+        let session_id = "run-current";
+        let malformed = serde_json::json!({
+            "stage": "enumeration",
+            "organization_id": org_id,
+            "session_id": session_id,
+            "assets": null
+        });
+        assert!(validated_enumeration_axis_from_coverage_snapshot(
+            &malformed,
+            org_id,
+            Some(session_id),
+        )
+        .is_err());
+
+        let authoritative_empty = serde_json::json!({
+            "stage": "enumeration",
+            "organization_id": org_id,
+            "session_id": session_id,
+            "assets": []
+        });
+        assert_eq!(
+            validated_enumeration_axis_from_coverage_snapshot(
+                &authoritative_empty,
+                org_id,
+                Some(session_id)
+            )
+            .unwrap(),
+            (Vec::new(), Vec::new())
+        );
+
+        let foreign_org = serde_json::json!({
+            "stage": "enumeration",
+            "organization_id": Uuid::new_v4(),
+            "session_id": session_id,
+            "assets": []
+        });
+        assert!(validated_enumeration_axis_from_coverage_snapshot(
+            &foreign_org,
+            org_id,
+            Some(session_id)
+        )
+        .is_err());
+
+        let stale_session = serde_json::json!({
+            "stage": "enumeration",
+            "organization_id": org_id,
+            "session_id": "run-old",
+            "assets": []
+        });
+        assert!(validated_enumeration_axis_from_coverage_snapshot(
+            &stale_session,
+            org_id,
+            Some(session_id)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn enumeration_gate_axis_excludes_next_wave_pending_origin_rows() {
+        let snapshot = serde_json::json!({
+            "stage": "enumeration",
+            "assets": [
+                {
+                    "value": "https://current.example.com:443",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-JS", "state": "found"},
+                        {"technique": "GOLISH-ENUM-DIR", "state": "empty"}
+                    ]
+                },
+                {
+                    "value": "https://next.example.com:443",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-JS", "state": "next_wave_pending"},
+                        {"technique": "GOLISH-ENUM-DIR", "state": "next_wave_pending"}
+                    ]
+                }
+            ]
+        });
+
+        let (assets, typed_assets) = enumeration_axis_from_coverage_snapshot(&snapshot);
+
+        assert_eq!(assets, vec!["https://current.example.com:443".to_string()]);
+        assert_eq!(
+            typed_assets,
+            vec![(
+                "https://current.example.com:443".to_string(),
+                "url".to_string()
+            )]
+        );
+    }
 
     #[test]
     fn verdict_pass_on_allowed() {
@@ -542,10 +1115,406 @@ mod tests {
                 "empty".into(),
                 8,
             ),
+            ("a.com".into(), "GOLISH-ENUM-JS".into(), "partial".into(), 9),
         ]);
+        assert_eq!(f.len(), 2, "partial evidence is never a terminal fact");
         assert_eq!(f[0].outcome, EvidenceOutcome::Found);
         assert_eq!(f[1].outcome, EvidenceOutcome::Empty);
         assert_eq!(f[0].evidence_id, 7);
+    }
+
+    #[test]
+    fn enumeration_nonterminal_outcome_overrides_historical_found_fact() {
+        let mut facts = vec![EvidenceFact {
+            asset: "https://app.example.com:443".to_string(),
+            technique: "GOLISH-ENUM-JS".to_string(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 41,
+        }];
+        let rows = vec![outcome_fact(
+            "https://app.example.com:443",
+            "GOLISH-ENUM-JS",
+            "partial",
+            0,
+        )];
+
+        apply_technique_outcome_rows(StageKind::Enumeration, &mut facts, &rows);
+
+        assert_eq!(facts.len(), 1, "partial must leave a non-terminal marker");
+        assert_eq!(facts[0].outcome, EvidenceOutcome::Error);
+
+        facts.push(EvidenceFact {
+            asset: "https://app.example.com:443".to_string(),
+            technique: "GOLISH-ENUM-JS".to_string(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 42,
+        });
+        let rows = vec![outcome_fact(
+            "https://app.example.com:443/ignored/path",
+            "GOLISH-ENUM-JS",
+            "error",
+            0,
+        )];
+
+        apply_technique_outcome_rows(StageKind::Enumeration, &mut facts, &rows);
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].outcome, EvidenceOutcome::Error);
+    }
+
+    #[test]
+    fn enumeration_missing_current_outcome_does_not_inherit_legacy_found_fact() {
+        let mut facts = vec![EvidenceFact {
+            asset: "https://app.example.com:443".to_string(),
+            technique: "GOLISH-ENUM-DIR".to_string(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 77,
+        }];
+
+        apply_technique_outcome_rows(StageKind::Enumeration, &mut facts, &[]);
+
+        assert!(facts.is_empty());
+    }
+
+    #[test]
+    fn enumeration_terminal_outcome_requires_real_evidence_id() {
+        for outcome in ["found", "empty", "blocked"] {
+            let mut facts = Vec::new();
+            apply_technique_outcome_rows(
+                StageKind::Enumeration,
+                &mut facts,
+                &[TechniqueOutcomeFact::new(
+                    "https://app.example.com:443",
+                    "GOLISH-ENUM-DIR",
+                    outcome,
+                    0,
+                    Some(TRUSTED_ENUM_BLOCKED_SOURCE.to_string()),
+                )],
+            );
+            assert!(
+                facts.is_empty(),
+                "{outcome} without evidence must not close a cell"
+            );
+        }
+    }
+
+    #[test]
+    fn enumeration_blocked_requires_matching_current_evidence_fact() {
+        let asset = "https://app.example.com:443";
+        let technique = "GOLISH-ENUM-DIR";
+        let outcome = TechniqueOutcomeFact::new(
+            asset,
+            technique,
+            "blocked",
+            61,
+            Some(TRUSTED_ENUM_BLOCKED_SOURCE.to_string()),
+        );
+
+        for mut facts in [
+            Vec::new(),
+            vec![EvidenceFact {
+                asset: asset.to_string(),
+                technique: technique.to_string(),
+                outcome: EvidenceOutcome::Blocked,
+                evidence_id: 62,
+            }],
+            vec![EvidenceFact {
+                asset: asset.to_string(),
+                technique: technique.to_string(),
+                outcome: EvidenceOutcome::Error,
+                evidence_id: 61,
+            }],
+        ] {
+            apply_technique_outcome_rows(
+                StageKind::Enumeration,
+                &mut facts,
+                std::slice::from_ref(&outcome),
+            );
+            assert!(
+                facts.is_empty(),
+                "unmatched blocked evidence must fail closed"
+            );
+        }
+
+        let trusted_evidence = EvidenceFact {
+            asset: asset.to_string(),
+            technique: technique.to_string(),
+            outcome: EvidenceOutcome::Blocked,
+            evidence_id: 61,
+        };
+        let mut facts = vec![trusted_evidence.clone()];
+        let mut forged_source = outcome.clone();
+        forged_source.source = Some("untrusted_probe".to_string());
+        apply_technique_outcome_rows(
+            StageKind::Enumeration,
+            &mut facts,
+            std::slice::from_ref(&forged_source),
+        );
+        assert!(
+            facts.is_empty(),
+            "final and submit gates must reject blocked from an untrusted outcome source"
+        );
+
+        let mut facts = vec![trusted_evidence.clone()];
+        let mut route_source = outcome.clone();
+        route_source.source = Some("route_probe_paths".to_string());
+        apply_technique_outcome_rows(
+            StageKind::Enumeration,
+            &mut facts,
+            std::slice::from_ref(&route_source),
+        );
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].outcome, EvidenceOutcome::Blocked);
+
+        let mut wrong_axis_facts = vec![EvidenceFact {
+            asset: asset.to_string(),
+            technique: "GOLISH-ENUM-JS".to_string(),
+            outcome: EvidenceOutcome::Blocked,
+            evidence_id: 63,
+        }];
+        apply_technique_outcome_rows(
+            StageKind::Enumeration,
+            &mut wrong_axis_facts,
+            &[TechniqueOutcomeFact::new(
+                asset,
+                "GOLISH-ENUM-JS",
+                "blocked",
+                63,
+                Some("route_probe_paths".to_string()),
+            )],
+        );
+        assert!(
+            wrong_axis_facts.is_empty(),
+            "route recovery exhaustion must own only DIR blocked"
+        );
+
+        let mut facts = vec![trusted_evidence];
+        apply_technique_outcome_rows(
+            StageKind::Enumeration,
+            &mut facts,
+            std::slice::from_ref(&outcome),
+        );
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].outcome, EvidenceOutcome::Blocked);
+        assert_eq!(facts[0].evidence_id, 61);
+    }
+
+    #[test]
+    fn preflight_blocked_is_authoritative_for_all_enumeration_axes() {
+        let asset = "https://app.example.com:443";
+        for technique in ENUM_CONTENT_TECHNIQUES {
+            let mut facts = vec![EvidenceFact {
+                asset: asset.to_string(),
+                technique: technique.to_string(),
+                outcome: EvidenceOutcome::Blocked,
+                evidence_id: 70,
+            }];
+            apply_technique_outcome_rows(
+                StageKind::Enumeration,
+                &mut facts,
+                &[TechniqueOutcomeFact::new(
+                    asset,
+                    technique,
+                    "blocked",
+                    70,
+                    Some(TRUSTED_ENUM_BLOCKED_SOURCE.to_string()),
+                )],
+            );
+            assert_eq!(facts.len(), 1, "preflight should own blocked {technique}");
+        }
+    }
+
+    #[test]
+    fn browser_recovery_blocked_is_authoritative_only_for_browser_axes() {
+        let asset = "https://app.example.com:443";
+        for technique in ["GOLISH-ENUM-JS", "GOLISH-ENUM-JSAPI", "GOLISH-ENUM-PARAM"] {
+            let mut facts = vec![EvidenceFact {
+                asset: asset.to_string(),
+                technique: technique.to_string(),
+                outcome: EvidenceOutcome::Blocked,
+                evidence_id: 71,
+            }];
+            apply_technique_outcome_rows(
+                StageKind::Enumeration,
+                &mut facts,
+                &[TechniqueOutcomeFact::new(
+                    asset,
+                    technique,
+                    "blocked",
+                    71,
+                    Some("browser_collect_js_api".to_string()),
+                )],
+            );
+            assert_eq!(facts.len(), 1, "browser should own blocked {technique}");
+        }
+
+        let mut dir = vec![EvidenceFact {
+            asset: asset.to_string(),
+            technique: "GOLISH-ENUM-DIR".to_string(),
+            outcome: EvidenceOutcome::Blocked,
+            evidence_id: 72,
+        }];
+        apply_technique_outcome_rows(
+            StageKind::Enumeration,
+            &mut dir,
+            &[TechniqueOutcomeFact::new(
+                asset,
+                "GOLISH-ENUM-DIR",
+                "blocked",
+                72,
+                Some("browser_collect_js_api".to_string()),
+            )],
+        );
+        assert!(dir.is_empty(), "browser must never own DIR blocked");
+    }
+
+    #[test]
+    fn eas_found_requires_business_truth_guarded_evidence_and_matching_outcome() {
+        let asset = "192.0.2.10";
+        let technique = TECH_EAS_PORT;
+        let business = EvidenceFact {
+            asset: asset.to_string(),
+            technique: technique.to_string(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 0,
+        };
+        let guarded = EvidenceFact {
+            asset: asset.to_string(),
+            technique: technique.to_string(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 41,
+        };
+        let outcome = outcome_fact(asset, technique, "found", 41);
+
+        for (mut facts, rows) in [
+            (vec![business.clone(), guarded.clone()], Vec::new()),
+            (vec![guarded.clone()], vec![outcome.clone()]),
+            (vec![business.clone()], vec![outcome.clone()]),
+            (
+                vec![business.clone(), guarded.clone()],
+                vec![outcome_fact(asset, technique, "found", 42)],
+            ),
+        ] {
+            apply_technique_outcome_rows(StageKind::ExternalAttackSurface, &mut facts, &rows);
+            assert!(
+                facts.is_empty(),
+                "incomplete EAS intersection must fail closed"
+            );
+        }
+
+        let mut complete = vec![business, guarded];
+        apply_technique_outcome_rows(StageKind::ExternalAttackSurface, &mut complete, &[outcome]);
+        assert_eq!(complete.len(), 1);
+        assert_eq!(complete[0].outcome, EvidenceOutcome::Found);
+        assert_eq!(complete[0].evidence_id, 41);
+    }
+
+    #[test]
+    fn eas_empty_requires_matching_guarded_outcome_but_not_business_found() {
+        let mut facts = vec![EvidenceFact {
+            asset: "192.0.2.10".to_string(),
+            technique: TECH_EAS_PORT.to_string(),
+            outcome: EvidenceOutcome::Empty,
+            evidence_id: 51,
+        }];
+        apply_technique_outcome_rows(
+            StageKind::ExternalAttackSurface,
+            &mut facts,
+            &[outcome_fact("192.0.2.10", TECH_EAS_PORT, "empty", 51)],
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].outcome, EvidenceOutcome::Empty);
+    }
+
+    #[test]
+    fn enumeration_outcome_projection_requires_freshness_cutoff() {
+        assert!(!stage_accepts_outcome_projection(
+            StageKind::Enumeration,
+            false
+        ));
+        assert!(stage_accepts_outcome_projection(
+            StageKind::Enumeration,
+            true
+        ));
+        assert!(!stage_accepts_outcome_projection(
+            StageKind::ExternalAttackSurface,
+            false
+        ));
+        assert!(stage_accepts_outcome_projection(
+            StageKind::ExternalAttackSurface,
+            true
+        ));
+        assert!(stage_accepts_outcome_projection(
+            StageKind::TargetIntel,
+            false
+        ));
+    }
+
+    #[test]
+    fn enumeration_gate_expected_techniques_are_always_four_axes() {
+        assert_eq!(
+            stage_gate_expected_techniques(StageKind::Enumeration, &["ip_address".to_string()])
+                .unwrap(),
+            ENUM_CONTENT_TECHNIQUES.map(str::to_string).to_vec()
+        );
+        assert_eq!(
+            stage_gate_expected_techniques(StageKind::Enumeration, &[]).unwrap(),
+            ENUM_CONTENT_TECHNIQUES.map(str::to_string).to_vec()
+        );
+    }
+
+    #[test]
+    fn enumeration_does_not_accept_source_query_completion() {
+        assert!(!stage_accepts_source_query_completion(
+            StageKind::Enumeration
+        ));
+        assert!(stage_accepts_source_query_completion(
+            StageKind::TargetIntel
+        ));
+    }
+
+    #[test]
+    fn eas_service_outcome_mapping_is_filtered_by_the_outer_intersection() {
+        assert_eq!(
+            technique_outcome_to_fact(
+                "115.175.6.207".to_string(),
+                TECH_EAS_SERVICE_FP.to_string(),
+                "found".to_string(),
+                9,
+            )
+            .unwrap()
+            .outcome,
+            EvidenceOutcome::Found
+        );
+        assert_eq!(
+            technique_outcome_to_fact(
+                "115.175.6.207".to_string(),
+                TECH_EAS_SERVICE_FP.to_string(),
+                "empty".to_string(),
+                10,
+            )
+            .unwrap()
+            .outcome,
+            EvidenceOutcome::Empty
+        );
+    }
+
+    #[test]
+    fn eas_port_empty_outcome_makes_service_not_applicable() {
+        let rows = vec![
+            outcome_fact("101.132.155.91", TECH_EAS_PORT, "empty", 7),
+            outcome_fact("115.175.6.207", TECH_EAS_PORT, "found", 8),
+            outcome_fact("example.com", TECH_EAS_LIVENESS, "empty", 9),
+        ];
+
+        assert_eq!(
+            eas_service_not_applicable_from_port_outcomes(&rows),
+            vec![(
+                "101.132.155.91".to_string(),
+                TECH_EAS_SERVICE_FP.to_string()
+            )]
+        );
     }
 
     #[test]
@@ -805,5 +1774,27 @@ mod tests {
             ttl,
             None
         ));
+    }
+
+    #[test]
+    fn final_org_gate_rejects_present_empty_wave_before_cutoff_fallback() {
+        let org_id = Uuid::from_u128(7);
+        let wave = StageAssetWaveView {
+            id: Uuid::from_u128(1),
+            operation_id: Uuid::from_u128(2),
+            organization_id: org_id,
+            stage_kind: StageKind::Enumeration.as_str().to_string(),
+            wave_index: 0,
+            started_at: Utc::now(),
+            parent_wave_id: None,
+            asset_hash: "empty".to_string(),
+            target_ids: Vec::new(),
+            asset_values: Vec::new(),
+        };
+
+        let error = current_wave_gate_error(Some(&wave), Some(org_id), StageKind::Enumeration)
+            .expect("a present empty wave must block instead of becoming NoWave");
+
+        assert!(error.contains("has no items"));
     }
 }

@@ -179,6 +179,7 @@ where
         request_id: tool_id.clone(),
         tool_name: tool_name.to_string(),
         source: ToolSource::Main,
+        operation_id: ctx.harness_operation_id,
         organization_id: ctx.harness_org_id,
     };
     let mut result = golish_core::with_agent_tool_context(

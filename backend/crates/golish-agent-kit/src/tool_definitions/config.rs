@@ -65,11 +65,6 @@ impl ToolSelectionConfig {
                 "list_unresearched_cves".to_string(),
                 "poc_stats".to_string(),
                 // Security analysis
-                "log_operation".to_string(),
-                "discover_apis".to_string(),
-                "save_js_analysis".to_string(),
-                "fingerprint_target".to_string(),
-                "log_scan_result".to_string(),
                 "query_target_data".to_string(),
                 "list_in_scope_targets".to_string(),
                 "list_attack_surface_seeds".to_string(),

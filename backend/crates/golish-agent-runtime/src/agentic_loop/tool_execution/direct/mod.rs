@@ -58,6 +58,13 @@ fn structured_storage_hook_payload(
     result: &serde_json::Value,
     success: bool,
 ) -> Option<StructuredStorageHookPayload> {
+    if result
+        .get("structured_storage_disabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        return None;
+    }
     let stdout = result
         .get("stdout")
         .and_then(|s| s.as_str())
@@ -89,6 +96,13 @@ fn structured_storage_hook_payload(
     }
 
     Some(StructuredStorageHookPayload { command, stdout })
+}
+
+fn generic_pentest_evidence_enabled(result: &serde_json::Value) -> bool {
+    !result
+        .get("generic_evidence_disabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 fn combined_stdout_stderr(result: &serde_json::Value) -> String {
@@ -637,6 +651,7 @@ where
                     .and_then(|s| s.as_str())
                     .is_some())
                 && ctx.harness_stage.is_some()
+                && generic_pentest_evidence_enabled(v)
             {
                 if let Some(tracker) = ctx.events.db_tracker {
                     if let Some(repo) = tracker.repo() {
@@ -1009,9 +1024,7 @@ async fn duplicate_source_query_guard(
         .iter()
         .filter(|row| {
             row.query == query
-                && target
-                    .as_deref()
-                    .map_or(true, |target| row.target == target)
+                && target.as_deref().is_none_or(|target| row.target == target)
                 && is_terminal_source_query_status(&row.status)
         })
         .collect();
@@ -1096,8 +1109,8 @@ fn guardrail_block_reason(
 #[cfg(test)]
 mod tests {
     use super::{
-        duplicate_guard_query, guardrail_block_reason, is_terminal_source_query_status,
-        recon_source_query_rows, structured_storage_hook_payload,
+        duplicate_guard_query, generic_pentest_evidence_enabled, guardrail_block_reason,
+        is_terminal_source_query_status, recon_source_query_rows, structured_storage_hook_payload,
     };
     use golish_agent_kit::harness::StageKind;
     use serde_json::json;
@@ -1272,7 +1285,27 @@ mod tests {
     }
 
     #[test]
-    fn enum_wrapper_result_feeds_structured_storage_hook() {
+    fn self_landed_eas_wrapper_disables_generic_storage_and_evidence() {
+        let result = json!({
+            "wrapped_tool_name": "nmap",
+            "wrapped_args": "-sV -Pn -iL {input_file} -p 80 -T3",
+            "stdout": "80/tcp open http nginx",
+            "exit_code": 0,
+            "structured_storage_disabled": true,
+            "generic_evidence_disabled": true
+        });
+        assert!(structured_storage_hook_payload(
+            "eas_fingerprint_services",
+            &json!({"targets": ["192.0.2.10"], "ports": [80]}),
+            &result,
+            true,
+        )
+        .is_none());
+        assert!(!generic_pentest_evidence_enabled(&result));
+    }
+
+    #[test]
+    fn enum_wrapper_seed_only_result_skips_structured_storage_hook() {
         let payload = structured_storage_hook_payload(
             "enum_crawl_same_origin_urls",
             &json!({"target_urls": ["https://app.example.com/"]}),
@@ -1282,16 +1315,15 @@ mod tests {
                 "command": "katana -list /tmp/roots.txt -jc -silent -d 2",
                 "stdout": "https://app.example.com/api/v1/users",
                 "stderr": "",
-                "exit_code": 0
+                "exit_code": 0,
+                "structured_storage_disabled": true,
+                "generic_evidence_disabled": true
             }),
             true,
-        )
-        .expect("Enumeration wrapper should produce structured-storage payload");
-
-        assert_eq!(
-            payload.command,
-            "katana -list /tmp/roots.txt -jc -silent -d 2"
         );
-        assert_eq!(payload.stdout, "https://app.example.com/api/v1/users");
+        assert!(payload.is_none());
+        assert!(!generic_pentest_evidence_enabled(&json!({
+            "generic_evidence_disabled": true
+        })));
     }
 }

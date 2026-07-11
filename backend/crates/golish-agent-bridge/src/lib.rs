@@ -43,4 +43,7 @@ mod bridge_hitl;
 mod bridge_policy;
 mod bridge_session;
 
-pub use agent_bridge::{AgentBridge, BridgeBackends};
+pub use agent_bridge::{
+    AgentBridge, BridgeBackends, SessionRequestBusy, SessionRequestSlot,
+    SessionRequestTransitionLease, TopLevelRequestLease,
+};

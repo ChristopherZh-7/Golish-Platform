@@ -5,8 +5,8 @@
 //! scan-runner crate independent of the application's data model.
 
 use async_trait::async_trait;
+use golish_db::repo::scoped::TargetWriteGuard;
 use sqlx::PgPool;
-use uuid::Uuid;
 
 use crate::error::ScanRunnerResult;
 
@@ -16,13 +16,12 @@ pub trait ScanStorage: Send + Sync {
     async fn store_directory_entry(
         &self,
         pool: &PgPool,
-        target_id: Option<Uuid>,
+        guard: &TargetWriteGuard,
         url: &str,
         status_code: Option<i32>,
         content_length: Option<i32>,
         lines: Option<i32>,
         words: Option<i32>,
         tool: &str,
-        project_path: Option<&str>,
     ) -> ScanRunnerResult<()>;
 }

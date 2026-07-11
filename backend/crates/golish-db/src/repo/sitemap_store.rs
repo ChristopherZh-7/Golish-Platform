@@ -1,8 +1,8 @@
 //! `sitemap_store` project-scoped repo helpers (AGENTS.md I2).
 //!
-//! Three command-layer call sites (`pipeline::storage`, `sensitive_scan`,
-//! `pentest_bridge::js_collect`) read and delete the `'zap-sitemap'` blob with
-//! identical scoped SQL; this centralises that read/delete/upsert.
+//! Command-layer call sites such as `pipeline::storage` and `sensitive_scan`
+//! read and delete the `'zap-sitemap'` blob with identical scoped SQL; this
+//! centralises that read/delete/upsert.
 
 use crate::Result;
 use sqlx::PgPool;

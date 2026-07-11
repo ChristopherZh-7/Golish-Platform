@@ -221,6 +221,8 @@ SELECT
 FROM api_endpoints ae
 JOIN targets t ON t.id = ae.target_id
 WHERE ae.target_id = ANY($3::uuid[])
+  AND t.scope::text = 'in'
+  AND ae.project_path IS NOT DISTINCT FROM t.project_path
   AND (
       ($1::uuid IS NOT NULL AND t.organization_id = $1)
       OR ($1::uuid IS NULL AND t.organization_id IS NULL AND t.project_path = $2)
@@ -238,6 +240,8 @@ SELECT
 FROM js_analysis_results ja
 JOIN targets t ON t.id = ja.target_id
 WHERE ja.target_id = ANY($3::uuid[])
+  AND t.scope::text = 'in'
+  AND ja.project_path IS NOT DISTINCT FROM t.project_path
   AND (
       ($1::uuid IS NOT NULL AND t.organization_id = $1)
       OR ($1::uuid IS NULL AND t.organization_id IS NULL AND t.project_path = $2)
@@ -255,6 +259,8 @@ SELECT
 FROM directory_entries de
 JOIN targets t ON t.id = de.target_id
 WHERE de.target_id = ANY($3::uuid[])
+  AND t.scope::text = 'in'
+  AND de.project_path IS NOT DISTINCT FROM t.project_path
   AND (
       ($1::uuid IS NOT NULL AND t.organization_id = $1)
       OR ($1::uuid IS NULL AND t.organization_id IS NULL AND t.project_path = $2)
@@ -272,6 +278,8 @@ SELECT
 FROM passive_scan_logs ps
 JOIN targets t ON t.id = ps.target_id
 WHERE ps.target_id = ANY($3::uuid[])
+  AND t.scope::text = 'in'
+  AND ps.project_path IS NOT DISTINCT FROM t.project_path
   AND (
       ($1::uuid IS NOT NULL AND t.organization_id = $1)
       OR ($1::uuid IS NULL AND t.organization_id IS NULL AND t.project_path = $2)
@@ -959,6 +967,15 @@ mod tests {
         );
         assert!(LIST_SURFACE_LEGACY_CONTENT_ROWS_SQL.contains("t.organization_id = $1"));
         assert!(LIST_SURFACE_LEGACY_CONTENT_ROWS_SQL.contains("t.project_path = $2"));
+        for predicate in [
+            "ae.project_path IS NOT DISTINCT FROM t.project_path",
+            "ja.project_path IS NOT DISTINCT FROM t.project_path",
+            "de.project_path IS NOT DISTINCT FROM t.project_path",
+            "ps.project_path IS NOT DISTINCT FROM t.project_path",
+        ] {
+            assert!(LIST_SURFACE_LEGACY_CONTENT_ROWS_SQL.contains(predicate));
+        }
+        assert!(LIST_SURFACE_LEGACY_CONTENT_ROWS_SQL.contains("t.scope::text = 'in'"));
     }
 
     #[test]

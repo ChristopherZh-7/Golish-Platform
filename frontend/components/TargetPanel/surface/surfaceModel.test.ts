@@ -203,7 +203,7 @@ describe("buildSitemapItems", () => {
 
     const tree = buildSitemapTree(items);
     expect(tree).toHaveLength(1);
-    expect(tree[0].label).toBe("https://example.com");
+    expect(tree[0].label).toBe("https://example.com:443");
     expect(tree[0].children.map((node) => node.label).sort()).toEqual(["assets", "sd"]);
     expect(tree[0].children.find((node) => node.label === "sd")?.children[0].label).toBe("baxia");
   });
@@ -275,11 +275,67 @@ describe("buildSitemapTree", () => {
     ]);
 
     expect(tree).toHaveLength(1);
-    expect(tree[0].label).toBe("https://example.com");
+    expect(tree[0].label).toBe("https://example.com:443");
     expect(tree[0].itemCount).toBe(3);
     expect(tree[0].children.map((node) => node.label)).toEqual(["admin", "api"]);
     expect(tree[0].children[1].children.map((node) => node.label)).toEqual(["search", "users"]);
     expect(tree[0].children[1].children[0].children[0].label).toBe("?q=one");
+  });
+
+  it("keeps explicit ports visible on sitemap origin roots", () => {
+    const tree = buildSitemapTree([
+      {
+        id: "https-default",
+        url: "https://secure.example.com/login",
+        method: "GET",
+        path: "/login",
+        source: "crawler",
+        kind: "endpoint",
+        sizeBytes: null,
+        params: [],
+        headers: {},
+        statusCode: 200,
+        contentType: "text/html",
+        capturePath: null,
+        discoveredAt: "2026-06-30T00:00:00Z",
+      },
+      {
+        id: "http-default",
+        url: "http://plain.example.com/status",
+        method: "GET",
+        path: "/status",
+        source: "crawler",
+        kind: "endpoint",
+        sizeBytes: null,
+        params: [],
+        headers: {},
+        statusCode: 200,
+        contentType: "text/html",
+        capturePath: null,
+        discoveredAt: "2026-06-30T00:00:01Z",
+      },
+      {
+        id: "custom-port",
+        url: "https://admin.example.com:8443/",
+        method: "GET",
+        path: "/",
+        source: "crawler",
+        kind: "endpoint",
+        sizeBytes: null,
+        params: [],
+        headers: {},
+        statusCode: 200,
+        contentType: "text/html",
+        capturePath: null,
+        discoveredAt: "2026-06-30T00:00:02Z",
+      },
+    ]);
+
+    expect(tree.map((node) => node.label).sort()).toEqual([
+      "http://plain.example.com:80",
+      "https://admin.example.com:8443",
+      "https://secure.example.com:443",
+    ]);
   });
 });
 

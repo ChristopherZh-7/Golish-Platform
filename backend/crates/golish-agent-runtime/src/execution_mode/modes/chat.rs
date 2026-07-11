@@ -1,7 +1,7 @@
 //! `ChatModePolicy` — single-agent conversational mode with the full toolbox.
 //!
 //! This policy is what finally gives the chat-mode LLM access to
-//! `js_collect / manage_targets / record_finding / vault / js_extract_apis /
+//! `browser_collect_js_api / manage_targets / record_finding / vault / js_extract_apis /
 //! auth_probe` (the `pentest_bridge` tools that the legacy
 //! `tool.name.starts_with("pentest_")` filter was silently dropping).
 
@@ -68,12 +68,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_primary_includes_js_collect() {
+    async fn chat_primary_includes_js_api_tools() {
         let s = ChatModePolicy.primary_tools(&mock_ctx()).await;
-        assert!(
-            s.bridge_tools.js_collect,
-            "chat must expose js_collect (regression guard for the bug fixed in PR2)"
-        );
         assert!(s.bridge_tools.manage_targets);
         assert!(s.bridge_tools.auth_probe);
         assert!(s.bridge_tools.record_finding);

@@ -32,6 +32,7 @@
   "GOLISH-EAS-LIVENESS": { "name": "Active Liveness Verification (DNS resolve + HTTP probe)", "standard": "GOLISH custom" },
   "GOLISH-EAS-PORT": { "name": "Port / Open Service Enumeration", "standard": "GOLISH custom" },
   "GOLISH-EAS-SERVICE-FINGERPRINT": { "name": "Service / Version Fingerprinting", "standard": "GOLISH custom" },
+  "GOLISH-EAS-WEB-FINGERPRINT": { "name": "Web Technology Fingerprinting (WhatWeb per origin)", "standard": "GOLISH custom" },
 
   "$comment_enum": "enumeration 阶段技术类（内容枚举，coverage_complete 用）。阶段重排 2026-06-09：在 EAS 摸清的完整服务清单上做内容枚举；四类 JS/DIR/PARAM/JSAPI（JS 收集独立成轴，design 2026-07-01）产出的可测单元是下游 vuln_triage 覆盖率分母（total_units）来源。",
   "GOLISH-ENUM-JS": { "name": "JS Asset Collection", "standard": "GOLISH custom" },

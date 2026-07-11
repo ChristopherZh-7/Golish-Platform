@@ -45,6 +45,7 @@
 
 - 端点抽取仍不覆盖所有变量 URL / 无 HTTP 动词的 opaque wrapper（这些回退给 AI 局部复核）；`client.<verb>` 属于低一档置信度的确定性规则；P1 计划上 swc AST extractor（同 `extract_endpoints` 签名）。
 - `signals` 输出必须保持脱敏：完整 secret 不进入 tool result / prompt；`rule_matches.context` 也要脱敏同一行的邻近 Authorization/token/password/API key，不能只脱敏当前 regex 命中的片段。需要人工或模型确认时用 source_file + line 通过文件工具局部查看。`rule_matches` 只是 HAE-style 第一层候选（group/kind/color/scope/severity 供分流），不等于真实漏洞或真实 secret。
+- `signals` 对每个 source 只建一次换行字节索引，所有 regex 命中的行号与上下文查询都复用该索引；minified 单行 bundle 的上下文还必须限制在命中点前后各 2 KiB，再做脱敏和 180 字符渲染。不要恢复成每次扫描 source 前缀或对整条 megabyte 单行反复 `replace`/redact，否则多命中 bundle 会退化为 O(matches × source_len)。索引使用 regex 返回的 UTF-8 字节 offset，不改变 Unicode 行号语义。
 - `js_api_extract` CLI 默认 `--max-file-bytes 1500000`，超大 bundle 会返回 `status="partial"` 和 `skipped_js_files`，不要为了一个 3MB+ webpack/umi bundle 把本地静态分析卡死；需要深挖时改成局部文件/片段复核。
 - `scripts/js_api_pipeline_test.mjs --ai-filter true` 的 DeepSeek/AI 复核是抽样 triage：payload 带 `sampling`，结果带 `input_sampling`。AI 分类只能解释已包含的 sample，不能覆盖 deterministic `endpoints_total` / `secret_candidates_total` 全量统计。
 - `#![forbid(unsafe_code)]` + `#![deny(warnings)]`：改动不能引入 warning。

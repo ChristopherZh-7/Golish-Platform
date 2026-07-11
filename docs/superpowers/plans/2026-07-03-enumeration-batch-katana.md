@@ -1,5 +1,9 @@
 # 枚举阶段批次化 + 每资产终态收口 实现计划
 
+> Raw-IP / DNS-only `not_applicable` 注入已被
+> `docs/design/2026-07-10-enumeration-origin-terminal-closeout.md` 取代；当前实现只对
+> 可物化的 exact Web Origin 建立四轴分母，其余 host 直接排除。
+
 > 面向 AI 工作者：按 `.cursor/skills/executing-plans` 逐任务实现。设计源：
 > `docs/design/2026-07-03-enumeration-batch-and-terminal-coverage.md`。
 > 用户指示：**一口气实现全部，中途不跑 precommit / 大测试，最后统一修 build**。
@@ -55,6 +59,14 @@
 ### Task 1.2 · js_extract_apis 批次
 **文件**：`js_extract_apis.rs`
 **步骤**：同 1.1（`target_urls`），抽 `execute_single`，聚合 PARAM/JSAPI 计数。schema 增 `target_urls`。测试批次解析。
+
+2026-07-11 可观测性补项：batch 只在 `results[].result` 放
+`bounded_batch_summary_v1`，每 target ≤8 KiB；白名单保留 status/completion、
+JSAPI/PARAM outcome/persisted flags、全部计数、partial/retry 诊断、最多 3 个 endpoint
+sample 与小候选 sample、capture manifest/DB 引用。single-target 完整结果不变。
+`response_parsing.rs` 为 batch 生成逐 root `root_diagnostics`，endpoint 数必须读
+`endpoints_total`，不能因顶层无 `endpoints` 误报 0。先加红测，再验证单 root 上限、
+50-root 聚合 ≤512 KiB、model-visible counts/outcomes。
 
 ### Task 1.3 · route_probe_paths 批次
 **文件**：`route_probe_paths.rs`

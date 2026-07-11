@@ -239,7 +239,10 @@ mod tests {
 
         let enumeration =
             stage_methodology_md(StageKind::Enumeration).expect("enumeration playbook");
-        assert!(enumeration.contains("tested_units"));
+        assert!(!enumeration.contains("tested_units"));
+        assert!(enumeration.contains("fresh exact-origin `technique_outcomes`"));
+        assert!(enumeration.contains("enum_preflight_web_origins"));
+        assert!(enumeration.contains("`coverage: []`"));
 
         // Stages without a playbook return None (charter appends nothing).
         assert!(stage_methodology_md(StageKind::Cleanup).is_none());

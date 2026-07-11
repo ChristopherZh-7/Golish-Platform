@@ -197,10 +197,11 @@ fn test_prober_has_active_surface_tools() {
     assert!(has_tool(prober, "eas_probe_http_liveness"));
     assert!(has_tool(prober, "eas_discover_ports"));
     assert!(has_tool(prober, "eas_fingerprint_services"));
+    assert!(has_tool(prober, "eas_fingerprint_web_stack"));
     assert!(!has_tool(prober, "pentest_run"));
     assert!(!has_tool(prober, "pentest_list_tools"));
-    assert!(has_tool(prober, "wait_for_background_jobs"));
-    assert!(has_tool(prober, "manage_targets"));
+    assert!(!has_tool(prober, "wait_for_background_jobs"));
+    assert!(!has_tool(prober, "manage_targets"));
     assert!(has_tool(prober, "list_in_scope_targets"));
     // L1b (design 2026-06-24): Prober gets the ranked attack-surface seed worklist.
     assert!(has_tool(prober, "list_attack_surface_seeds"));
@@ -232,11 +233,24 @@ fn test_prober_prompt_is_active_surface() {
     assert!(prompt.contains("eas_probe_http_liveness"));
     assert!(prompt.contains("eas_discover_ports"));
     assert!(prompt.contains("eas_fingerprint_services"));
+    assert!(prompt.contains("eas_fingerprint_web_stack"));
+    assert!(prompt.contains("confirmed HTTP(S)"));
     assert!(prompt.contains("port"));
     assert!(prompt.contains("list_attack_surface_seeds"));
-    assert!(prompt.contains("wait_for_background_jobs"));
+    assert!(prompt.contains("All four wrappers are forced foreground"));
+    assert!(prompt.contains("guarded business rows and evidence have synchronously landed"));
+    assert!(prompt.contains("legacy `background` compatibility field is deprecated and ignored"));
+    assert!(prompt.contains("retry only the corresponding unfinished asset-technique cells"));
+    assert!(!prompt.contains("background:true"));
+    assert!(!prompt.contains("soft timeout"));
+    assert!(!prompt.contains("wait_for_background_jobs"));
+    assert!(!prompt.contains("check_job"));
+    assert!(!prompt.contains("kill_job"));
     assert!(prompt.contains("found cells are credited from the database"));
     assert!(prompt.contains("Do NOT hand-copy found coverage cells"));
+    assert!(prompt.contains("Never include a bare IP, IP:port, or CIDR"));
+    assert!(prompt.contains("run eas_discover_ports first"));
+    assert!(prompt.contains("WEB-FINGERPRINT"));
     assert!(prompt.contains("HTTP liveness alone"));
     assert!(prompt.contains("do NOT call httpx or pentest_run directly"));
     assert!(prompt.contains("do NOT call nmap/naabu/masscan or pentest_run directly"));
@@ -251,19 +265,20 @@ fn test_enumerator_has_content_enum_tools() {
     // the active content-enumeration mapper split out of the Pentester (mirroring how Prober
     // was split for external_attack_surface). It must carry the content-probe tools
     // (route_probe_paths for DIR, enum_crawl_same_origin_urls for bounded crawler
-    // URL sources, and js_collect/js_extract_apis for JS-API/PARAM extraction)
+    // URL sources, and browser_collect_js_api/js_extract_apis for JS-API/PARAM extraction)
     // + target state + the stage submit tool, and must NOT carry the passive provider recon_*
     // tools (Recon's) nor the Pentester's offensive surface (exploits, graph writes, vault).
     let agents = create_default_sub_agents();
     let enumerator = agents.iter().find(|a| a.id == "enumerator").unwrap();
 
     // Active content enumeration + stage submission tools present.
+    assert!(has_tool(enumerator, "enum_preflight_web_origins"));
     assert!(has_tool(enumerator, "enum_crawl_same_origin_urls"));
     assert!(!has_tool(enumerator, "pentest_run"));
     assert!(!has_tool(enumerator, "pentest_list_tools"));
     assert!(has_tool(enumerator, "wait_for_background_jobs"));
     assert!(has_tool(enumerator, "browser_collect_js_api"));
-    assert!(has_tool(enumerator, "js_collect"));
+    assert!(!has_tool(enumerator, "js_collect"));
     assert!(has_tool(enumerator, "js_extract_apis"));
     assert!(has_tool(enumerator, "route_probe_paths"));
     assert!(has_tool(enumerator, "stage_worklist_status"));
@@ -297,27 +312,60 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(prompt.contains("director"));
     assert!(prompt.contains("param"));
     assert!(prompt.contains("browser_collect_js_api"));
-    assert!(prompt.contains("browser_collect_js_api(target_urls=[{target_id, target_url}"));
+    assert!(prompt.contains("browser_seed.target_urls"));
+    assert!(prompt
+        .contains("Prefer target_urls=<enum_crawl_same_origin_urls.browser_seed.target_urls>"));
     assert!(prompt.contains("DB coverage lands against the exact target_id"));
     assert!(prompt.contains("full root_url"));
     assert!(prompt.contains("do NOT call query_target_data per target"));
-    assert!(prompt.contains("not a substitute"));
+    assert!(prompt.contains("browser closure crawl is the primary collector"));
     assert!(prompt.contains("ai_assist"));
     assert!(prompt.contains("recipe"));
     assert!(prompt.contains("js_extract_apis"));
     assert!(prompt.contains("route_probe_paths"));
     assert!(prompt.contains("stage_worklist_status"));
     assert!(prompt.contains("stage_worklist_next"));
+    assert!(prompt.contains("stage_worklist_next(prefer=[\"pending\",\"error\",\"partial\"])"));
     assert!(prompt.contains("ready_to_submit=true"));
+    assert!(prompt.contains("enum_preflight_web_origins"));
+    assert!(prompt.contains(
+        "construct a fresh enum_preflight_web_origins origin object containing only {target_id,target_url}"
+    ));
+    assert!(prompt.contains(
+        "do not pass root_url, base_url, unfinished_techniques, or the whole page object"
+    ));
+    assert!(!prompt.contains("exact_origin_page verbatim into enum_preflight_web_origins"));
+    assert!(prompt.contains("Any HTTP response means reachable"));
+    assert!(prompt.contains("non-empty arrays are rejected"));
+    assert!(prompt.contains("coverage: []"));
+    assert!(prompt.contains("at most 200 cells across at most 50 distinct exact-origin roots"));
+    assert!(prompt.contains("deduplicate its items by asset"));
     assert!(prompt.contains("work_item_id"));
-    assert!(prompt.contains("max_runtime_ms=60000"));
-    assert!(prompt.contains("max_requests=2000"));
+    assert!(prompt.contains("omit both max_runtime_ms and max_requests"));
+    assert!(prompt.contains("also omit batch_max_runtime_ms"));
+    assert!(prompt.contains("scheduling-start ceiling, not a cancellation deadline"));
+    assert!(!prompt.contains("max_runtime_ms=60000"));
+    assert!(!prompt.contains("max_requests=1000"));
+    assert!(prompt.contains("batch_concurrency=4"));
+    assert!(prompt.contains("omit wordlist_recursion_depth"));
+    assert!(prompt.contains("explicit 1..6"));
+    assert!(prompt.contains("root wordlist"));
+    assert!(prompt.contains("candidate-generation limit remains non-terminal"));
     assert!(prompt.contains("request_limited_partial"));
+    assert!(prompt.contains("timeout_partial / request_limited_partial are non-terminal"));
+    assert!(prompt.contains("v8 checkpoint"));
+    assert!(prompt.contains("automatic_retry_allowed=false"));
+    assert!(prompt.contains("retry_exhausted_*"));
+    assert!(prompt.contains(
+        "all four exact-origin axes: GOLISH-ENUM-JS, GOLISH-ENUM-JSAPI, GOLISH-ENUM-DIR, and GOLISH-ENUM-PARAM"
+    ));
+    assert!(prompt.contains("Business rows are discovery context only"));
+    assert!(prompt.contains("Do not hand-write found, empty, blocked, or not_applicable coverage"));
     assert!(prompt.contains("Do not call external directory tools"));
     assert!(prompt.contains("list_enumeration_web_roots"));
     assert!(prompt.contains("enum_crawl_same_origin_urls"));
     assert!(prompt.contains("do NOT call katana or pentest_run directly"));
-    assert!(prompt.contains("DB cannot derive"));
+    assert!(!prompt.contains("DB cannot derive"));
     assert!(prompt.contains("check_stage_asset_coverage"));
     assert!(prompt.contains("web_root_enumerated"));
     assert!(prompt.contains("api_endpoints_discovered"));
@@ -384,11 +432,11 @@ fn test_browser_prompt_prefers_browser_closure_collection() {
     assert!(prompt.contains("browser_collect_js_api"));
     assert!(prompt.contains("Use `browser_collect_js_api` first"));
     assert!(prompt.contains("crawl_mode=\"standard\""));
-    assert!(prompt.contains("ai_assist=true"));
+    assert!(prompt.contains("ai_assist=false"));
     assert!(prompt.contains("same standard mode"));
     assert!(prompt.contains("bounded `recipe`"));
     assert!(prompt.contains("js_extract_apis"));
-    assert!(prompt.contains("not as a replacement"));
+    assert!(prompt.contains("browser_collect_js_api` is the collector"));
 }
 
 #[test]

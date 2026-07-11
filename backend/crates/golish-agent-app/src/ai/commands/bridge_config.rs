@@ -39,30 +39,98 @@ pub async fn configure_bridge(
         setup_bridge_mcp_tools(bridge, state).await;
         register_pentest_tools(bridge, state, app_handle).await;
         register_visible_pty_tool(bridge, state).await;
-        // P3-c: the listener also books successful background jobs into the
-        // evidence ledger, so it needs a repo handle + the project-path scope.
-        let bg_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> =
-            std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
-                state.db_pool.clone(),
-            ));
-        let pp = bridge
-            .workspace()
-            .read()
-            .await
-            .to_string_lossy()
-            .to_string();
-        let bg_project_path = if pp == "." || pp.is_empty() {
-            None
-        } else {
-            Some(pp)
-        };
-        spawn_background_output_listener(bridge);
-        spawn_background_completion_listener(
-            bridge,
-            bg_repo,
+    }
+}
+
+/// Fully subscribed but not yet running listener pair. GUI init constructs this
+/// only after every fallible/async bridge setup step, then activates it inside
+/// the stable-session publish transition. The overlap with the old subscriber
+/// prevents a completion gap; `JobCompletion::try_claim_processing` makes that
+/// overlap exactly-once for evidence/DB side effects.
+pub(crate) struct PreparedBridgeBackgroundListeners {
+    session_id: String,
+    output_rx: tokio::sync::broadcast::Receiver<golish_app_core::background_jobs::JobOutputChunk>,
+    completion_rx:
+        tokio::sync::broadcast::Receiver<golish_app_core::background_jobs::JobCompletion>,
+    db_repo: Arc<dyn golish_agent_kit::db_traits::DbRepoProvider>,
+    db_pool: Arc<sqlx::PgPool>,
+    project_path: Option<String>,
+    retired: tokio::sync::watch::Receiver<bool>,
+}
+
+pub(crate) async fn prepare_bridge_background_listeners(
+    bridge: &AgentBridge,
+    state: &AgentState,
+) -> Option<PreparedBridgeBackgroundListeners> {
+    if bridge
+        .event_session_id()
+        .is_some_and(golish_core::is_title_gen_session_id)
+    {
+        return None;
+    }
+    let session_id = bridge.event_session_id()?.to_string();
+    // P3-c: the listener also books successful background jobs into the
+    // evidence ledger, so it needs a repo handle + the project-path scope.
+    let bg_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> =
+        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
             state.db_pool.clone(),
-            bg_project_path,
-        );
+        ));
+    let pp = bridge
+        .workspace()
+        .read()
+        .await
+        .to_string_lossy()
+        .to_string();
+    let bg_project_path = if pp == "." || pp.is_empty() {
+        None
+    } else {
+        Some(pp)
+    };
+    // Claim only after the last await. Once claimed, both tasks are spawned
+    // synchronously so cancellation cannot strand a published bridge in a
+    // permanently "started" state with no listeners.
+    let retired = bridge.claim_background_listener_lifecycle()?;
+    let manager = golish_app_core::background_jobs::manager();
+    Some(PreparedBridgeBackgroundListeners {
+        session_id,
+        output_rx: manager.subscribe_output_chunks(),
+        completion_rx: manager.subscribe_completions(),
+        db_repo: bg_repo,
+        db_pool: state.db_pool.clone(),
+        project_path: bg_project_path,
+        retired,
+    })
+}
+
+pub(crate) fn activate_bridge_background_listeners(
+    bridge: &AgentBridge,
+    prepared: PreparedBridgeBackgroundListeners,
+) {
+    let event_tx = bridge.get_or_create_event_tx();
+    let notes = bridge.background_notes_handle();
+    spawn_background_output_listener(
+        prepared.session_id.clone(),
+        event_tx.clone(),
+        prepared.output_rx,
+        prepared.retired.clone(),
+    );
+    spawn_background_completion_listener(
+        prepared.session_id,
+        notes,
+        event_tx,
+        prepared.completion_rx,
+        prepared.db_repo,
+        prepared.db_pool,
+        prepared.project_path,
+        prepared.retired,
+    );
+}
+
+/// Convenience for standalone bridges that have no replacement handoff. GUI
+/// init uses prepare + publish-transition activation instead.
+pub async fn configure_bridge_background_listeners(bridge: &AgentBridge, state: &AgentState) {
+    if let Some(prepared) = prepare_bridge_background_listeners(bridge, state).await {
+        activate_bridge_background_listeners(bridge, prepared);
     }
 }
 
@@ -70,31 +138,46 @@ pub async fn configure_bridge(
 /// output event stream. The frontend already knows how to append
 /// `ToolOutputChunk` to shell-like tool panels, so attributed `pentest_run`
 /// background jobs become visible without a separate UI path.
-fn spawn_background_output_listener(bridge: &AgentBridge) {
-    use golish_core::events::AiEvent;
-
-    let Some(session_id) = bridge.event_session_id().map(str::to_string) else {
-        tracing::debug!("[configure_bridge] No session id; skipping background output listener");
-        return;
-    };
-    let event_tx = bridge.get_or_create_event_tx();
-    let mut rx = golish_app_core::background_jobs::manager().subscribe_output_chunks();
-
+fn spawn_background_output_listener(
+    session_id: String,
+    event_tx: tokio::sync::mpsc::UnboundedSender<golish_core::events::AiEvent>,
+    mut rx: tokio::sync::broadcast::Receiver<golish_app_core::background_jobs::JobOutputChunk>,
+    mut retired: tokio::sync::watch::Receiver<bool>,
+) {
     tokio::spawn(async move {
         loop {
-            match rx.recv().await {
-                Ok(chunk) => {
-                    if chunk.session_id.as_deref() != Some(session_id.as_str()) {
-                        continue;
+            let received = tokio::select! {
+                biased;
+                changed = retired.changed() => {
+                    if changed.is_err() || *retired.borrow() {
+                        let mut remaining_at_retirement = rx.len();
+                        while remaining_at_retirement > 0 {
+                            match rx.try_recv() {
+                                Ok(chunk) => {
+                                    remaining_at_retirement -= 1;
+                                    process_background_output_chunk(&session_id, &event_tx, chunk);
+                                }
+                                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(dropped)) => {
+                                    remaining_at_retirement = remaining_at_retirement.saturating_sub(
+                                        usize::try_from(dropped).unwrap_or(usize::MAX),
+                                    );
+                                    tracing::warn!(
+                                        "[background-output-listener] retirement drain lagged; dropped {} chunk(s)",
+                                        dropped
+                                    );
+                                }
+                                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                                | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                            }
+                        }
+                        break;
                     }
-                    let _ = event_tx.send(AiEvent::ToolOutputChunk {
-                        request_id: chunk.request_id,
-                        tool_name: chunk.tool_name,
-                        chunk: chunk.chunk,
-                        stream: chunk.stream.to_string(),
-                        source: chunk.source,
-                    });
+                    continue;
                 }
+                received = rx.recv() => received,
+            };
+            match received {
+                Ok(chunk) => process_background_output_chunk(&session_id, &event_tx, chunk),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
                     tracing::warn!(
                         "[background-output-listener] lagged; dropped {} chunk(s)",
@@ -106,6 +189,25 @@ fn spawn_background_output_listener(bridge: &AgentBridge) {
         }
     });
     tracing::info!("[configure_bridge] Started background-job output listener");
+}
+
+fn process_background_output_chunk(
+    session_id: &str,
+    event_tx: &tokio::sync::mpsc::UnboundedSender<golish_core::events::AiEvent>,
+    chunk: golish_app_core::background_jobs::JobOutputChunk,
+) {
+    use golish_core::events::AiEvent;
+
+    if chunk.session_id.as_deref() != Some(session_id) || !chunk.try_claim_processing() {
+        return;
+    }
+    let _ = event_tx.send(AiEvent::ToolOutputChunk {
+        request_id: chunk.request_id,
+        tool_name: chunk.tool_name,
+        chunk: chunk.chunk,
+        stream: chunk.stream.to_string(),
+        source: chunk.source,
+    });
 }
 
 /// Wire this session's background-job completions back into the agent.
@@ -122,122 +224,73 @@ fn spawn_background_output_listener(bridge: &AgentBridge) {
 ///
 /// [`JobCompletion`]: golish_app_core::background_jobs::JobCompletion
 fn spawn_background_completion_listener(
-    bridge: &AgentBridge,
+    session_id: String,
+    notes: Arc<std::sync::Mutex<Vec<String>>>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<golish_core::events::AiEvent>,
+    mut rx: tokio::sync::broadcast::Receiver<golish_app_core::background_jobs::JobCompletion>,
     db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider>,
     db_pool: std::sync::Arc<sqlx::PgPool>,
     project_path: Option<String>,
+    mut retired: tokio::sync::watch::Receiver<bool>,
 ) {
-    use golish_core::events::AiEvent;
-
-    let Some(session_id) = bridge.event_session_id().map(str::to_string) else {
-        tracing::debug!(
-            "[configure_bridge] No session id; skipping background completion listener"
-        );
-        return;
-    };
-    let notes = bridge.background_notes_handle();
-    let event_tx = bridge.get_or_create_event_tx();
-    let mut rx = golish_app_core::background_jobs::manager().subscribe_completions();
-
     tokio::spawn(async move {
         loop {
-            match rx.recv().await {
-                Ok(jc) => {
-                    // Only handle jobs this session started.
-                    if jc.session_id.as_deref() != Some(session_id.as_str()) {
-                        continue;
+            let received = tokio::select! {
+                biased;
+                changed = retired.changed() => {
+                    if changed.is_err() || *retired.borrow() {
+                        // A completion broadcast just before the candidate's
+                        // pre-subscription exists only in this old queue. Drain
+                        // it before exit; broadcasts after pre-subscription are
+                        // also seen by the new generation and deduplicated by
+                        // the shared processing claim.
+                        let mut remaining_at_retirement = rx.len();
+                        while remaining_at_retirement > 0 {
+                            match rx.try_recv() {
+                                Ok(completion) => {
+                                    remaining_at_retirement -= 1;
+                                    process_background_completion(
+                                        &session_id,
+                                        &notes,
+                                        &event_tx,
+                                        &db_repo,
+                                        &db_pool,
+                                        project_path.as_deref(),
+                                        completion,
+                                    )
+                                    .await;
+                                }
+                                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(dropped)) => {
+                                    remaining_at_retirement = remaining_at_retirement.saturating_sub(
+                                        usize::try_from(dropped).unwrap_or(usize::MAX),
+                                    );
+                                    tracing::warn!(
+                                        "[background-listener] retirement drain lagged; dropped {} completion(s)",
+                                        dropped
+                                    );
+                                }
+                                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                                | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                            }
+                        }
+                        break;
                     }
-
-                    tracing::info!(
-                        message = "[background-listener] job finished",
-                        session_id = %session_id,
-                        job_id = %jc.job_id,
-                        status = %jc.status.as_str(),
-                    );
-
-                    let _ = event_tx.send(AiEvent::ToolBackgroundCompleted {
-                        job_id: jc.job_id.clone(),
-                        command: jc.command.clone(),
-                        status: jc.status.as_str().to_string(),
-                        exit_code: jc.exit_code,
-                        stdout_tail: jc.stdout_tail.clone(),
-                        stderr_tail: jc.stderr_tail.clone(),
-                        duration_ms: jc.duration_ms,
-                    });
-
-                    // P3-c: book the (successful) job into the evidence ledger so
-                    // the agent can cite a real id next turn.
-                    let evidence_id = maybe_append_background_evidence(
+                    continue;
+                }
+                received = rx.recv() => received,
+            };
+            match received {
+                Ok(completion) => {
+                    process_background_completion(
+                        &session_id,
+                        &notes,
+                        &event_tx,
                         &db_repo,
-                        &session_id,
-                        project_path.as_deref(),
-                        &jc,
-                    )
-                    .await;
-                    maybe_store_background_structured_output(
                         &db_pool,
                         project_path.as_deref(),
-                        &jc,
+                        completion,
                     )
                     .await;
-                    maybe_store_background_batch_liveness_outcomes(
-                        &db_pool,
-                        &session_id,
-                        project_path.as_deref(),
-                        &jc,
-                        evidence_id,
-                    )
-                    .await;
-                    maybe_store_background_batch_port_outcomes(
-                        &db_pool,
-                        &session_id,
-                        project_path.as_deref(),
-                        &jc,
-                        evidence_id,
-                    )
-                    .await;
-                    maybe_store_background_batch_service_outcomes(
-                        &db_pool,
-                        &session_id,
-                        project_path.as_deref(),
-                        &jc,
-                        evidence_id,
-                    )
-                    .await;
-                    maybe_store_background_vuln_outcomes(
-                        &db_pool,
-                        &session_id,
-                        project_path.as_deref(),
-                        &jc,
-                        evidence_id,
-                    )
-                    .await;
-
-                    // Observability (design 2026-06-05): surface background-job
-                    // evidence as a first-class HarnessTrace so it appears in the
-                    // timeline. This path was the worst blind spot — backgrounded
-                    // scans' real ids previously only reached the agent via a
-                    // next-turn prompt note, invisible to any run reconstruction.
-                    if let Some(eid) = evidence_id {
-                        let evidence_kind = background_evidence_kind(&jc.command);
-                        let _ = event_tx.send(AiEvent::HarnessTrace {
-                            operation_id: session_id.clone(),
-                            stage: String::new(),
-                            agent_path: "main".to_string(),
-                            trace: golish_core::events::HarnessTraceKind::EvidenceBooked {
-                                tool: evidence_kind.to_string(),
-                                evidence_id: eid,
-                                source: "background".to_string(),
-                            },
-                        });
-                    }
-
-                    let note = format_background_note(&jc, evidence_id);
-                    match notes.lock() {
-                        Ok(mut q) => q.push(note),
-                        // Recover the Vec without dropping the note on poison.
-                        Err(poisoned) => poisoned.into_inner().push(note),
-                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
                     tracing::warn!(
@@ -250,6 +303,90 @@ fn spawn_background_completion_listener(
         }
     });
     tracing::info!("[configure_bridge] Started background-job completion listener");
+}
+
+async fn process_background_completion(
+    session_id: &str,
+    notes: &Arc<std::sync::Mutex<Vec<String>>>,
+    event_tx: &tokio::sync::mpsc::UnboundedSender<golish_core::events::AiEvent>,
+    db_repo: &Arc<dyn golish_agent_kit::db_traits::DbRepoProvider>,
+    db_pool: &Arc<sqlx::PgPool>,
+    project_path: Option<&str>,
+    jc: golish_app_core::background_jobs::JobCompletion,
+) {
+    use golish_core::events::AiEvent;
+
+    if jc.session_id.as_deref() != Some(session_id) {
+        return;
+    }
+    if !jc.try_claim_processing() {
+        tracing::debug!(
+            job_id = %jc.job_id,
+            session_id,
+            "background completion already claimed by another bridge generation"
+        );
+        return;
+    }
+
+    tracing::info!(
+        message = "[background-listener] job finished",
+        session_id,
+        job_id = %jc.job_id,
+        status = %jc.status.as_str(),
+    );
+
+    let _ = event_tx.send(AiEvent::ToolBackgroundCompleted {
+        job_id: jc.job_id.clone(),
+        command: jc.command.clone(),
+        status: jc.status.as_str().to_string(),
+        exit_code: jc.exit_code,
+        stdout_tail: jc.stdout_tail.clone(),
+        stderr_tail: jc.stderr_tail.clone(),
+        duration_ms: jc.duration_ms,
+    });
+
+    let evidence_id =
+        maybe_append_background_evidence(db_repo, session_id, project_path, &jc).await;
+    maybe_store_background_structured_output(db_pool, project_path, &jc).await;
+    maybe_store_background_batch_liveness_outcomes(
+        db_pool,
+        session_id,
+        project_path,
+        &jc,
+        evidence_id,
+    )
+    .await;
+    maybe_store_background_batch_port_outcomes(db_pool, session_id, project_path, &jc, evidence_id)
+        .await;
+    maybe_store_background_batch_service_outcomes(
+        db_pool,
+        session_id,
+        project_path,
+        &jc,
+        evidence_id,
+    )
+    .await;
+    maybe_store_background_vuln_outcomes(db_pool, session_id, project_path, &jc, evidence_id).await;
+
+    if let Some(evidence_id) = evidence_id {
+        let evidence_kind = background_evidence_kind(&jc.command);
+        let _ = event_tx.send(AiEvent::HarnessTrace {
+            operation_id: session_id.to_string(),
+            stage: String::new(),
+            agent_path: "main".to_string(),
+            trace: golish_core::events::HarnessTraceKind::EvidenceBooked {
+                tool: evidence_kind.to_string(),
+                evidence_id,
+                source: "background".to_string(),
+            },
+        });
+    }
+
+    let note = format_background_note(&jc, evidence_id);
+    match notes.lock() {
+        Ok(mut queue) => queue.push(note),
+        Err(poisoned) => poisoned.into_inner().push(note),
+    }
 }
 
 async fn maybe_store_background_structured_output(
@@ -280,6 +417,7 @@ async fn maybe_store_background_structured_output(
         project_path,
         golish_pentest::output_store::StoreContext {
             organization_id: jc.organization_id,
+            ..Default::default()
         },
     )
     .await
@@ -458,7 +596,7 @@ async fn maybe_store_background_batch_port_outcomes(
     jc: &golish_app_core::background_jobs::JobCompletion,
     evidence_id: Option<i64>,
 ) {
-    use golish_agent_kit::harness::evidence_facts::TECH_EAS_PORT;
+    use golish_agent_kit::harness::evidence_facts::{TECH_EAS_LIVENESS, TECH_EAS_PORT};
     use golish_app_core::background_jobs::JobStatus;
 
     if jc.status != JobStatus::Done {
@@ -518,8 +656,46 @@ async fn maybe_store_background_batch_port_outcomes(
     )
     .await;
 
+    let target_assets = targets
+        .iter()
+        .filter(|target| {
+            !(target.contains('/')
+                && !target.starts_with("http://")
+                && !target.starts_with("https://"))
+        })
+        .filter_map(|target| golish_pentest_domain::canonical_asset_key(target).map(|key| key.key))
+        .filter(|asset| allowed_assets.contains(asset))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let existing_open_ports =
+        match golish_db::repo::coverage_truth::confirmed_open_service_ports_for_assets(
+            db_pool,
+            Some(organization_id),
+            project_path,
+            &target_assets,
+        )
+        .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| (row.asset, row.ports))
+                .collect::<HashMap<_, _>>(),
+            Err(err) => {
+                tracing::warn!(
+                    target: "harness::evidence",
+                    job_id = %jc.job_id,
+                    org_id = %organization_id,
+                    error = %err,
+                    "background batch port outcome could not read existing open ports"
+                );
+                HashMap::new()
+            }
+        };
+
     let mut stored = 0usize;
     let mut skipped = 0usize;
+    let mut stale_open_skipped = 0usize;
     for target in targets {
         if target.contains('/') && !target.starts_with("http://") && !target.starts_with("https://")
         {
@@ -536,11 +712,16 @@ async fn maybe_store_background_batch_port_outcomes(
             continue;
         }
         let count = open_counts.get(&asset).copied().unwrap_or(0);
+        if should_skip_empty_port_outcome(count, existing_open_ports.get(&asset)) {
+            skipped += 1;
+            stale_open_skipped += 1;
+            continue;
+        }
         let outcome = if count > 0 { "found" } else { "empty" };
         let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
             organization_id,
             run_id: session_id.to_string(),
-            asset,
+            asset: asset.clone(),
             technique: TECH_EAS_PORT.to_string(),
             outcome: outcome.to_string(),
             source: Some(source.clone()),
@@ -561,6 +742,29 @@ async fn maybe_store_background_batch_port_outcomes(
                 );
             }
         }
+        let liveness_write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
+            organization_id,
+            run_id: session_id.to_string(),
+            asset,
+            technique: TECH_EAS_LIVENESS.to_string(),
+            outcome: outcome.to_string(),
+            source: Some(source.clone()),
+            query: Some(jc.command.clone()),
+            result_count: Some(count.min(i32::MAX as usize) as i32),
+            confidence: None,
+            evidence_ids: vec![evidence_id],
+            collected_at: Some(chrono::Utc::now()),
+        };
+        if let Err(err) =
+            golish_db::repo::technique_outcomes::upsert(db_pool, &liveness_write).await
+        {
+            tracing::warn!(
+                target: "harness::evidence",
+                job_id = %jc.job_id,
+                error = %err,
+                "background batch port-derived liveness outcome upsert failed"
+            );
+        }
     }
 
     if stored > 0 || skipped > 0 {
@@ -571,6 +775,7 @@ async fn maybe_store_background_batch_port_outcomes(
             source = %source,
             stored,
             skipped,
+            stale_open_skipped,
             "background batch port outcomes stored"
         );
     }
@@ -583,7 +788,9 @@ async fn maybe_store_background_batch_service_outcomes(
     jc: &golish_app_core::background_jobs::JobCompletion,
     evidence_id: Option<i64>,
 ) {
-    use golish_agent_kit::harness::evidence_facts::TECH_EAS_SERVICE_FINGERPRINT;
+    use golish_agent_kit::harness::evidence_facts::{
+        TECH_EAS_SERVICE_FINGERPRINT, TECH_EAS_WEB_FINGERPRINT,
+    };
     use golish_app_core::background_jobs::JobStatus;
 
     if jc.status != JobStatus::Done {
@@ -649,6 +856,57 @@ async fn maybe_store_background_batch_service_outcomes(
         &web_hits,
     )
     .await;
+    if tool == "whatweb" {
+        let mut stored = 0usize;
+        let mut skipped = 0usize;
+        for target in targets {
+            let Some(asset) =
+                golish_pentest_domain::canonical_asset_key(&target).map(|key| key.key)
+            else {
+                skipped += 1;
+                continue;
+            };
+            if !allowed_assets.contains(&asset) {
+                skipped += 1;
+                continue;
+            }
+            let found = batch_output_mentions_target(&retained_stdout, &asset);
+            let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
+                organization_id,
+                run_id: session_id.to_string(),
+                asset,
+                technique: TECH_EAS_WEB_FINGERPRINT.to_string(),
+                outcome: if found { "found" } else { "empty" }.to_string(),
+                source: Some(source.clone()),
+                query: Some(jc.command.clone()),
+                result_count: Some(if found { 1 } else { 0 }),
+                confidence: None,
+                evidence_ids: vec![evidence_id],
+                collected_at: Some(chrono::Utc::now()),
+            };
+            match golish_db::repo::technique_outcomes::upsert(db_pool, &write).await {
+                Ok(()) => stored += 1,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "harness::evidence",
+                        job_id = %jc.job_id,
+                        error = %err,
+                        "background batch web-fingerprint outcome upsert failed"
+                    );
+                }
+            }
+        }
+        tracing::info!(
+            target: "harness::evidence",
+            job_id = %jc.job_id,
+            org_id = %organization_id,
+            source = %source,
+            stored,
+            skipped,
+            "background whatweb WEB-FINGERPRINT outcomes stored without SERVICE-FINGERPRINT outcome"
+        );
+        return;
+    }
     let service_hits = match tool.as_str() {
         "nmap" => nmap_service_hits(&retained_stdout),
         _ => Vec::new(),
@@ -2056,6 +2314,10 @@ fn open_port_counts(tool: &str, stdout: &str) -> HashMap<String, usize> {
     counts
 }
 
+fn should_skip_empty_port_outcome(count: usize, existing_open_ports: Option<&Vec<u16>>) -> bool {
+    count == 0 && existing_open_ports.is_some_and(|ports| !ports.is_empty())
+}
+
 fn open_port_hits(tool: &str, stdout: &str) -> Vec<OpenPortHit> {
     let mut hits = Vec::new();
     for line in stdout
@@ -2796,7 +3058,10 @@ fn configure_domain_hooks(bridge: &mut AgentBridge, state: &AgentState) {
                     &cmd,
                     &stdout,
                     project_path.as_deref(),
-                    golish_pentest::output_store::StoreContext { organization_id },
+                    golish_pentest::output_store::StoreContext {
+                        organization_id,
+                        ..Default::default()
+                    },
                 )
                 .await;
             })
@@ -3184,7 +3449,17 @@ mod tests {
             stdout_tail: "open: 80,443".to_string(),
             stderr_tail: String::new(),
             duration_ms: 4200,
+            processing_claim: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    #[test]
+    fn completion_processing_claim_is_shared_across_broadcast_clones() {
+        let completion = sample_completion();
+        let overlapping_generation = completion.clone();
+
+        assert!(completion.try_claim_processing());
+        assert!(!overlapping_generation.try_claim_processing());
     }
 
     #[test]
@@ -3377,6 +3652,14 @@ mod tests {
         let counts = open_port_counts("naabu", "Example.COM:443\n1.2.3.4:80\nnoise\n");
         assert_eq!(counts.get("example.com"), Some(&1));
         assert_eq!(counts.get("1.2.3.4"), Some(&1));
+    }
+
+    #[test]
+    fn empty_port_outcome_is_skipped_when_db_still_has_open_ports() {
+        assert!(should_skip_empty_port_outcome(0, Some(&vec![82])));
+        assert!(!should_skip_empty_port_outcome(1, Some(&vec![82])));
+        assert!(!should_skip_empty_port_outcome(0, Some(&Vec::new())));
+        assert!(!should_skip_empty_port_outcome(0, None));
     }
 
     #[test]

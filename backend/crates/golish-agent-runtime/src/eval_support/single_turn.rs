@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::agentic_loop::{
     AgenticLoopConfig, AgenticLoopContext, LoopAccessControl, LoopEventRefs, LoopLlmRefs,
+    StageRunReentryGuard,
 };
 use golish_agent_kit::agent_mode::AgentMode;
 use golish_agent_kit::hitl::ApprovalRecorder;
@@ -191,6 +192,7 @@ where
         harness_org_id: None,
         harness_org_id_source: None,
         harness_operation_id: None,
+        stage_run_reentry_guard: Arc::new(StageRunReentryGuard::default()),
     };
 
     let capabilities = ModelCapabilities::detect(&config.provider_name, &config.model_name);
@@ -430,6 +432,7 @@ where
         harness_org_id: None,
         harness_org_id_source: None,
         harness_operation_id: None,
+        stage_run_reentry_guard: Arc::new(StageRunReentryGuard::default()),
     };
 
     // Detect capabilities from provider/model

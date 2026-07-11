@@ -106,9 +106,59 @@ pub async fn create_pool(connection_string: &str) -> Result<PoolInfo> {
     Ok(PoolInfo { pool, has_pgvector })
 }
 
-/// Attempt to fix common migration issues:
-/// 1. Dirty migrations (success=false) left by interrupted runs
-/// 2. Checksum mismatches from edited migration files during development
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+struct MigrationMetadata {
+    version: i64,
+    description: String,
+    success: bool,
+    checksum: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChecksumRepair {
+    version: i64,
+    description: String,
+    old_checksum: Vec<u8>,
+    new_checksum: Vec<u8>,
+}
+
+/// Plan the only metadata repair that is safe without migration-specific schema
+/// knowledge: a checksum refresh for a row SQLx already recorded as successful,
+/// with the same version and description as the embedded migration.
+///
+/// Missing rows are deliberately absent from this plan so the next SQLx run
+/// executes their SQL. Failed/dirty rows and description mismatches are also
+/// left untouched and therefore remain hard migration errors.
+fn plan_checksum_repairs(
+    records: &[MigrationMetadata],
+    migrator: &sqlx::migrate::Migrator,
+) -> Vec<ChecksumRepair> {
+    migrator
+        .iter()
+        .filter(|migration| !migration.migration_type.is_down_migration())
+        .filter_map(|migration| {
+            let record = records.iter().find(|record| {
+                record.version == migration.version
+                    && record.success
+                    && record.description == migration.description.as_ref()
+            })?;
+            if record.checksum == migration.checksum.as_ref() {
+                return None;
+            }
+            Some(ChecksumRepair {
+                version: record.version,
+                description: record.description.clone(),
+                old_checksum: record.checksum.clone(),
+                new_checksum: migration.checksum.to_vec(),
+            })
+        })
+        .collect()
+}
+
+/// Repair checksum metadata for migrations SQLx has already recorded as
+/// successfully applied. Never manufacture success metadata, promote dirty
+/// rows, or remove unknown rows: the second `Migrator::run` must either execute
+/// genuinely missing SQL or fail closed on dirty/schema-history drift.
 async fn repair_migrations(
     conn: &mut sqlx::postgres::PgConnection,
     migrator: &sqlx::migrate::Migrator,
@@ -124,102 +174,39 @@ async fn repair_migrations(
         return Ok(());
     }
 
-    // Fix dirty migrations (success=false from interrupted runs)
-    let dirty_fixed =
-        sqlx::query("UPDATE _sqlx_migrations SET success = true WHERE success = false")
-            .execute(&mut *conn)
-            .await?;
-    if dirty_fixed.rows_affected() > 0 {
-        warn!(
-            count = dirty_fixed.rows_affected(),
-            "Fixed dirty migration records"
-        );
-    }
+    let records = sqlx::query_as::<_, MigrationMetadata>(
+        "SELECT version, description, success, checksum FROM _sqlx_migrations",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
 
-    // Fix checksum mismatches by updating stored checksums to match current files
-    for migration in migrator.iter() {
-        let version = migration.version;
-        let new_checksum = &migration.checksum;
+    for repair in plan_checksum_repairs(&records, migrator) {
         let updated = sqlx::query(
-            "UPDATE _sqlx_migrations SET checksum = $1 WHERE version = $2 AND checksum != $1",
+            r#"UPDATE _sqlx_migrations
+               SET checksum = $1
+               WHERE version = $2
+                 AND description = $3
+                 AND success = true
+                 AND checksum = $4
+                 AND checksum != $1"#,
         )
-        .bind(new_checksum.as_ref())
-        .bind(version)
+        .bind(&repair.new_checksum)
+        .bind(repair.version)
+        .bind(&repair.description)
+        .bind(&repair.old_checksum)
         .execute(&mut *conn)
         .await?;
-        if updated.rows_affected() > 0 {
-            warn!(
-                version,
-                description = %migration.description,
-                "Repaired checksum for migration"
+        if updated.rows_affected() != 1 {
+            anyhow::bail!(
+                "migration metadata changed while repairing checksum for version {}",
+                repair.version
             );
         }
-    }
-
-    // Insert records for migrations that were applied to the schema but are
-    // missing from the tracking table. This happens when a previous PG instance
-    // ran the SQL but the _sqlx_migrations row was never committed (crash, port
-    // reuse across dev restarts, etc.).
-    let recorded: std::collections::HashSet<i64> =
-        sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations")
-            .fetch_all(&mut *conn)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-
-    for migration in migrator.iter() {
-        if recorded.contains(&migration.version) {
-            continue;
-        }
-        let inserted = sqlx::query(
-            r#"INSERT INTO _sqlx_migrations (version, description, installed_on, success, checksum, execution_time)
-               VALUES ($1, $2, NOW(), true, $3, 0)
-               ON CONFLICT (version) DO NOTHING"#,
-        )
-        .bind(migration.version)
-        .bind(migration.description.as_ref())
-        .bind(migration.checksum.as_ref())
-        .execute(&mut *conn)
-        .await?;
-        if inserted.rows_affected() > 0 {
-            warn!(
-                version = migration.version,
-                description = %migration.description,
-                "Inserted missing migration record (schema already applied)"
-            );
-        }
-    }
-
-    // Phantom records: rows in _sqlx_migrations whose version no longer has
-    // a corresponding file in the codebase (typical when a developer's
-    // local-only experimental migration was applied then deleted, or when
-    // branches diverge). The sqlx migrator refuses to proceed with such
-    // records ("X was previously applied but is missing in the resolved
-    // migrations"), so drop them and let the migrator move on. The actual
-    // schema changes those phantom files made are kept as-is on the
-    // assumption they were ad-hoc dev work — anything important should have
-    // been re-encoded as a real, committed migration.
-    let known: std::collections::HashSet<i64> = migrator.iter().map(|m| m.version).collect();
-    let recorded_versions: Vec<i64> =
-        sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations")
-            .fetch_all(&mut *conn)
-            .await
-            .unwrap_or_default();
-    for version in recorded_versions {
-        if known.contains(&version) {
-            continue;
-        }
-        let deleted = sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
-            .bind(version)
-            .execute(&mut *conn)
-            .await?;
-        if deleted.rows_affected() > 0 {
-            warn!(
-                version,
-                "Removed phantom migration record (file no longer exists in codebase)"
-            );
-        }
+        warn!(
+            version = repair.version,
+            description = %repair.description,
+            "Repaired checksum for previously successful migration"
+        );
     }
 
     Ok(())
@@ -256,5 +243,159 @@ async fn detect_pgvector(pool: &PgPool) -> bool {
             tracing::warn!(error = %e, "CREATE EXTENSION vector failed — pgvector unavailable");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+    use std::collections::HashSet;
+
+    use sqlx::migrate::{Migration, MigrationType, Migrator};
+
+    use super::{plan_checksum_repairs, ChecksumRepair, MigrationMetadata};
+
+    fn migration(version: i64, description: &'static str, sql: &'static str) -> Migration {
+        Migration::new(
+            version,
+            Cow::Borrowed(description),
+            MigrationType::Simple,
+            Cow::Borrowed(sql),
+            false,
+        )
+    }
+
+    fn migrator(migrations: Vec<Migration>) -> Migrator {
+        Migrator {
+            migrations: Cow::Owned(migrations),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        }
+    }
+
+    fn metadata(migration: &Migration, success: bool, checksum: &[u8]) -> MigrationMetadata {
+        MigrationMetadata {
+            version: migration.version,
+            description: migration.description.to_string(),
+            success,
+            checksum: checksum.to_vec(),
+        }
+    }
+
+    fn apply_repairs(records: &mut [MigrationMetadata], repairs: &[ChecksumRepair]) {
+        for repair in repairs {
+            let record = records
+                .iter_mut()
+                .find(|record| record.version == repair.version)
+                .expect("repair must reference an existing row");
+            assert!(record.success);
+            assert_eq!(record.description, repair.description);
+            assert_eq!(record.checksum, repair.old_checksum);
+            record.checksum.clone_from(&repair.new_checksum);
+        }
+    }
+
+    /// Minimal SQLx-run simulation: dirty rows block; successful rows are
+    /// checksum-validated; genuinely missing rows execute their SQL before a
+    /// success record is appended.
+    fn simulate_second_run(
+        migrator: &Migrator,
+        records: &mut Vec<MigrationMetadata>,
+        schema_postconditions: &mut HashSet<String>,
+    ) -> Result<Vec<i64>, String> {
+        if let Some(dirty) = records.iter().find(|record| !record.success) {
+            return Err(format!("dirty:{}", dirty.version));
+        }
+
+        let mut executed = Vec::new();
+        for migration in migrator.iter() {
+            if let Some(record) = records
+                .iter()
+                .find(|record| record.version == migration.version)
+            {
+                if record.checksum != migration.checksum.as_ref() {
+                    return Err(format!("checksum:{}", migration.version));
+                }
+                continue;
+            }
+
+            // This represents the migration SQL/postcondition, and must happen
+            // before SQLx writes the success metadata row.
+            schema_postconditions.insert(migration.sql.to_string());
+            executed.push(migration.version);
+            records.push(metadata(migration, true, migration.checksum.as_ref()));
+        }
+        Ok(executed)
+    }
+
+    #[test]
+    fn checksum_repair_leaves_missing_migration_for_second_run_to_execute_sql() {
+        let old = migration(1, "old", "CREATE TABLE old_truth(id int)");
+        let new = migration(2, "new", "CREATE TABLE new_truth(id int)");
+        let migrator = migrator(vec![old.clone(), new.clone()]);
+        let mut records = vec![metadata(&old, true, b"legacy-checksum")];
+
+        let repairs = plan_checksum_repairs(&records, &migrator);
+        assert_eq!(repairs.len(), 1, "only the applied old row is repairable");
+        assert_eq!(repairs[0].version, old.version);
+        assert!(repairs.iter().all(|repair| repair.version != new.version));
+        apply_repairs(&mut records, &repairs);
+
+        let mut postconditions = HashSet::new();
+        let executed = simulate_second_run(&migrator, &mut records, &mut postconditions)
+            .expect("second run should apply the missing migration");
+
+        assert_eq!(executed, vec![new.version]);
+        assert!(postconditions.contains(new.sql.as_ref()));
+        assert!(records
+            .iter()
+            .any(|record| record.version == new.version && record.success));
+    }
+
+    #[test]
+    fn dirty_migration_is_never_marked_success_or_checksum_repaired() {
+        let dirty = migration(7, "dirty", "CREATE TABLE dirty_truth(id int)");
+        let migrator = migrator(vec![dirty.clone()]);
+        let mut records = vec![metadata(&dirty, false, b"partial-checksum")];
+
+        let repairs = plan_checksum_repairs(&records, &migrator);
+        assert!(repairs.is_empty());
+        apply_repairs(&mut records, &repairs);
+
+        let mut postconditions = HashSet::new();
+        let error = simulate_second_run(&migrator, &mut records, &mut postconditions)
+            .expect_err("dirty row must remain a hard failure");
+        assert_eq!(error, "dirty:7");
+        assert!(!records[0].success);
+        assert!(postconditions.is_empty());
+    }
+
+    #[test]
+    fn successful_matching_metadata_repairs_only_the_checksum() {
+        let applied = migration(11, "stable description", "ALTER TABLE t ADD COLUMN c int");
+        let migrator = migrator(vec![applied.clone()]);
+        let mut records = vec![metadata(&applied, true, b"old-checksum")];
+        let before_version = records[0].version;
+        let before_description = records[0].description.clone();
+
+        let repairs = plan_checksum_repairs(&records, &migrator);
+        assert_eq!(repairs.len(), 1);
+        apply_repairs(&mut records, &repairs);
+
+        assert_eq!(records[0].version, before_version);
+        assert_eq!(records[0].description, before_description);
+        assert!(records[0].success);
+        assert_eq!(records[0].checksum, applied.checksum.as_ref());
+    }
+
+    #[test]
+    fn description_mismatch_is_not_repaired() {
+        let applied = migration(13, "expected description", "SELECT 13");
+        let migrator = migrator(vec![applied.clone()]);
+        let mut record = metadata(&applied, true, b"old-checksum");
+        record.description = "different description".to_string();
+
+        assert!(plan_checksum_repairs(&[record], &migrator).is_empty());
     }
 }

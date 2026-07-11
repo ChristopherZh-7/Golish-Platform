@@ -119,66 +119,67 @@
         "id": "quick-scan",
         "name": "Quick Top-100 Scan",
         "description": "Fast scan of top 100 ports",
-        "args": "{{target}} --top-ports 100 -T4",
+        "args": "-n {{target}} --top-ports 100 -T4",
         "tags": ["recon", "fast"]
       },
       {
         "id": "full-tcp",
         "name": "Full TCP Scan",
         "description": "Scan all 65535 TCP ports with service detection",
-        "args": "-sS -sV -p- -T4 {{target}}",
+        "args": "-n -sS -sV -p- -T4 {{target}}",
         "tags": ["thorough", "slow"]
       },
       {
         "id": "stealth-syn",
         "name": "Stealth SYN Scan",
         "description": "TCP SYN scan with timing T2",
-        "args": "-sS -T2 -p 1-1000 {{target}}",
+        "args": "-n -sS -T2 -p 1-1000 {{target}}",
         "tags": ["stealth"]
       },
       {
         "id": "vuln-scripts",
         "name": "Run Vuln NSE Scripts",
         "description": "Run vulnerability NSE scripts on common ports",
-        "args": "-sV --script vuln {{target}}",
+        "args": "-n -sV --script vuln {{target}}",
         "tags": ["vuln-scan"]
       },
       {
         "id": "discover-hosts",
         "name": "Host Discovery (Ping Sweep)",
         "description": "Find live hosts in CIDR without port scanning",
-        "args": "-sn {{target}}",
+        "args": "-n -sn {{target}}",
         "tags": ["discovery"]
       },
       {
         "id": "service-version-list",
         "name": "Batch Service Version",
         "description": "Run service/version detection for a host list with a shared port set",
-        "args": "-sV -iL {{input_file}} -p {{ports}} -T3",
+        "args": "-n -sV -iL {{input_file}} -p {{ports}} -T3",
         "tags": ["recon", "fingerprint", "bulk"]
       },
       {
         "id": "aggressive-all",
         "name": "Aggressive Full Recon",
         "description": "OS, version, scripts, traceroute - one command",
-        "args": "-A -T4 {{target}}",
+        "args": "-n -A -T4 {{target}}",
         "tags": ["thorough"]
       }
     ],
     "output": {
       "format": "text",
-      "produces": ["host", "port", "service"],
+      "produces": ["host", "port", "service", "state"],
       "detect": "Nmap scan report|PORT\\s+STATE\\s+SERVICE",
       "db_action": "target_update_recon",
       "patterns": [
         {
           "type": "open_port",
-          "regex": "^(\\d+)/(tcp|udp)\\s+open\\s+(\\S+)(?:\\s+(.+))?$",
+          "regex": "^(\\d+)/(tcp|udp)\\s+(open|closed|filtered)\\s+(\\S+)(?:\\s+(.+))?$",
           "fields": {
             "port": "$1",
             "protocol": "$2",
-            "service": "$3",
-            "version": "$4"
+            "state": "$3",
+            "service": "$4",
+            "version": "$5"
           }
         },
         {

@@ -7,7 +7,9 @@ use tauri::{AppHandle, State};
 
 use super::super::super::agent_bridge::AgentBridge;
 use super::super::super::llm_client::{ProviderConfig, SharedComponentsConfig};
-use super::super::configure_bridge;
+use super::super::{
+    activate_bridge_background_listeners, configure_bridge, prepare_bridge_background_listeners,
+};
 use crate::runtime::TauriRuntime;
 use crate::state::AgentState;
 use golish_context::ContextManagerConfig;
@@ -31,13 +33,11 @@ pub async fn init_ai_session(
     session_id: String,
     config: ProviderConfig,
 ) -> Result<(), GolishError> {
-    // Clean up existing session bridge if present
-    if state.ai_state.has_session_bridge(&session_id).await {
-        tracing::debug!("Removing existing bridge for session {}", session_id);
-        let _old_bridge = state.ai_state.remove_session_bridge(&session_id).await;
-        // Explicitly drop outside the if to ensure it's fully dropped before continuing
-        drop(_old_bridge);
-    }
+    let install = state
+        .ai_state
+        .begin_session_bridge_install(&session_id)
+        .await
+        .map_err(GolishError::from)?;
 
     // Create runtime for event emission
     let app_for_tools = app.clone();
@@ -86,8 +86,27 @@ pub async fn init_ai_session(
     let provider_name = config.provider_name().to_string();
     let model_name = config.model().to_string();
 
-    let mut bridge =
-        AgentBridge::from_provider_config(config, shared_config, runtime, &session_id).await?;
+    let mut bridge = match AgentBridge::from_provider_config(
+        config,
+        shared_config,
+        runtime,
+        &session_id,
+    )
+    .await
+    {
+        Ok(bridge) => bridge,
+        Err(error) => {
+            // A first init creates a stable slot before provider construction.
+            // Failed construction has no bridge/late clone to protect, so drop
+            // the transition and prune the otherwise permanent tombstone.
+            drop(install);
+            state
+                .ai_state
+                .prune_inactive_session_slot(&session_id)
+                .await;
+            return Err(GolishError::from(error));
+        }
+    };
 
     configure_bridge(&mut bridge, &state, &session_id, Some(app_for_tools)).await;
 
@@ -122,12 +141,28 @@ pub async fn init_ai_session(
 
     // Set the session_id on the bridge for terminal command execution
     bridge.set_session_id(Some(session_id.clone())).await;
+    // Subscribe before retiring the old generation, but do not start processing
+    // until the map publish transition activates this candidate.
+    let background_listeners = prepare_bridge_background_listeners(&bridge, state.inner()).await;
 
-    // Store the bridge in the session map
-    state
+    // Atomically publish the next bridge generation. The stable per-session
+    // request slot makes this fail fast while the old bridge is running and
+    // permanently invalidates late clones after replacement.
+    if let Err(error) = state
         .ai_state
-        .insert_session_bridge(session_id.clone(), bridge)
-        .await;
+        .finish_session_bridge_install(install, bridge, move |published| {
+            if let Some(prepared) = background_listeners {
+                activate_bridge_background_listeners(published, prepared);
+            }
+        })
+        .await
+    {
+        state
+            .ai_state
+            .prune_inactive_session_slot(&session_id)
+            .await;
+        return Err(GolishError::from(error));
+    }
 
     tracing::info!(
         "AI agent initialized for session {}: provider={}, model={}",
@@ -147,14 +182,14 @@ pub async fn shutdown_ai_session(
     state: State<'_, AgentState>,
     session_id: String,
 ) -> Result<(), GolishError> {
-    // Signal cancellation before removing the bridge so the running
-    // agentic loop (which holds an Arc clone) sees the flag.
-    {
-        let bridges = state.ai_state.get_bridges().await;
-        if let Some(bridge) = bridges.get(&session_id) {
-            bridge.cancel();
-            tracing::info!("Cancellation signalled for session {}", session_id);
-        }
+    // Invalidate the stable session generation before cancellation. A sender
+    // that cloned the old bridge but has not acquired yet must never be able to
+    // reset cancellation and revive the removed session.
+    let removed_bridge = state.ai_state.remove_session_bridge(&session_id).await;
+    let had_bridge = removed_bridge.is_some();
+    if let Some(bridge) = removed_bridge.as_ref() {
+        bridge.cancel();
+        tracing::info!("Cancellation signalled for session {}", session_id);
     }
     let killed_jobs =
         golish_app_core::background_jobs::manager().kill_running_for_session(&session_id);
@@ -166,12 +201,16 @@ pub async fn shutdown_ai_session(
         );
     }
 
-    if state
+    // Drop the command's returned old-bridge Arc before GC. Any real late clone
+    // or active request still retains the inner SessionRequestSlot and keeps the
+    // tombstone, preserving cross-generation single-flight.
+    drop(removed_bridge);
+    state
         .ai_state
-        .remove_session_bridge(&session_id)
-        .await
-        .is_some()
-    {
+        .prune_inactive_session_slot(&session_id)
+        .await;
+
+    if had_bridge {
         tracing::info!("AI agent shut down for session {}", session_id);
         Ok(())
     } else {

@@ -22,6 +22,7 @@ pub enum CallSiteKind {
     HttpClientVerb,
     JqueryAjax,
     NewRequest,
+    HaeRoute,
 }
 
 // ─────────────────────────────────────────────────────────────────────────

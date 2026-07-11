@@ -76,7 +76,8 @@ pub use compaction::{
 pub use config::AgenticLoopConfig;
 pub use context::{
     AgenticLoopContext, LoopAccessControl, LoopCaptureContext, LoopEventRefs, LoopLlmRefs,
-    McpToolExecutor, OutputClassifier, PostShellHook, TerminalErrorEmitted, ToolExecutionResult,
+    McpToolExecutor, OutputClassifier, PostShellHook, StageRunReentryGuard, TerminalErrorEmitted,
+    ToolExecutionResult,
 };
 pub use entry::{run_agentic_loop, run_agentic_loop_generic};
 pub use tool_execution::{execute_tool_direct_generic, execute_with_hitl_generic};

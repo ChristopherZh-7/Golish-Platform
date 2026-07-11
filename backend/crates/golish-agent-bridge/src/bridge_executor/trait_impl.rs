@@ -6,6 +6,7 @@ use golish_agent_kit::harness::StageKind;
 use golish_agent_kit::task_orchestrator::{
     prompts, AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext,
 };
+use golish_sub_agents::SubAgentContext;
 
 use super::BridgeAgentExecutor;
 
@@ -46,6 +47,19 @@ fn resolve_gate_content(agent_text: &str, side_channel: Option<&str>) -> String 
             }
         }
         _ => agent_text.to_string(),
+    }
+}
+
+/// The operation's `task_input` is the one common source for GUI Task requests
+/// and headless CLI `-e`. Keep it out of the primary system prompt policy, but
+/// carry it as data so `stage_run` can quote a bounded, lower-priority excerpt in
+/// its specialist objective. This context is request-local and does not alter the
+/// bridge's stage-run reentry guard or worker-chain persistence.
+fn primary_loop_context(execution_context: &ExecutionContext) -> SubAgentContext {
+    SubAgentContext {
+        original_request: execution_context.task_input.clone(),
+        depth: 0,
+        ..Default::default()
     }
 }
 
@@ -144,7 +158,10 @@ impl AgentExecutor for BridgeAgentExecutor {
             }
         }
 
-        let content_result = self.bridge.execute_isolated(&prompt).await;
+        let content_result = self
+            .bridge
+            .execute_isolated_with_context(&prompt, primary_loop_context(execution_context))
+            .await;
         // Forced tool locks are one-shot runtime hints. Clear the bridge
         // side-channel even when the isolated loop returns an error so a later
         // plain chat turn cannot inherit a stale tool lock.
@@ -426,5 +443,23 @@ mod tests {
             None,
             Some(StageKind::TargetIntel)
         ));
+    }
+
+    #[test]
+    fn primary_loop_context_carries_cli_and_gui_top_level_requests() {
+        for request in [
+            "CLI -e: do not call producers for five unreachable exact origins",
+            "GUI request: keep Enumeration read-only and process batches of at most 25",
+        ] {
+            let execution_context = ExecutionContext {
+                task_input: request.to_string(),
+                ..Default::default()
+            };
+
+            let context = primary_loop_context(&execution_context);
+
+            assert_eq!(context.original_request, request);
+            assert_eq!(context.depth, 0);
+        }
     }
 }

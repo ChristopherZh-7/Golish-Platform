@@ -315,7 +315,10 @@ impl AgentBridge {
 
         use super::{
             BridgeAccessControl, BridgeEventBus, BridgeLlmConfig, BridgeServices, BridgeSession,
+            SessionRequestSlot,
         };
+        let (session_request_slot, session_request_generation) = SessionRequestSlot::new_active();
+        let (background_listener_retired, _) = tokio::sync::watch::channel(false);
 
         Self {
             events: BridgeEventBus {
@@ -360,10 +363,14 @@ impl AgentBridge {
                 session_persistence_enabled: Arc::new(RwLock::new(true)),
                 pending_background: Default::default(),
             },
+            isolated_history_recovery: Arc::new(std::sync::Mutex::new(None)),
             workspace,
             tool_registry,
             tool_config: ToolSelectionConfig::main_agent(),
             cancelled: Arc::new(AtomicBool::new(false)),
+            cancel_epoch: AtomicU64::new(0),
+            background_listener_retired,
+            background_listeners_started: AtomicBool::new(false),
             api_request_stats: Arc::new(ApiRequestStats::new()),
             sub_agent_registry,
             prompt_registry: golish_sub_agents::PromptRegistry::new(),
@@ -388,6 +395,9 @@ impl AgentBridge {
             harness_active_authz: Arc::new(RwLock::new(None)),
             harness_active_org_id: Arc::new(RwLock::new(None)),
             harness_active_operation_id: Arc::new(RwLock::new(None)),
+            stage_run_reentry_guard: Arc::new(crate::agentic_loop::StageRunReentryGuard::default()),
+            session_request_slot,
+            session_request_generation,
             harness_submit_only: Arc::new(RwLock::new(false)),
             harness_forced_tool: Arc::new(RwLock::new(None)),
             harness_profile: Arc::new(RwLock::new(None)),

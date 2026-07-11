@@ -1,6 +1,6 @@
 # golish-agent-bridge
 
-> **一句话职责**：Tauri 应用与 agent runtime 之间的**桥接层**——`AgentBridge`（生命周期 + 派发）+ `bridge_*` 伙伴（context/hitl/policy/session）+ `bridge_executor` 编排器实现 + prompt contributors。
+> **一句话职责**：Tauri 应用与 agent runtime 之间的**桥接层**——`AgentBridge`（生命周期 + 派发 + per-session universal request single-flight）+ `bridge_*` 伙伴（context/hitl/policy/session）+ `bridge_executor` 编排器实现 + prompt contributors。
 
 - **类型**：crate（Layer 4c · agent 桥接）
 - **路径**：`backend/crates/golish-agent-bridge/`
@@ -22,7 +22,8 @@
 
 | 符号 | 说明 |
 |---|---|
-| `AgentBridge` | 桥接主体（生命周期 + 派发） |
+| `AgentBridge` | 桥接主体（生命周期 + 派发 + generation-bound request owner） |
+| `SessionRequestSlot` / `SessionRequestTransitionLease` | 跨 bridge generation 的 stable logical-session request authority / init reservation |
 | `BridgeBackends` | bridge 后端装配束 |
 | `bridge_executor` | 依赖 `AgentBridge` 的编排器实现 |
 | `contributors` | prompt 贡献者 |
@@ -53,6 +54,7 @@
 
 - crate 根的大量 `pub use` 是**有意的兼容垫片**（迁移自 `golish-ai`），不要误删——删了会断开历史 `crate::agentic_loop` 等路径。
 - 桥接层不应直接持有 Tauri 类型业务逻辑；Tauri command 在 `golish-agent-app`。
+- 同一 logical session 的 GUI text/attachments、Chat/Task/profile lead、CLI/stage-run 和 history clear/restore 共用 stable slot 的 universal fail-fast owner；GUI bridge replacement 只能推进 generation，不能创建独立 gate。Task handoff 必须用同一 token 构造 `BridgeAgentExecutor`，不能绕过 ownership 或递归 acquire，否则 cancel/history/harness side-channel 隔离失效。
 
 ## 测试入口
 

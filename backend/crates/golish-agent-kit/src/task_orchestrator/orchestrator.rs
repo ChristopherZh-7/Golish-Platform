@@ -432,7 +432,7 @@ impl TaskOrchestrator {
         // (`execute_subtask_loop` remains the resume path + the
         // run_executor_driven DAG-load-failure fallback.)
         let outcome = self
-            .run_executor_driven(task.id, &queue, executor, false)
+            .run_executor_driven(task.id, &queue, executor, false, None)
             .await;
 
         // P1 · never leave the task zombied in `running`: any error from the
@@ -455,10 +455,13 @@ impl TaskOrchestrator {
     /// operation_state — they already exist; it re-drives the same operation from
     /// the checkpoint's `next_node` via `Executor::resume`.
     ///
-    /// `user_message` is the message that triggered the resume ("继续" / steering
-    /// text / anything). It is recorded for context but is not parsed as a
-    /// keyword — the decision to resume was already made from DB state. (Threading
-    /// steering text into the resumed stage is deferred; see the plan doc risks.)
+    /// `user_message` is the request-local input that triggered the resume
+    /// ("继续" / steering text / anything). A non-blank value is threaded into
+    /// this execution's [`ExecutionContext`](crate::task_orchestrator::ExecutionContext)
+    /// so the resumed primary/stage worker sees the current operator constraints.
+    /// The durable task row keeps the original operation input unchanged; a blank
+    /// resume message falls back to that original input. The message is not parsed
+    /// as a routing keyword here — the caller already selected resume from DB state.
     pub async fn resume(
         &mut self,
         task_id: Uuid,
@@ -493,7 +496,7 @@ impl TaskOrchestrator {
         // DAG inside run_executor_driven, which rehydrates the UI on resume.
         let queue: Vec<PlannedSubtask> = Vec::new();
         let outcome = self
-            .run_executor_driven(task_id, &queue, executor, true)
+            .run_executor_driven(task_id, &queue, executor, true, Some(user_message))
             .await;
         if let Err(ref e) = outcome {
             self.fail_task_if_active(task_id, e).await;

@@ -30,7 +30,15 @@ pub fn builtin_server_names() -> HashSet<String> {
 fn builtin_configs() -> HashMap<String, McpServerConfig> {
     let mut servers = HashMap::new();
 
-    let js_reverse_path = resolve_builtin_tool_path("js-reverse-mcp/src/index.js");
+    let js_reverse_path = [
+        "js-reverse-mcp/build/src/index.js",
+        "js-reverse-mcp/src/index.js",
+    ]
+    .into_iter()
+    .filter_map(resolve_builtin_tool_path)
+    .find(|entry_point| {
+        js_reverse_entry_point_has_generated_devtools_runtime(Path::new(entry_point))
+    });
     if let Some(entry_point) = js_reverse_path {
         servers.insert(
             "js-reverse".to_string(),
@@ -51,36 +59,59 @@ fn builtin_configs() -> HashMap<String, McpServerConfig> {
     servers
 }
 
+/// Return whether the js-reverse entry point has the generated DevTools runtime
+/// entry that its source and packaged build import at startup.
+fn js_reverse_entry_point_has_generated_devtools_runtime(entry_point: &Path) -> bool {
+    if !entry_point.is_file() {
+        return false;
+    }
+
+    let Some(runtime_root) = entry_point.parent().and_then(Path::parent) else {
+        return false;
+    };
+    let devtools_root = runtime_root.join("node_modules/chrome-devtools-frontend");
+    devtools_root.join("mcp/mcp.js").is_file()
+        && devtools_root
+            .join("front_end/core/common/common.js")
+            .is_file()
+}
+
+/// Resolve the canonical directory for a known built-in server setup action.
+///
+/// This registry is intentionally independent from merged user/project config
+/// so an override can never redirect `npm install` or `npm run build`.
+pub fn builtin_setup_directory(server_name: &str) -> Option<PathBuf> {
+    let manifest_path = match server_name {
+        "js-reverse" => "js-reverse-mcp/package.json",
+        _ => return None,
+    };
+    let manifest_path = PathBuf::from(resolve_builtin_tool_path(manifest_path)?);
+    manifest_path.parent().map(Path::to_path_buf)
+}
+
 /// Resolve the absolute path to a built-in tool's entry point.
 ///
 /// Searches candidate directories for `tools/{rel_path}`. Candidates (in order):
-/// 1. QBIT_WORKSPACE env var (explicit workspace override)
-/// 2. Relative to the executable (production bundles)
-/// 3. Current working directory and its ancestors (dev mode: cwd may be `backend/`)
+/// 1. Relative to the executable (production bundles and local target dirs)
+/// 2. The compile-time repository root (development builds)
+///
+/// Runtime workspace/cwd paths are deliberately excluded: a project directory
+/// is untrusted input and must never be able to impersonate a built-in tool.
 fn resolve_builtin_tool_path(rel_path: &str) -> Option<String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    if let Ok(ws) = std::env::var("QBIT_WORKSPACE") {
-        candidates.push(PathBuf::from(ws));
-    }
-
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.to_path_buf());
+            candidates.push(exe_dir.join("../Resources"));
             candidates.push(exe_dir.join(".."));
             candidates.push(exe_dir.join("../.."));
             candidates.push(exe_dir.join("../../.."));
+            candidates.push(exe_dir.join("../../../.."));
         }
     }
 
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.clone());
-        if let Some(parent) = cwd.parent() {
-            candidates.push(parent.to_path_buf());
-            if let Some(grandparent) = parent.parent() {
-                candidates.push(grandparent.to_path_buf());
-            }
-        }
-    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
 
     for base in candidates {
         let full = base.join("tools").join(rel_path);
@@ -97,12 +128,17 @@ fn resolve_builtin_tool_path(rel_path: &str) -> Option<String> {
 
 /// Load and merge MCP configs from builtin, user-global, and project locations.
 pub fn load_mcp_config(project_dir: &Path) -> Result<McpConfigFile> {
-    load_mcp_config_inner(user_config_path(), project_dir)
+    load_mcp_config_inner(
+        user_config_path(),
+        project_dir,
+        is_project_config_trusted(project_dir),
+    )
 }
 
 fn load_mcp_config_inner(
     user_config: Option<PathBuf>,
     project_dir: &Path,
+    project_config_trusted: bool,
 ) -> Result<McpConfigFile> {
     let mut merged = McpConfigFile::default();
 
@@ -120,7 +156,7 @@ fn load_mcp_config_inner(
 
     // 2. Load project config (<project>/.golish/mcp.json)
     let project_config_path = project_dir.join(".golish/mcp.json");
-    if project_config_path.exists() {
+    if project_config_trusted && project_config_path.exists() {
         let project_config: McpConfigFile =
             load_json_file(&project_config_path).with_context(|| {
                 format!(

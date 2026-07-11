@@ -19,6 +19,7 @@ pub const TECH_SUBSIDIARY: &str = "GOLISH-INTEL-SUBSIDIARY";
 pub const TECH_EAS_LIVENESS: &str = "GOLISH-EAS-LIVENESS";
 pub const TECH_EAS_PORT: &str = "GOLISH-EAS-PORT";
 pub const TECH_EAS_SERVICE_FINGERPRINT: &str = "GOLISH-EAS-SERVICE-FINGERPRINT";
+pub const TECH_EAS_WEB_FINGERPRINT: &str = "GOLISH-EAS-WEB-FINGERPRINT";
 
 /// Coverage gate join key for URL endpoint liveness.
 ///
@@ -196,8 +197,11 @@ fn eas_facts_from_command(command: &str) -> Option<(&'static str, String)> {
         "naabu" | "masscan" => target_from_flags(&rest_tokens, &["-host"], normalize_target_token)
             .or_else(|| first_target_like(&rest_tokens, normalize_target_token))
             .map(|asset| (TECH_EAS_PORT, asset)),
-        "whatweb" => first_target_like(&rest_tokens, normalize_target_token)
-            .map(|asset| (TECH_EAS_SERVICE_FINGERPRINT, asset)),
+        // WhatWeb fingerprints a web origin, not the full IP:port service
+        // denominator. SERVICE-FINGERPRINT truth comes from port-level nmap
+        // service surface; WhatWeb closes the separate web-stack coverage cell.
+        "whatweb" => first_target_like(&rest_tokens, normalize_liveness_target_token)
+            .map(|asset| (TECH_EAS_WEB_FINGERPRINT, asset)),
         _ => None,
     }
 }
@@ -422,7 +426,7 @@ pub fn coverage_outcome_for_run(
 ) -> &'static str {
     if matches!(
         technique,
-        TECH_EAS_LIVENESS | TECH_EAS_PORT | TECH_EAS_SERVICE_FINGERPRINT
+        TECH_EAS_LIVENESS | TECH_EAS_PORT | TECH_EAS_SERVICE_FINGERPRINT | TECH_EAS_WEB_FINGERPRINT
     ) {
         eas_outcome_for_run(technique, raw_output, succeeded, distinguish_failure)
     } else {
@@ -472,8 +476,11 @@ fn eas_outcome_for_run(
         {
             "empty"
         }
-        TECH_EAS_SERVICE_FINGERPRINT if trimmed.is_empty() => "empty",
-        TECH_EAS_LIVENESS | TECH_EAS_PORT | TECH_EAS_SERVICE_FINGERPRINT => "found",
+        TECH_EAS_SERVICE_FINGERPRINT | TECH_EAS_WEB_FINGERPRINT if trimmed.is_empty() => "empty",
+        TECH_EAS_LIVENESS
+        | TECH_EAS_PORT
+        | TECH_EAS_SERVICE_FINGERPRINT
+        | TECH_EAS_WEB_FINGERPRINT => "found",
         _ => "found",
     }
 }
@@ -637,12 +644,15 @@ mod tests {
     }
 
     #[test]
-    fn coverage_maps_wrapped_whatweb_service_fingerprint() {
+    fn coverage_maps_wrapped_whatweb_to_web_fingerprint_not_service_fingerprint() {
         assert_eq!(
             coverage_facts_from_command(
                 "\"/usr/bin/ruby\" \"/opt/tools/whatweb\" -a 1 https://www.example.com/login"
             ),
-            Some((TECH_EAS_SERVICE_FINGERPRINT, "www.example.com".to_string()))
+            Some((
+                TECH_EAS_WEB_FINGERPRINT,
+                "www.example.com/login".to_string()
+            ))
         );
     }
 

@@ -200,6 +200,11 @@ function pushJsExtractFindings(
   const summary = isRecord(result.summary) ? result.summary : {};
   const aiUsed = result.ai_used === true || summary.ai_used === true;
   const aiAdded = firstNumber(result.ai_endpoints_added, summary.ai_endpoints_added);
+  const haeCandidates = firstNumber(
+    result.hae_route_candidates_total,
+    summary.hae_route_candidates
+  );
+  const haePromoted = firstNumber(result.hae_ai_promoted, summary.hae_ai_promoted);
   const jsapiOutcome = asString(result.jsapi_outcome);
   const paramOutcome = asString(result.param_outcome);
 
@@ -212,6 +217,8 @@ function pushJsExtractFindings(
       : paramHints && paramHints > 0
         ? `param hints ${paramHints}`
         : null,
+    haeCandidates && haeCandidates > 0 ? `HAE candidates ${haeCandidates}` : null,
+    haePromoted && haePromoted > 0 ? `HAE promoted ${haePromoted}` : null,
     secrets && secrets > 0 ? `secrets ${secrets}` : null,
     aiUsed ? `AI +${aiAdded ?? 0}` : null,
   ]);
@@ -233,6 +240,13 @@ function pushJsExtractFindings(
   }
   if (configs && configs > 0) {
     reasons.push(`${configs} config value(s) were detected.`);
+  }
+  if (haeCandidates && haeCandidates > 0) {
+    reasons.push(
+      `HaE-style regex produced ${haeCandidates} route/path candidate(s); ${
+        haePromoted ?? 0
+      } were AI-promoted into the API set.`
+    );
   }
   if (aiUsed) {
     reasons.push(`AI review ran and added ${aiAdded ?? 0} endpoint candidate(s).`);

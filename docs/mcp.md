@@ -161,9 +161,11 @@ golish -v -e "List files in documents"
 
 ### Project Config Trust
 
-When opening a workspace with a `.golish/mcp.json` file for the first time, Golish tracks whether you've approved it. Trusted project configs are stored in `~/.golish/trusted-mcp-configs.json`.
+When opening a workspace with a `.golish/mcp.json` file, Golish excludes that file from the executable MCP configuration until the canonical project path has been explicitly trusted. Trusted project paths are stored in `~/.golish/trusted-mcp-configs.json`; approval takes effect on the next MCP initialization (currently an app restart).
 
 This prevents malicious repositories from running arbitrary commands through MCP servers without your knowledge.
+
+The backend trust commands exist, but the Settings approval/preview UI is not complete yet. Until that UI lands, an untrusted project config remains safely unavailable rather than being auto-approved.
 
 ### Best Practices
 

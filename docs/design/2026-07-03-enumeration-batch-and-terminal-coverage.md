@@ -1,5 +1,11 @@
 # Enumeration 批次化 + 每资产终态收口（含 katana 补充）
 
+> Enumeration 的 error/partial 终态语义、Web Origin 分母以及 raw-IP /
+> DNS-only `not_applicable` 注入已由
+> `docs/design/2026-07-10-enumeration-origin-terminal-closeout.md` 收敛：无法物化
+> `scheme://host:port` 的 host 直接不进入 Enumeration 分母，不再合成
+> rootless `not_applicable` cell。本文其余 batch/工具分工设计继续有效。
+
 > 状态：Accepted（用户 2026-07-03 拍板：分步骤、不要包装成一个大工具、批次整资产集一次跑、katana 作补充、先实现后修 build）。
 > 关联：`docs/design/2026-07-01-enumeration-four-axis-and-ip-web.md`（四轴 + IP-web）、
 > `docs/design/2026-06-26-enumeration-deliverables-and-flow.md`、
@@ -62,10 +68,21 @@
 | `route_probe_paths` | `target_id`+`base_url` | `targets: {target_id, base_url}[]` | DIR |
 
 约束：
-- 批次上限（如 50）防止一次调用跑爆；超限截断并在结果里标注。
+- 批次上限（如 50）防止一次调用跑爆；空批次、超限、畸形项或重复 exact-origin
+  整批拒绝，避免调用方误以为被静默截掉的 target 已检查。
 - 批次内单 target 失败不中断整批（收集 per-target error，继续下一个）。
 - 每 target 仍各自 `append_bridge_evidence` + `technique_outcomes::upsert`（复用 execute_single 内已有逻辑）。
 - 聚合结果保留每 target 的 `_evidence_id` / outcome，方便子代理引用与 gate 交叉核对。
+
+2026-07-11 transport 补充：`js_extract_apis` 的 single-target 结果仍保留完整
+`endpoints` / candidates / rule matches / AI diagnostics；batch 继续保留
+`results[].result` 层级，但内层改为 `bounded_batch_summary_v1`。每 root 摘要硬上限
+8 KiB，保留 target/status/completion、JSAPI/PARAM outcomes 与 persisted flags、全部
+计数、partial/retry 原因、小样本、capture manifest 与 DB 表引用；完整 endpoint / HAE /
+rule / AI dialogue 数组不再复制进 batch。50-root 合成响应测试上限 512 KiB，低于
+transcript JSONL 单条 1 MiB 限制。sub-agent 的 model-visible compactor 必须识别
+`batch=true`，逐 root 使用 `endpoints_total` 等真实计数，禁止把 sample 长度或顶层缺失
+`endpoints` 解释成“没有发现 endpoint”。
 
 ### 3.3 P2 · katana 合并去重
 

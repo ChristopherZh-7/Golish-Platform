@@ -132,9 +132,15 @@ pub async fn retry_compaction(
         .get_session_bridge(&session_id)
         .await
         .ok_or_else(|| ai_session_not_initialized_error(&session_id))?;
-
-    bridge
-        .retry_compaction()
+    let request = bridge
+        .begin_top_level_request()
         .await
-        .map_err(GolishError::Internal)
+        .map_err(|error| GolishError::Internal(error.to_string()))?;
+    let result = bridge.retry_compaction().await;
+    let cleanup = bridge.clear_top_level_request_state(&request).await;
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), _) => Err(GolishError::Internal(error)),
+        (Ok(()), Err(error)) => Err(GolishError::Internal(error.to_string())),
+    }
 }

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getStageAssetCoverage } from "@/lib/api/stage-coverage";
 import {
@@ -195,7 +195,7 @@ function nextWaveSnapshot() {
           {
             ...coverageCell("GOLISH-EAS-LIVENESS", "LIVENESS"),
             state: "next_wave_pending",
-            note: "newly discovered during this stage; queued for the next wave",
+            note: "not in the current asset wave; queued for a supplemental wave",
           },
         ],
       },
@@ -288,6 +288,58 @@ function enumerationFourAxisSnapshot() {
           coverageCell("GOLISH-ENUM-PARAM", "Parameter"),
           coverageCell("GOLISH-ENUM-JSAPI", "API"),
         ],
+      },
+    ],
+  };
+}
+
+function enumerationMultiOriginPartialSnapshot() {
+  const completeCoverage = [
+    coverageCell("GOLISH-ENUM-JS", "JS"),
+    coverageCell("GOLISH-ENUM-DIR", "Directory"),
+    coverageCell("GOLISH-ENUM-PARAM", "Parameter"),
+    coverageCell("GOLISH-ENUM-JSAPI", "API"),
+  ].map((cell) => ({ ...cell, state: "found", evidence_refs: [1] }));
+  const partialCoverage = completeCoverage.map((cell) =>
+    cell.technique === "GOLISH-ENUM-JS"
+      ? { ...cell, state: "partial", evidence_refs: [] }
+      : { ...cell, evidence_refs: [2] }
+  );
+
+  return {
+    stage: "enumeration",
+    organization_id: "org-1",
+    session_id: "session-1",
+    summary: {
+      total_assets: 2,
+      seed_assets: 2,
+      new_assets: 0,
+      done_assets: 1,
+      pending_assets: 1,
+      blocked_assets: 0,
+    },
+    assets: [
+      {
+        target_id: "shared-target-id",
+        value: "http://app.example.com:80",
+        target_type: "url",
+        real_ip: "",
+        source: "confirmed_web_origin",
+        discovered_phase: "seed",
+        created_at: "2026-07-10T10:00:00.000Z",
+        parent_id: null,
+        coverage: completeCoverage,
+      },
+      {
+        target_id: "shared-target-id",
+        value: "https://app.example.com:443",
+        target_type: "url",
+        real_ip: "",
+        source: "confirmed_web_origin",
+        discovered_phase: "seed",
+        created_at: "2026-07-10T10:00:01.000Z",
+        parent_id: null,
+        coverage: partialCoverage,
       },
     ],
   };
@@ -492,6 +544,79 @@ describe("StageAssetCoveragePanel", () => {
       expect(screen.getAllByText(label).length).toBeGreaterThan(0);
     }
     expect(screen.getByText("正在补 JS · browser_collect_js_api")).toBeInTheDocument();
+  });
+
+  it("keeps multiple exact origins visible when they share one target id", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      render(
+        <StageAssetCoveragePanel
+          snapshot={enumerationMultiOriginPartialSnapshot()}
+          loading={false}
+          error={null}
+          workItems={[]}
+        />
+      );
+
+      expect(screen.getByText("http://app.example.com:80")).toBeInTheDocument();
+      expect(screen.getByText("https://app.example.com:443")).toBeInTheDocument();
+      const duplicateKeyWarnings = consoleError.mock.calls.filter((call) =>
+        call.some((part) => String(part).includes("same key"))
+      );
+      expect(duplicateKeyWarnings).toEqual([]);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("does not light up a different exact origin for running work on the same host", () => {
+    render(
+      <StageAssetCoveragePanel
+        snapshot={enumerationMultiOriginPartialSnapshot()}
+        loading={false}
+        error={null}
+        workItems={[
+          {
+            id: "tool-dir-http",
+            displayToolName: "route_probe_paths",
+            rawToolName: "route_probe_paths",
+            subject: "http://app.example.com/admin",
+            subjects: ["http://app.example.com/admin"],
+            primary: "Probing HTTP routes",
+            techniques: ["DIR"],
+            status: "running",
+            startedAt: "2026-07-10T10:00:02.000Z",
+          },
+        ]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "看全部" }));
+    const httpRow = screen.getByText("http://app.example.com:80").closest(".grid");
+    const httpsRow = screen.getByText("https://app.example.com:443").closest(".grid");
+    expect(httpRow).not.toBeNull();
+    expect(httpsRow).not.toBeNull();
+    expect(within(httpRow as HTMLElement).getByTitle(/正在补 DIR: route_probe_paths/)).toBeInTheDocument();
+    expect(
+      within(httpsRow as HTMLElement).queryByTitle(/正在补 DIR: route_probe_paths/)
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders partial coverage as unfinished in the cell, row, and summary", () => {
+    render(
+      <StageAssetCoveragePanel
+        snapshot={enumerationMultiOriginPartialSnapshot()}
+        loading={false}
+        error={null}
+        workItems={[]}
+      />
+    );
+
+    expect(screen.getByText("1/2 done")).toBeInTheDocument();
+    expect(screen.getByText("1 部分完成")).toBeInTheDocument();
+    expect(screen.queryByText("1 未查")).not.toBeInTheDocument();
+    expect(screen.getByText(/部分完成 JS/)).toBeInTheDocument();
+    expect(screen.getByTitle(/^JS: 部分完成/)).toBeInTheDocument();
   });
 
   it("shows a compact return action in coverage panel mode", async () => {

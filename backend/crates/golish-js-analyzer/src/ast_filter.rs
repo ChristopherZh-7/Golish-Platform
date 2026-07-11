@@ -20,8 +20,38 @@
 //! corrupted/minified JS), [`call_site_ranges`] returns `None` and the
 //! caller falls back to regex+noise-only filtering.
 
+use ast_grep_core::Pattern;
 use ast_grep_language::{LanguageExt, SupportLang};
 use std::panic;
+
+const CALL_EXPRESSION_PATTERN: &str = "$F($$$_)";
+const NEW_EXPRESSION_PATTERN: &str = "new $F($$$_)";
+
+struct CallSitePatterns {
+    call_expression: Pattern,
+    new_expression: Pattern,
+}
+
+impl CallSitePatterns {
+    fn compile() -> Self {
+        Self {
+            call_expression: compile_pattern(CALL_EXPRESSION_PATTERN),
+            new_expression: compile_pattern(NEW_EXPRESSION_PATTERN),
+        }
+    }
+}
+
+fn compile_pattern(source: &str) -> Pattern {
+    #[cfg(test)]
+    PATTERN_COMPILE_COUNT.with(|count| count.set(count.get() + 1));
+
+    Pattern::new(source, SupportLang::JavaScript)
+}
+
+#[cfg(test)]
+thread_local! {
+    static PATTERN_COMPILE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// Byte ranges (`start..end`, exclusive end) of every recognised "call
 /// site" AST node in the source.
@@ -68,17 +98,20 @@ pub(crate) fn call_site_ranges(source: &str) -> Option<CallSiteRanges> {
 
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         let grep = SupportLang::JavaScript.ast_grep(source);
+        let patterns = CallSitePatterns::compile();
         let mut ranges: Vec<(usize, usize)> = Vec::new();
 
         // `$F($$$_)` matches every call_expression — ast-grep's pattern
         // language treats `$F` as "any single node" so this is enough
-        // to cover both bare-name and member-access call sites.
-        for nm in grep.root().find_all("$F($$$_)") {
+        // to cover both bare-name and member-access call sites. Compile each
+        // matcher once: passing `&str` directly makes ast-grep rebuild the
+        // pattern for every candidate node visited by `find_all`.
+        for nm in grep.root().find_all(&patterns.call_expression) {
             if let Some(range) = node_match_byte_range(&nm, source, &line_starts) {
                 ranges.push(range);
             }
         }
-        for nm in grep.root().find_all("new $F($$$_)") {
+        for nm in grep.root().find_all(&patterns.new_expression) {
             if let Some(range) = node_match_byte_range(&nm, source, &line_starts) {
                 ranges.push(range);
             }
@@ -103,7 +136,9 @@ pub(crate) fn call_site_ranges(source: &str) -> Option<CallSiteRanges> {
 pub(crate) fn source_has_real_calls(source: &str) -> Option<bool> {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         let grep = SupportLang::JavaScript.ast_grep(source);
-        grep.root().find("$F($$$_)").is_some() || grep.root().find("new $F($$$_)").is_some()
+        let patterns = CallSitePatterns::compile();
+        grep.root().find(&patterns.call_expression).is_some()
+            || grep.root().find(&patterns.new_expression).is_some()
     }));
     result.ok()
 }
@@ -210,5 +245,24 @@ mod tests {
     fn source_has_real_calls_diagnostic() {
         assert_eq!(source_has_real_calls("fetch('/x')"), Some(true));
         assert_eq!(source_has_real_calls("const x = 1;"), Some(false));
+    }
+
+    #[test]
+    fn compiles_patterns_once_per_scan_not_once_per_ast_node() {
+        let src = (0..128)
+            .map(|idx| format!("client.get('/api/{idx}');"))
+            .collect::<String>();
+        PATTERN_COMPILE_COUNT.with(|count| count.set(0));
+
+        let ranges = call_site_ranges(&src).expect("parse should succeed");
+
+        assert_eq!(ranges.len(), 128);
+        PATTERN_COMPILE_COUNT.with(|count| {
+            assert_eq!(
+                count.get(),
+                2,
+                "the two AST matchers must be compiled once per source scan"
+            );
+        });
     }
 }

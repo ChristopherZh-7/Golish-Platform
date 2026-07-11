@@ -15,8 +15,16 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use golish_core::time::ts_from_dt;
+use golish_db::repo::scoped::TargetWriteGuard;
+use golish_db::repo::technique_outcomes::TechniqueOutcomeAttemptGuard;
 
 use crate::domain::targets::DirectoryEntry;
+
+#[derive(Debug)]
+pub enum ConditionalDirectoryEntryWrite {
+    Applied(DirectoryEntry),
+    Superseded,
+}
 
 /// Outbound port for recon directory-entry existence checks + inserts.
 #[async_trait]
@@ -24,6 +32,12 @@ pub trait ReconDirectoryPort: Send + Sync {
     async fn directory_entries_list_by_target(
         &self,
         target_id: Uuid,
+    ) -> anyhow::Result<Vec<DirectoryEntry>>;
+
+    async fn directory_entries_list_by_target_project(
+        &self,
+        target_id: Uuid,
+        project_path: Option<&str>,
     ) -> anyhow::Result<Vec<DirectoryEntry>>;
 
     async fn directory_entries_exists_by_url_project(
@@ -46,6 +60,40 @@ pub trait ReconDirectoryPort: Send + Sync {
         tool: &str,
         project_path: Option<&str>,
     ) -> anyhow::Result<DirectoryEntry>;
+
+    /// Target-owned counterpart used by active producers. The adapter locks
+    /// and validates the immutable target witness in the same short
+    /// transaction as the directory-entry write.
+    #[allow(clippy::too_many_arguments)]
+    async fn directory_entry_add_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        url: &str,
+        status_code: Option<i32>,
+        content_length: Option<i32>,
+        lines: Option<i32>,
+        words: Option<i32>,
+        tool: &str,
+    ) -> anyhow::Result<DirectoryEntry>;
+
+    /// Generation-CAS counterpart for long-running route producers. The
+    /// adapter writes only while the exact operation epoch and DIR attempt
+    /// marker are still current.
+    #[allow(clippy::too_many_arguments)]
+    async fn directory_entry_add_guarded_if_attempt_current(
+        &self,
+        guard: &TargetWriteGuard,
+        attempt_guard: &TechniqueOutcomeAttemptGuard,
+        run_id: &str,
+        asset: &str,
+        technique: &str,
+        url: &str,
+        status_code: Option<i32>,
+        content_length: Option<i32>,
+        lines: Option<i32>,
+        words: Option<i32>,
+        tool: &str,
+    ) -> anyhow::Result<ConditionalDirectoryEntryWrite>;
 }
 
 /// In-proc adapter backed by the embedded Postgres pool.
@@ -99,8 +147,25 @@ impl ReconDirectoryPort for PgReconDirectoryAdapter {
         target_id: Uuid,
     ) -> anyhow::Result<Vec<DirectoryEntry>> {
         let rows: Vec<DirEntryRow> =
-            golish_db::repo::directory_entries::list_by_target(self.pool.as_ref(), target_id)
-                .await?;
+            golish_db::repo::directory_entries::list_by_current_target_owner(
+                self.pool.as_ref(),
+                target_id,
+            )
+            .await?;
+        Ok(rows.into_iter().map(DirectoryEntry::from).collect())
+    }
+
+    async fn directory_entries_list_by_target_project(
+        &self,
+        target_id: Uuid,
+        project_path: Option<&str>,
+    ) -> anyhow::Result<Vec<DirectoryEntry>> {
+        let rows: Vec<DirEntryRow> = golish_db::repo::directory_entries::list_by_target_project(
+            self.pool.as_ref(),
+            target_id,
+            project_path,
+        )
+        .await?;
         Ok(rows.into_iter().map(DirectoryEntry::from).collect())
     }
 
@@ -141,6 +206,71 @@ impl ReconDirectoryPort for PgReconDirectoryAdapter {
         )
         .await?;
         Ok(DirectoryEntry::from(row))
+    }
+
+    async fn directory_entry_add_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        url: &str,
+        status_code: Option<i32>,
+        content_length: Option<i32>,
+        lines: Option<i32>,
+        words: Option<i32>,
+        tool: &str,
+    ) -> anyhow::Result<DirectoryEntry> {
+        let row: DirEntryRow = golish_db::repo::directory_entries::insert_entry_guarded(
+            self.pool.as_ref(),
+            guard,
+            url,
+            status_code,
+            content_length,
+            lines,
+            words,
+            tool,
+        )
+        .await?;
+        Ok(DirectoryEntry::from(row))
+    }
+
+    async fn directory_entry_add_guarded_if_attempt_current(
+        &self,
+        guard: &TargetWriteGuard,
+        attempt_guard: &TechniqueOutcomeAttemptGuard,
+        run_id: &str,
+        asset: &str,
+        technique: &str,
+        url: &str,
+        status_code: Option<i32>,
+        content_length: Option<i32>,
+        lines: Option<i32>,
+        words: Option<i32>,
+        tool: &str,
+    ) -> anyhow::Result<ConditionalDirectoryEntryWrite> {
+        let result: golish_db::repo::directory_entries::ConditionalDirectoryEntryWrite<
+            DirEntryRow,
+        > = golish_db::repo::directory_entries::insert_entry_guarded_if_attempt_current(
+            self.pool.as_ref(),
+            guard,
+            attempt_guard,
+            run_id,
+            asset,
+            technique,
+            url,
+            status_code,
+            content_length,
+            lines,
+            words,
+            tool,
+        )
+        .await?;
+        Ok(match result {
+            golish_db::repo::directory_entries::ConditionalDirectoryEntryWrite::Applied(row) => {
+                ConditionalDirectoryEntryWrite::Applied(DirectoryEntry::from(row))
+            }
+            golish_db::repo::directory_entries::ConditionalDirectoryEntryWrite::Superseded => {
+                ConditionalDirectoryEntryWrite::Superseded
+            }
+        })
     }
 }
 

@@ -5,8 +5,14 @@
 
 use chrono::{Duration, Utc};
 
-use super::queries::{build_clear_by_project_exact_sql, build_list_by_project_exact_sql};
-use super::{audit_project_path, reclaim_cutoff, DEFAULT_RECLAIM_THRESHOLD_HOURS};
+use super::queries::{
+    build_clear_by_project_exact_sql, build_list_by_project_exact_sql,
+    build_list_by_target_current_owner_sql,
+};
+use super::{
+    audit_project_path, reclaim_cutoff, DEFAULT_RECLAIM_THRESHOLD_HOURS,
+    EVIDENCE_FACTS_FOR_SESSION_ORG_FRESH_SQL,
+};
 
 #[test]
 fn audit_command_sql_matches_command_layer() {
@@ -18,6 +24,15 @@ fn audit_command_sql_matches_command_layer() {
         build_clear_by_project_exact_sql(),
         "DELETE FROM audit_log WHERE project_path = $1"
     );
+}
+
+#[test]
+fn target_timeline_requires_current_in_scope_project_owner() {
+    let sql = build_list_by_target_current_owner_sql();
+    assert!(sql.contains("JOIN targets t ON t.id = al.target_id"));
+    assert!(sql.contains("t.scope::text = 'in'"));
+    assert!(sql.contains("t.project_path IS NOT NULL"));
+    assert!(sql.contains("al.project_path = t.project_path"));
 }
 
 #[test]
@@ -61,6 +76,25 @@ fn reclaim_cutoff_zero_duration_is_now() {
     let after = Utc::now();
     assert!(cutoff >= before - Duration::milliseconds(1));
     assert!(cutoff <= after + Duration::milliseconds(1));
+}
+
+#[test]
+fn target_bound_evidence_query_is_producer_org_target_owner_and_freshness_scoped() {
+    let sql = EVIDENCE_FACTS_FOR_SESSION_ORG_FRESH_SQL;
+    assert!(sql.contains("JOIN targets t ON t.id = al.target_id"));
+    assert!(sql.contains("al.detail->>'organization_id' AS evidence_organization_id"));
+    assert!(sql.contains("al.tool_name"));
+    assert!(sql.contains("al.detail->>'kind' AS evidence_kind"));
+    assert!(sql.contains("t.organization_id AS target_organization_id"));
+    assert!(sql.contains("t.name AS target_name"));
+    assert!(sql.contains("t.value AS target_value"));
+    assert!(sql.contains("COALESCE(t.ports, '[]'::jsonb) AS target_ports"));
+    assert!(sql.contains("al.detail->>'organization_id' = $2::text"));
+    assert!(sql.contains("t.organization_id = $2"));
+    assert!(sql.contains("t.scope::text = 'in'"));
+    assert!(sql.contains("t.project_path IS NOT NULL"));
+    assert!(sql.contains("al.project_path = t.project_path"));
+    assert!(sql.contains("al.created_at >= $3"));
 }
 
 #[test]

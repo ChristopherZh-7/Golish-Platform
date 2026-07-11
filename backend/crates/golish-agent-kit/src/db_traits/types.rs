@@ -251,8 +251,89 @@ pub struct StageAssetWaveView {
     pub stage_kind: String,
     pub wave_index: i32,
     pub started_at: chrono::DateTime<chrono::Utc>,
+    pub parent_wave_id: Option<Uuid>,
     pub asset_hash: String,
+    /// Durable membership identity. Kept index-aligned with `asset_values`.
+    pub target_ids: Vec<Uuid>,
     pub asset_values: Vec<String>,
+}
+
+/// Provenance-preserving projection of one materialized technique outcome.
+/// `source` must survive the DB/application boundary because security-sensitive
+/// terminal states (currently Enumeration `blocked`) trust one backend producer
+/// only; a four-column tuple would discard the fact needed to enforce that at
+/// submit preview and final org-gate time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TechniqueOutcomeFact {
+    pub asset: String,
+    pub technique: String,
+    pub outcome: String,
+    pub evidence_id: i64,
+    pub source: Option<String>,
+}
+
+impl TechniqueOutcomeFact {
+    pub fn new(
+        asset: impl Into<String>,
+        technique: impl Into<String>,
+        outcome: impl Into<String>,
+        evidence_id: i64,
+        source: Option<String>,
+    ) -> Self {
+        Self {
+            asset: asset.into(),
+            technique: technique.into(),
+            outcome: outcome.into(),
+            evidence_id,
+            source,
+        }
+    }
+}
+
+impl StageAssetWaveView {
+    /// A present running wave is never equivalent to `NoWave`: corrupt or empty
+    /// membership must fail closed before any caller considers cutoff fallback.
+    pub fn validate_membership(&self) -> Result<(), String> {
+        if self.target_ids.is_empty() || self.asset_values.is_empty() {
+            return Err(format!("running asset wave {} has no items", self.id));
+        }
+        if self.target_ids.len() != self.asset_values.len() {
+            return Err(format!(
+                "running asset wave {} has mismatched target_ids ({}) and asset_values ({})",
+                self.id,
+                self.target_ids.len(),
+                self.asset_values.len()
+            ));
+        }
+        if self.target_ids.iter().any(Uuid::is_nil) {
+            return Err(format!(
+                "running asset wave {} contains a nil target_id",
+                self.id
+            ));
+        }
+        if self
+            .asset_values
+            .iter()
+            .any(|value| value.trim().is_empty())
+        {
+            return Err(format!(
+                "running asset wave {} contains a blank asset_value",
+                self.id
+            ));
+        }
+        let unique_ids = self
+            .target_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        if unique_ids.len() != self.target_ids.len() {
+            return Err(format!(
+                "running asset wave {} contains duplicate target_ids",
+                self.id
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Minimal view of a sub-agent dispatch row, exposed to higher layers
@@ -266,4 +347,47 @@ pub struct SubAgentDispatchView {
     pub depth: i32,
     pub args: serde_json::Value,
     pub started_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[cfg(test)]
+mod stage_asset_wave_tests {
+    use super::*;
+
+    fn wave(target_ids: Vec<Uuid>, asset_values: Vec<String>) -> StageAssetWaveView {
+        StageAssetWaveView {
+            id: Uuid::from_u128(1),
+            operation_id: Uuid::from_u128(2),
+            organization_id: Uuid::from_u128(3),
+            stage_kind: "enumeration".to_string(),
+            wave_index: 0,
+            started_at: chrono::Utc::now(),
+            parent_wave_id: None,
+            asset_hash: "test".to_string(),
+            target_ids,
+            asset_values,
+        }
+    }
+
+    #[test]
+    fn running_wave_empty_items_fail_closed() {
+        assert!(wave(Vec::new(), Vec::new()).validate_membership().is_err());
+    }
+
+    #[test]
+    fn running_wave_blank_values_fail_closed() {
+        assert!(wave(vec![Uuid::from_u128(9)], vec!["  ".to_string()])
+            .validate_membership()
+            .is_err());
+    }
+
+    #[test]
+    fn running_wave_requires_aligned_unique_target_ids() {
+        let id = Uuid::from_u128(9);
+        assert!(wave(vec![id], vec!["a".to_string(), "b".to_string()])
+            .validate_membership()
+            .is_err());
+        assert!(wave(vec![id, id], vec!["a".to_string(), "a".to_string()])
+            .validate_membership()
+            .is_err());
+    }
 }

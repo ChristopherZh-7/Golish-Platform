@@ -4,10 +4,10 @@
 //! harness 外层 hook 转成 `Found` EvidenceFact 注入 coverage gate，使 coverage
 //! 判定以 DB 真值为准（而非 agent 自报 / 命令派生）。
 //!
-//! 覆盖技术（Phase 0 被动 4 类 + Phase 1 被动 2 类 + 主动 6 类 = 12 维）：
+//! 覆盖技术（Phase 0 被动 4 类 + Phase 1 被动 2 类 + 主动 7 类 = 13 维）：
 //! - 被动情报（target_intel）：ASN / CT / WHOIS（org 级专列）、OSINT（org 级
 //!   intel/contacts/social/business 任一非空）、SUBDOMAIN / DNS（per-asset）。
-//! - 主动攻击面（external_attack_surface）：LIVENESS / PORT / SERVICE-FINGERPRINT。
+//! - 主动攻击面（external_attack_surface）：LIVENESS / PORT / SERVICE-FINGERPRINT / WEB-FINGERPRINT。
 //! - 内容枚举（enumeration）：DIR / PARAM / JSAPI。
 //!
 //! 红线（设计 §4）：
@@ -16,7 +16,7 @@
 //! - org 维度过滤（`organization_id`）= coverage 资产盘按 organization 隔离
 //!   （design 2026-06-09），避免跨 org 业务数据互相投影。
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -47,6 +47,14 @@ const IP_TYPE_IN_LIST: &str = "('ip', 'ipv4', 'ipv6', 'ip_address', 'cidr', 'ran
 pub const TECH_EAS_LIVENESS: &str = "GOLISH-EAS-LIVENESS";
 pub const TECH_EAS_PORT: &str = "GOLISH-EAS-PORT";
 pub const TECH_EAS_SERVICE_FP: &str = "GOLISH-EAS-SERVICE-FINGERPRINT";
+pub const TECH_EAS_WEB_FP: &str = "GOLISH-EAS-WEB-FINGERPRINT";
+
+/// Confirmed open TCP-ish ports currently stored on an EAS asset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmedOpenServicePorts {
+    pub asset: String,
+    pub ports: Vec<u16>,
+}
 
 /// 内容枚举 technique id（enumeration）。
 /// JS 资产收集（design 2026-07-01 §4.1）：真值 = 该 host 已落 js_analysis_results 行。
@@ -159,7 +167,8 @@ fn build_in_scope_values_sql(join: &str, filter: &str, window: Option<&str>) -> 
 fn build_subdomain_target_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "JOIN target_assets ta ON ta.target_id = t.id",
-        "AND ta.asset_type = 'subdomain'",
+        "AND ta.project_path IS NOT DISTINCT FROM t.project_path
+         AND ta.asset_type = 'subdomain'",
         apply_window.then_some("ta.discovered_at"),
     )
 }
@@ -191,19 +200,166 @@ fn informative_service_sql(port_alias: &str) -> String {
     )
 }
 
-fn ports_have_service_hint_sql(alias: &str) -> String {
-    let ports = ports_array_expr(alias);
-    let technologies = port_has_technologies_sql("p");
-    let service = informative_service_sql("p");
+fn open_port_sql(port_alias: &str) -> String {
+    format!(
+        "NULLIF({port_alias}->>'port', '') IS NOT NULL
+            AND lower(COALESCE(NULLIF({port_alias}->>'state', ''), 'open')) = 'open'"
+    )
+}
+
+fn service_fingerprint_required_port_sql(port_alias: &str) -> String {
+    let open_port = open_port_sql(port_alias);
+    format!("({open_port} AND COALESCE(NULLIF({port_alias}->>'port', ''), '') <> '53')")
+}
+
+fn port_has_service_surface_sql(port_alias: &str) -> String {
+    let technologies = port_has_technologies_sql(port_alias);
+    let service = informative_service_sql(port_alias);
+    format!(
+        "(({service})
+            OR NULLIF({port_alias}->>'version', '') IS NOT NULL
+            OR NULLIF({port_alias}->>'product', '') IS NOT NULL
+            OR NULLIF({port_alias}->>'service_product', '') IS NOT NULL
+            OR NULLIF({port_alias}->>'service_version', '') IS NOT NULL
+            OR NULLIF({port_alias}->>'banner', '') IS NOT NULL
+            OR NULLIF({port_alias}->>'webserver', '') IS NOT NULL
+            OR {technologies})"
+    )
+}
+
+fn port_number_from_json(entry: &serde_json::Value) -> Option<u16> {
+    let value = entry.get("port")?;
+    let raw = value
+        .as_u64()
+        .map(|n| n.to_string())
+        .or_else(|| value.as_str().map(|s| s.trim().to_string()))?;
+    let port = raw.parse::<u16>().ok()?;
+    (port > 0).then_some(port)
+}
+
+fn port_state_is_open_json(entry: &serde_json::Value) -> bool {
+    entry
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|state| !state.is_empty())
+        .map(|state| state.eq_ignore_ascii_case("open"))
+        .unwrap_or(true)
+}
+
+fn json_text_field_non_empty(entry: &serde_json::Value, key: &str) -> bool {
+    entry
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+}
+
+fn json_value_non_empty(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        Some(serde_json::Value::Array(items)) => !items.is_empty(),
+        Some(serde_json::Value::Object(items)) => !items.is_empty(),
+        Some(serde_json::Value::String(value)) => !value.trim().is_empty(),
+        Some(serde_json::Value::Null) | None => false,
+        Some(_) => true,
+    }
+}
+
+fn port_has_service_surface_json(entry: &serde_json::Value) -> bool {
+    let informative_service = entry
+        .get("service")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|service| !service.is_empty())
+        .map(|service| {
+            let first = service
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            !matches!(
+                first.as_str(),
+                "tcpwrapped" | "unknown" | "open" | "filtered" | "closed"
+            ) && port_number_from_json(entry) != Some(53)
+        })
+        .unwrap_or(false);
+    informative_service
+        || [
+            "version",
+            "product",
+            "service_product",
+            "service_version",
+            "banner",
+            "webserver",
+        ]
+        .iter()
+        .any(|key| json_text_field_non_empty(entry, key))
+        || json_value_non_empty(entry.get("technologies"))
+}
+
+/// Parse the current confirmed-open service ports from a target `ports` JSONB
+/// array. This mirrors the gate's SERVICE-FINGERPRINT denominator closely: an
+/// absent/empty state is treated as open, and DNS/53 does not require nmap
+/// service fingerprinting for multi-port hosts.
+pub fn confirmed_open_service_ports_from_ports_json(ports: &serde_json::Value) -> Vec<u16> {
+    let mut out = BTreeSet::new();
+    let Some(items) = ports.as_array() else {
+        return Vec::new();
+    };
+    for entry in items {
+        let Some(port) = port_number_from_json(entry) else {
+            continue;
+        };
+        if port == 53 || !port_state_is_open_json(entry) {
+            continue;
+        }
+        out.insert(port);
+    }
+    out.into_iter().collect()
+}
+
+/// Return confirmed-open ports that still lack a terminal service surface in
+/// `targets.ports[]`. This is used for read-model diagnostics; full PASS/BLOCK
+/// authority still lives in `coverage_truth_facts` and the gate.
+pub fn missing_service_fingerprint_ports_from_ports_json(ports: &serde_json::Value) -> Vec<u16> {
+    let mut out = BTreeSet::new();
+    let Some(items) = ports.as_array() else {
+        return Vec::new();
+    };
+    for entry in items {
+        let Some(port) = port_number_from_json(entry) else {
+            continue;
+        };
+        if port == 53 || !port_state_is_open_json(entry) || port_has_service_surface_json(entry) {
+            continue;
+        }
+        out.insert(port);
+    }
+    out.into_iter().collect()
+}
+
+fn port_has_nmap_fingerprint_sql(
+    target_alias: &str,
+    port_alias: &str,
+    apply_window: bool,
+) -> String {
+    let window = if apply_window {
+        "AND f.detected_at >= $2"
+    } else {
+        ""
+    };
     format!(
         "EXISTS (
-        SELECT 1
-          FROM jsonb_array_elements({ports}) p
-         WHERE ({service})
-            OR NULLIF(p->>'version', '') IS NOT NULL
-            OR NULLIF(p->>'webserver', '') IS NOT NULL
-            OR {technologies}
-    )"
+            SELECT 1
+              FROM fingerprints f
+             WHERE f.target_id = {target_alias}.id
+               AND f.project_path IS NOT DISTINCT FROM {target_alias}.project_path
+               AND lower(COALESCE(f.source, '')) = 'nmap'
+               AND COALESCE(f.evidence->>'port', '') = {port_alias}->>'port'
+               AND (NULLIF(trim(f.name), '') IS NOT NULL
+                    OR NULLIF(trim(f.version), '') IS NOT NULL)
+               {window}
+        )"
     )
 }
 
@@ -235,18 +391,55 @@ fn real_ip_fresh_ports_exists_sql(apply_window: bool) -> String {
 fn fingerprint_exists_sql(alias: &str, apply_window: bool) -> String {
     if apply_window {
         format!(
-            "EXISTS (SELECT 1 FROM fingerprints f WHERE f.target_id = {alias}.id AND f.detected_at >= $2)"
+            "EXISTS (SELECT 1 FROM fingerprints f WHERE f.target_id = {alias}.id AND f.project_path IS NOT DISTINCT FROM {alias}.project_path AND f.detected_at >= $2)"
         )
     } else {
-        format!("EXISTS (SELECT 1 FROM fingerprints f WHERE f.target_id = {alias}.id)")
+        format!("EXISTS (SELECT 1 FROM fingerprints f WHERE f.target_id = {alias}.id AND f.project_path IS NOT DISTINCT FROM {alias}.project_path)")
     }
 }
 
 fn service_from_ports_sql(alias: &str, apply_window: bool) -> String {
+    let ports = ports_array_expr(alias);
+    let open_port = open_port_sql("p");
+    let required_port = service_fingerprint_required_port_sql("p");
+    let service_surface = port_has_service_surface_sql("p");
+    let nmap_port_fingerprint = port_has_nmap_fingerprint_sql(alias, "p", apply_window);
+    let terminal_port = format!("(COALESCE({service_surface}, false) OR {nmap_port_fingerprint})");
     format!(
-        "({fresh_ports} AND {hints})",
+        "({fresh_ports}
+            AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements({ports}) p
+                 WHERE {open_port}
+            )
+            AND (
+                (
+                    EXISTS (
+                        SELECT 1 FROM jsonb_array_elements({ports}) p
+                         WHERE {required_port}
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM jsonb_array_elements({ports}) p
+                         WHERE {required_port}
+                           AND NOT {terminal_port}
+                    )
+                )
+                OR (
+                    NOT EXISTS (
+                        SELECT 1 FROM jsonb_array_elements({ports}) p
+                         WHERE {required_port}
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM jsonb_array_elements({ports}) p
+                         WHERE {open_port}
+                           AND NOT {terminal_port}
+                    )
+                )
+            ))",
         fresh_ports = fresh_ports_sql(alias, apply_window),
-        hints = ports_have_service_hint_sql(alias)
+        ports = ports,
+        open_port = open_port,
+        required_port = required_port,
+        terminal_port = terminal_port
     )
 }
 
@@ -260,9 +453,8 @@ fn real_ip_service_exists_sql(apply_window: bool) -> String {
                AND ip.scope::text = 'in'
                AND ($1 IS NULL OR ip.organization_id = $1)
                AND ip.target_type::text IN {IP_TYPE_IN_LIST}
-               AND ({fp_exists} OR {service_from_ports})
+               AND {service_from_ports}
         )",
-        fp_exists = fingerprint_exists_sql("ip", apply_window),
         service_from_ports = service_from_ports_sql("ip", apply_window)
     )
 }
@@ -326,6 +518,47 @@ fn build_web_capable_ip_values_sql() -> String {
     )
 }
 
+fn http_port_surface_sql(port_alias: &str) -> String {
+    format!(
+        "(lower(COALESCE({port_alias}->>'service', '')) IN ('http', 'https', 'http-alt', 'http-proxy')
+            OR lower(COALESCE({port_alias}->>'service', '')) LIKE '%http%'
+            OR NULLIF({port_alias}->>'url', '') IS NOT NULL
+            OR NULLIF({port_alias}->>'http_status', '') IS NOT NULL
+            OR NULLIF({port_alias}->>'webserver', '') IS NOT NULL)"
+    )
+}
+
+/// EAS web-stack denominator: assets with a freshly confirmed HTTP(S) surface.
+/// `targets.http_status` comes from httpx/WhatWeb landing; `targets.ports[]`
+/// covers nmap/http service detection on concrete IP:port surfaces.
+fn build_eas_web_capable_values_sql(apply_window: bool) -> String {
+    let ports = ports_array_expr("t");
+    let open_port = open_port_sql("p");
+    let http_port = http_port_surface_sql("p");
+    let port_window = if apply_window {
+        "AND t.ports_scanned_at >= $2"
+    } else {
+        ""
+    };
+    let http_status_clause = if apply_window {
+        "t.http_status IS NOT NULL AND t.liveness_checked_at >= $2"
+    } else {
+        "t.http_status IS NOT NULL"
+    };
+    build_in_scope_values_sql(
+        "",
+        &format!(
+            "AND (({http_status_clause})
+                OR (jsonb_typeof(t.ports) = 'array' {port_window}
+                    AND EXISTS (
+                        SELECT 1 FROM jsonb_array_elements({ports}) p
+                         WHERE {open_port} AND {http_port}
+                    )))"
+        ),
+        None,
+    )
+}
+
 /// EAS-PORT：端口扫描结果（`ports` 为非空 JSONB 数组）。判空走 `jsonb_typeof =
 /// 'array'` + 比较式（不裸调 `jsonb_array_length`，否则非数组 `ports` 会抛
 /// `cannot get array length of a non-array`），与 `engagement_truth` 同款守卫。
@@ -338,18 +571,37 @@ fn build_port_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql("", &filter, None)
 }
 
-/// EAS-SERVICE-FINGERPRINT：该 host 有服务/版本指纹行，或端口扫描结果里已经
-/// 带 service/version/webserver/technology hint。Phase D 行级窗：`apply_window`
-/// ⇒ 只数本次 stage-run 探到的指纹/端口服务（`f.detected_at` /
-/// `t.ports_scanned_at >= $2`）。
+/// EAS-SERVICE-FINGERPRINT：该 host 的每个 SERVICE-applicable confirmed-open
+/// port 都已有 service/version/product/banner/webserver/technology 之类的端口级
+/// 服务面，或有同 target、同 port 的 nmap service fingerprint 行。弱服务名
+///（tcpwrapped/unknown/open/...）不算强服务面，但 nmap 对该 port 的 terminal
+/// fingerprint 行可以关闭该端口，避免不可进一步识别的服务被无限重扫。泛化
+/// `fingerprints` 不再足够：WhatWeb 是 web-origin 技术栈补充，不能替代
+/// IP:port 的服务指纹。DNS/53 只有在 DNS-only 主机且有强表面/nmap 结果时
+/// 才作为 SERVICE found；多端口主机上的 bare DNS/53 不阻塞其它服务闭环。
+/// Phase D 行级窗：`apply_window` ⇒ 只数本次 stage-run 探到的端口服务
+///（`t.ports_scanned_at >= $2` / `f.detected_at >= $2`）。
 fn build_service_fp_values_sql(apply_window: bool) -> String {
-    let fp_exists = fingerprint_exists_sql("t", apply_window);
     let ports_clause = service_from_ports_sql("t", apply_window);
     let real_ip_service = real_ip_service_exists_sql(apply_window);
     build_in_scope_values_sql(
         "",
-        &format!("AND ({fp_exists} OR {ports_clause} OR {real_ip_service})"),
+        &format!("AND ({ports_clause} OR {real_ip_service})"),
         None,
+    )
+}
+
+/// EAS-WEB-FINGERPRINT：WhatWeb web-origin stack facts. This is deliberately
+/// separate from SERVICE-FINGERPRINT: web-origin technologies enrich UI/targets
+/// but do not prove every IP:port has nmap-style service/version coverage.
+fn build_web_fp_values_sql(apply_window: bool) -> String {
+    build_in_scope_values_sql(
+        "JOIN fingerprints f ON f.target_id = t.id",
+        "AND f.project_path IS NOT DISTINCT FROM t.project_path
+         AND lower(COALESCE(f.source, '')) = 'whatweb'
+         AND f.category IN ('web_server', 'technology')
+         AND NULLIF(trim(f.name), '') IS NOT NULL",
+        apply_window.then_some("f.detected_at"),
     )
 }
 
@@ -367,7 +619,7 @@ fn build_eas_service_not_applicable_values_sql(apply_window: bool) -> String {
 fn build_js_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "JOIN js_analysis_results jar ON jar.target_id = t.id",
-        "",
+        "AND jar.project_path IS NOT DISTINCT FROM t.project_path",
         apply_window.then_some("jar.analyzed_at"),
     )
 }
@@ -377,7 +629,7 @@ fn build_js_values_sql(apply_window: bool) -> String {
 fn build_dir_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "JOIN directory_entries de ON de.target_id = t.id",
-        "",
+        "AND de.project_path IS NOT DISTINCT FROM t.project_path",
         apply_window.then_some("de.created_at"),
     )
 }
@@ -388,7 +640,8 @@ fn build_dir_values_sql(apply_window: bool) -> String {
 fn build_param_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "JOIN api_endpoints ae ON ae.target_id = t.id",
-        "AND jsonb_typeof(ae.params) = 'array' AND ae.params <> '[]'::jsonb",
+        "AND ae.project_path IS NOT DISTINCT FROM t.project_path
+         AND jsonb_typeof(ae.params) = 'array' AND ae.params <> '[]'::jsonb",
         apply_window.then_some("ae.discovered_at"),
     )
 }
@@ -397,7 +650,8 @@ fn build_param_values_sql(apply_window: bool) -> String {
 fn build_jsapi_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "JOIN api_endpoints ae ON ae.target_id = t.id",
-        "AND ae.source IN ('js_analysis', 'crawler')",
+        "AND ae.project_path IS NOT DISTINCT FROM t.project_path
+         AND ae.source IN ('js_analysis', 'crawler')",
         apply_window.then_some("ae.discovered_at"),
     )
 }
@@ -407,7 +661,10 @@ fn build_jsapi_values_sql(apply_window: bool) -> String {
 fn build_rdns_values_sql() -> String {
     build_in_scope_values_sql(
         "JOIN dns_records dr ON dr.target_id = t.id",
-        &format!("AND dr.record_type = 'PTR' AND t.target_type::text IN {IP_TYPE_IN_LIST}"),
+        &format!(
+            "AND dr.project_path IS NOT DISTINCT FROM t.project_path
+             AND dr.record_type = 'PTR' AND t.target_type::text IN {IP_TYPE_IN_LIST}"
+        ),
         None,
     )
 }
@@ -442,6 +699,7 @@ pub(crate) struct TruthInputs<'a> {
     pub liveness_values: &'a HashSet<String>,
     pub port_values: &'a HashSet<String>,
     pub service_fp_values: &'a HashSet<String>,
+    pub web_fp_values: &'a HashSet<String>,
     /// ENUM-JS（design 2026-07-01 §4.1）：该 host 已收集 JS 资产（js_analysis_results 有行）。
     pub js_values: &'a HashSet<String>,
     pub dir_values: &'a HashSet<String>,
@@ -510,6 +768,9 @@ pub(crate) fn assemble_truth_facts_typed(
         }
         if inputs.service_fp_values.contains(asset) {
             facts.push((asset.clone(), TECH_EAS_SERVICE_FP));
+        }
+        if inputs.web_fp_values.contains(asset) {
+            facts.push((asset.clone(), TECH_EAS_WEB_FP));
         }
         if inputs.js_values.contains(asset) {
             facts.push((asset.clone(), TECH_ENUM_JS));
@@ -611,6 +872,7 @@ pub async fn coverage_truth_facts(
     let port_values = fetch_values(pool, &build_port_values_sql(aw), org_id, run_start).await?;
     let service_fp_values =
         fetch_values(pool, &build_service_fp_values_sql(aw), org_id, run_start).await?;
+    let web_fp_values = fetch_values(pool, &build_web_fp_values_sql(aw), org_id, run_start).await?;
     let js_values = fetch_values(pool, &build_js_values_sql(aw), org_id, run_start).await?;
     let dir_values = fetch_values(pool, &build_dir_values_sql(aw), org_id, run_start).await?;
     let param_values = fetch_values(pool, &build_param_values_sql(aw), org_id, run_start).await?;
@@ -631,6 +893,7 @@ pub async fn coverage_truth_facts(
             liveness_values: &liveness_values,
             port_values: &port_values,
             service_fp_values: &service_fp_values,
+            web_fp_values: &web_fp_values,
             js_values: &js_values,
             dir_values: &dir_values,
             param_values: &param_values,
@@ -643,6 +906,76 @@ pub async fn coverage_truth_facts(
 /// EAS/httpx observed an HTTP response (`targets.http_status` is non-null).
 pub async fn web_capable_ip_assets(pool: &PgPool, org_id: Option<Uuid>) -> Result<HashSet<String>> {
     fetch_values(pool, &build_web_capable_ip_values_sql(), org_id, None).await
+}
+
+/// In-scope assets that currently have an HTTP(S) surface and therefore need
+/// per-origin web-stack fingerprinting in EAS.
+pub async fn eas_web_capable_assets(
+    pool: &PgPool,
+    org_id: Option<Uuid>,
+    run_start: Option<DateTime<Utc>>,
+) -> Result<HashSet<String>> {
+    let aw = run_start.is_some();
+    fetch_values(
+        pool,
+        &build_eas_web_capable_values_sql(aw),
+        org_id,
+        run_start,
+    )
+    .await
+}
+
+/// Current confirmed-open service ports for a set of in-scope assets. This is a
+/// read-model helper for EAS tooling, not a PASS/BLOCK shortcut: it lets wrapper
+/// tools and background listeners stay consistent with the `targets.ports[]`
+/// denominator the gate already uses.
+const CONFIRMED_OPEN_SERVICE_PORTS_FOR_ASSETS_SQL: &str = r#"
+        SELECT t.value,
+               CASE
+                 WHEN jsonb_typeof(t.ports) = 'array' THEN t.ports
+                 ELSE '[]'::jsonb
+               END AS ports
+          FROM targets t
+         WHERE t.scope::text = 'in'
+           AND t.value = ANY($1)
+           AND ($2::uuid IS NULL OR t.organization_id = $2)
+           AND ($3::text IS NULL OR t.project_path = $3)
+        "#;
+
+pub async fn confirmed_open_service_ports_for_assets(
+    pool: &PgPool,
+    org_id: Option<Uuid>,
+    project_path: Option<&str>,
+    assets: &[String],
+) -> Result<Vec<ConfirmedOpenServicePorts>> {
+    if assets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(String, serde_json::Value)> =
+        sqlx::query_as(CONFIRMED_OPEN_SERVICE_PORTS_FOR_ASSETS_SQL)
+            .bind(assets)
+            .bind(org_id)
+            .bind(project_path)
+            .fetch_all(pool)
+            .await?;
+
+    let mut by_asset: BTreeMap<String, BTreeSet<u16>> = BTreeMap::new();
+    for (asset, ports) in rows {
+        by_asset
+            .entry(asset)
+            .or_default()
+            .extend(confirmed_open_service_ports_from_ports_json(&ports));
+    }
+
+    Ok(by_asset
+        .into_iter()
+        .filter_map(|(asset, ports)| {
+            (!ports.is_empty()).then(|| ConfirmedOpenServicePorts {
+                asset,
+                ports: ports.into_iter().collect(),
+            })
+        })
+        .collect())
 }
 
 fn build_dead_asset_values_sql() -> String {
@@ -702,6 +1035,7 @@ mod tests {
             liveness_values: empty,
             port_values: empty,
             service_fp_values: empty,
+            web_fp_values: empty,
             js_values: empty,
             dir_values: empty,
             param_values: empty,
@@ -762,6 +1096,7 @@ mod tests {
     fn rdns_values_sql_filters_ptr_and_ip_types() {
         let sql = build_rdns_values_sql();
         assert!(sql.contains("JOIN dns_records dr ON dr.target_id = t.id"));
+        assert!(sql.contains("dr.project_path IS NOT DISTINCT FROM t.project_path"));
         assert!(sql.contains("dr.record_type = 'PTR'"));
         assert!(sql.contains("t.target_type::text IN ('ip', 'ipv4'"));
         assert!(sql.contains("t.scope::text = 'in'"));
@@ -901,6 +1236,7 @@ mod tests {
         assert!(sql.contains("($1 IS NULL OR t.organization_id = $1)"));
         assert!(sql.contains("ta.asset_type = 'subdomain'"));
         assert!(sql.contains("JOIN target_assets ta ON ta.target_id = t.id"));
+        assert!(sql.contains("ta.project_path IS NOT DISTINCT FROM t.project_path"));
     }
 
     #[test]
@@ -957,20 +1293,106 @@ mod tests {
         assert!(build_port_values_sql(false)
             .contains("jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb"));
         let service = build_service_fp_values_sql(false);
-        assert!(service.contains("EXISTS (SELECT 1 FROM fingerprints f WHERE f.target_id = t.id)"));
-        assert!(service.contains("jsonb_array_elements("));
+        assert!(service.contains("FROM fingerprints f"));
+        assert!(service.contains("f.project_path IS NOT DISTINCT FROM t.project_path"));
+        assert!(service.contains("lower(COALESCE(f.source, '')) = 'nmap'"));
+        assert!(service.contains("COALESCE(f.evidence->>'port', '') = p->>'port'"));
+        assert!(service.contains("NOT EXISTS"));
+        assert!(service.contains("COALESCE("));
+        assert!(service.contains(", false)"));
+        assert!(service.contains("jsonb_array_elements(CASE WHEN jsonb_typeof(t.ports)"));
+        assert!(service.contains("lower(COALESCE(NULLIF(p->>'state', ''), 'open')) = 'open'"));
         assert!(service.contains("p->>'service'"));
         assert!(service.contains("NOT IN ('tcpwrapped', 'unknown', 'open', 'filtered', 'closed')"));
-        assert!(service.contains("p->>'port' <> '53'"));
         assert!(service.contains("p->>'version'"));
+        assert!(service.contains("p->>'product'"));
+        assert!(service.contains("p->>'banner'"));
         assert!(build_dir_values_sql(false)
             .contains("JOIN directory_entries de ON de.target_id = t.id"));
+        assert!(build_dir_values_sql(false)
+            .contains("de.project_path IS NOT DISTINCT FROM t.project_path"));
         let param = build_param_values_sql(false);
         assert!(param.contains("JOIN api_endpoints ae ON ae.target_id = t.id"));
+        assert!(param.contains("ae.project_path IS NOT DISTINCT FROM t.project_path"));
         assert!(param.contains("jsonb_typeof(ae.params) = 'array' AND ae.params <> '[]'::jsonb"));
         let jsapi = build_jsapi_values_sql(false);
         assert!(jsapi.contains("JOIN api_endpoints ae ON ae.target_id = t.id"));
+        assert!(jsapi.contains("ae.project_path IS NOT DISTINCT FROM t.project_path"));
         assert!(jsapi.contains("ae.source IN ('js_analysis', 'crawler')"));
+    }
+
+    #[test]
+    fn nmap_port_fingerprint_is_terminal_even_for_weak_service_names() {
+        let nmap = port_has_nmap_fingerprint_sql("t", "p", false);
+        assert!(nmap.contains("lower(COALESCE(f.source, '')) = 'nmap'"));
+        assert!(nmap.contains("COALESCE(f.evidence->>'port', '') = p->>'port'"));
+        assert!(nmap.contains("f.project_path IS NOT DISTINCT FROM t.project_path"));
+        assert!(nmap.contains("NULLIF(trim(f.name), '') IS NOT NULL"));
+        assert!(
+            !nmap.contains("NOT IN ('tcpwrapped', 'unknown', 'open', 'filtered', 'closed')"),
+            "port-scoped nmap attempts must close tcpwrapped/unknown style terminal results: {nmap}"
+        );
+
+        let strong_surface = informative_service_sql("p");
+        assert!(strong_surface
+            .contains("NOT IN ('tcpwrapped', 'unknown', 'open', 'filtered', 'closed')"));
+    }
+
+    #[test]
+    fn service_fp_sql_does_not_require_bare_dns_53_on_multi_service_hosts() {
+        let required = service_fingerprint_required_port_sql("p");
+        assert!(required.contains("lower(COALESCE(NULLIF(p->>'state', ''), 'open')) = 'open'"));
+        assert!(required.contains("COALESCE(NULLIF(p->>'port', ''), '') <> '53'"));
+
+        let sql = service_from_ports_sql("t", false);
+        assert!(sql.contains("WHERE (NULLIF(p->>'port', '') IS NOT NULL"));
+        assert!(sql.contains("COALESCE(NULLIF(p->>'port', ''), '') <> '53'"));
+        assert!(sql.contains("OR (\n                    NOT EXISTS"));
+    }
+
+    #[test]
+    fn confirmed_open_service_ports_json_matches_eas_service_denominator() {
+        let ports = serde_json::json!([
+            {"port": "22", "state": "open", "service": "ssh"},
+            {"port": 53, "state": "open", "service": "domain"},
+            {"port": "82", "state": "open", "service": ""},
+            {"port": "443", "state": "filtered"},
+            {"port": "50002"}
+        ]);
+
+        assert_eq!(
+            confirmed_open_service_ports_from_ports_json(&ports),
+            vec![22, 82, 50002]
+        );
+        assert_eq!(
+            missing_service_fingerprint_ports_from_ports_json(&ports),
+            vec![82, 50002]
+        );
+    }
+
+    #[test]
+    fn confirmed_ports_exact_workspace_rejects_legacy_project_rows() {
+        let sql = CONFIRMED_OPEN_SERVICE_PORTS_FOR_ASSETS_SQL;
+
+        assert!(sql.contains("($3::text IS NULL OR t.project_path = $3)"));
+        assert!(!sql.contains("t.project_path = ''"));
+        assert!(!sql.contains("t.project_path IS NULL"));
+    }
+
+    #[test]
+    fn weak_service_names_are_missing_service_fingerprint_json() {
+        let ports = serde_json::json!([
+            {"port": "80", "state": "open", "service": "http"},
+            {"port": "81", "state": "open", "service": "open"},
+            {"port": "82", "state": "open", "service": "tcpwrapped"},
+            {"port": "83", "state": "open", "technologies": ["nginx"]},
+            {"port": "84", "state": "open", "version": "1.2.3"}
+        ]);
+
+        assert_eq!(
+            missing_service_fingerprint_ports_from_ports_json(&ports),
+            vec![81, 82]
+        );
     }
 
     #[test]
@@ -978,11 +1400,19 @@ mod tests {
         // ENUM-JS 真值（design 2026-07-01 §4.1）：join js_analysis_results + org/scope 隔离。
         let sql = build_js_values_sql(false);
         assert!(sql.contains("JOIN js_analysis_results jar ON jar.target_id = t.id"));
+        assert!(sql.contains("jar.project_path IS NOT DISTINCT FROM t.project_path"));
         assert!(sql.contains("t.scope::text = 'in'"));
         assert!(sql.contains("($1 IS NULL OR t.organization_id = $1)"));
         assert!(!sql.contains("$2"), "off must bind only $1: {sql}");
         // freshness window on ⇒ 只数本次 stage-run 落库（jar.analyzed_at >= $2）。
         assert!(build_js_values_sql(true).contains("jar.analyzed_at >= $2"));
+    }
+
+    #[test]
+    fn web_fingerprint_truth_requires_current_target_project() {
+        let sql = build_web_fp_values_sql(false);
+        assert!(sql.contains("JOIN fingerprints f ON f.target_id = t.id"));
+        assert!(sql.contains("f.project_path IS NOT DISTINCT FROM t.project_path"));
     }
 
     #[test]
@@ -1040,7 +1470,7 @@ mod tests {
     #[test]
     fn active_dimension_sqls_never_array_length_unguarded() {
         assert!(!build_port_values_sql(false).contains("jsonb_array_length(t.ports)"));
-        assert!(!build_service_fp_values_sql(false).contains("jsonb_array_elements(t.ports)"));
+        assert!(!build_service_fp_values_sql(false).contains("jsonb_array_length(t.ports)"));
         assert!(!build_param_values_sql(false).contains("jsonb_array_length(ae.params)"));
     }
 
@@ -1193,6 +1623,7 @@ mod tests {
         let liveness = subs(&["a.com"]);
         let port = subs(&["a.com"]);
         let service_fp = subs(&["b.com"]);
+        let web_fp = subs(&["b.com"]);
         let dir = subs(&["a.com"]);
         let param = subs(&["b.com"]);
         let jsapi = subs(&["a.com"]);
@@ -1213,6 +1644,7 @@ mod tests {
                 liveness_values: &liveness,
                 port_values: &port,
                 service_fp_values: &service_fp,
+                web_fp_values: &web_fp,
                 js_values: &js,
                 dir_values: &dir,
                 param_values: &param,
@@ -1228,6 +1660,7 @@ mod tests {
                 ("a.com".to_string(), TECH_ENUM_DIR),
                 ("a.com".to_string(), TECH_ENUM_JSAPI),
                 ("b.com".to_string(), TECH_EAS_SERVICE_FP),
+                ("b.com".to_string(), TECH_EAS_WEB_FP),
                 ("b.com".to_string(), TECH_ENUM_PARAM),
             ]
         );
@@ -1252,6 +1685,7 @@ mod tests {
                 liveness_values: &one,
                 port_values: &one,
                 service_fp_values: &one,
+                web_fp_values: &one,
                 js_values: &one,
                 dir_values: &one,
                 param_values: &one,
@@ -1273,6 +1707,7 @@ mod tests {
                 ("a.com".to_string(), TECH_EAS_LIVENESS),
                 ("a.com".to_string(), TECH_EAS_PORT),
                 ("a.com".to_string(), TECH_EAS_SERVICE_FP),
+                ("a.com".to_string(), TECH_EAS_WEB_FP),
                 ("a.com".to_string(), TECH_ENUM_JS),
                 ("a.com".to_string(), TECH_ENUM_DIR),
                 ("a.com".to_string(), TECH_ENUM_PARAM),

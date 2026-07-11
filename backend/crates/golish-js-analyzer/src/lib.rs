@@ -98,8 +98,8 @@ pub enum UrlKind {
 }
 
 /// Which extraction path produced an [`Endpoint`]: the deterministic regex
-/// pass (default) or the AI-assisted hybrid pass (设计
-/// 2026-06-30-jsapi-ai-tools). `#[serde(default)]` on the field keeps old
+/// pass (default), HaE-style route/path rules, or the AI-assisted hybrid pass
+/// (设计 2026-06-30-jsapi-ai-tools). `#[serde(default)]` on the field keeps old
 /// persisted JSON (without this key) deserializing as [`EndpointSource::Regex`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -107,6 +107,8 @@ pub enum EndpointSource {
     /// Found by deterministic regex/AST analysis.
     #[default]
     Regex,
+    /// Promoted mechanically from a HaE-style route/path candidate.
+    Hae,
     /// Recovered by an LLM pass and anchored back to the source text.
     Ai,
 }

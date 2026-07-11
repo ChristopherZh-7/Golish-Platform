@@ -18,10 +18,145 @@
 //! the canonical form the per-table repo functions used before delegation, so the
 //! refactor introduces **zero query semantics drift**.
 
-use crate::Result;
+use crate::{DbError, Result};
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgRow;
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgConnection, PgPool};
 use uuid::Uuid;
+
+/// Immutable raw target row captured when an active producer is authorized.
+///
+/// Target-bound business writers lock the current `targets` row and compare
+/// every field before inserting/updating child rows. Keeping the raw
+/// `name`/`value`/`ports` witness avoids reimplementing Web Origin
+/// normalization in SQL: any mutation that could revoke the exact-origin
+/// authorization changes the witness and makes the write fail closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetWriteGuard {
+    pub target_id: Uuid,
+    pub organization_id: Option<Uuid>,
+    pub project_path: String,
+    pub scope: String,
+    pub name: String,
+    pub value: String,
+    pub ports: serde_json::Value,
+}
+
+#[derive(Debug, FromRow)]
+struct TargetWriteGuardRow {
+    id: Uuid,
+    organization_id: Option<Uuid>,
+    project_path: Option<String>,
+    scope: String,
+    name: String,
+    value: String,
+    ports: serde_json::Value,
+}
+
+const LOCK_TARGET_WRITE_GUARD_SQL: &str = r#"SELECT id,
+       organization_id,
+       project_path,
+       scope::text AS scope,
+       name,
+       value,
+       ports
+FROM targets
+WHERE id = $1
+FOR UPDATE"#;
+
+fn build_load_target_write_guard_sql() -> &'static str {
+    r#"SELECT id,
+              organization_id,
+              project_path,
+              scope::text AS scope,
+              name,
+              value,
+              ports
+       FROM targets
+       WHERE id = $1
+         AND scope::text = 'in'
+         AND project_path IS NOT NULL"#
+}
+
+impl From<TargetWriteGuardRow> for TargetWriteGuard {
+    fn from(row: TargetWriteGuardRow) -> Self {
+        Self {
+            target_id: row.id,
+            organization_id: row.organization_id,
+            project_path: row
+                .project_path
+                .expect("guard loader requires a non-null project_path"),
+            scope: row.scope,
+            name: row.name,
+            value: row.value,
+            ports: row.ports,
+        }
+    }
+}
+
+/// Capture the immutable raw owner/scope/origin witness for a current in-scope
+/// target. Network-capable callers keep this snapshot across preparation and
+/// revalidate it immediately before returning a launch decision.
+pub async fn load_target_write_guard(
+    pool: &PgPool,
+    target_id: Uuid,
+) -> Result<Option<TargetWriteGuard>> {
+    let row = sqlx::query_as::<_, TargetWriteGuardRow>(build_load_target_write_guard_sql())
+        .bind(target_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(TargetWriteGuard::from))
+}
+
+fn target_matches_write_guard(current: &TargetWriteGuardRow, guard: &TargetWriteGuard) -> bool {
+    current.id == guard.target_id
+        && current.organization_id == guard.organization_id
+        && current.project_path.as_deref() == Some(guard.project_path.as_str())
+        && current.scope == "in"
+        && current.scope == guard.scope
+        && current.name == guard.name
+        && current.value == guard.value
+        && current.ports == guard.ports
+}
+
+/// Lock and validate the exact target authorization snapshot for a short DB
+/// transaction. Callers must perform the child-row write on the same
+/// connection before committing; no network or other long-running work belongs
+/// between this guard and the write.
+pub async fn lock_target_write_guard(
+    connection: &mut PgConnection,
+    guard: &TargetWriteGuard,
+) -> Result<()> {
+    let current = sqlx::query_as::<_, TargetWriteGuardRow>(LOCK_TARGET_WRITE_GUARD_SQL)
+        .bind(guard.target_id)
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or_else(|| {
+            DbError::NotFound(format!(
+                "target write guard rejected missing target {}",
+                guard.target_id
+            ))
+        })?;
+
+    if !target_matches_write_guard(&current, guard) {
+        return Err(DbError::Other(anyhow::anyhow!(
+            "target write guard rejected authorization drift for {}",
+            guard.target_id
+        )));
+    }
+
+    Ok(())
+}
+
+/// Revalidate a previously captured guard under the same row lock used by
+/// guarded writers. The transaction contains DB work only and releases the
+/// lock immediately after the comparison.
+pub async fn validate_target_write_guard(pool: &PgPool, guard: &TargetWriteGuard) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    lock_target_write_guard(&mut tx, guard).await?;
+    tx.commit().await?;
+    Ok(())
+}
 
 /// Conservative check that an interpolated SQL fragment (table name or `ORDER BY`
 /// clause) only contains characters we expect from a trusted literal.
@@ -329,5 +464,80 @@ mod tests {
         assert!(!is_safe_sql_fragment("findings; DROP TABLE findings"));
         assert!(!is_safe_sql_fragment("findings WHERE 1=1 --"));
         assert!(!is_safe_sql_fragment("a)('b"));
+    }
+
+    fn write_guard() -> TargetWriteGuard {
+        TargetWriteGuard {
+            target_id: Uuid::new_v4(),
+            organization_id: Some(Uuid::new_v4()),
+            project_path: "/workspace/a".to_string(),
+            scope: "in".to_string(),
+            name: "app.example".to_string(),
+            value: "https://app.example/".to_string(),
+            ports: serde_json::json!([{
+                "port": 443,
+                "state": "open",
+                "url": "https://app.example/"
+            }]),
+        }
+    }
+
+    fn guard_row(guard: &TargetWriteGuard) -> TargetWriteGuardRow {
+        TargetWriteGuardRow {
+            id: guard.target_id,
+            organization_id: guard.organization_id,
+            project_path: Some(guard.project_path.clone()),
+            scope: guard.scope.clone(),
+            name: guard.name.clone(),
+            value: guard.value.clone(),
+            ports: guard.ports.clone(),
+        }
+    }
+
+    #[test]
+    fn target_write_guard_locks_one_target_row() {
+        assert!(LOCK_TARGET_WRITE_GUARD_SQL.contains("FROM targets"));
+        assert!(LOCK_TARGET_WRITE_GUARD_SQL.contains("WHERE id = $1"));
+        assert!(LOCK_TARGET_WRITE_GUARD_SQL.contains("scope::text AS scope"));
+        assert!(LOCK_TARGET_WRITE_GUARD_SQL.contains("FOR UPDATE"));
+    }
+
+    #[test]
+    fn target_write_guard_loader_is_current_in_scope_and_project_bound() {
+        let sql = build_load_target_write_guard_sql();
+        assert!(sql.contains("WHERE id = $1"));
+        assert!(sql.contains("scope::text = 'in'"));
+        assert!(sql.contains("project_path IS NOT NULL"));
+    }
+
+    #[test]
+    fn target_write_guard_requires_every_raw_snapshot_field() {
+        let guard = write_guard();
+        let current = guard_row(&guard);
+        assert!(target_matches_write_guard(&current, &guard));
+
+        let mut drifted = guard_row(&guard);
+        drifted.organization_id = Some(Uuid::new_v4());
+        assert!(!target_matches_write_guard(&drifted, &guard));
+
+        let mut drifted = guard_row(&guard);
+        drifted.project_path = Some("/workspace/b".to_string());
+        assert!(!target_matches_write_guard(&drifted, &guard));
+
+        let mut drifted = guard_row(&guard);
+        drifted.scope = "out".to_string();
+        assert!(!target_matches_write_guard(&drifted, &guard));
+
+        let mut drifted = guard_row(&guard);
+        drifted.name = "other.example".to_string();
+        assert!(!target_matches_write_guard(&drifted, &guard));
+
+        let mut drifted = guard_row(&guard);
+        drifted.value = "https://other.example/".to_string();
+        assert!(!target_matches_write_guard(&drifted, &guard));
+
+        let mut drifted = guard_row(&guard);
+        drifted.ports = serde_json::json!([]);
+        assert!(!target_matches_write_guard(&drifted, &guard));
     }
 }

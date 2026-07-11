@@ -105,21 +105,19 @@ fn build_next_candidates_sql() -> String {
        FROM targets t \
       WHERE t.scope::text = 'in' \
         AND t.organization_id = $2 \
-        AND ( \
-            EXISTS ( \
-                SELECT 1 \
-                  FROM stage_asset_waves existing \
-                 WHERE existing.operation_id = $1 \
-                   AND existing.organization_id = $2 \
-                   AND existing.stage_kind = $3 \
-            ) \
-            OR t.created_at > COALESCE(( \
-                SELECT c.passed_at \
-                  FROM org_stage_completions c \
-                 WHERE c.organization_id = $2 \
-                   AND c.stage_kind = $3 \
-            ), '-infinity'::timestamptz) \
-        ) \
+        AND t.created_at > COALESCE(( \
+            SELECT parent.started_at \
+              FROM stage_asset_waves parent \
+             WHERE parent.id = $4 \
+               AND parent.operation_id = $1 \
+               AND parent.organization_id = $2 \
+               AND parent.stage_kind = $3 \
+        ), ( \
+            SELECT c.passed_at \
+              FROM org_stage_completions c \
+             WHERE c.organization_id = $2 \
+               AND c.stage_kind = $3 \
+        ), '-infinity'::timestamptz) \
         AND NOT EXISTS ( \
             SELECT 1 \
               FROM stage_asset_wave_items i \
@@ -130,7 +128,7 @@ fn build_next_candidates_sql() -> String {
                AND i.target_id = t.id \
         ) \
       ORDER BY t.created_at ASC, t.value ASC, t.id ASC \
-      LIMIT $4"
+      LIMIT $5"
         .to_string()
 }
 
@@ -190,6 +188,40 @@ fn stable_asset_hash(candidates: &[WaveTargetCandidate]) -> String {
     format!("{hash:016x}")
 }
 
+fn stable_wave_item_hash(items: &[StageAssetWaveItemRow]) -> String {
+    let candidates = items
+        .iter()
+        .map(|item| WaveTargetCandidate {
+            target_id: item.target_id,
+            asset_value: item.asset_value.clone(),
+            asset_type: item.asset_type.clone(),
+            source: item.source.clone(),
+        })
+        .collect::<Vec<_>>();
+    stable_asset_hash(&candidates)
+}
+
+fn validate_wave_items(wave: &StageAssetWaveRow, items: &[StageAssetWaveItemRow]) -> Result<()> {
+    if items.is_empty() {
+        return Err(anyhow::anyhow!(
+            "running asset wave {} has no items; refusing denominator fallback",
+            wave.id
+        )
+        .into());
+    }
+    let actual_hash = stable_wave_item_hash(items);
+    if actual_hash != wave.asset_hash {
+        return Err(anyhow::anyhow!(
+            "running asset wave {} item hash mismatch: stored={}, actual={}; wave items may have been deleted",
+            wave.id,
+            wave.asset_hash,
+            actual_hash
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub async fn current_running(
     pool: &PgPool,
     operation_id: Uuid,
@@ -206,6 +238,7 @@ pub async fn current_running(
         return Ok(None);
     };
     let items = list_items(pool, wave.id).await?;
+    validate_wave_items(&wave, &items)?;
     Ok(Some(StageAssetWaveWithItems { wave, items }))
 }
 
@@ -299,6 +332,7 @@ pub async fn create_next(
         .bind(operation_id)
         .bind(organization_id)
         .bind(stage_kind)
+        .bind(parent_wave_id)
         .bind(limit.max(0))
         .fetch_all(pool)
         .await?;
@@ -393,6 +427,18 @@ mod tests {
         }
     }
 
+    fn item(target_id: u128, value: &str) -> StageAssetWaveItemRow {
+        StageAssetWaveItemRow {
+            id: target_id as i64,
+            wave_id: Uuid::from_u128(99),
+            target_id: Uuid::from_u128(target_id),
+            asset_value: value.to_string(),
+            asset_type: "domain".to_string(),
+            source: Some("test".to_string()),
+            created_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn stage_asset_wave_hash_is_order_independent_and_content_bound() {
         let a = candidate(1, "a.example.com");
@@ -409,6 +455,29 @@ mod tests {
     }
 
     #[test]
+    fn stage_asset_wave_hash_detects_cascade_deleted_item() {
+        let full = vec![item(1, "a.example.com"), item(2, "b.example.com")];
+        let stored_hash = stable_wave_item_hash(&full);
+
+        let remaining_hash = stable_wave_item_hash(&full[1..]);
+
+        assert_ne!(stored_hash, remaining_hash);
+        let wave = StageAssetWaveRow {
+            id: Uuid::from_u128(90),
+            operation_id: Uuid::from_u128(91),
+            organization_id: Uuid::from_u128(92),
+            stage_kind: "enumeration".to_string(),
+            wave_index: 0,
+            status: "running".to_string(),
+            started_at: Utc::now(),
+            completed_at: None,
+            parent_wave_id: None,
+            asset_hash: stored_hash,
+        };
+        assert!(validate_wave_items(&wave, &full[1..]).is_err());
+    }
+
+    #[test]
     fn stage_asset_wave_next_candidates_exclude_prior_wave_items() {
         let sql = build_next_candidates_sql();
         assert!(sql.contains("NOT EXISTS"));
@@ -416,16 +485,24 @@ mod tests {
         assert!(sql.contains("w.operation_id = $1"));
         assert!(sql.contains("w.organization_id = $2"));
         assert!(sql.contains("w.stage_kind = $3"));
+        assert!(sql.contains("LIMIT $5"));
     }
 
     #[test]
-    fn stage_asset_wave_next_candidates_respect_legacy_completion_floor() {
+    fn stage_asset_wave_next_candidates_use_parent_started_at_floor() {
+        let sql = build_next_candidates_sql();
+        assert!(sql.contains("parent.started_at"));
+        assert!(sql.contains("parent.id = $4"));
+        assert!(sql.contains("parent.operation_id = $1"));
+        assert!(sql.contains("t.created_at > COALESCE"));
+    }
+
+    #[test]
+    fn stage_asset_wave_next_candidates_keep_legacy_completion_floor_fallback() {
         let sql = build_next_candidates_sql();
         assert!(sql.contains("org_stage_completions"));
         assert!(sql.contains("c.organization_id = $2"));
         assert!(sql.contains("c.stage_kind = $3"));
-        assert!(sql.contains("t.created_at > COALESCE"));
-        assert!(sql.contains("existing.operation_id = $1"));
     }
 
     #[test]

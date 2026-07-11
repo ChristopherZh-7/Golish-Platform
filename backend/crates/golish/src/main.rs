@@ -74,11 +74,11 @@ fn main() {
         return;
     }
 
-    // 方案 2 (design 2026-06-06): `golish --stage-run` boots the backend
-    // headlessly, runs one harness stage (or a --from..=--to slice) with a real
-    // LLM, prints a structured report, and exits. Like --replay it must
-    // short-circuit before the GUI/CLI chat branch.
-    if args.stage_run {
+    // 方案 2 (design 2026-06-06): fresh `--stage-run` and exact
+    // `--stage-run-resume` both boot the headless stage runner. Resume is routed
+    // through the same process bootstrap but reuses the selected DB
+    // session/task/operation; it never enters ordinary CLI chat.
+    if args.stage_run || args.stage_run_resume.is_some() {
         run_stage_run(args);
         return;
     }

@@ -253,6 +253,7 @@ fn test_result_construction() {
         success: true,
         duration_ms: 1500,
         files_modified: vec!["main.go".to_string()],
+        chain_id: None,
     };
 
     assert_eq!(result.agent_id, "test_agent");
@@ -260,6 +261,42 @@ fn test_result_construction() {
     assert!(result.success);
     assert_eq!(result.duration_ms, 1500);
     assert_eq!(result.files_modified, vec!["main.go".to_string()]);
+}
+
+#[test]
+fn sub_agent_result_deserializes_legacy_payload_without_chain_id() {
+    let result: SubAgentResult = serde_json::from_value(serde_json::json!({
+        "agent_id": "legacy-agent",
+        "response": "legacy response",
+        "context": SubAgentContext::default(),
+        "success": false,
+        "duration_ms": 42,
+        "files_modified": [],
+    }))
+    .expect("legacy SubAgentResult JSON remains readable");
+
+    assert_eq!(result.chain_id, None);
+}
+
+#[test]
+fn sub_agent_result_chain_id_round_trips_as_uuid() {
+    let chain_id = uuid::Uuid::new_v4();
+    let result: SubAgentResult = serde_json::from_value(serde_json::json!({
+        "agent_id": "checkpointed-agent",
+        "response": "checkpointed response",
+        "context": SubAgentContext::default(),
+        "success": false,
+        "duration_ms": 42,
+        "files_modified": [],
+        "chain_id": chain_id,
+    }))
+    .expect("structured chain UUID deserializes");
+
+    assert_eq!(result.chain_id, Some(chain_id));
+    assert_eq!(
+        serde_json::to_value(result).expect("SubAgentResult serializes")["chain_id"],
+        serde_json::json!(chain_id)
+    );
 }
 
 // ===========================================

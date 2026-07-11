@@ -25,7 +25,7 @@
 | `DbTrackingBackend` | fire-and-forget 记录 + memory 存/搜 |
 | `DbReadinessGate` | PG 启动就绪门 |
 | `TextEmbedder` | 语义记忆文本嵌入 |
-| `types` / `memory` / `repo` / `tracking`（本地 DTO） | trait + 本地模型；`StageAssetWaveView` 是 runtime 读取 durable asset wave 的本地 DTO |
+| `types` / `memory` / `repo` / `tracking`（本地 DTO） | trait + 本地模型；`StageAssetWaveView` 携带 durable wave 的对齐 `target_ids + asset_values`；`TechniqueOutcomeFact` 保留 asset/technique/outcome/evidence_id **及 source**，让 submit/final gate 能验证 trusted producer |
 
 ## 关键文件
 
@@ -42,8 +42,9 @@
 
 - **依赖倒置核心**：本 crate 定义 trait，golish-agent-app 注入实现——别在此引 golish-db/sqlx（会破坏 agent 栈的可测/解耦）。
 - 本地 DTO 与 golish-db 的 row 类型是两套，由 bridge 转换。
-- harness gate 相关读写也走 `DbRepoProvider` seam：`technique_outcome_facts` 投影 coverage truth，`source_query_facts` 投影 `source_query_log` 的 source/provider terminal rows；后者只证明 source 尝试，不证明 found。`mark_target_intel_dns_empty_outcomes` 是 target_intel DNS negative fact 的 app-side hook：runtime 拿到真实 evidence id 后调用，trait 默认 no-op，生产实现写 `technique_outcomes(GOLISH-INTEL-DNS, empty)`。
-- wave-aware stage 的 durable batch 也走 `DbRepoProvider` seam：`stage_asset_wave_current_or_create_initial` / `stage_asset_wave_create_next` / `stage_asset_wave_complete` 默认 no-op/None，app bridge 才接到 `golish-db::repo::stage_asset_waves`。
+- harness gate 相关读写也走 `DbRepoProvider` seam：`technique_outcome_facts` 必须返回保留 `source` 的 `TechniqueOutcomeFact`，不能退回丢 provenance 的四元组；Enumeration `blocked` 的 submit/final gate 据此只接受 preflight→四轴、route recovery→DIR、browser recovery→JS/JSAPI/PARAM 的 source/axis 组合，并要求匹配 current-target guarded evidence。audit `kind` 的精确校验由 app bridge 在投影前完成，不能指望 kit trait 自行查询 DB。`source_query_facts` 投影 `source_query_log` terminal rows，但只证明 source 尝试、不证明 found。`mark_target_intel_dns_empty_outcomes` 是 target_intel DNS negative fact 的 app-side hook：runtime 拿到真实 evidence id 后调用，trait 默认 no-op，生产实现写 `technique_outcomes(GOLISH-INTEL-DNS, empty)`。
+- EAS gate 的 ledger seam 是 `eas_evidence_facts_for_session_org_fresh(session, org, since)`：默认空且绝不 fallback 到 session-wide facts；app 实现负责 producer org、current target owner/project/scope、freshness 与 asset/technique raw witness 校验。
+- wave-aware stage 的 durable batch 也走 `DbRepoProvider` seam：`stage_asset_wave_current_or_create_initial` / `stage_asset_wave_create_next` / `stage_asset_wave_complete` 默认 no-op/None，app bridge 才接到 `golish-db::repo::stage_asset_waves`。coverage snapshot seam 同时接 current wave ids/values，不能只传 value；present-invalid wave 与 `None` 必须保持可区分。
 
 ## 测试入口
 

@@ -17,6 +17,7 @@
 //! - [`nuclei`]      — Nuclei targeted scan + fingerprint→PoC matching engine.
 //! - [`feroxbuster`] — directory busting over seed paths supplied by callers.
 
+pub mod authorization;
 pub mod error;
 pub mod feroxbuster;
 pub mod helpers;
@@ -25,6 +26,7 @@ pub mod storage;
 pub mod types;
 pub mod whatweb;
 
+pub use authorization::{authorize_scan_target, AuthorizedScanTarget};
 pub use error::{ScanRunnerError, ScanRunnerResult};
 pub use feroxbuster::{run_feroxbuster, FeroxScanOptions};
 pub use helpers::NUCLEI_CANCELLED;

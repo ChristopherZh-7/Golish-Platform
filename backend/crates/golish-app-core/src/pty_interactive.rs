@@ -112,9 +112,23 @@ fn compute_hard_ms(command: &str, timeout_ms: u64) -> u64 {
 }
 
 fn finished_job_value(command: &str, snap: crate::background_jobs::JobSnapshot) -> Value {
+    let BoundedOutput {
+        text: stdout,
+        truncated: stdout_truncated,
+        original_bytes: stdout_original_bytes,
+    } = truncate_output(snap.stdout);
+    let BoundedOutput {
+        text: stderr,
+        truncated: stderr_truncated,
+        original_bytes: stderr_original_bytes,
+    } = truncate_output(snap.stderr);
     json!({
-        "stdout": truncate_output(snap.stdout),
-        "stderr": truncate_output(snap.stderr),
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+        "stdout_original_bytes": stdout_original_bytes,
+        "stderr_original_bytes": stderr_original_bytes,
         "command": command,
         "exit_code": snap.exit_code.unwrap_or(-1),
         "duration_ms": snap.duration_ms,
@@ -126,6 +140,16 @@ fn timeout_job_value(
     snap: crate::background_jobs::JobSnapshot,
     timeout_ms: u64,
 ) -> Value {
+    let BoundedOutput {
+        text: stdout,
+        truncated: stdout_truncated,
+        original_bytes: stdout_original_bytes,
+    } = truncate_output(snap.stdout);
+    let BoundedOutput {
+        text: stderr,
+        truncated: stderr_truncated,
+        original_bytes: stderr_original_bytes,
+    } = truncate_output(snap.stderr);
     json!({
         "status": "timeout",
         "error_kind": "COMMAND_TIMEOUT",
@@ -133,8 +157,12 @@ fn timeout_job_value(
             "Command exceeded the {}s timeout and was killed before being moved to the background.",
             timeout_ms.div_ceil(1000)
         ),
-        "stdout": truncate_output(snap.stdout),
-        "stderr": truncate_output(snap.stderr),
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+        "stdout_original_bytes": stdout_original_bytes,
+        "stderr_original_bytes": stderr_original_bytes,
         "command": command,
         "exit_code": snap.exit_code.unwrap_or(124),
         "duration_ms": snap.duration_ms,
@@ -327,8 +355,12 @@ async fn run_shell_command_detail_with_mode(
         "status": "backgrounded",
         "job_id": job_id,
         "command": command,
-        "partial_stdout": partial_stdout,
-        "partial_stderr": partial_stderr,
+        "partial_stdout": partial_stdout.text,
+        "partial_stderr": partial_stderr.text,
+        "partial_stdout_truncated": partial_stdout.truncated,
+        "partial_stderr_truncated": partial_stderr.truncated,
+        "partial_stdout_original_bytes": partial_stdout.original_bytes,
+        "partial_stderr_original_bytes": partial_stderr.original_bytes,
         "soft_timeout_ms": soft_ms,
         "hint": hint,
     }))
@@ -349,19 +381,36 @@ pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
     cmd
 }
 
-fn truncate_output(output: String) -> String {
-    let max_output_len = 50_000;
-    if output.len() <= max_output_len {
-        return output;
+const MAX_TOOL_OUTPUT_BYTES: usize = 50_000;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct BoundedOutput {
+    text: String,
+    truncated: bool,
+    original_bytes: usize,
+}
+
+fn truncate_output(output: String) -> BoundedOutput {
+    let original_bytes = output.len();
+    if original_bytes <= MAX_TOOL_OUTPUT_BYTES {
+        return BoundedOutput {
+            text: output,
+            truncated: false,
+            original_bytes,
+        };
     }
 
     // Byte-bounded, char-boundary-safe head truncation via the canonical
     // `golish_core::utils::truncate_str`, plus this caller's size note.
-    format!(
-        "{}...\n[Output truncated, {} bytes total]",
-        golish_core::utils::truncate_str(&output, max_output_len),
-        output.len()
-    )
+    BoundedOutput {
+        text: format!(
+            "{}...\n[Output truncated, {} bytes total]",
+            golish_core::utils::truncate_str(&output, MAX_TOOL_OUTPUT_BYTES),
+            original_bytes
+        ),
+        truncated: true,
+        original_bytes,
+    }
 }
 
 fn tail_output(output: &str, max_bytes: usize) -> String {
@@ -493,7 +542,18 @@ impl Tool for CheckJobTool {
             .ok_or_else(|| anyhow::anyhow!("Missing required argument: job_id"))?;
 
         match crate::background_jobs::manager().snapshot(job_id) {
-            Some(snap) => Ok(json!({
+            Some(snap) => {
+                let BoundedOutput {
+                    text: stdout,
+                    truncated: stdout_truncated,
+                    original_bytes: stdout_original_bytes,
+                } = truncate_output(snap.stdout);
+                let BoundedOutput {
+                    text: stderr,
+                    truncated: stderr_truncated,
+                    original_bytes: stderr_original_bytes,
+                } = truncate_output(snap.stderr);
+                Ok(json!({
                 "job_id": job_id,
                 "status": snap.status.as_str(),
                 "running": !snap.finished,
@@ -502,10 +562,15 @@ impl Tool for CheckJobTool {
                 // make this `check_job` call itself read as a tool failure.
                 "job_exit_code": snap.exit_code,
                 "command": snap.command,
-                "stdout": truncate_output(snap.stdout),
-                "stderr": truncate_output(snap.stderr),
+                "stdout": stdout,
+                "stderr": stderr,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                "stdout_original_bytes": stdout_original_bytes,
+                "stderr_original_bytes": stderr_original_bytes,
                 "duration_ms": snap.duration_ms,
-            })),
+                }))
+            }
             None => Ok(json!({
                 "error": format!("No background job with id '{job_id}' (it may have finished and been cleared)."),
             })),
@@ -756,6 +821,52 @@ mod tests {
 
     fn ws() -> std::path::PathBuf {
         std::env::temp_dir()
+    }
+
+    #[test]
+    fn output_over_50kb_reports_truncation_and_lost_tail() {
+        let output = format!("{}TAIL_SENTINEL", "x".repeat(MAX_TOOL_OUTPUT_BYTES + 1));
+
+        let bounded = truncate_output(output.clone());
+
+        assert!(bounded.truncated);
+        assert_eq!(bounded.original_bytes, output.len());
+        assert!(!bounded.text.contains("TAIL_SENTINEL"));
+        assert!(bounded.text.contains("[Output truncated,"));
+
+        let result = finished_job_value(
+            "fake-scan",
+            crate::background_jobs::JobSnapshot {
+                command: "fake-scan".to_string(),
+                status: crate::background_jobs::JobStatus::Done,
+                exit_code: Some(0),
+                stdout: output.clone(),
+                stderr: String::new(),
+                duration_ms: 1,
+                finished: true,
+            },
+        );
+        assert_eq!(result["stdout_truncated"], true);
+        assert_eq!(result["stdout_original_bytes"], json!(output.len()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_large_process_output_is_drained_before_truncation_metadata() {
+        const BYTES_PER_STREAM: usize = 128 * 1024;
+        let command = format!(
+            "python3 -c 'import sys; sys.stdout.write(\"A\"*{BYTES_PER_STREAM}); sys.stderr.write(\"B\"*{BYTES_PER_STREAM})'"
+        );
+
+        let result = run_shell_command_detail_foreground_only(&command, &ws(), 10_000)
+            .await
+            .unwrap();
+
+        assert_eq!(result["exit_code"], 0);
+        assert_eq!(result["stdout_truncated"], true);
+        assert_eq!(result["stderr_truncated"], true);
+        assert_eq!(result["stdout_original_bytes"], BYTES_PER_STREAM);
+        assert_eq!(result["stderr_original_bytes"], BYTES_PER_STREAM);
     }
 
     #[test]

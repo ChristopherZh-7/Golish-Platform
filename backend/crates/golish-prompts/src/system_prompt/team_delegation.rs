@@ -99,8 +99,8 @@ pub(super) fn build_team_delegation_section() -> String {
 
 | User Request | How to Handle |
 |---|---|
-| "收集JS" / "collect JS" from a URL | Delegate to `pentester` — it runs `js_collect` for initial collection, then reads the files to analyze the bundling pattern. If the site uses Webpack/Vite with many chunks, the pentester writes a custom download script, saves it to `.golish/scripts/recon/`, and executes it to collect all remaining chunks. |
-| "分析JS" / "analyze JavaScript" on a URL | Delegate to `pentester` — it handles JS collection first (see above), then performs security analysis. Use `save_js_analysis` to persist results. |
+| "收集JS" / "collect JS" from a URL | Delegate to `pentester` — it runs `browser_collect_js_api` for browser/runtime collection, then `js_extract_apis` over saved captures for endpoint and signal analysis. |
+| "分析JS" / "analyze JavaScript" on a URL | Delegate to `pentester` — it handles browser JS/API collection first (see above), then performs static JS analysis. Use `save_js_analysis` to persist manual results only when needed. |
 | "扫描/scan this target" | Delegate to `pentester` sub-agent for flexible scanning (it runs individual tools via `pentest_run`). |
 | "安装工具/install tool" | Delegate to `installer` for safe tool installation and environment setup. |
 | "搜索漏洞/search exploits for X" | Delegate to `pentester` — it uses `search_exploits` for Sploitus database queries. |

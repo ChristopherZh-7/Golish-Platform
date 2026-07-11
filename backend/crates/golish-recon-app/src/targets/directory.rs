@@ -36,13 +36,38 @@ pub async fn db_directory_entry_add(
     Ok(DirectoryEntry::from(row))
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn db_directory_entry_add_guarded(
+    pool: &PgPool,
+    guard: &golish_db::repo::scoped::TargetWriteGuard,
+    url: &str,
+    status_code: Option<i32>,
+    content_length: Option<i32>,
+    lines: Option<i32>,
+    words: Option<i32>,
+    tool: &str,
+) -> Result<DirectoryEntry, GolishError> {
+    let row: DirEntryRow = golish_db::repo::directory_entries::insert_entry_guarded(
+        pool,
+        guard,
+        url,
+        status_code,
+        content_length,
+        lines,
+        words,
+        tool,
+    )
+    .await?;
+    Ok(DirectoryEntry::from(row))
+}
+
 pub async fn db_directory_entries_list(
     pool: &PgPool,
     target_id: Option<Uuid>,
     project_path: Option<&str>,
 ) -> Result<Vec<DirectoryEntry>, GolishError> {
     let rows: Vec<DirEntryRow> = if let Some(tid) = target_id {
-        golish_db::repo::directory_entries::list_by_target(pool, tid).await?
+        golish_db::repo::directory_entries::list_by_current_target_owner(pool, tid).await?
     } else {
         golish_db::repo::directory_entries::list_by_project(pool, project_path).await?
     };

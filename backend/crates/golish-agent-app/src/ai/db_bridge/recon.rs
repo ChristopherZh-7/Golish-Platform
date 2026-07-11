@@ -6,7 +6,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use golish_agent_kit::db_traits::OrgScopeUnit;
-use golish_app_core::domain::targets::{web_root_url, Target, TargetType};
+use golish_app_core::domain::targets::{Target, TargetType};
 
 use super::GolishDbRepoProvider;
 
@@ -16,8 +16,11 @@ fn section_requested(include_all: bool, sections: &[String], section: &str) -> b
 
 fn json_string(v: &serde_json::Value, keys: &[&str]) -> String {
     keys.iter()
-        .find_map(|key| v.get(*key).and_then(|value| value.as_str()))
-        .unwrap_or_default()
+        .filter_map(|key| v.get(*key).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
         .to_ascii_lowercase()
 }
 
@@ -31,112 +34,88 @@ fn json_port(v: &serde_json::Value) -> Option<u16> {
         .and_then(|port| u16::try_from(port).ok())
 }
 
-fn is_web_like_port(port: Option<u16>, service: &str) -> bool {
-    service.contains("http")
-        || service.contains("web")
-        || matches!(
-            port,
-            Some(
-                80 | 81
-                    | 443
-                    | 3000
-                    | 5000
-                    | 7001
-                    | 8000
-                    | 8008
-                    | 8080
-                    | 8081
-                    | 8443
-                    | 8888
-                    | 9000
-                    | 9443
-            )
-        )
+fn port_state_is_open(port_entry: &serde_json::Value) -> bool {
+    port_entry
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|state| !state.is_empty())
+        .map(|state| state.eq_ignore_ascii_case("open"))
+        .unwrap_or(false)
+}
+
+fn enumeration_web_root(
+    target: &Target,
+    origin: &golish_pentest_domain::WebOriginKey,
+    confidence: &str,
+    needs_probe: bool,
+) -> serde_json::Value {
+    json!({
+        "web_root_id": format!("derived:{}:{}", target.id, origin.key),
+        "target_id": target.id,
+        "organization_id": target.organization_id,
+        "root_url": origin.root_url,
+        "final_url": origin.root_url,
+        "scheme": origin.scheme,
+        "host": origin.host,
+        "port": origin.port,
+        "status": target.http_status,
+        "title": target.http_title,
+        "confidence": confidence,
+        "needs_probe": needs_probe,
+        "source_stage": "external_attack_surface",
+        "exact_web_origin": true,
+    })
 }
 
 fn derive_enumeration_web_roots(target: &Target) -> Vec<serde_json::Value> {
-    let value = target.value.trim().trim_end_matches('/');
+    let value = target.value.trim();
     if value.is_empty() {
         return Vec::new();
     }
 
-    if matches!(target.target_type, TargetType::Url)
-        || value.starts_with("http://")
-        || value.starts_with("https://")
-    {
-        let scheme = if value.starts_with("https://") {
-            "https"
-        } else {
-            "http"
-        };
-        return vec![json!({
-            "web_root_id": format!("derived:{}:{}", target.id, value),
-            "target_id": target.id,
-            "organization_id": target.organization_id,
-            "root_url": format!("{value}/"),
-            "final_url": format!("{value}/"),
-            "scheme": scheme,
-            "host": value.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or(value),
-            "port": null,
-            "status": target.http_status,
-            "title": target.http_title,
-            "confidence": if target.http_status.is_some() { "high" } else { "medium" },
-            "needs_probe": target.http_status.is_none(),
-            "source_stage": "external_attack_surface",
-        })];
+    if let Some(origin) = golish_pentest_domain::canonical_web_origin(value) {
+        return vec![enumeration_web_root(
+            target,
+            &origin,
+            if target.http_status.is_some() {
+                "high"
+            } else {
+                "medium"
+            },
+            target.http_status.is_none(),
+        )];
+    }
+
+    if matches!(target.target_type, TargetType::Url) {
+        return Vec::new();
     }
 
     if matches!(target.target_type, TargetType::Cidr | TargetType::Wildcard) {
         return Vec::new();
     }
 
-    let has_web_metadata = target.http_status.is_some()
-        || !target.webserver.trim().is_empty()
-        || !target.content_type.trim().is_empty()
-        || !target.http_title.trim().is_empty();
-
     let mut roots = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for port_entry in &target.ports {
-        let port = json_port(port_entry);
-        let service = json_string(port_entry, &["service", "name", "protocol", "proto"]);
-        if !is_web_like_port(port, &service) {
+        if !port_state_is_open(port_entry) {
             continue;
         }
-        let (root_url, scheme, port) = web_root_url(value, port, &service);
-        roots.push(json!({
-            "web_root_id": format!("derived:{}:{}:{}", target.id, scheme, port.unwrap_or_default()),
-            "target_id": target.id,
-            "organization_id": target.organization_id,
-            "root_url": root_url,
-            "final_url": root_url,
-            "scheme": scheme,
-            "host": value,
-            "port": port,
-            "status": target.http_status,
-            "title": target.http_title,
-            "confidence": "high",
-            "needs_probe": false,
-            "source_stage": "external_attack_surface",
-        }));
-    }
-
-    if roots.is_empty() && has_web_metadata {
-        let (root_url, scheme, port) = web_root_url(value, None, "");
-        roots.push(json!({
-            "web_root_id": format!("derived:{}:{}:default", target.id, scheme),
-            "target_id": target.id,
-            "organization_id": target.organization_id,
-            "root_url": root_url,
-            "final_url": root_url,
-            "scheme": scheme,
-            "host": value,
-            "port": port,
-            "status": target.http_status,
-            "title": target.http_title,
-            "confidence": "medium",
-            "needs_probe": target.http_status.is_none(),
-            "source_stage": "external_attack_surface",
-        }));
+        let port = json_port(port_entry);
+        let service = json_string(port_entry, &["service", "name", "protocol", "proto"]);
+        let explicit_origin = port_entry
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .and_then(golish_pentest_domain::canonical_web_origin);
+        let origin = explicit_origin.or_else(|| {
+            golish_pentest_domain::canonical_web_origin_from_service(value, port?, &service)
+        });
+        let Some(origin) = origin else {
+            continue;
+        };
+        if seen.insert(origin.key.clone()) {
+            roots.push(enumeration_web_root(target, &origin, "high", false));
+        }
     }
 
     roots
@@ -164,14 +143,17 @@ fn build_enumeration_coverage_summary(facts: &[(String, String)]) -> serde_json:
         .map(|technique| {
             json!({
                 "technique": technique,
-                "db_found": found.contains(*technique),
-                "status_hint": if found.contains(*technique) { "found" } else { "no_found_fact" },
+                "observed_business_fact": found.contains(*technique),
+                "status_hint": if found.contains(*technique) { "observation_only" } else { "no_observation" },
             })
         })
         .collect();
     json!({
-        "source": "coverage_truth",
-        "semantics": "found-only; absence is not checked_empty",
+        "source": "coverage_truth_legacy_observation",
+        "authoritative": false,
+        "exact_origin": false,
+        "semantics": "advisory business observations only; never closes exact-origin Enumeration coverage",
+        "authoritative_source": "stage_worklist_status/check_stage_asset_coverage",
         "techniques": rows,
     })
 }
@@ -442,8 +424,10 @@ impl GolishDbRepoProvider {
                 data["coverage"] = build_enumeration_coverage_summary(&facts);
             } else {
                 data["coverage"] = json!({
-                    "source": "coverage_truth",
-                    "semantics": "found-only; absence is not checked_empty",
+                    "source": "coverage_truth_legacy_observation",
+                    "authoritative": false,
+                    "semantics": "advisory business observations only; never closes exact-origin Enumeration coverage",
+                    "authoritative_source": "stage_worklist_status/check_stage_asset_coverage",
                     "error": "target row not found in in-scope targets",
                 });
             }
@@ -644,6 +628,8 @@ impl GolishDbRepoProvider {
         stage: &str,
         session_id: Option<&str>,
         stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
     ) -> anyhow::Result<serde_json::Value> {
         let stage_kind = golish_agent_kit::harness::StageKind::try_parse(stage)
             .ok_or_else(|| anyhow::anyhow!("unknown stage: {stage}"))?;
@@ -653,6 +639,8 @@ impl GolishDbRepoProvider {
             stage_kind,
             session_id,
             stage_started_at,
+            current_wave_target_ids,
+            current_wave_asset_values,
             false,
         )
         .await?;
@@ -726,6 +714,21 @@ impl GolishDbRepoProvider {
     ) -> anyhow::Result<Vec<String>> {
         Ok(
             golish_db::repo::coverage_truth::web_capable_ip_assets(&self.pool, org_id)
+                .await?
+                .into_iter()
+                .collect(),
+        )
+    }
+
+    /// EAS web-stack coverage: all in-scope assets with a confirmed HTTP(S)
+    /// surface, not just IP/CIDR enumeration roots.
+    pub(super) async fn eas_web_capable_assets_impl(
+        &self,
+        org_id: Option<Uuid>,
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(
+            golish_db::repo::coverage_truth::eas_web_capable_assets(&self.pool, org_id, run_start)
                 .await?
                 .into_iter()
                 .collect(),
@@ -856,15 +859,35 @@ mod tests {
         target.http_status = Some(200);
         let roots = derive_enumeration_web_roots(&target);
         assert_eq!(roots.len(), 1);
-        assert_eq!(roots[0]["root_url"], "https://app.example.com/app/");
+        assert_eq!(roots[0]["root_url"], "https://app.example.com:443/");
         assert_eq!(roots[0]["scheme"], "https");
+        assert_eq!(roots[0]["port"], 443);
         assert_eq!(roots[0]["needs_probe"], false);
+    }
+
+    #[test]
+    fn url_shaped_value_overrides_stale_target_type_and_scheme_case() {
+        let target = target("HTTPS://APP.Example.com/app", TargetType::Domain);
+
+        let roots = derive_enumeration_web_roots(&target);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0]["root_url"], "https://app.example.com:443/");
+    }
+
+    #[test]
+    fn web_root_url_target_preserves_nondefault_scheme_and_port() {
+        let target = target("http://app.example.com:8443/login", TargetType::Url);
+        let roots = derive_enumeration_web_roots(&target);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0]["root_url"], "http://app.example.com:8443/");
+        assert_eq!(roots[0]["scheme"], "http");
+        assert_eq!(roots[0]["port"], 8443);
     }
 
     #[test]
     fn derives_web_root_from_web_like_port() {
         let mut target = target("app.example.com", TargetType::Domain);
-        target.ports = vec![json!({"port": 8443, "service": "https"})];
+        target.ports = vec![json!({"port": 8443, "state": "open", "service": "https"})];
         let roots = derive_enumeration_web_roots(&target);
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0]["root_url"], "https://app.example.com:8443/");
@@ -878,7 +901,81 @@ mod tests {
     }
 
     #[test]
-    fn coverage_summary_is_found_only() {
+    fn host_metadata_without_exact_url_or_port_does_not_guess_an_origin() {
+        let mut target = target("app.example.com", TargetType::Domain);
+        target.http_status = Some(200);
+        assert!(derive_enumeration_web_roots(&target).is_empty());
+    }
+
+    #[test]
+    fn common_web_port_with_unknown_tcp_service_does_not_guess_an_origin() {
+        let mut target = target("app.example.com", TargetType::Domain);
+        target.ports = vec![json!({
+            "port": 80,
+            "service": "unknown",
+            "protocol": "tcp",
+            "state": "open"
+        })];
+        assert!(derive_enumeration_web_roots(&target).is_empty());
+    }
+
+    #[test]
+    fn closed_port_url_does_not_become_enumeration_root() {
+        let mut target = target("app.example.com", TargetType::Domain);
+        target.ports = vec![json!({
+            "port": 8443,
+            "service": "https",
+            "state": "closed",
+            "url": "https://app.example.com:8443/"
+        })];
+        assert!(derive_enumeration_web_roots(&target).is_empty());
+    }
+
+    #[test]
+    fn port_without_confirmed_open_state_does_not_become_enumeration_root() {
+        let mut target = target("app.example.com", TargetType::Domain);
+        target.ports = vec![json!({
+            "port": 8443,
+            "service": "https",
+            "url": "https://app.example.com:8443/"
+        })];
+
+        assert!(derive_enumeration_web_roots(&target).is_empty());
+    }
+
+    #[test]
+    fn service_metadata_uses_all_hints_without_guessing_tls_from_port_number() {
+        let mut target = target("app.example.com", TargetType::Domain);
+        target.ports = vec![
+            json!({
+                "port": 8080,
+                "state": "open",
+                "service": "tcp",
+                "name": "https-alt"
+            }),
+            json!({
+                "port": 8443,
+                "state": "open",
+                "service": "http"
+            }),
+        ];
+
+        let roots = derive_enumeration_web_roots(&target);
+        let urls = roots
+            .iter()
+            .filter_map(|root| root["root_url"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            urls,
+            vec![
+                "https://app.example.com:8080/",
+                "http://app.example.com:8443/"
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_coverage_summary_is_explicitly_advisory_only() {
         let facts = vec![(
             "app.example.com".to_string(),
             golish_db::repo::coverage_truth::TECH_ENUM_JSAPI.to_string(),
@@ -893,13 +990,14 @@ mod tests {
             .iter()
             .find(|row| row["technique"] == golish_db::repo::coverage_truth::TECH_ENUM_DIR)
             .unwrap();
-        assert_eq!(jsapi["db_found"], true);
-        assert_eq!(jsapi["status_hint"], "found");
-        assert_eq!(dir["db_found"], false);
-        assert_eq!(dir["status_hint"], "no_found_fact");
+        assert_eq!(jsapi["observed_business_fact"], true);
+        assert_eq!(jsapi["status_hint"], "observation_only");
+        assert_eq!(dir["observed_business_fact"], false);
+        assert_eq!(dir["status_hint"], "no_observation");
+        assert_eq!(summary["authoritative"], false);
         assert_eq!(
             summary["semantics"],
-            "found-only; absence is not checked_empty"
+            "advisory business observations only; never closes exact-origin Enumeration coverage"
         );
     }
 }

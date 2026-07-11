@@ -41,11 +41,23 @@ impl ReconAssetsPort for PgReconAssetsAdapter {
         &self,
         target_id: Uuid,
     ) -> anyhow::Result<Vec<TargetAsset>> {
-        Ok(golish_db::repo::target_assets::list_by_target(self.pool.as_ref(), target_id).await?)
+        Ok(
+            golish_db::repo::target_assets::list_by_current_target_owner(
+                self.pool.as_ref(),
+                target_id,
+            )
+            .await?,
+        )
     }
 
     async fn target_assets_count_by_target(&self, target_id: Uuid) -> anyhow::Result<i64> {
-        Ok(golish_db::repo::target_assets::count_by_target(self.pool.as_ref(), target_id).await?)
+        Ok(
+            golish_db::repo::target_assets::count_by_current_target_owner(
+                self.pool.as_ref(),
+                target_id,
+            )
+            .await?,
+        )
     }
 }
 

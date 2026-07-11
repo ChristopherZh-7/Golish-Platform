@@ -233,9 +233,23 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// EAS SERVICE-FINGERPRINT deterministic not-applicable assets: IP/CIDR rows
-    /// whose only open port in the current freshness window is DNS/53 and whose DB
-    /// truth has no strong service/version surface. Default empty ⇒ no derived
+    /// EAS web-stack denominator: in-scope assets that this EAS run has proven
+    /// have an HTTP(S) surface and therefore need WEB-FINGERPRINT coverage.
+    /// Unlike [`Self::enumeration_web_capable_assets`], this includes domains,
+    /// URLs, and IP/CIDR assets and honors the stage freshness window when
+    /// `run_start` is provided.
+    async fn eas_web_capable_assets(
+        &self,
+        org_id: Option<Uuid>,
+        run_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<Vec<String>> {
+        let _ = (org_id, run_start);
+        Ok(Vec::new())
+    }
+
+    /// DNS/53-only assets with no web surface. EAS SERVICE no longer consumes
+    /// this as automatic not_applicable; Enumeration uses it to terminalise
+    /// content axes for IPs that are not web roots. Default empty ⇒ no derived
     /// not_applicable cells.
     async fn eas_service_not_applicable_assets(
         &self,
@@ -293,8 +307,14 @@ pub trait DbRepoProvider: Send + Sync {
         stage: &str,
         session_id: Option<&str>,
         stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
     ) -> anyhow::Result<serde_json::Value> {
-        let _ = stage_started_at;
+        let _ = (
+            stage_started_at,
+            current_wave_target_ids,
+            current_wave_asset_values,
+        );
         Ok(serde_json::json!({
             "stage": stage,
             "organization_id": organization_id,
@@ -585,16 +605,32 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Strict active-EAS ledger projection. Implementations must bind every row
+    /// to the producer-time organization, the target's current in-scope
+    /// organization/project ownership, and `created_at >= since`, then verify
+    /// that the evidence asset/technique remains authorized by that target.
+    /// Legacy unbound rows fail closed. Default empty prevents test doubles or
+    /// older providers from falling back to session-wide evidence for EAS.
+    async fn eas_evidence_facts_for_session_org_fresh(
+        &self,
+        session_id: &str,
+        organization_id: Uuid,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<(String, String, String, i64)>> {
+        let _ = (session_id, organization_id, since);
+        Ok(Vec::new())
+    }
+
     /// PR-D（#4 / E3，设计 2026-06-23-technique-outcomes-provenance）：从
-    /// `technique_outcomes` 物化表读某 `(org, run)` 的 `(asset, technique, outcome,
-    /// evidence_id)`（`evidence_id` 取该行 `evidence_ids` 首个，无则 0）。gate 灰度
+    /// `technique_outcomes` 物化表读某 `(org, run)` 的 provenance-preserving
+    /// [`TechniqueOutcomeFact`]（`evidence_id` 取该行 `evidence_ids` 首个，无则 0）。gate 灰度
     /// dual-read 投影源。fail-safe 到空（读失败 → 空，gate 退回 coverage_truth/ledger）。
     /// 默认空（test double 零改动 + gray-switch off 时调用方根本不调）。app 层覆写。
     async fn technique_outcome_facts(
         &self,
         organization_id: Uuid,
         run_id: &str,
-    ) -> Vec<(String, String, String, i64)> {
+    ) -> Vec<TechniqueOutcomeFact> {
         let _ = (organization_id, run_id);
         Vec::new()
     }
@@ -612,7 +648,7 @@ pub trait DbRepoProvider: Send + Sync {
         organization_id: Uuid,
         run_id: &str,
         since: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Vec<(String, String, String, i64)> {
+    ) -> Vec<TechniqueOutcomeFact> {
         let _ = since;
         self.technique_outcome_facts(organization_id, run_id).await
     }

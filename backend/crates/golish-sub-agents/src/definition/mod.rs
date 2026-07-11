@@ -79,6 +79,10 @@ pub struct SubAgentResult {
     /// Files modified by this sub-agent during execution
     #[serde(default)]
     pub files_modified: Vec<String>,
+
+    /// Last successfully persisted provider-valid message-chain checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<uuid::Uuid>,
 }
 
 /// Definition of a specialized sub-agent

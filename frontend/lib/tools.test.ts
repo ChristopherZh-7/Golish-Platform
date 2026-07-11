@@ -12,6 +12,12 @@ describe("getToolActionLabel", () => {
     );
   });
 
+  it("renders EAS web fingerprint wrapper as a readable action", () => {
+    expect(getToolActionLabel("eas_fingerprint_web_stack")).toBe(
+      "Fingerprinting web services"
+    );
+  });
+
   it("summarizes nmap service probes by intent instead of command syntax", () => {
     expect(
       getToolActionLabel("pentest_run", {

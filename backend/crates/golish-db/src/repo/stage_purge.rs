@@ -10,7 +10,9 @@
 //! Layering: this module exposes **data-domain** purges (recon / eas / enumeration
 //! / vuln) plus the cross-stage ledger deletes. The harness `StageKind → domain`
 //! mapping lives in the command layer (`golish-agent-app`), so this crate stays
-//! free of harness stage semantics.
+//! free of harness stage semantics. Executors accept one `PgConnection`; the
+//! command layer must pass the connection owned by a single transaction so every
+//! destructive fact/ledger/status step commits or rolls back as one unit.
 //!
 //! Not touched here (by design / user instruction):
 //! - `audit_log` (== the evidence ledger AND the audit/run log the user keeps);
@@ -20,7 +22,7 @@
 //!   back status + null per-stage freshness and delete the per-target fact rows).
 
 use crate::Result;
-use sqlx::PgPool;
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 /// Per-table affected-row counts for one purge invocation (transparency / audit).
@@ -158,34 +160,49 @@ fn build_delete_org_stage_completions_sql() -> String {
         .to_string()
 }
 
+fn build_delete_technique_outcomes_sql() -> String {
+    "DELETE FROM technique_outcomes \
+      WHERE organization_id = ANY($1) \
+        AND technique = ANY($2)"
+        .to_string()
+}
+
 // ── Primitive executors ──
 
-async fn delete_by_target_org(pool: &PgPool, table: &str, org_ids: &[Uuid]) -> Result<u64> {
+async fn delete_by_target_org(
+    conn: &mut PgConnection,
+    table: &str,
+    org_ids: &[Uuid],
+) -> Result<u64> {
     if org_ids.is_empty() {
         return Ok(0);
     }
     let res = sqlx::query(&build_delete_by_target_org_sql(table))
         .bind(org_ids)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     Ok(res.rows_affected())
 }
 
-async fn delete_by_org(pool: &PgPool, table: &str, org_ids: &[Uuid]) -> Result<u64> {
+async fn delete_by_org(conn: &mut PgConnection, table: &str, org_ids: &[Uuid]) -> Result<u64> {
     if org_ids.is_empty() {
         return Ok(0);
     }
     let res = sqlx::query(&build_delete_by_org_sql(table))
         .bind(org_ids)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     Ok(res.rows_affected())
 }
 
-async fn delete_by_project(pool: &PgPool, table: &str, project_path: &str) -> Result<u64> {
+async fn delete_by_project(
+    conn: &mut PgConnection,
+    table: &str,
+    project_path: &str,
+) -> Result<u64> {
     let res = sqlx::query(&build_delete_by_project_sql(table))
         .bind(project_path)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     Ok(res.rows_affected())
 }
@@ -195,18 +212,18 @@ async fn delete_by_project(pool: &PgPool, table: &str, project_path: &str) -> Re
 /// target_intel domain: discovered assets, DNS, passive scans, source-query log,
 /// and the org-level intel freshness stamps (so re-collection re-runs).
 pub async fn purge_target_intel_domain(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     org_ids: &[Uuid],
     counts: &mut StagePurgeCounts,
 ) -> Result<()> {
-    counts.target_assets += delete_by_target_org(pool, "target_assets", org_ids).await?;
-    counts.dns_records += delete_by_target_org(pool, "dns_records", org_ids).await?;
-    counts.passive_scans += delete_by_target_org(pool, "passive_scan_logs", org_ids).await?;
-    counts.source_query_log += delete_by_org(pool, "source_query_log", org_ids).await?;
+    counts.target_assets += delete_by_target_org(conn, "target_assets", org_ids).await?;
+    counts.dns_records += delete_by_target_org(conn, "dns_records", org_ids).await?;
+    counts.passive_scans += delete_by_target_org(conn, "passive_scan_logs", org_ids).await?;
+    counts.source_query_log += delete_by_org(conn, "source_query_log", org_ids).await?;
     if !org_ids.is_empty() {
         let res = sqlx::query(&build_reset_org_intel_freshness_sql())
             .bind(org_ids)
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         counts.org_intel_freshness += res.rows_affected();
     }
@@ -216,7 +233,7 @@ pub async fn purge_target_intel_domain(
 /// external_attack_surface domain: reset per-target probe columns + freshness,
 /// service fingerprints, the expansion queue, and (project-scoped) screenshots.
 pub async fn purge_eas_domain(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     org_ids: &[Uuid],
     project_path: Option<&str>,
     counts: &mut StagePurgeCounts,
@@ -224,14 +241,14 @@ pub async fn purge_eas_domain(
     if !org_ids.is_empty() {
         let res = sqlx::query(&build_reset_targets_eas_sql())
             .bind(org_ids)
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         counts.eas_target_columns += res.rows_affected();
     }
-    counts.fingerprints += delete_by_target_org(pool, "fingerprints", org_ids).await?;
-    counts.expansion_queue += delete_by_org(pool, "expansion_queue", org_ids).await?;
+    counts.fingerprints += delete_by_target_org(conn, "fingerprints", org_ids).await?;
+    counts.expansion_queue += delete_by_org(conn, "expansion_queue", org_ids).await?;
     if let Some(project_path) = project_path.filter(|p| !p.is_empty()) {
-        counts.screenshots += delete_by_project(pool, "screenshots", project_path).await?;
+        counts.screenshots += delete_by_project(conn, "screenshots", project_path).await?;
     }
     Ok(())
 }
@@ -239,39 +256,39 @@ pub async fn purge_eas_domain(
 /// enumeration domain: API endpoints (endpoint_tests cascade), JS analysis,
 /// directory entries, and any target-scoped endpoint tests left behind.
 pub async fn purge_enumeration_domain(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     org_ids: &[Uuid],
     counts: &mut StagePurgeCounts,
 ) -> Result<()> {
-    counts.api_endpoints += delete_by_target_org(pool, "api_endpoints", org_ids).await?;
-    counts.js_analysis += delete_by_target_org(pool, "js_analysis_results", org_ids).await?;
-    counts.directory_entries += delete_by_target_org(pool, "directory_entries", org_ids).await?;
-    counts.endpoint_tests += delete_by_target_org(pool, "endpoint_tests", org_ids).await?;
+    counts.api_endpoints += delete_by_target_org(conn, "api_endpoints", org_ids).await?;
+    counts.js_analysis += delete_by_target_org(conn, "js_analysis_results", org_ids).await?;
+    counts.directory_entries += delete_by_target_org(conn, "directory_entries", org_ids).await?;
+    counts.endpoint_tests += delete_by_target_org(conn, "endpoint_tests", org_ids).await?;
     Ok(())
 }
 
 /// vuln/verify domain: findings (target-scoped), vuln scan history (host-string
-/// match), sensitive scans (project-scoped), and per-technique outcomes.
+/// match), and sensitive scans (project-scoped). Technique outcomes are purged
+/// separately by the exact union declared by the affected embedded stage specs.
 pub async fn purge_vuln_domain(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     org_ids: &[Uuid],
     project_path: Option<&str>,
     counts: &mut StagePurgeCounts,
 ) -> Result<()> {
-    counts.findings += delete_by_target_org(pool, "findings", org_ids).await?;
-    counts.technique_outcomes += delete_by_org(pool, "technique_outcomes", org_ids).await?;
+    counts.findings += delete_by_target_org(conn, "findings", org_ids).await?;
     if !org_ids.is_empty() {
         let res = sqlx::query(&build_delete_vuln_scan_history_sql())
             .bind(org_ids)
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         counts.vuln_scan_history += res.rows_affected();
     }
     if let Some(project_path) = project_path.filter(|p| !p.is_empty()) {
         counts.sensitive_scan +=
-            delete_by_project(pool, "sensitive_scan_results", project_path).await?;
+            delete_by_project(conn, "sensitive_scan_results", project_path).await?;
         counts.sensitive_scan +=
-            delete_by_project(pool, "sensitive_scan_history", project_path).await?;
+            delete_by_project(conn, "sensitive_scan_history", project_path).await?;
     }
     Ok(())
 }
@@ -281,7 +298,7 @@ pub async fn purge_vuln_domain(
 /// Delete the per-(org, stage) completion ledger rows for the affected stages so
 /// the resume oracle stops skipping them.
 pub async fn delete_org_stage_completions(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     org_ids: &[Uuid],
     stage_kinds: &[String],
 ) -> Result<u64> {
@@ -291,7 +308,7 @@ pub async fn delete_org_stage_completions(
     let res = sqlx::query(&build_delete_org_stage_completions_sql())
         .bind(org_ids)
         .bind(stage_kinds)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     Ok(res.rows_affected())
 }
@@ -299,7 +316,7 @@ pub async fn delete_org_stage_completions(
 /// Delete durable stage asset wave snapshots (items cascade) for the affected
 /// stages of one operation.
 pub async fn delete_stage_asset_waves(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     operation_id: Uuid,
     org_ids: &[Uuid],
     stage_kinds: &[String],
@@ -311,7 +328,7 @@ pub async fn delete_stage_asset_waves(
         .bind(operation_id)
         .bind(org_ids)
         .bind(stage_kinds)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     Ok(res.rows_affected())
 }
@@ -319,7 +336,7 @@ pub async fn delete_stage_asset_waves(
 /// Roll back `targets.status` to `floor_status` for any target in the subtree that
 /// progressed past it. Returns rows changed.
 pub async fn rollback_target_status(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     org_ids: &[Uuid],
     floor_status: &str,
 ) -> Result<u64> {
@@ -329,7 +346,25 @@ pub async fn rollback_target_status(
     let res = sqlx::query(&build_rollback_target_status_sql())
         .bind(org_ids)
         .bind(floor_status)
-        .execute(pool)
+        .execute(&mut *conn)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Delete only outcomes belonging to techniques declared by the affected stage
+/// specs. Both scopes are mandatory: an empty org or technique set is a no-op.
+pub async fn delete_technique_outcomes(
+    conn: &mut PgConnection,
+    org_ids: &[Uuid],
+    techniques: &[String],
+) -> Result<u64> {
+    if org_ids.is_empty() || techniques.is_empty() {
+        return Ok(0);
+    }
+    let res = sqlx::query(&build_delete_technique_outcomes_sql())
+        .bind(org_ids)
+        .bind(techniques)
+        .execute(&mut *conn)
         .await?;
     Ok(res.rows_affected())
 }
@@ -416,6 +451,14 @@ mod tests {
         let sql = build_delete_org_stage_completions_sql();
         assert!(sql.contains("organization_id = ANY($1)"));
         assert!(sql.contains("stage_kind = ANY($2)"));
+    }
+
+    #[test]
+    fn technique_outcome_delete_keys_org_and_technique() {
+        let sql = build_delete_technique_outcomes_sql();
+        assert!(sql.starts_with("DELETE FROM technique_outcomes"));
+        assert!(sql.contains("organization_id = ANY($1)"));
+        assert!(sql.contains("technique = ANY($2)"));
     }
 
     #[test]

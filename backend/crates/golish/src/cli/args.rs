@@ -76,6 +76,64 @@ pub struct Args {
     #[arg(long)]
     pub stage_run: bool,
 
+    /// Resume one exact interrupted headless stage-run. Accepts its
+    /// `stage-run-*` chat key, DB session UUID, or task/operation UUID. This is
+    /// not a fresh run: it reuses the original session, operation, freshness
+    /// epoch, and persisted specialist chain.
+    #[arg(
+        long,
+        value_name = "SESSION_OR_OPERATION",
+        conflicts_with_all = [
+            "stage_run",
+            "ephemeral_db",
+            "keep_ephemeral_db",
+            "profile",
+            "from",
+            "to",
+            "only",
+            "org",
+            "target",
+            "include_subsidiaries"
+        ]
+    )]
+    pub stage_run_resume: Option<String>,
+
+    /// Explicitly assert that a `running` task is an orphan left by a dead
+    /// process. Requires exact expected identities; never inferred from age.
+    #[arg(long, requires = "stage_run_resume")]
+    pub allow_orphan_running: bool,
+
+    /// Explicitly permit synthesizing the missing `graph_flow` wrapper around a
+    /// valid flat first-stage checkpoint. Requires exact expected identities.
+    #[arg(long, requires = "stage_run_resume")]
+    pub repair_missing_graph_flow: bool,
+
+    /// Explicitly permit restoring a task that the legacy startup reaper marked
+    /// failed with its exact abandoned-task marker. Requires exact expected
+    /// identities and never applies to an ordinary failed task.
+    #[arg(long, requires = "stage_run_resume")]
+    pub repair_reaped_task: bool,
+
+    /// Expected DB `sessions.id` for an exact resume.
+    #[arg(long, value_name = "UUID", requires = "stage_run_resume")]
+    pub expect_session: Option<uuid::Uuid>,
+
+    /// Expected `tasks.id` for an exact resume.
+    #[arg(long, value_name = "UUID", requires = "stage_run_resume")]
+    pub expect_task: Option<uuid::Uuid>,
+
+    /// Expected `operation_state.operation_id` for an exact resume.
+    #[arg(long, value_name = "UUID", requires = "stage_run_resume")]
+    pub expect_operation: Option<uuid::Uuid>,
+
+    /// Expected engagement root organization for an exact resume.
+    #[arg(long, value_name = "UUID", requires = "stage_run_resume")]
+    pub expect_org: Option<uuid::Uuid>,
+
+    /// Expected current harness stage for an exact resume.
+    #[arg(long, value_name = "STAGE", requires = "stage_run_resume")]
+    pub expect_stage: Option<String>,
+
     /// `--stage-run` test mode: use an isolated temporary embedded Postgres data
     /// directory and a random local port. The normal app DB is not touched.
     #[arg(long)]
@@ -242,6 +300,92 @@ mod tests {
         assert_eq!(args.to.as_deref(), Some("target_intel"));
         assert_eq!(args.org.as_deref(), Some("ACME"));
         assert_eq!(args.target, vec!["a.com".to_string(), "b.com".to_string()]);
+    }
+
+    #[test]
+    fn test_args_stage_run_resume_with_orphan_identity_assertions() {
+        let args = Args::parse_from([
+            "golish",
+            "--stage-run-resume",
+            "stage-run-476558c3-c22a-4009-a82e-17e086a005de",
+            "--allow-orphan-running",
+            "--repair-missing-graph-flow",
+            "--repair-reaped-task",
+            "--expect-session",
+            "a15c0b0f-23ff-42f9-b950-7dcaf25de860",
+            "--expect-task",
+            "462b6c9f-2a0d-48af-8ff0-8b5c08416196",
+            "--expect-operation",
+            "462b6c9f-2a0d-48af-8ff0-8b5c08416196",
+            "--expect-org",
+            "0a431390-7726-48e5-b0a8-e692a9070e33",
+            "--expect-stage",
+            "enumeration",
+            "-e",
+            "继续",
+            "/tmp/original-workspace",
+        ]);
+
+        assert_eq!(
+            args.stage_run_resume.as_deref(),
+            Some("stage-run-476558c3-c22a-4009-a82e-17e086a005de")
+        );
+        assert!(args.allow_orphan_running);
+        assert!(args.repair_missing_graph_flow);
+        assert!(args.repair_reaped_task);
+        assert_eq!(
+            args.expect_session,
+            Some(
+                uuid::Uuid::parse_str("a15c0b0f-23ff-42f9-b950-7dcaf25de860")
+                    .expect("session uuid")
+            )
+        );
+        assert_eq!(
+            args.expect_task,
+            Some(uuid::Uuid::parse_str("462b6c9f-2a0d-48af-8ff0-8b5c08416196").expect("task uuid"))
+        );
+        assert_eq!(
+            args.expect_operation,
+            Some(
+                uuid::Uuid::parse_str("462b6c9f-2a0d-48af-8ff0-8b5c08416196")
+                    .expect("operation uuid")
+            )
+        );
+        assert_eq!(args.expect_stage.as_deref(), Some("enumeration"));
+        assert_eq!(
+            args.expect_org,
+            Some(uuid::Uuid::parse_str("0a431390-7726-48e5-b0a8-e692a9070e33").expect("org uuid"))
+        );
+        assert_eq!(args.execute.as_deref(), Some("继续"));
+        assert_eq!(args.workspace, PathBuf::from("/tmp/original-workspace"));
+    }
+
+    #[test]
+    fn test_args_stage_run_resume_rejects_fresh_run_and_ephemeral_selectors() {
+        for conflicting in [
+            vec!["--stage-run"],
+            vec!["--only", "enumeration"],
+            vec!["--ephemeral-db"],
+        ] {
+            let mut argv = vec!["golish", "--stage-run-resume", "stage-run-abc"];
+            argv.extend(conflicting);
+            assert!(
+                Args::try_parse_from(argv).is_err(),
+                "resume must reject fresh/ephemeral selector"
+            );
+        }
+    }
+
+    #[test]
+    fn test_args_orphan_assertions_require_stage_run_resume() {
+        assert!(
+            Args::try_parse_from(["golish", "--allow-orphan-running"]).is_err(),
+            "orphan override must be scoped to the explicit resume command"
+        );
+        assert!(
+            Args::try_parse_from(["golish", "--repair-reaped-task"]).is_err(),
+            "reaped-task repair must be scoped to the explicit resume command"
+        );
     }
 
     #[test]

@@ -74,7 +74,7 @@ pub use executor::{
 };
 pub use executor_types::{
     CoverageGapAction, PostShellHook, StageCapabilitySuggestion, StageToolGuard, StageToolHider,
-    SubAgentChainPersistence, SubAgentToolObservation, SubAgentToolObserver,
+    SubAgentChainError, SubAgentChainPersistence, SubAgentToolObservation, SubAgentToolObserver,
     SubAgentToolResultHook, SubAgentToolRouter, SubmitRepairKind, SubmitRepairMode,
 };
 

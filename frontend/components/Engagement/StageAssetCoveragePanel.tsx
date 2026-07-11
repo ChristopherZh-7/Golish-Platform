@@ -46,6 +46,7 @@ type TechniqueState =
   | "checked_empty"
   | "error"
   | "blocked"
+  | "partial"
   | "not_applicable"
   | "next_wave_pending"
   | "pending";
@@ -71,6 +72,11 @@ const TECH_META: Record<TechniqueState, { className: string; label: string; mark
     label: "阻塞",
     mark: "!",
   },
+  partial: {
+    className: "bg-orange-500/15 text-orange-300 border-orange-500/35",
+    label: "部分完成",
+    mark: "…",
+  },
   not_applicable: {
     className: "bg-muted/30 text-muted-foreground/50 border-border/30",
     label: "不适用",
@@ -93,6 +99,7 @@ const STATUS_LEGEND: TechniqueState[] = [
   "checked_empty",
   "error",
   "blocked",
+  "partial",
   "next_wave_pending",
   "pending",
   "not_applicable",
@@ -101,6 +108,7 @@ const STATUS_LEGEND: TechniqueState[] = [
 const ROW_STATUS_SUMMARY_ORDER: TechniqueState[] = [
   "error",
   "blocked",
+  "partial",
   "pending",
   "next_wave_pending",
   "checked_empty",
@@ -113,6 +121,7 @@ const ROW_STATUS_SUMMARY_LABEL: Partial<Record<TechniqueState, string>> = {
   error: "错误",
   next_wave_pending: "下批待查",
   not_applicable: "不适用",
+  partial: "部分完成",
   pending: "未查",
 };
 
@@ -203,6 +212,10 @@ function isOrganizationCoverageRow(row: CoverageRow) {
   return row.target_type === "organization" && row.source === "engagement_org";
 }
 
+function coverageRowKey(row: CoverageRow): string {
+  return `${row.target_id}:${row.value}`;
+}
+
 function coverageSummaryText(summary: CoverageSummary) {
   if (summary.total_assets === 0) return "0 assets";
   return `${summary.done_assets}/${summary.total_assets} done`;
@@ -262,6 +275,20 @@ function normalizeAssetToken(value: string): string {
     .replace(/\/$/, "");
 }
 
+function exactHttpOrigin(value: string): string | null {
+  const trimmed = value.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+    const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+    return `${parsed.protocol}//${hostname}:${port}`;
+  } catch {
+    return null;
+  }
+}
+
 function assetTokens(value: string): string[] {
   const normalized = normalizeAssetToken(value);
   const tokens = [normalized];
@@ -276,6 +303,14 @@ function assetTokens(value: string): string[] {
 }
 
 function workMatchesAsset(row: CoverageRow, item: StageAssetCoverageWorkItem): boolean {
+  const rowOrigin = exactHttpOrigin(row.value);
+  const subjectOrigins = item.subjects
+    .map(exactHttpOrigin)
+    .filter((origin): origin is string => origin !== null);
+  if (rowOrigin && subjectOrigins.length > 0) {
+    return subjectOrigins.includes(rowOrigin);
+  }
+
   const rowTokens = assetTokens(row.value);
   return item.subjects.some((subject) => {
     const subjectTokens = assetTokens(subject);
@@ -387,7 +422,7 @@ function buildAssetCoverageGroups(rows: CoverageRow[]): AssetCoverageGroup[] {
       return;
     }
 
-    getGroup(`asset:${row.target_id}`, row.value, index, false).childRows.push(row);
+    getGroup(`asset:${coverageRowKey(row)}`, row.value, index, false).childRows.push(row);
   });
 
   return Array.from(groups.values()).sort(
@@ -674,6 +709,14 @@ function coverageRowStatusSummary(row: CoverageRow): string | null {
     return `${summaryLabel} ${formatTechniqueList(labels)}`;
   });
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+function coverageRowUnfinishedState(row: CoverageRow): "blocked" | "partial" | "pending" | null {
+  const states = new Set(row.coverage.map((cell) => normalizeTechniqueState(cell.state)));
+  if (states.has("blocked") || states.has("error")) return "blocked";
+  if (states.has("partial")) return "partial";
+  if (states.has("pending")) return "pending";
+  return null;
 }
 
 function rowMetaLabel(row: CoverageRow, child = false): string {
@@ -1040,6 +1083,12 @@ export function StageAssetCoveragePanel({
   }
 
   const summary = displaySnapshot.summary;
+  const partialAssetCount = assetRows.filter(
+    (asset) => coverageRowUnfinishedState(asset) === "partial"
+  ).length;
+  const purePendingAssetCount = assetRows.filter(
+    (asset) => coverageRowUnfinishedState(asset) === "pending"
+  ).length;
   const groups = buildAssetCoverageGroups(assetRows);
   const liveWorkItems = matrixLiveWorkItems;
   const activeGroups = groups.filter((group) => groupMatchesLiveWork(group, liveWorkItems));
@@ -1121,7 +1170,7 @@ export function StageAssetCoveragePanel({
     const metaLabel = rowMetaLabel(asset, options.child);
     return (
       <div
-        key={asset.target_id}
+        key={coverageRowKey(asset)}
         className={cn(
           "grid items-center gap-1.5 border-t border-border/10 px-3 py-1.5 text-[11px]",
           options.host && "bg-muted/15",
@@ -1247,9 +1296,14 @@ export function StageAssetCoveragePanel({
               {summary.new_assets} 下批
             </span>
           )}
-          {summary.pending_assets > 0 && (
+          {partialAssetCount > 0 && (
+            <span className="inline-flex h-6 min-w-24 items-center justify-center rounded bg-orange-500/15 px-1.5 tabular-nums text-orange-300">
+              {partialAssetCount} 部分完成
+            </span>
+          )}
+          {purePendingAssetCount > 0 && (
             <span className="inline-flex h-6 min-w-24 items-center justify-center rounded bg-muted/40 px-1.5 tabular-nums">
-              {summary.pending_assets} 未查
+              {purePendingAssetCount} 未查
             </span>
           )}
           {summary.blocked_assets > 0 && (
@@ -1326,7 +1380,7 @@ export function StageAssetCoveragePanel({
         {organizationRows.length > 0 && (
           <div className="border-b border-border/15 px-3 py-2">
             {organizationRows.map((row) => (
-              <div key={row.target_id} className="flex min-w-0 flex-wrap items-center gap-2">
+              <div key={coverageRowKey(row)} className="flex min-w-0 flex-wrap items-center gap-2">
                 <span className="shrink-0 text-[10px] font-medium text-muted-foreground/70">
                   组织情报
                 </span>

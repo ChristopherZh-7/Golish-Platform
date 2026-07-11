@@ -14,7 +14,9 @@ use super::super::types::{
     HarnessFinding, HarnessRecoveryActions, StageClaim, StageDeliverable,
 };
 use super::{min_invocations_check, scope_check, surface_coverage_check, GateCheckOutcome};
-use crate::harness::{suggested_capabilities_for_any_technique, suggested_tools_for_any_technique};
+use crate::harness::{
+    suggested_capabilities_for_any_technique, suggested_tools_for_any_technique, StageKind,
+};
 
 /// 一条规则 = 一个顶层积木 op；求值产出一个 `GateCheckOutcome`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +83,12 @@ pub enum GateRule {
         /// 按 spec 灰度逐阶段翻开。
         #[serde(default)]
         require_note_for_other: bool,
+        /// Whether a projected [`EvidenceOutcome::Error`] closes the cell as a
+        /// legacy non-found terminal state. Default true preserves existing
+        /// stages; Enumeration opts out because its worklist treats errors as
+        /// unfinished retry/repair work.
+        #[serde(default = "default_error_is_terminal")]
+        error_is_terminal: bool,
         on_fail: OnFail,
     },
     /// P5（2026-06-11）交叉校验：每个 status == found 的 coverage cell 必须有 ≥1 个
@@ -303,12 +311,14 @@ pub struct EvidenceFact {
 /// 事实的结局：`Found`（有产出）/ `Empty`（跑了→空 — I8 的被记录事实，
 /// 投影成 CheckedEmpty 终态，**绝不**当 Found）/ `Error`（跑了但失败：非零退出 /
 /// 超时 / 502 等——T2，设计 2026-06-23-failure-outcome-not-checked-empty。投影成
-/// 「失败阻断」终态，**绝不**当 Found / CheckedEmpty）。
+/// 「失败阻断」终态，**绝不**当 Found / CheckedEmpty）/
+/// `Blocked`（可审计的可信生产者证明当前执行环境无法完成）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceOutcome {
     Found,
     Empty,
     Error,
+    Blocked,
 }
 
 /// A terminal source/provider query row projected from `source_query_log`.
@@ -407,6 +417,7 @@ fn eval_one(
             authoritative_found,
             authoritative_techniques,
             require_note_for_other,
+            error_is_terminal,
             on_fail,
         } => coverage_complete(
             d,
@@ -418,6 +429,7 @@ fn eval_one(
             *authoritative_found,
             authoritative_techniques.as_deref(),
             *require_note_for_other,
+            *error_is_terminal,
             on_fail,
         ),
         GateRule::CoverageCorroborated {
@@ -548,6 +560,33 @@ fn coverage_gap_action(asset: &str, technique: &str) -> CoverageGapAction {
     }
 }
 
+fn coverage_gap_action_for_asset(
+    stage: StageKind,
+    class: crate::harness::technique_resolver::AssetClass,
+    asset: &str,
+    technique: &str,
+) -> CoverageGapAction {
+    if stage == StageKind::ExternalAttackSurface
+        && technique == "GOLISH-EAS-LIVENESS"
+        && matches!(
+            class,
+            crate::harness::technique_resolver::AssetClass::Ip
+                | crate::harness::technique_resolver::AssetClass::Cidr
+        )
+    {
+        let suggested_capabilities = suggested_capabilities_for_any_technique("GOLISH-EAS-PORT");
+        let suggested_tools = suggested_tools_for_any_technique("GOLISH-EAS-PORT");
+        return CoverageGapAction {
+            asset: asset.to_string(),
+            technique: technique.to_string(),
+            reason: "missing_terminal_coverage; concrete IP/CIDR liveness should be closed through port discovery".to_string(),
+            suggested_capabilities,
+            suggested_tools,
+        };
+    }
+    coverage_gap_action(asset, technique)
+}
+
 #[cfg(test)]
 fn suggested_tools_for_gap(technique: &str) -> Vec<String> {
     suggested_tools_for_any_technique(technique)
@@ -579,6 +618,15 @@ fn canon_asset(s: &str) -> String {
     no_scheme.trim_end_matches('.').to_string()
 }
 
+fn coverage_join_asset_key(stage: StageKind, asset: &str) -> String {
+    if stage == StageKind::Enumeration {
+        return golish_pentest_domain::canonical_web_origin(asset)
+            .map(|origin| origin.key)
+            .unwrap_or_else(|| asset.trim().to_ascii_lowercase());
+    }
+    canon_asset(asset)
+}
+
 /// `coverage_complete` 求值（纯函数，设计 §4.2 + Phase 2 ①③ seam）。期望技术取
 /// `ctx.expected_techniques`（③ 动态注入）否则 `spec.expected_techniques`（静态），空 →
 /// no-op Pass。资产维度取 `ctx.in_scope_assets`（① 权威注入）否则 deliverable.coverage
@@ -594,6 +642,7 @@ fn coverage_complete(
     authoritative_found: bool,
     authoritative_techniques: Option<&[String]>,
     require_note_for_other: bool,
+    error_is_terminal: bool,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
     // ③ seam：动态注入的期望技术覆盖 spec 静态值。
@@ -642,7 +691,7 @@ fn coverage_complete(
         let mut seen = std::collections::HashSet::new();
         assets
             .into_iter()
-            .filter(|a| seen.insert(canon_asset(a)))
+            .filter(|a| seen.insert(coverage_join_asset_key(spec.kind, a)))
             .collect()
     };
 
@@ -682,6 +731,17 @@ fn coverage_complete(
 
     let mut gaps: Vec<CoverageGapAction> = Vec::new();
     for asset in &assets {
+        let class = if spec.host_aware_coverage {
+            crate::harness::technique_resolver::AssetClass::classify(
+                ctx.asset_types
+                    .as_ref()
+                    .and_then(|m| m.get(*asset))
+                    .map(String::as_str),
+                asset,
+            )
+        } else {
+            crate::harness::technique_resolver::AssetClass::Other
+        };
         // Host-aware coverage (design 2026-06-15 §4.0): when enabled, hold each
         // asset only to the techniques that apply to its class (a bare IP is not
         // asked for SUBDOMAIN/DNS/CT). Flag off ⇒ the full `techniques` list for
@@ -692,13 +752,6 @@ fn coverage_complete(
             // authoritative `targets.type` when present; else fall back to value
             // inference (2a/2b), then `Other` (full set). `asset` is `&&str`, so
             // `*asset` is the `&str` map key.
-            let class = crate::harness::technique_resolver::AssetClass::classify(
-                ctx.asset_types
-                    .as_ref()
-                    .and_then(|m| m.get(*asset))
-                    .map(String::as_str),
-                asset,
-            );
             let asset_key = canon_asset(asset);
             let web_capable = ctx.web_capable_assets.as_ref().is_some_and(|assets| {
                 assets.contains(*asset) || assets.contains(asset_key.as_str())
@@ -720,7 +773,7 @@ fn coverage_complete(
         };
         // E1 PR-B：把当前资产轴值归一成身份键，下面 join 两侧都用它比较，
         // 容忍同一资产的不同写法（http://x / x / X. / 大小写）。
-        let asset_key = canon_asset(asset);
+        let asset_key = coverage_join_asset_key(spec.kind, asset);
         for tech in asset_techniques {
             // Phase 0（设计 2026-06-12-redteam-phase0）：该 technique 是否进入「权威」
             // 模式（found 只认真值）。authoritative_techniques=None → 全部期望技术；
@@ -730,26 +783,34 @@ fn coverage_complete(
 
             let cell_status = |want: CoverageStatus| {
                 d.coverage.iter().any(|c| {
-                    canon_asset(&c.asset) == asset_key && c.technique == *tech && c.status == want
+                    coverage_join_asset_key(spec.kind, &c.asset) == asset_key
+                        && c.technique == *tech
+                        && c.status == want
                 })
             };
             // 账本/DB 真值通道：asset+technique 精确匹配且 outcome 命中的事实存在？
             let has_fact = |want: EvidenceOutcome| {
                 ctx.evidence_facts.as_deref().is_some_and(|facts| {
                     facts.iter().any(|f| {
-                        canon_asset(&f.asset) == asset_key
+                        coverage_join_asset_key(spec.kind, &f.asset) == asset_key
                             && f.technique == *tech
                             && f.outcome == want
                     })
                 })
             };
+            // Enumeration's `error_is_terminal=false` contract also uses Error as
+            // the current-run marker for `partial`. A current non-terminal marker
+            // outranks every deliverable-side assertion (including a noted
+            // blocked/not_applicable cell); only a later complete outcome upsert
+            // removes it.
+            let current_nonterminal_marker = !error_is_terminal && has_fact(EvidenceOutcome::Error);
             // P5 派生（D1/D2）：technique 标注且 subject == asset 的 claim/finding 视作
             // found（仅旧自报路径用；authoritative 模式下不再算 found）。
             let tagged_found = d.claims.iter().any(|c| {
-                canon_asset(&c.subject) == asset_key
+                coverage_join_asset_key(spec.kind, &c.subject) == asset_key
                     && c.technique.as_deref() == Some(tech.as_str())
             }) || d.findings.iter().any(|f| {
-                canon_asset(&f.subject) == asset_key
+                coverage_join_asset_key(spec.kind, &f.subject) == asset_key
                     && f.technique.as_deref() == Some(tech.as_str())
             });
 
@@ -779,30 +840,39 @@ fn coverage_complete(
                     cell_status(CoverageStatus::CheckedEmpty)
                         || (derive_from_evidence && has_fact(EvidenceOutcome::Empty))
                 };
+            // Enumeration's blocked state is also authoritative. It closes a
+            // cell only when a trusted current-run producer projected a real
+            // evidence-backed Blocked fact; a model-authored coverage row can
+            // never mint this fact or mirror it into truth.
+            let trusted_blocked_ok = spec.kind == StageKind::Enumeration
+                && terminal.contains(&CoverageStatus::Blocked)
+                && derive_from_evidence
+                && has_fact(EvidenceOutcome::Blocked);
             // blocked / not_applicable 终态：自报 cell 命中即算。T1（设计
             // 2026-06-23-coverage-note-required）：`require_note_for_other` 开时额外
             // 要求 `note` 非空（堵「空 note 蒙混 blocked」）；缺省 false ⇒ note 子句
             // 恒真 = 与旧 `cell_status` 逐字节一致。
             let cell_other_ok = |want: CoverageStatus| {
                 d.coverage.iter().any(|c| {
-                    canon_asset(&c.asset) == asset_key
+                    coverage_join_asset_key(spec.kind, &c.asset) == asset_key
                         && c.technique == *tech
                         && c.status == want
                         && (!require_note_for_other
                             || c.note.as_deref().is_some_and(|n| !n.trim().is_empty()))
                 })
             };
-            let other_ok = (terminal.contains(&CoverageStatus::Blocked)
-                && cell_other_ok(CoverageStatus::Blocked))
-                || (terminal.contains(&CoverageStatus::NotApplicable)
-                    && cell_other_ok(CoverageStatus::NotApplicable));
+            let other_ok = spec.kind != StageKind::Enumeration
+                && ((terminal.contains(&CoverageStatus::Blocked)
+                    && cell_other_ok(CoverageStatus::Blocked))
+                    || (terminal.contains(&CoverageStatus::NotApplicable)
+                        && cell_other_ok(CoverageStatus::NotApplicable)));
 
-            // T2（设计 2026-06-23-failure-outcome-not-checked-empty）：error 事实
-            // （跑了但失败：超时 / 非零退出 / 502）= 终态——保住旧 failure→empty 的
-            // 「落终态、不无限重试」性质，但按「失败阻断」计，绝不当 found / checked_empty。
-            // 终态条件取 CheckedEmpty∪Blocked（覆盖旧 empty 路径 + Blocked 语义）。无
-            // error 事实时恒假 = 逐字节不变（additive，gate 侧无需灰度）。
-            let error_ok = derive_from_evidence
+            // T2（设计 2026-06-23-failure-outcome-not-checked-empty）：旧合同把
+            // error 事实当作非 found 终态，避免无限重试。`error_is_terminal=false`
+            // 的 stage（当前仅 Enumeration）改为保持未完成，与 worklist 的 error
+            // 语义一致；其他 stage 通过缺省 true 保留旧行为。
+            let error_ok = error_is_terminal
+                && derive_from_evidence
                 && has_fact(EvidenceOutcome::Error)
                 && (terminal.contains(&CoverageStatus::CheckedEmpty)
                     || terminal.contains(&CoverageStatus::Blocked));
@@ -828,14 +898,16 @@ fn coverage_complete(
                         || pairs.contains(&((*asset).to_string(), tech.to_string()))
                 });
 
-            if !found_ok
-                && !empty_ok
-                && !other_ok
-                && !error_ok
-                && !source_terminal_ok
-                && !context_not_applicable_ok
+            if current_nonterminal_marker
+                || (!found_ok
+                    && !empty_ok
+                    && !trusted_blocked_ok
+                    && !other_ok
+                    && !error_ok
+                    && !source_terminal_ok
+                    && !context_not_applicable_ok)
             {
-                gaps.push(coverage_gap_action(asset, tech));
+                gaps.push(coverage_gap_action_for_asset(spec.kind, class, asset, tech));
             }
         }
     }
@@ -877,6 +949,10 @@ fn coverage_complete(
 /// `coverage_denominator` 的 `min_sample_ratio_pct` 缺省 = 100（D6 默认全覆盖）。
 fn default_sample_ratio_pct() -> u8 {
     100
+}
+
+fn default_error_is_terminal() -> bool {
+    true
 }
 
 /// `coverage_denominator` 求值（纯函数，设计 §5.3）。对每个 status ∈
@@ -1778,16 +1854,25 @@ mod tests {
             rule,
             GateRule::CoverageComplete {
                 terminal_status: None,
+                error_is_terminal: true,
                 ..
             }
         ));
     }
 
     #[test]
-    fn eas_service_gap_suggests_nmap_only() {
+    fn eas_service_gap_suggests_service_wrapper_only() {
         assert_eq!(
             suggested_tools_for_gap("GOLISH-EAS-SERVICE-FINGERPRINT"),
-            vec!["nmap".to_string()]
+            vec!["eas_fingerprint_services".to_string()]
+        );
+    }
+
+    #[test]
+    fn eas_web_fingerprint_gap_suggests_web_stack_wrapper() {
+        assert_eq!(
+            suggested_tools_for_gap("GOLISH-EAS-WEB-FINGERPRINT"),
+            vec!["eas_fingerprint_web_stack".to_string()]
         );
     }
 
@@ -2810,6 +2895,163 @@ mod tests {
     }
 
     #[test]
+    fn enumeration_error_fact_keeps_coverage_incomplete() {
+        let spec = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::StageKind::Enumeration,
+        )
+        .expect("load enumeration spec");
+        let ctx = projection_ctx(
+            &["GOLISH-ENUM-DIR"],
+            Some(vec![fact(
+                "a",
+                "GOLISH-ENUM-DIR",
+                EvidenceOutcome::Error,
+                9,
+            )]),
+        );
+        let outcomes = eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &spec,
+            &spec.gate_rules,
+            &ctx,
+        );
+
+        assert!(
+            outcomes.iter().any(|outcome| !outcome.is_pass()),
+            "Enumeration must keep an Error outcome incomplete instead of passing coverage"
+        );
+    }
+
+    #[test]
+    fn enumeration_nonterminal_truth_rejects_self_reported_terminal_cells() {
+        let spec = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::StageKind::Enumeration,
+        )
+        .expect("load enumeration spec");
+        let contexts = [
+            (
+                "error",
+                projection_ctx(
+                    &["GOLISH-ENUM-DIR"],
+                    Some(vec![fact(
+                        "a",
+                        "GOLISH-ENUM-DIR",
+                        EvidenceOutcome::Error,
+                        9,
+                    )]),
+                ),
+            ),
+            // `partial` is projected as the same non-terminal Error marker by the
+            // Enumeration context assembler. The marker must outrank every
+            // deliverable-side terminal assertion.
+            (
+                "partial",
+                projection_ctx(
+                    &["GOLISH-ENUM-DIR"],
+                    Some(vec![fact(
+                        "a",
+                        "GOLISH-ENUM-DIR",
+                        EvidenceOutcome::Error,
+                        0,
+                    )]),
+                ),
+            ),
+        ];
+
+        for (marker, ctx) in &contexts {
+            let submitted_cells = [
+                cov_cell("a", "GOLISH-ENUM-DIR", CoverageStatus::Found, vec![]),
+                cov_cell("a", "GOLISH-ENUM-DIR", CoverageStatus::CheckedEmpty, vec![]),
+                cov_cell_noted(
+                    "a",
+                    "GOLISH-ENUM-DIR",
+                    CoverageStatus::Blocked,
+                    "claimed policy block",
+                ),
+                cov_cell_noted(
+                    "a",
+                    "GOLISH-ENUM-DIR",
+                    CoverageStatus::NotApplicable,
+                    "claimed not applicable",
+                ),
+            ];
+            for cell in submitted_cells {
+                let status = cell.status;
+                let outcomes = eval_with_context(
+                    &deliverable_with_coverage(vec![cell]),
+                    &spec,
+                    &spec.gate_rules,
+                    ctx,
+                );
+                assert!(
+                    outcomes.iter().any(|outcome| !outcome.is_pass()),
+                    "current {marker} truth must reject a self-reported {status:?} cell"
+                );
+            }
+        }
+
+        let outcomes = eval_with_context(
+            &deliverable_with_coverage(vec![cov_cell(
+                "a",
+                "GOLISH-ENUM-DIR",
+                CoverageStatus::Blocked,
+                vec![],
+            )]),
+            &spec,
+            &spec.gate_rules,
+            &projection_ctx(&["GOLISH-ENUM-DIR"], None),
+        );
+        assert!(
+            outcomes.iter().any(|outcome| !outcome.is_pass()),
+            "blocked without a concrete note must not close a missing cell"
+        );
+    }
+
+    #[test]
+    fn enumeration_accepts_only_trusted_blocked_fact_not_model_mirror() {
+        let spec = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::StageKind::Enumeration,
+        )
+        .expect("load enumeration spec");
+        for status in [CoverageStatus::Blocked, CoverageStatus::NotApplicable] {
+            let outcomes = eval_with_context(
+                &deliverable_with_coverage(vec![cov_cell_noted(
+                    "a",
+                    "GOLISH-ENUM-DIR",
+                    status,
+                    "model-authored terminal assertion",
+                )]),
+                &spec,
+                &spec.gate_rules,
+                &projection_ctx(&["GOLISH-ENUM-DIR"], None),
+            );
+            assert!(
+                outcomes.iter().any(|outcome| !outcome.is_pass()),
+                "Enumeration must reject self-reported {status:?}"
+            );
+        }
+
+        let outcomes = eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &spec,
+            &spec.gate_rules,
+            &projection_ctx(
+                &["GOLISH-ENUM-DIR"],
+                Some(vec![fact(
+                    "a",
+                    "GOLISH-ENUM-DIR",
+                    EvidenceOutcome::Blocked,
+                    41,
+                )]),
+            ),
+        );
+        assert!(
+            outcomes.iter().all(GateCheckOutcome::is_pass),
+            "trusted current-run Blocked fact must close the cell without deliverable coverage"
+        );
+    }
+
+    #[test]
     fn error_fact_does_not_satisfy_found_only_terminal() {
         // terminal=["found"]：Error 事实既不算 found，也不在 CheckedEmpty/Blocked 终态
         // 集 → 缺口 Block。证明 error 绝不冒充 found。
@@ -3639,6 +3881,134 @@ mod tests {
         assert!(
             eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &endpoint_ctx)[0].is_pass(),
             "endpoint liveness fact must close the matching URL:port cell"
+        );
+    }
+
+    #[test]
+    fn enumeration_keeps_http_and_https_origins_distinct_on_same_port() {
+        let tech = "GOLISH-ENUM-DIR";
+        let d = deliverable_with_coverage(vec![]);
+        let spec = host_aware_spec("enumeration", "enumeration", true);
+        let one_origin_ctx = GateContext {
+            in_scope_assets: Some(vec![
+                "http://app.example.com:8080".to_string(),
+                "https://app.example.com:8080".to_string(),
+            ]),
+            asset_types: Some(std::collections::HashMap::from([
+                ("http://app.example.com:8080".to_string(), "url".to_string()),
+                (
+                    "https://app.example.com:8080".to_string(),
+                    "url".to_string(),
+                ),
+            ])),
+            expected_techniques: Some(vec![tech.to_string()]),
+            evidence_facts: Some(vec![fact(
+                "http://app.example.com:8080",
+                tech,
+                EvidenceOutcome::Found,
+                1,
+            )]),
+            source_queries: None,
+            web_capable_assets: None,
+            not_applicable_coverage: None,
+        };
+
+        assert!(
+            !eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &one_origin_ctx,)[0]
+                .is_pass(),
+            "one origin fact must not close a sibling origin with a different scheme"
+        );
+
+        let mut both_origins_ctx = one_origin_ctx;
+        both_origins_ctx.evidence_facts.as_mut().unwrap().push(fact(
+            "https://app.example.com:8080",
+            tech,
+            EvidenceOutcome::Found,
+            2,
+        ));
+        assert!(
+            eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &both_origins_ctx,)[0]
+                .is_pass()
+        );
+    }
+
+    #[test]
+    fn enumeration_authoritative_exact_ip_origin_requires_all_four_axes() {
+        let origin = "https://203.0.113.10:443";
+        let techniques = [
+            "GOLISH-ENUM-JS",
+            "GOLISH-ENUM-DIR",
+            "GOLISH-ENUM-PARAM",
+            "GOLISH-ENUM-JSAPI",
+        ];
+        let ctx = GateContext {
+            in_scope_assets: Some(vec![origin.to_string()]),
+            asset_types: Some(std::collections::HashMap::from([(
+                origin.to_string(),
+                "url".to_string(),
+            )])),
+            expected_techniques: Some(
+                techniques
+                    .iter()
+                    .map(|technique| (*technique).to_string())
+                    .collect(),
+            ),
+            web_capable_assets: Some(std::collections::HashSet::from(
+                ["203.0.113.10".to_string()],
+            )),
+            not_applicable_coverage: Some(
+                techniques
+                    .iter()
+                    .map(|technique| ("203.0.113.10".to_string(), (*technique).to_string()))
+                    .collect(),
+            ),
+            ..GateContext::default()
+        };
+        let outcome = &eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &host_aware_spec("enumeration", "enumeration", true),
+            &[evidence_derive_rule(None)],
+            &ctx,
+        )[0];
+
+        match outcome {
+            GateCheckOutcome::Block { reasons, .. } => {
+                for technique in techniques {
+                    assert!(
+                        reasons.iter().any(|reason| reason.contains(technique)),
+                        "exact IP origin must retain {technique} as a gate gap: {reasons:?}"
+                    );
+                }
+            }
+            GateCheckOutcome::Pass => {
+                panic!("exact IP origin must not vacuously pass without four-axis evidence")
+            }
+        }
+
+        let mut complete_ctx = ctx;
+        complete_ctx.evidence_facts = Some(
+            techniques
+                .iter()
+                .enumerate()
+                .map(|(index, technique)| {
+                    fact(
+                        origin,
+                        technique,
+                        EvidenceOutcome::Found,
+                        i64::try_from(index + 1).unwrap(),
+                    )
+                })
+                .collect(),
+        );
+        assert!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &host_aware_spec("enumeration", "enumeration", true),
+                &[evidence_derive_rule(None)],
+                &complete_ctx,
+            )[0]
+            .is_pass(),
+            "four exact-origin facts must close the same four required cells"
         );
     }
 

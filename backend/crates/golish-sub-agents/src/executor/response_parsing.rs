@@ -4,6 +4,7 @@
 //! barrier tools, nested sub-agent delegation, regular tool execution,
 //! event emission, and file modification tracking.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,8 +17,9 @@ use uuid::Uuid;
 use crate::definition::{SubAgentContext, SubAgentDefinition};
 use crate::executor_helpers::{epoch_secs, extract_file_path, is_write_tool};
 use crate::executor_types::{
-    cancellation_requested, wait_for_cancelled, CoverageGapAction, SubAgentExecutorContext,
-    SubAgentToolObservation, SubmitRepairKind, SubmitRepairMode, ToolProvider, BARRIER_TOOL_NAME,
+    cancellation_requested, coverage_gap_action_instruction, wait_for_cancelled, CoverageGapAction,
+    SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairKind, SubmitRepairMode,
+    ToolProvider, BARRIER_TOOL_NAME,
 };
 use crate::transcript::SubAgentTranscriptWriter;
 use golish_core::events::{AiEvent, ToolSource};
@@ -135,6 +137,13 @@ fn structured_storage_hook_payload(
     result: &serde_json::Value,
     success: bool,
 ) -> Option<StructuredStorageHookPayload> {
+    if result
+        .get("structured_storage_disabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        return None;
+    }
     let stdout = result
         .get("stdout")
         .and_then(|s| s.as_str())
@@ -236,6 +245,19 @@ fn collect_json_array_strings(value: Option<&serde_json::Value>) -> Vec<String> 
         .unwrap_or_default()
 }
 
+fn tool_result_for_history(tool_call: &ToolCall, result_value: serde_json::Value) -> UserContent {
+    let tool_call_id = tool_call
+        .call_id
+        .clone()
+        .unwrap_or_else(|| tool_call.id.clone());
+    let result_text = serde_json::to_string(&result_value).unwrap_or_default();
+    UserContent::ToolResult(ToolResult {
+        id: tool_call.id.clone(),
+        call_id: Some(tool_call_id),
+        content: OneOrMany::one(ToolResultContent::Text(Text { text: result_text })),
+    })
+}
+
 fn missing_min_invocation_tools(reasons: &[String]) -> Vec<String> {
     const PREFIX: &str = "min tool invocations not satisfied for '";
     let mut out = Vec::new();
@@ -256,14 +278,304 @@ fn missing_min_invocation_tools(reasons: &[String]) -> Vec<String> {
     out
 }
 
-fn model_visible_tool_result(tool_name: &str, value: &serde_json::Value) -> serde_json::Value {
+pub(super) fn model_visible_tool_result(
+    tool_name: &str,
+    value: &serde_json::Value,
+) -> serde_json::Value {
     match tool_name {
         "route_probe_paths" => compact_route_probe_result(value),
         "list_enumeration_web_roots" => compact_enumeration_web_roots_result(value),
+        "enum_preflight_web_origins" => compact_enum_preflight_result(value),
         "browser_collect_js_api" => compact_browser_collect_result(value),
         "js_extract_apis" => compact_js_extract_result(value),
+        "stage_worklist_status" | "stage_worklist_next" | "check_stage_asset_coverage" => {
+            compact_stage_preflight_result(value)
+        }
         _ => compact_large_json_result(value),
     }
+}
+
+const MAX_ENUM_PREFLIGHT_MODEL_ORIGINS: usize = 50;
+
+pub(super) fn compact_enum_preflight_result(value: &serde_json::Value) -> serde_json::Value {
+    const SCALAR_FIELDS: &[&str] = &[
+        "status",
+        "input_count",
+        "reachable_count",
+        "blocked_count",
+        "incomplete_count",
+        "fixed_concurrency",
+        "next_action",
+    ];
+    let mut output = serde_json::Map::new();
+    for field in SCALAR_FIELDS {
+        if let Some(value) = value.get(*field) {
+            output.insert((*field).to_string(), value.clone());
+        }
+    }
+    for field in ["reachable_origins", "blocked_origins", "pending_origins"] {
+        let Some(origins) = value.get(field).and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        output.insert(
+            field.to_string(),
+            serde_json::Value::Array(
+                origins
+                    .iter()
+                    .take(MAX_ENUM_PREFLIGHT_MODEL_ORIGINS)
+                    .map(|origin| {
+                        serde_json::json!({
+                            "target_id": origin
+                                .get("target_id")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                            "target_url": origin
+                                .get("target_url")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        if origins.len() > MAX_ENUM_PREFLIGHT_MODEL_ORIGINS {
+            output.insert(
+                format!("model_visible_{field}_omitted"),
+                serde_json::json!(origins.len() - MAX_ENUM_PREFLIGHT_MODEL_ORIGINS),
+            );
+        }
+    }
+    output.insert(
+        "model_visible_compacted".to_string(),
+        serde_json::json!(true),
+    );
+    output.insert(
+        "raw_result_retained_in_transcript".to_string(),
+        serde_json::json!(true),
+    );
+    serde_json::Value::Object(output)
+}
+
+fn compact_stage_preflight_result(value: &serde_json::Value) -> serde_json::Value {
+    const TOP_LEVEL_FIELDS: &[&str] = &[
+        "tool",
+        "stage",
+        "organization_id",
+        "session_id",
+        "limit",
+        "prefer",
+        "ready_to_submit",
+        "coverage_denominator_missing",
+        "summary",
+        "cell_summary",
+        "omitted_item_count",
+        "omitted_gap_count",
+        "root_limit",
+        "root_count",
+        "matching_root_count",
+        "omitted_root_count",
+        "worklist_contract",
+        "worklist_semantics",
+        "deliverable_contract",
+        "next_tool",
+        "next_action",
+        "assets_omitted",
+        "assets_omitted_count",
+        "asset_detail_hint",
+    ];
+    let mut output = serde_json::Map::new();
+    for field in TOP_LEVEL_FIELDS {
+        if let Some(item) = value.get(*field) {
+            output.insert((*field).to_string(), item.clone());
+        }
+    }
+
+    let exact_origin_page = compact_enumeration_exact_origin_page(value);
+    if let Some(page) = exact_origin_page.as_ref() {
+        output.insert("exact_origin_page".to_string(), page.clone());
+        output.insert(
+            "exact_origin_page_contract".to_string(),
+            serde_json::json!("Copy target_id + target_url from exact_origin_page exactly into enum_preflight_web_origins and the same-page producers. Do not reconstruct IDs or roots from older history."),
+        );
+    }
+
+    if exact_origin_page.is_none() {
+        if let Some(items) = value.get("items").and_then(|items| items.as_array()) {
+            const MAX_ITEMS: usize = 200;
+            output.insert(
+                "items".to_string(),
+                serde_json::Value::Array(
+                    items
+                        .iter()
+                        .take(MAX_ITEMS)
+                        .map(compact_stage_work_item)
+                        .collect(),
+                ),
+            );
+            output.insert("items_count".to_string(), serde_json::json!(items.len()));
+            output.insert(
+                "model_visible_items_omitted".to_string(),
+                serde_json::json!(items.len().saturating_sub(MAX_ITEMS)),
+            );
+        }
+    }
+    if let Some(gaps) = value
+        .get("gap_examples")
+        .and_then(|examples| examples.as_array())
+    {
+        const MAX_GAPS: usize = 25;
+        output.insert(
+            "gap_examples".to_string(),
+            serde_json::Value::Array(
+                gaps.iter()
+                    .take(MAX_GAPS)
+                    .map(compact_stage_work_item)
+                    .collect(),
+            ),
+        );
+        output.insert(
+            "model_visible_gap_examples_omitted".to_string(),
+            serde_json::json!(gaps.len().saturating_sub(MAX_GAPS)),
+        );
+    }
+
+    // This field is already bounded and fail-closed by golish-agent-kit (max
+    // 200 entries, bounded note size). Keep it lossless: the Enumerator must
+    // copy coverage_to_submit exactly into the unchanged submit gate.
+    if let Some(preview) = value.get("terminal_exceptions_preview") {
+        output.insert("terminal_exceptions_preview".to_string(), preview.clone());
+    }
+    output.insert(
+        "model_visible_compacted".to_string(),
+        serde_json::json!(true),
+    );
+    output.insert(
+        "raw_result_retained_in_transcript".to_string(),
+        serde_json::json!(true),
+    );
+    serde_json::Value::Object(output)
+}
+
+/// Collapse the Enumeration worklist's four asset-technique cells per root
+/// into one lossless exact-origin page. A raw 200-cell page is large enough to
+/// trigger total-history compaction, which used to retain only the first few
+/// roots and tempted the model to reuse stale target IDs from older turns.
+/// Fifty compact root records fit comfortably inside the per-result budget.
+pub(super) fn compact_enumeration_exact_origin_page(
+    value: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    if value.get("stage").and_then(serde_json::Value::as_str) != Some("enumeration") {
+        return None;
+    }
+    let items = value.get("items")?.as_array()?;
+    if items.is_empty() {
+        return Some(serde_json::Value::Array(Vec::new()));
+    }
+
+    let root_limit = value
+        .get("root_limit")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(50)
+        .clamp(1, 50) as usize;
+    let mut indexes = BTreeMap::<(String, String), usize>::new();
+    let mut roots = Vec::<serde_json::Value>::new();
+
+    for item in items {
+        let Some(target_id) = item
+            .get("target_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+        let Some(target_url) = item
+            .get("asset")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| item.get("root_url").and_then(serde_json::Value::as_str))
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+        let target_url = target_url.trim_end_matches('/').to_string();
+        let key = (target_id.to_string(), target_url.clone());
+
+        let index = if let Some(index) = indexes.get(&key).copied() {
+            index
+        } else {
+            if roots.len() >= root_limit {
+                continue;
+            }
+            let index = roots.len();
+            indexes.insert(key, index);
+            roots.push(serde_json::json!({
+                "target_id": target_id,
+                "target_url": target_url,
+                "root_url": item.get("root_url").cloned().unwrap_or(serde_json::Value::Null),
+                "base_url": item.get("base_url").cloned().unwrap_or(serde_json::Value::Null),
+                "unfinished_techniques": [],
+            }));
+            index
+        };
+
+        let Some(technique) = item
+            .get("technique")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+        let state = item
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("pending");
+        let techniques = roots[index]
+            .get_mut("unfinished_techniques")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("new exact-origin worklist rows always own an array");
+        if !techniques.iter().any(|entry| {
+            entry.get("technique").and_then(serde_json::Value::as_str) == Some(technique)
+        }) {
+            techniques.push(serde_json::json!({"technique": technique, "state": state}));
+        }
+    }
+
+    Some(serde_json::Value::Array(roots))
+}
+
+fn compact_stage_work_item(item: &serde_json::Value) -> serde_json::Value {
+    const FIELDS: &[&str] = &[
+        "work_item_id",
+        "target_id",
+        "asset",
+        "target_type",
+        "technique",
+        "label",
+        "state",
+        "source",
+        "note",
+        "details",
+        "evidence_refs",
+        "suggested_capabilities",
+        "suggested_tools",
+        "worklist_source",
+        "enumeration_focus",
+        "eas_focus",
+        "root_url",
+        "base_url",
+        "scheme",
+        "port",
+        "origin_resolution",
+    ];
+    let Some(object) = item.as_object() else {
+        return item.clone();
+    };
+    let mut compact = serde_json::Map::new();
+    for field in FIELDS {
+        if let Some(value) = object.get(*field) {
+            compact.insert((*field).to_string(), value.clone());
+        }
+    }
+    serde_json::Value::Object(compact)
 }
 
 fn compact_route_probe_result(value: &serde_json::Value) -> serde_json::Value {
@@ -273,17 +585,21 @@ fn compact_route_probe_result(value: &serde_json::Value) -> serde_json::Value {
     compact_route_probe_single_result(value)
 }
 
+const MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS: usize = 50;
+const MAX_ROUTE_PROBE_MODEL_BATCH_BYTES: usize = 512 * 1024;
+
 fn compact_route_probe_batch_result(value: &serde_json::Value) -> serde_json::Value {
-    let results_sample = value
+    let results = value
         .get("results")
         .and_then(|v| v.as_array())
         .map(|items| {
             items
                 .iter()
-                .take(10)
+                .take(MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS)
                 .map(|item| {
                     serde_json::json!({
-                        "base_url": item.get("base_url").cloned().unwrap_or(serde_json::Value::Null),
+                        "target_id": compact_route_probe_scalar(item.get("target_id")),
+                        "base_url": compact_route_probe_scalar(item.get("base_url")),
                         "result": item
                             .get("result")
                             .map(compact_route_probe_single_result)
@@ -298,50 +614,99 @@ fn compact_route_probe_batch_result(value: &serde_json::Value) -> serde_json::Va
         .and_then(|v| v.as_array())
         .map(Vec::len)
         .unwrap_or_default();
-
-    serde_json::json!({
-        "batch": true,
-        "status": value.get("status").cloned().unwrap_or(serde_json::Value::Null),
-        "timed_out": value.get("timed_out").cloned().unwrap_or(serde_json::Value::Null),
-        "count": value.get("count").cloned().unwrap_or(serde_json::Value::Null),
-        "succeeded": value.get("succeeded").cloned().unwrap_or(serde_json::Value::Null),
-        "failed": value.get("failed").cloned().unwrap_or(serde_json::Value::Null),
-        "dir_found_targets": value.get("dir_found_targets").cloned().unwrap_or(serde_json::Value::Null),
-        "elapsed_ms": value.get("elapsed_ms").cloned().unwrap_or(serde_json::Value::Null),
-        "max_runtime_ms": value.get("max_runtime_ms").cloned().unwrap_or(serde_json::Value::Null),
-        "results_count": result_count,
-        "results_sample": results_sample,
-        "skipped": sample_array(value.get("skipped"), 10),
-        "errors_count": value.get("errors").and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
-        "errors_sample": sample_array(value.get("errors"), 5),
-        "next_action": "Refresh stage_worklist/check_stage_asset_coverage. For each nested result, only rerun roots whose DIR cell remains pending/error.",
-        "model_visible_compacted": true,
-        "raw_result_retained_in_transcript": true,
-        "omitted_large_fields": ["results.result.matches", "results.result.rejected_candidates", "results.result.errors", "results.result.prefixes_tested"],
-    })
-}
-
-fn compact_route_probe_single_result(value: &serde_json::Value) -> serde_json::Value {
-    let matches = value
-        .get("matches")
-        .and_then(|v| v.as_array())
-        .map(Vec::len)
-        .unwrap_or_default();
-    let rejected = value
-        .get("rejected_candidates")
-        .and_then(|v| v.as_array())
-        .map(Vec::len)
-        .unwrap_or_default();
     let errors = value
         .get("errors")
         .and_then(|v| v.as_array())
-        .map(Vec::len)
+        .map(|items| {
+            items
+                .iter()
+                .take(MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS)
+                .map(compact_route_probe_batch_failure)
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
-    let prefixes = value
-        .get("prefixes_tested")
+    let skipped = value
+        .get("skipped")
         .and_then(|v| v.as_array())
-        .map(Vec::len)
+        .map(|items| {
+            items
+                .iter()
+                .take(MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS)
+                .map(compact_route_probe_batch_failure)
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
+
+    let mut compact = serde_json::json!({
+        "batch": true,
+        "status": compact_route_probe_scalar(value.get("status")),
+        "timed_out": compact_route_probe_scalar(value.get("timed_out")),
+        "count": compact_route_probe_scalar(value.get("count")),
+        "processed": compact_route_probe_scalar(value.get("processed")),
+        "succeeded": compact_route_probe_scalar(value.get("succeeded")),
+        "terminal_completed": compact_route_probe_scalar(value.get("terminal_completed")),
+        "incomplete_targets": compact_route_probe_scalar(value.get("incomplete_targets")),
+        "failed": compact_route_probe_scalar(value.get("failed")),
+        "batch_concurrency": compact_route_probe_scalar(value.get("batch_concurrency")),
+        "per_target_max_runtime_ms": compact_route_probe_scalar(value.get("per_target_max_runtime_ms")),
+        "per_target_timeout_targets": compact_route_probe_scalar(value.get("per_target_timeout_targets")),
+        "per_target_request_limited_targets": compact_route_probe_scalar(value.get("per_target_request_limited_targets")),
+        "dir_found_targets": compact_route_probe_scalar(value.get("dir_found_targets")),
+        "elapsed_ms": compact_route_probe_scalar(value.get("elapsed_ms")),
+        "max_runtime_ms": compact_route_probe_scalar(value.get("max_runtime_ms")),
+        "batch_max_runtime_ms": compact_route_probe_scalar(value.get("batch_max_runtime_ms")),
+        "per_target_result_max_bytes": compact_route_probe_scalar(value.get("per_target_result_max_bytes")),
+        "serialized_size_limit_bytes": compact_route_probe_scalar(value.get("serialized_size_limit_bytes")),
+        "detail_contract": compact_route_probe_scalar(value.get("detail_contract")),
+        "results_count": result_count,
+        "results": results,
+        "model_visible_results_omitted": result_count.saturating_sub(MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS),
+        "skipped_count": value.get("skipped").and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
+        "skipped": skipped,
+        "errors_count": value.get("errors").and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
+        "errors": errors,
+        "next_action": "Refresh stage_worklist/check_stage_asset_coverage. Continue only roots whose compact result has retry.recommended=true and whose DIR cell remains pending/error. If retry.recommended=false, stop automatic retry and follow that root's recovery_action before any new attempt.",
+        "model_visible_compacted": true,
+        "raw_result_retained_in_transcript": true,
+        "omitted_large_fields": ["results.result.matches", "results.result.rejected_candidates", "results.result.errors", "results.result.prefixes_tested"],
+        "model_visible_size_limit_bytes": MAX_ROUTE_PROBE_MODEL_BATCH_BYTES,
+    });
+    prune_route_probe_model_batch_to_limit(&mut compact);
+    debug_assert!(
+        serde_json::to_vec(&compact)
+            .map(|encoded| encoded.len() <= MAX_ROUTE_PROBE_MODEL_BATCH_BYTES)
+            .unwrap_or(false),
+        "model-visible route batch summary exceeded its byte budget"
+    );
+    compact
+}
+
+fn compact_route_probe_single_result(value: &serde_json::Value) -> serde_json::Value {
+    let matches_source = value.get("matches_sample").or_else(|| value.get("matches"));
+    let rejected_source = value
+        .get("rejected_candidates_sample")
+        .or_else(|| value.get("rejected_candidates"));
+    let errors_source = value.get("errors_sample").or_else(|| value.get("errors"));
+    let persistence_errors_source = value
+        .get("persistence_errors_sample")
+        .or_else(|| value.get("persistence_errors"));
+    let prefixes_source = value
+        .get("prefixes_tested_sample")
+        .or_else(|| value.get("prefixes_tested"));
+    let matches = route_probe_detail_count(value, "matches_detail_count", "matches");
+    let rejected = route_probe_detail_count(
+        value,
+        "rejected_candidates_detail_count",
+        "rejected_candidates",
+    );
+    let errors = route_probe_detail_count(value, "errors_detail_count", "errors");
+    let persistence_errors = route_probe_detail_count(
+        value,
+        "persistence_errors_detail_count",
+        "persistence_errors",
+    );
+    let prefixes =
+        route_probe_detail_count(value, "prefixes_tested_detail_count", "prefixes_tested");
     let outcome = value
         .get("outcome")
         .and_then(|v| v.as_str())
@@ -350,49 +715,492 @@ fn compact_route_probe_single_result(value: &serde_json::Value) -> serde_json::V
         .get("queue_completed")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let next_action = if outcome == "error" {
-        "Refresh stage_worklist/check_stage_asset_coverage, then retry only this failed root or mark blocked with the concrete error evidence."
+    let retry = value.get("retry").map_or_else(
+        || {
+            let recommended = value
+                .get("automatic_retry_allowed")
+                .and_then(|item| item.as_bool())
+                .unwrap_or(outcome == "error" || outcome == "partial" || !queue_completed);
+            serde_json::json!({
+                "recommended": recommended,
+                "reason_codes": route_probe_retry_reason_codes(value),
+                "checkpoint_available": value
+                    .get("checkpoint_persisted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                "queue_remaining": compact_route_probe_scalar(value.get("queue_remaining")),
+            })
+        },
+        |retry| {
+            let reason_codes = retry
+                .get("reason_codes")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .map(|reason| serde_json::json!(truncate_str(reason, 128)))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            serde_json::json!({
+                "recommended": compact_route_probe_scalar(retry.get("recommended")),
+                "reason_codes": reason_codes,
+                "checkpoint_available": compact_route_probe_scalar(retry.get("checkpoint_available")),
+                "queue_remaining": compact_route_probe_scalar(retry.get("queue_remaining")),
+            })
+        },
+    );
+    let retry_recommended = retry
+        .get("recommended")
+        .and_then(|item| item.as_bool())
+        .unwrap_or(false);
+    let manual_repair_reason = value
+        .get("manual_repair_reason")
+        .and_then(|item| item.as_str());
+    let recovery_action = value.get("recovery_action").and_then(|item| item.as_str());
+    let next_action = if !retry_recommended {
+        if let (Some(reason), Some(action)) = (manual_repair_reason, recovery_action) {
+            format!("Stop automatic retry. Reason: {reason}. Recovery action: {action}")
+        } else if let Some(action) = recovery_action {
+            format!("Stop automatic retry. Recovery action: {action}")
+        } else if let Some(reason) = manual_repair_reason {
+            format!("Stop automatic retry. Reason: {reason}")
+        } else if value
+            .get("attempt_superseded")
+            .and_then(|item| item.as_bool())
+            .unwrap_or(false)
+        {
+            "Stop retrying this attempt; a newer route attempt is authoritative. Refresh stage_worklist/check_stage_asset_coverage.".to_string()
+        } else if queue_completed && matches!(outcome, "found" | "empty" | "blocked") {
+            "Refresh stage_worklist/check_stage_asset_coverage; do not rerun this root unless coverage still reports DIR pending/error.".to_string()
+        } else {
+            "Refresh stage_worklist/check_stage_asset_coverage; do not rerun this root unless an explicit recovery action is required.".to_string()
+        }
+    } else if outcome == "error" {
+        "Refresh stage_worklist/check_stage_asset_coverage, then retry only this failed root or mark blocked with the concrete error evidence.".to_string()
     } else if queue_completed {
-        "Refresh stage_worklist/check_stage_asset_coverage; do not rerun this root unless coverage still reports DIR pending/error."
+        "Refresh stage_worklist/check_stage_asset_coverage; do not rerun this root unless coverage still reports DIR pending/error.".to_string()
     } else {
-        "Queue did not complete; refresh coverage, then continue this root only if DIR remains pending/error."
+        "Queue did not complete; refresh coverage, then continue this root only if DIR remains pending/error.".to_string()
     };
 
+    let mut compact = serde_json::Map::new();
+    for (field, item) in [
+        ("success", compact_route_probe_scalar(value.get("success"))),
+        (
+            "base_url",
+            compact_route_probe_scalar(value.get("base_url")),
+        ),
+        (
+            "requested_base_url",
+            compact_route_probe_scalar(value.get("requested_base_url")),
+        ),
+        ("outcome", serde_json::Value::String(outcome.to_string())),
+        (
+            "attempted_outcome",
+            compact_route_probe_scalar(value.get("attempted_outcome")),
+        ),
+        (
+            "completion_state",
+            compact_route_probe_scalar(value.get("completion_state")),
+        ),
+        (
+            "outcome_persisted",
+            compact_route_probe_scalar(value.get("outcome_persisted")),
+        ),
+        ("status", compact_route_probe_scalar(value.get("status"))),
+        (
+            "timed_out",
+            compact_route_probe_scalar(value.get("timed_out")),
+        ),
+        (
+            "request_limited",
+            compact_route_probe_scalar(value.get("request_limited")),
+        ),
+        (
+            "candidate_generation_limited",
+            compact_route_probe_scalar(value.get("candidate_generation_limited")),
+        ),
+        (
+            "recovery_exhausted",
+            compact_route_probe_scalar(value.get("recovery_exhausted")),
+        ),
+        (
+            "automatic_retry_allowed",
+            compact_route_probe_scalar(value.get("automatic_retry_allowed")),
+        ),
+        ("queue_completed", serde_json::Value::Bool(queue_completed)),
+        (
+            "queue_remaining",
+            compact_route_probe_scalar(value.get("queue_remaining")),
+        ),
+        (
+            "max_requests",
+            compact_route_probe_scalar(value.get("max_requests")),
+        ),
+        (
+            "requests_sent",
+            compact_route_probe_scalar(value.get("requests_sent")),
+        ),
+        (
+            "invocation_requests_sent",
+            compact_route_probe_scalar(value.get("invocation_requests_sent")),
+        ),
+        (
+            "candidate_requests_sent",
+            compact_route_probe_scalar(value.get("candidate_requests_sent")),
+        ),
+        (
+            "baseline_requests_sent",
+            compact_route_probe_scalar(value.get("baseline_requests_sent")),
+        ),
+        (
+            "persisted_directory_entries",
+            compact_route_probe_scalar(value.get("persisted_directory_entries")),
+        ),
+        (
+            "matches_found",
+            compact_route_probe_scalar(value.get("matches_found")),
+        ),
+        ("matches_count", serde_json::json!(matches)),
+        ("matches_sample", sample_array(matches_source, 2)),
+        (
+            "rejected_count",
+            compact_route_probe_scalar(value.get("rejected_count")),
+        ),
+        ("rejected_candidates_count", serde_json::json!(rejected)),
+        (
+            "rejected_candidates_sample",
+            sample_array(rejected_source, 1),
+        ),
+        ("errors_count", serde_json::json!(errors)),
+        ("errors_top", error_counts(errors_source, 5)),
+        ("errors_sample", sample_array(errors_source, 3)),
+        (
+            "persistence_errors_count",
+            serde_json::json!(persistence_errors),
+        ),
+        (
+            "persistence_errors_sample",
+            sample_array(persistence_errors_source, 2),
+        ),
+        ("prefixes_tested_count", serde_json::json!(prefixes)),
+        ("prefixes_tested_sample", sample_array(prefixes_source, 5)),
+        (
+            "wordlist",
+            value
+                .get("wordlist")
+                .map(|item| summarize_json_for_model(item, 2))
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "seed_paths",
+            value
+                .get("seed_paths_summary")
+                .or_else(|| value.get("seed_paths"))
+                .map(|item| summarize_json_for_model(item, 2))
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        ("run_id", compact_route_probe_scalar(value.get("run_id"))),
+        ("dry_run", compact_route_probe_scalar(value.get("dry_run"))),
+        (
+            "checkpoint_resumed",
+            compact_route_probe_scalar(value.get("checkpoint_resumed")),
+        ),
+        (
+            "checkpoint_resume_count",
+            compact_route_probe_scalar(value.get("checkpoint_resume_count")),
+        ),
+        (
+            "checkpoint_persisted",
+            compact_route_probe_scalar(value.get("checkpoint_persisted")),
+        ),
+        (
+            "checkpoint_pending_candidates",
+            compact_route_probe_scalar(value.get("checkpoint_pending_candidates")),
+        ),
+        (
+            "checkpoint_pending_directory_writes",
+            compact_route_probe_scalar(value.get("checkpoint_pending_directory_writes")),
+        ),
+        (
+            "terminalization_pending",
+            compact_route_probe_scalar(value.get("terminalization_pending")),
+        ),
+        (
+            "checkpoint_write_rejected",
+            compact_route_probe_scalar(value.get("checkpoint_write_rejected")),
+        ),
+        (
+            "checkpoint_overflow",
+            compact_route_probe_scalar(value.get("checkpoint_overflow")),
+        ),
+        (
+            "checkpoint_error",
+            compact_route_probe_scalar(value.get("checkpoint_error")),
+        ),
+        (
+            "authorization_drift",
+            value
+                .get("authorization_drift")
+                .map(|item| summarize_json_for_model(item, 1))
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "authorization_unavailable",
+            value
+                .get("authorization_unavailable")
+                .map(|item| summarize_json_for_model(item, 1))
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "attempt_superseded",
+            compact_route_probe_scalar(value.get("attempt_superseded")),
+        ),
+        (
+            "persistence_recovery_exhausted",
+            compact_route_probe_scalar(value.get("persistence_recovery_exhausted")),
+        ),
+        (
+            "retry_exhausted_persistence",
+            compact_route_probe_scalar(value.get("retry_exhausted_persistence")),
+        ),
+        (
+            "terminal_publication_recovery_exhausted",
+            compact_route_probe_scalar(value.get("terminal_publication_recovery_exhausted")),
+        ),
+        (
+            "terminal_publication_total_failures",
+            compact_route_probe_scalar(value.get("terminal_publication_total_failures")),
+        ),
+        (
+            "terminal_publication_stable_failures",
+            compact_route_probe_scalar(value.get("terminal_publication_stable_failures")),
+        ),
+        (
+            "terminal_publication_last_failure_kind",
+            compact_route_probe_scalar(value.get("terminal_publication_last_failure_kind")),
+        ),
+        (
+            "terminal_publication_last_error_preview",
+            compact_route_probe_scalar(value.get("terminal_publication_last_error_preview")),
+        ),
+        (
+            "retry_exhausted_terminalization",
+            compact_route_probe_scalar(value.get("retry_exhausted_terminalization")),
+        ),
+        (
+            "manual_repair_reason",
+            compact_route_probe_scalar(value.get("manual_repair_reason")),
+        ),
+        (
+            "recovery_action",
+            compact_route_probe_scalar(value.get("recovery_action")),
+        ),
+        ("retry", retry),
+        (
+            "detail_contract",
+            compact_route_probe_scalar(value.get("detail_contract")),
+        ),
+        (
+            "detail_omitted",
+            compact_route_probe_scalar(value.get("detail_omitted")),
+        ),
+        (
+            "next_action",
+            serde_json::Value::String(next_action.to_string()),
+        ),
+        ("model_visible_compacted", serde_json::Value::Bool(true)),
+        (
+            "raw_result_retained_in_transcript",
+            serde_json::Value::Bool(true),
+        ),
+        (
+            "omitted_large_fields",
+            serde_json::json!([
+                "matches",
+                "rejected_candidates",
+                "errors",
+                "prefixes_tested"
+            ]),
+        ),
+    ] {
+        compact.insert(field.to_string(), item);
+    }
+    serde_json::Value::Object(compact)
+}
+
+fn compact_route_probe_scalar(value: Option<&serde_json::Value>) -> serde_json::Value {
+    value
+        .map(|item| summarize_json_for_model(item, 0))
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn route_probe_detail_count(
+    value: &serde_json::Value,
+    count_field: &str,
+    detail_field: &str,
+) -> usize {
+    value
+        .get(count_field)
+        .and_then(|item| item.as_u64())
+        .map(|count| count as usize)
+        .or_else(|| {
+            value
+                .get(detail_field)
+                .and_then(|item| item.as_array())
+                .map(Vec::len)
+        })
+        .unwrap_or_default()
+}
+
+fn compact_route_probe_batch_failure(item: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
-        "success": value.get("success").cloned().unwrap_or(serde_json::Value::Null),
-        "base_url": value.get("base_url").cloned().unwrap_or(serde_json::Value::Null),
-        "requested_base_url": value.get("requested_base_url").cloned().unwrap_or(serde_json::Value::Null),
-        "outcome": outcome,
-        "outcome_persisted": value.get("outcome_persisted").cloned().unwrap_or(serde_json::Value::Null),
-        "status": value.get("status").cloned().unwrap_or(serde_json::Value::Null),
-        "timed_out": value.get("timed_out").cloned().unwrap_or(serde_json::Value::Null),
-        "request_limited": value.get("request_limited").cloned().unwrap_or(serde_json::Value::Null),
-        "candidate_generation_limited": value.get("candidate_generation_limited").cloned().unwrap_or(serde_json::Value::Null),
-        "queue_completed": queue_completed,
-        "queue_remaining": value.get("queue_remaining").cloned().unwrap_or(serde_json::Value::Null),
-        "max_requests": value.get("max_requests").cloned().unwrap_or(serde_json::Value::Null),
-        "requests_sent": value.get("requests_sent").cloned().unwrap_or(serde_json::Value::Null),
-        "candidate_requests_sent": value.get("candidate_requests_sent").cloned().unwrap_or(serde_json::Value::Null),
-        "baseline_requests_sent": value.get("baseline_requests_sent").cloned().unwrap_or(serde_json::Value::Null),
-        "persisted_directory_entries": value.get("persisted_directory_entries").cloned().unwrap_or(serde_json::Value::Null),
-        "matches_count": matches,
-        "matches_sample": sample_array(value.get("matches"), 5),
-        "rejected_candidates_count": rejected,
-        "rejected_candidates_sample": sample_array(value.get("rejected_candidates"), 3),
-        "errors_count": errors,
-        "errors_top": error_counts(value.get("errors"), 5),
-        "errors_sample": sample_array(value.get("errors"), 5),
-        "prefixes_tested_count": prefixes,
-        "prefixes_tested_sample": sample_array(value.get("prefixes_tested"), 10),
-        "wordlist": value.get("wordlist").cloned().unwrap_or(serde_json::Value::Null),
-        "seed_paths": value.get("seed_paths").cloned().unwrap_or(serde_json::Value::Null),
-        "run_id": value.get("run_id").cloned().unwrap_or(serde_json::Value::Null),
-        "dry_run": value.get("dry_run").cloned().unwrap_or(serde_json::Value::Null),
-        "next_action": next_action,
-        "model_visible_compacted": true,
-        "raw_result_retained_in_transcript": true,
-        "omitted_large_fields": ["matches", "rejected_candidates", "errors", "prefixes_tested"],
+        "target_id": compact_route_probe_scalar(item.get("target_id")),
+        "base_url": compact_route_probe_scalar(item.get("base_url")),
+        "error": compact_route_probe_scalar(item.get("error")),
+        "reason": compact_route_probe_scalar(item.get("reason")),
+        "marker_persisted": compact_route_probe_scalar(item.get("marker_persisted")),
     })
+}
+
+fn route_probe_retry_reason_codes(value: &serde_json::Value) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    if value.get("completion_state").and_then(|item| item.as_str()) != Some("complete") {
+        reasons.push("completion_incomplete");
+    }
+    if value
+        .get("recovery_exhausted")
+        .and_then(|item| item.as_bool())
+        .unwrap_or(false)
+    {
+        reasons.push("recovery_exhausted");
+    }
+    if value
+        .get("baseline_budget_deferred")
+        .and_then(|item| item.as_u64())
+        .unwrap_or(0)
+        > 0
+    {
+        reasons.push("baseline_budget_deferred");
+    }
+    for (field, reason) in [
+        ("timed_out", "timed_out"),
+        ("request_limited", "request_limited"),
+        ("checkpoint_write_rejected", "checkpoint_write_rejected"),
+        ("checkpoint_overflow", "checkpoint_overflow"),
+        ("terminalization_pending", "terminalization_pending"),
+        ("attempt_superseded", "attempt_superseded"),
+        (
+            "persistence_recovery_exhausted",
+            "persistence_recovery_exhausted",
+        ),
+        (
+            "terminal_publication_recovery_exhausted",
+            "terminal_publication_recovery_exhausted",
+        ),
+        (
+            "candidate_generation_limited",
+            "candidate_generation_limited",
+        ),
+    ] {
+        if value
+            .get(field)
+            .and_then(|item| item.as_bool())
+            .unwrap_or(false)
+        {
+            reasons.push(reason);
+        }
+    }
+    if !value
+        .get("queue_completed")
+        .and_then(|item| item.as_bool())
+        .unwrap_or(false)
+    {
+        reasons.push("queue_incomplete");
+    }
+    if value
+        .get("checkpoint_error")
+        .is_some_and(|error| !error.is_null())
+    {
+        reasons.push("checkpoint_error");
+    }
+    for (field, reason) in [
+        ("errors", "probe_errors"),
+        ("persistence_errors", "persistence_errors"),
+    ] {
+        if value
+            .get(field)
+            .and_then(|items| items.as_array())
+            .is_some_and(|items| !items.is_empty())
+        {
+            reasons.push(reason);
+        }
+    }
+    if value
+        .get("authorization_drift")
+        .is_some_and(|error| !error.is_null())
+    {
+        reasons.push("authorization_drift");
+    }
+    if value
+        .get("authorization_unavailable")
+        .is_some_and(|error| !error.is_null())
+    {
+        reasons.push("authorization_unavailable");
+    }
+    if !value
+        .get("dry_run")
+        .and_then(|item| item.as_bool())
+        .unwrap_or(false)
+        && !value
+            .get("outcome_persisted")
+            .and_then(|item| item.as_bool())
+            .unwrap_or(false)
+    {
+        reasons.push("outcome_not_persisted");
+    }
+    reasons
+}
+
+fn prune_route_probe_model_batch_to_limit(value: &mut serde_json::Value) {
+    let encoded_len = |value: &serde_json::Value| {
+        serde_json::to_vec(value)
+            .map(|encoded| encoded.len())
+            .unwrap_or(usize::MAX)
+    };
+    if encoded_len(value) <= MAX_ROUTE_PROBE_MODEL_BATCH_BYTES {
+        return;
+    }
+    if let Some(results) = value
+        .get_mut("results")
+        .and_then(|items| items.as_array_mut())
+    {
+        for item in results {
+            let Some(result) = item
+                .get_mut("result")
+                .and_then(|result| result.as_object_mut())
+            else {
+                continue;
+            };
+            for field in [
+                "matches_sample",
+                "rejected_candidates_sample",
+                "errors_sample",
+                "persistence_errors_sample",
+                "prefixes_tested_sample",
+                "seed_paths",
+            ] {
+                result.remove(field);
+            }
+            result.insert(
+                "samples_pruned_to_size_limit".to_string(),
+                serde_json::json!(true),
+            );
+        }
+    }
+    value["model_visible_samples_pruned"] = serde_json::json!(true);
 }
 
 fn compact_enumeration_web_roots_result(value: &serde_json::Value) -> serde_json::Value {
@@ -445,16 +1253,40 @@ fn compact_enumeration_web_roots_result(value: &serde_json::Value) -> serde_json
     })
 }
 
-fn compact_browser_collect_result(value: &serde_json::Value) -> serde_json::Value {
+fn compact_browser_root_diagnostic(
+    value: &serde_json::Value,
+    target_id: Option<&serde_json::Value>,
+    target_url: Option<&serde_json::Value>,
+    include_payload_samples: bool,
+) -> serde_json::Value {
     let api_requests = value
         .get("api_requests")
         .or_else(|| value.get("requests"))
         .or_else(|| value.get("endpoints"));
     let scripts = value.get("scripts").or_else(|| value.get("script_urls"));
-    serde_json::json!({
+    let pages_visited_this_run_count = value
+        .get("pages_visited_this_run")
+        .and_then(|v| v.as_array())
+        .map(Vec::len)
+        .unwrap_or_default();
+    let mut diagnostic = serde_json::json!({
         "success": value.get("success").cloned().unwrap_or(serde_json::Value::Null),
-        "target_id": value.get("target_id").cloned().unwrap_or(serde_json::Value::Null),
-        "url": value.get("url").or_else(|| value.get("target_url")).cloned().unwrap_or(serde_json::Value::Null),
+        "target_id": target_id.or_else(|| value.get("target_id")).cloned().unwrap_or(serde_json::Value::Null),
+        "url": target_url.or_else(|| value.get("url")).or_else(|| value.get("target_url")).cloned().unwrap_or(serde_json::Value::Null),
+        "status": value.get("status").cloned().unwrap_or(serde_json::Value::Null),
+        "completion_state": value.get("completion_state").cloned().unwrap_or(serde_json::Value::Null),
+        "closure_complete": value.get("closure_complete").cloned().unwrap_or(serde_json::Value::Null),
+        "closure_incomplete_reasons": sample_array(value.get("closure_incomplete_reasons"), 12),
+        "page_queue_remaining": value.get("page_queue_remaining").cloned().unwrap_or(serde_json::Value::Null),
+        "page_resume_applied": value.get("page_resume_applied").cloned().unwrap_or(serde_json::Value::Null),
+        "page_resume_count": value.get("page_resume_count").cloned().unwrap_or(serde_json::Value::Null),
+        "page_resume_prior_visited": value.get("page_resume_prior_visited").cloned().unwrap_or(serde_json::Value::Null),
+        "pages_visited_this_run_count": pages_visited_this_run_count,
+        "js_outcome": value.get("js_outcome").cloned().unwrap_or(serde_json::Value::Null),
+        "jsapi_outcome": value.get("jsapi_outcome").cloned().unwrap_or(serde_json::Value::Null),
+        "param_outcome": value.get("param_outcome").cloned().unwrap_or(serde_json::Value::Null),
+        "terminal_cross_origin_redirects_count": value.get("terminal_cross_origin_redirects").and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
+        "terminal_cross_origin_redirects_sample": sample_array(value.get("terminal_cross_origin_redirects"), 3),
         "summary": value.get("summary").cloned().unwrap_or(serde_json::Value::Null),
         "api_requests_count": api_requests.and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
         "api_requests_sample": sample_array(api_requests, 10),
@@ -464,34 +1296,350 @@ fn compact_browser_collect_result(value: &serde_json::Value) -> serde_json::Valu
         "skipped": value.get("skipped").cloned().unwrap_or(serde_json::Value::Null),
         "ai_recipe_rounds": value.get("ai_recipe_rounds").cloned().unwrap_or(serde_json::Value::Null),
         "ai_recipe_rationale": value.get("ai_recipe_rationale").cloned().unwrap_or(serde_json::Value::Null),
-        "next_action": "Run js_extract_apis on collected JS if JS/API coverage remains pending, then refresh stage_worklist/check_stage_asset_coverage.",
-        "model_visible_compacted": true,
-        "raw_result_retained_in_transcript": true,
+    });
+    if !include_payload_samples {
+        if let Some(obj) = diagnostic.as_object_mut() {
+            obj.remove("api_requests_sample");
+            obj.remove("scripts_sample");
+        }
+    }
+    diagnostic
+}
+
+fn compact_browser_collect_result(value: &serde_json::Value) -> serde_json::Value {
+    if value.get("batch").and_then(|v| v.as_bool()) == Some(true) {
+        let root_diagnostics = value
+            .get("results")
+            .and_then(|v| v.as_array())
+            .map(|results| {
+                results
+                    .iter()
+                    .take(50)
+                    .filter_map(|entry| {
+                        let result = entry.get("result")?;
+                        Some(compact_browser_root_diagnostic(
+                            result,
+                            entry.get("target_id"),
+                            entry.get("target_url"),
+                            false,
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let errors = value
+            .get("errors")
+            .and_then(|v| v.as_array())
+            .map(|errors| {
+                errors
+                    .iter()
+                    .take(50)
+                    .map(|entry| {
+                        serde_json::json!({
+                            "target_id": entry.get("target_id").cloned().unwrap_or(serde_json::Value::Null),
+                            "target_url": entry.get("target_url").cloned().unwrap_or(serde_json::Value::Null),
+                            "error": entry.get("error").cloned().unwrap_or(serde_json::Value::Null),
+                            "outcome_marker": entry.get("outcome_marker").cloned().unwrap_or(serde_json::Value::Null),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        return serde_json::json!({
+            "batch": true,
+            "input_count": value.get("input_count").cloned().unwrap_or(serde_json::Value::Null),
+            "accepted": value.get("accepted").cloned().unwrap_or(serde_json::Value::Null),
+            "rejected": value.get("rejected").cloned().unwrap_or(serde_json::Value::Null),
+            "truncated": value.get("truncated").cloned().unwrap_or(serde_json::Value::Null),
+            "skipped": value.get("skipped").cloned().unwrap_or(serde_json::Value::Null),
+            "succeeded": value.get("succeeded").cloned().unwrap_or(serde_json::Value::Null),
+            "failed": value.get("failed").cloned().unwrap_or(serde_json::Value::Null),
+            "root_diagnostics": root_diagnostics,
+            "errors": errors,
+            "omissions": sample_array(value.get("omissions"), 50),
+            "next_action": "Re-run only root diagnostics whose completion_state is partial/error (page_queue_remaining checkpoints resume automatically under the same run/session/operation), then run js_extract_apis and refresh stage_worklist/check_stage_asset_coverage.",
+            "model_visible_compacted": true,
+            "raw_result_retained_in_transcript": true,
+            "omitted_large_fields": ["results.result.scripts", "results.result.api_requests", "results.result.ai_dialogue"],
+        });
+    }
+
+    let mut compact = compact_browser_root_diagnostic(value, None, None, true);
+    if let Some(obj) = compact.as_object_mut() {
+        obj.insert(
+            "next_action".to_string(),
+            serde_json::json!("Run js_extract_apis on collected JS if JS/API coverage remains pending; when completion_state is partial/error, rerun only this exact root so a same-run page checkpoint can resume. Then refresh stage_worklist/check_stage_asset_coverage."),
+        );
+        obj.insert(
+            "model_visible_compacted".to_string(),
+            serde_json::json!(true),
+        );
+        obj.insert(
+            "raw_result_retained_in_transcript".to_string(),
+            serde_json::json!(true),
+        );
+    }
+    compact
+}
+
+fn compact_js_extract_root_diagnostic(
+    value: &serde_json::Value,
+    target_id: Option<&serde_json::Value>,
+    target_url: Option<&serde_json::Value>,
+    endpoint_sample_limit: usize,
+) -> serde_json::Value {
+    const COUNT_FIELDS: &[&str] = &[
+        "target_lookup_candidates",
+        "files_scanned",
+        "files_skipped",
+        "total_source_bytes",
+        "endpoints_total",
+        "endpoints_unique",
+        "secrets_total",
+        "configs_total",
+        "frameworks_total",
+        "libraries_total",
+        "rule_matches_total",
+        "hae_route_candidates_total",
+        "hae_method_literal_candidates",
+        "hae_direct_promoted",
+        "hae_ai_promoted",
+        "persisted_rows",
+        "persisted_endpoint_rows",
+        "duplicate_endpoint_rows",
+        "unresolved_endpoint_rows",
+        "param_hints_count",
+        "param_endpoints",
+        "outcome_persisted_count",
+        "endpoints_detail_count",
+        "secret_candidates_detail_count",
+        "config_candidates_detail_count",
+        "frameworks_detail_count",
+        "libraries_detail_count",
+        "rule_matches_detail_count",
+        "hae_route_candidates_detail_count",
+        "skipped_files_detail_count",
+        "skipped_js_files_detail_count",
+        "endpoint_persist_errors_detail_count",
+        "js_analysis_persist_errors_detail_count",
+        "capture_errors_detail_count",
+        "outcome_prerequisite_errors_detail_count",
+        "outcome_persist_errors_detail_count",
+        "read_errors_detail_count",
+        "ai_dialogue_count",
+    ];
+    let endpoint_source = value
+        .get("endpoints_sample")
+        .or_else(|| value.get("endpoints"))
+        .or_else(|| value.get("endpoints_found"))
+        .or_else(|| value.pointer("/summary/endpoints"));
+    let endpoints_count = value
+        .get("endpoints_total")
+        .and_then(|v| v.as_u64())
+        .or_else(|| value.get("endpoints_count").and_then(|v| v.as_u64()))
+        .unwrap_or_else(|| {
+            endpoint_source
+                .and_then(|v| v.as_array())
+                .map(|items| items.len() as u64)
+                .unwrap_or_default()
+        });
+    let params = value.get("params").or_else(|| value.get("param_hints"));
+    let params_count = value
+        .get("param_endpoints")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(|| {
+            params
+                .and_then(|v| v.as_array())
+                .map(|items| items.len() as u64)
+                .unwrap_or_default()
+        });
+    let mut diagnostic = serde_json::json!({
+        "success": value.get("success").cloned().unwrap_or(serde_json::Value::Null),
+        "target_id": target_id.or_else(|| value.get("target_id")).cloned().unwrap_or(serde_json::Value::Null),
+        "url": target_url
+            .or_else(|| value.get("effective_target_url"))
+            .or_else(|| value.get("url"))
+            .or_else(|| value.get("target_url"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        "status": value.get("status").cloned().unwrap_or(serde_json::Value::Null),
+        "completion_state": value.get("completion_state").cloned().unwrap_or(serde_json::Value::Null),
+        "jsapi_outcome": value.get("jsapi_outcome").cloned().unwrap_or(serde_json::Value::Null),
+        "outcome_persisted": value.get("outcome_persisted").cloned().unwrap_or(serde_json::Value::Null),
+        "param_outcome": value.get("param_outcome").cloned().unwrap_or(serde_json::Value::Null),
+        "param_outcome_persisted": value.get("param_outcome_persisted").cloned().unwrap_or(serde_json::Value::Null),
+        "authorization_drift": value.get("authorization_drift").cloned().unwrap_or(serde_json::Value::Null),
+        "endpoints_count": endpoints_count,
+        "endpoints_sample": sample_array(endpoint_source, endpoint_sample_limit),
+        "params_count": params_count,
+        "params_sample": sample_array(params, endpoint_sample_limit),
+        "summary": value.get("summary").cloned().unwrap_or(serde_json::Value::Null),
+        "retry": value.get("retry").cloned().unwrap_or(serde_json::Value::Null),
+        "capture_manifest": value.get("capture_manifest").cloned().unwrap_or(serde_json::Value::Null),
+        "detail_reference": value.get("detail_reference").cloned().unwrap_or(serde_json::Value::Null),
+        "detail_contract": value.get("detail_contract").cloned().unwrap_or(serde_json::Value::Null),
+        "persisted_api_endpoints": value.get("persisted_api_endpoints").cloned().unwrap_or(serde_json::Value::Null),
+        "ai_used": value.pointer("/summary/ai_used").or_else(|| value.get("ai_used")).cloned().unwrap_or(serde_json::Value::Null),
+        "ai_endpoints_added": value.pointer("/summary/ai_endpoints_added").or_else(|| value.get("ai_endpoints_added")).cloned().unwrap_or(serde_json::Value::Null),
+    });
+    if let Some(object) = diagnostic.as_object_mut() {
+        for field in COUNT_FIELDS {
+            if let Some(item) = value.get(*field) {
+                object.insert((*field).to_string(), item.clone());
+            }
+        }
+        let mut partial_diagnostics = serde_json::Map::new();
+        for field in [
+            "skipped_files_sample",
+            "skipped_js_files_sample",
+            "endpoint_persist_errors_sample",
+            "js_analysis_persist_errors_sample",
+            "capture_errors_sample",
+            "outcome_prerequisite_errors_sample",
+            "outcome_persist_errors_sample",
+            "read_errors_sample",
+        ] {
+            if let Some(item) = value.get(field) {
+                partial_diagnostics.insert(field.to_string(), item.clone());
+            }
+        }
+        if !partial_diagnostics.is_empty() {
+            object.insert(
+                "partial_diagnostics".to_string(),
+                serde_json::Value::Object(partial_diagnostics),
+            );
+        }
+    }
+    diagnostic
+}
+
+fn compact_js_extract_failure_root_diagnostic(value: &serde_json::Value) -> serde_json::Value {
+    let marker = value.get("outcome_marker");
+    let marker_field = |field: &str| marker.and_then(|item| item.get(field));
+    serde_json::json!({
+        "success": false,
+        "target_id": value
+            .get("target_id")
+            .map(|item| summarize_json_for_model(item, 0))
+            .unwrap_or(serde_json::Value::Null),
+        "url": value
+            .get("target_url")
+            .map(|item| summarize_json_for_model(item, 0))
+            .unwrap_or(serde_json::Value::Null),
+        "status": "error",
+        "completion_state": marker_field("completion_state").cloned().unwrap_or_else(|| serde_json::json!("error")),
+        "jsapi_outcome": marker_field("jsapi_outcome").cloned().unwrap_or_else(|| serde_json::json!("error")),
+        "outcome_persisted": marker_field("outcome_persisted")
+            .or_else(|| marker_field("jsapi_outcome_persisted"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        "param_outcome": marker_field("param_outcome").cloned().unwrap_or_else(|| serde_json::json!("error")),
+        "param_outcome_persisted": marker_field("param_outcome_persisted").cloned().unwrap_or(serde_json::Value::Null),
+        "error": value
+            .get("error")
+            .map(|item| summarize_json_for_model(item, 0))
+            .unwrap_or(serde_json::Value::Null),
+        "outcome_marker": marker
+            .map(|item| summarize_json_for_model(item, 2))
+            .unwrap_or(serde_json::Value::Null),
+        "retry": {
+            "recommended": true,
+            "reason_codes": ["tool_error"]
+        }
     })
 }
 
 fn compact_js_extract_result(value: &serde_json::Value) -> serde_json::Value {
-    let endpoints = value
-        .get("endpoints")
-        .or_else(|| value.get("endpoints_found"))
-        .or_else(|| value.pointer("/summary/endpoints"));
-    let params = value.get("params").or_else(|| value.get("param_hints"));
-    serde_json::json!({
-        "success": value.get("success").cloned().unwrap_or(serde_json::Value::Null),
-        "target_id": value.get("target_id").cloned().unwrap_or(serde_json::Value::Null),
-        "url": value.get("url").or_else(|| value.get("target_url")).cloned().unwrap_or(serde_json::Value::Null),
-        "summary": value.get("summary").cloned().unwrap_or(serde_json::Value::Null),
-        "endpoints_count": endpoints.and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
-        "endpoints_sample": sample_array(endpoints, 12),
-        "params_count": params.and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default(),
-        "params_sample": sample_array(params, 12),
-        "persisted_api_endpoints": value.get("persisted_api_endpoints").cloned().unwrap_or(serde_json::Value::Null),
-        "ai_used": value.pointer("/summary/ai_used").or_else(|| value.get("ai_used")).cloned().unwrap_or(serde_json::Value::Null),
-        "ai_endpoints_added": value.pointer("/summary/ai_endpoints_added").or_else(|| value.get("ai_endpoints_added")).cloned().unwrap_or(serde_json::Value::Null),
-        "next_action": "Refresh stage_worklist/check_stage_asset_coverage; only retry this root if JS/API/PARAM remains pending or errored.",
-        "model_visible_compacted": true,
-        "raw_result_retained_in_transcript": true,
-    })
+    if value.get("batch").and_then(|v| v.as_bool()) == Some(true) {
+        let mut root_diagnostics = value
+            .get("results")
+            .and_then(|v| v.as_array())
+            .map(|results| {
+                results
+                    .iter()
+                    .take(50)
+                    .filter_map(|entry| {
+                        let result = entry.get("result")?;
+                        Some(compact_js_extract_root_diagnostic(
+                            result,
+                            entry.get("target_id"),
+                            entry.get("target_url"),
+                            3,
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let remaining = 50usize.saturating_sub(root_diagnostics.len());
+        if remaining > 0 {
+            root_diagnostics.extend(
+                value
+                    .get("errors")
+                    .and_then(|items| items.as_array())
+                    .into_iter()
+                    .flatten()
+                    .take(remaining)
+                    .map(compact_js_extract_failure_root_diagnostic),
+            );
+        }
+        let results_count = value
+            .get("results_detail_count")
+            .and_then(|v| v.as_u64())
+            .map(|count| count as usize)
+            .or_else(|| {
+                value
+                    .get("results")
+                    .and_then(|v| v.as_array())
+                    .map(Vec::len)
+            })
+            .unwrap_or_default();
+        return serde_json::json!({
+            "batch": true,
+            "input_count": value.get("input_count").cloned().unwrap_or(serde_json::Value::Null),
+            "accepted": value.get("accepted").cloned().unwrap_or(serde_json::Value::Null),
+            "rejected": value.get("rejected").cloned().unwrap_or(serde_json::Value::Null),
+            "truncated": value.get("truncated").cloned().unwrap_or(serde_json::Value::Null),
+            "skipped": value.get("skipped").cloned().unwrap_or(serde_json::Value::Null),
+            "count": value.get("count").cloned().unwrap_or(serde_json::Value::Null),
+            "succeeded": value.get("succeeded").cloned().unwrap_or(serde_json::Value::Null),
+            "failed": value.get("failed").cloned().unwrap_or(serde_json::Value::Null),
+            "jsapi_found_targets": value.get("jsapi_found_targets").cloned().unwrap_or(serde_json::Value::Null),
+            "param_found_targets": value.get("param_found_targets").cloned().unwrap_or(serde_json::Value::Null),
+            "result_contract": value.get("result_contract").cloned().unwrap_or(serde_json::Value::Null),
+            "per_target_result_max_bytes": value.get("per_target_result_max_bytes").cloned().unwrap_or(serde_json::Value::Null),
+            "serialized_size_limit_bytes": value.get("serialized_size_limit_bytes").cloned().unwrap_or(serde_json::Value::Null),
+            "results_count": results_count,
+            "root_diagnostics": root_diagnostics,
+            "errors_count": value.get("errors_detail_count").and_then(|v| v.as_u64()).map(|count| count as usize).unwrap_or_else(|| value.get("errors").and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default()),
+            "errors_omitted": value.get("errors_omitted").cloned().unwrap_or(serde_json::Value::Null),
+            "errors_sample": sample_array(value.get("errors"), 10),
+            "omissions_count": value.get("omissions_detail_count").and_then(|v| v.as_u64()).map(|count| count as usize).unwrap_or_else(|| value.get("omissions").and_then(|v| v.as_array()).map(Vec::len).unwrap_or_default()),
+            "omissions_omitted": value.get("omissions_omitted").cloned().unwrap_or(serde_json::Value::Null),
+            "omissions_sample": sample_array(value.get("omissions"), 10),
+            "next_action": "Trust per-root endpoints_count/outcomes above, then refresh stage_worklist/check_stage_asset_coverage. Retry only roots whose completion_state is partial/error or whose current JSAPI/PARAM cell remains incomplete.",
+            "model_visible_compacted": true,
+            "raw_result_retained_in_transcript": true,
+            "transcript_result_contract": "bounded_batch_summary_v1",
+            "omitted_large_fields": ["results.result.endpoints", "results.result.rule_matches", "results.result.hae_route_candidates", "results.result.ai_dialogue"],
+        });
+    }
+
+    let mut compact = compact_js_extract_root_diagnostic(value, None, None, 12);
+    if let Some(object) = compact.as_object_mut() {
+        object.insert(
+            "next_action".to_string(),
+            serde_json::json!("Refresh stage_worklist/check_stage_asset_coverage; only retry this root if JS/API/PARAM remains pending or errored."),
+        );
+        object.insert(
+            "model_visible_compacted".to_string(),
+            serde_json::json!(true),
+        );
+        object.insert(
+            "raw_result_retained_in_transcript".to_string(),
+            serde_json::json!(true),
+        );
+    }
+    compact
 }
 
 fn compact_large_json_result(value: &serde_json::Value) -> serde_json::Value {
@@ -843,45 +1991,7 @@ fn collect_coverage_gap_actions(result: &serde_json::Value) -> Vec<CoverageGapAc
 }
 
 fn format_coverage_gap_actions_for_runtime(actions: &[CoverageGapAction]) -> String {
-    let mut preview = actions
-        .iter()
-        .take(40)
-        .enumerate()
-        .map(|(idx, action)| {
-            let capabilities = if action.suggested_capabilities.is_empty() {
-                String::new()
-            } else {
-                let ids = action
-                    .suggested_capabilities
-                    .iter()
-                    .map(|capability| capability.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("; suggested_capabilities={ids}")
-            };
-            let tools = if action.suggested_tools.is_empty() {
-                String::new()
-            } else {
-                format!("; suggested_tools={}", action.suggested_tools.join(", "))
-            };
-            format!(
-                "{}. asset={} technique={} reason={}{}{}",
-                idx + 1,
-                action.asset,
-                action.technique,
-                action.reason,
-                capabilities,
-                tools
-            )
-        })
-        .collect::<Vec<_>>();
-    if actions.len() > preview.len() {
-        preview.push(format!("... +{} more", actions.len() - preview.len()));
-    }
-    format!(
-        "Exact coverage_gap_actions returned by the gate: {}. Run ONLY these listed target/technique pairs.",
-        preview.join(" | ")
-    )
+    coverage_gap_action_instruction(actions)
 }
 
 fn background_failure_runtime_correction(
@@ -966,7 +2076,7 @@ where
                 cancelled: true,
             };
         }
-        if hard_supervisor_active {
+        if hard_supervisor_active || barrier_hit {
             let tool_args = if tool_name == "run_pty_cmd" {
                 tool_provider.normalize_run_pty_cmd_args(tool_call.function.arguments.clone())
             } else {
@@ -992,10 +2102,17 @@ where
                 });
             }
 
-            let result_value = serde_json::json!({
-                "error": "Skipped without execution because a hard execution supervisor correction was injected earlier in this tool batch. Start a new turn, read the supervisor correction, and choose the next action only after satisfying it.",
-                "blocked_by_hard_supervisor": true,
-            });
+            let result_value = if barrier_hit {
+                serde_json::json!({
+                    "error": "Skipped without execution because submit_result is a terminal barrier for this tool batch.",
+                    "blocked_by_result_barrier": true,
+                })
+            } else {
+                serde_json::json!({
+                    "error": "Skipped without execution because a hard execution supervisor correction was injected earlier in this tool batch. Start a new turn, read the supervisor correction, and choose the next action only after satisfying it.",
+                    "blocked_by_hard_supervisor": true,
+                })
+            };
             let tool_result_event = AiEvent::SubAgentToolResult {
                 agent_id: agent_id.to_string(),
                 tool_name: tool_name.to_string(),
@@ -1016,17 +2133,7 @@ where
                 });
             }
 
-            let tool_id = tool_call.id.clone();
-            let tool_call_id = tool_call
-                .call_id
-                .clone()
-                .unwrap_or_else(|| tool_call.id.clone());
-            let result_text = serde_json::to_string(&result_value).unwrap_or_default();
-            tool_results.push(UserContent::ToolResult(ToolResult {
-                id: tool_id,
-                call_id: Some(tool_call_id),
-                content: OneOrMany::one(ToolResultContent::Text(Text { text: result_text })),
-            }));
+            tool_results.push(tool_result_for_history(&tool_call, result_value));
             last_activity.store(epoch_secs(), Ordering::Relaxed);
             continue;
         }
@@ -1054,17 +2161,28 @@ where
                 result_text
             });
 
-            let _ = ctx.event_tx.send(AiEvent::SubAgentToolResult {
+            let result_value = serde_json::json!({ "status": "result submitted" });
+            let result_event = AiEvent::SubAgentToolResult {
                 agent_id: agent_id.to_string(),
                 tool_name: BARRIER_TOOL_NAME.to_string(),
                 success: true,
-                result: serde_json::json!({ "status": "result submitted" }),
-                request_id: Uuid::new_v4().to_string(),
+                result: result_value.clone(),
+                request_id: tool_call.id.clone(),
                 parent_request_id: parent_request_id.to_string(),
-            });
+            };
+            let _ = ctx.event_tx.send(result_event.clone());
+            if let Some(ref writer) = transcript_writer {
+                let writer = Arc::clone(writer);
+                tokio::spawn(async move {
+                    if let Err(e) = writer.append(&result_event).await {
+                        tracing::warn!("Failed to write barrier result to transcript: {}", e);
+                    }
+                });
+            }
+            tool_results.push(tool_result_for_history(&tool_call, result_value));
 
             barrier_hit = true;
-            break;
+            continue;
         }
 
         // ── Nested delegation ───────────────────────────────────────────
@@ -1120,7 +2238,9 @@ where
                         sub_tool_router: None,
                         active_org_id_source: ctx.active_org_id_source.clone(),
                         active_org_id_override: ctx.active_org_id_override,
+                        operation_id: ctx.operation_id,
                         session_id: ctx.session_id,
+                        persistence_session_id: ctx.persistence_session_id,
                         transcript_base_dir: ctx.transcript_base_dir,
                         api_request_stats: ctx.api_request_stats,
                         briefing: None,
@@ -1412,6 +2532,7 @@ where
                         agent_id: agent_id.to_string(),
                         agent_name: agent_def.name.clone(),
                     },
+                    operation_id: ctx.operation_id,
                     organization_id: ctx.active_org_id_override,
                 };
                 golish_core::with_agent_session(
@@ -1646,7 +2767,10 @@ fn use_sub_agent_outer_tool_timeout(tool_name: &str) -> bool {
         // targets. Applying `tokio::time::timeout` here drops the future, so the
         // tool is killed before it can persist its final DB truth. Shell/pentest
         // commands already have a separate soft-timeout -> background-job path.
-        "browser_collect_js_api" | "js_extract_apis" | "route_probe_paths"
+        "browser_collect_js_api"
+            | "js_extract_apis"
+            | "route_probe_paths"
+            | "enum_preflight_web_origins"
     )
 }
 
@@ -1697,7 +2821,16 @@ fn inject_harness_org_id_arg(
     let Some(org_id) = org_id else {
         return false;
     };
-    if !matches!(tool_name, "manage_targets" | "manage_organizations") {
+    if !matches!(
+        tool_name,
+        "manage_targets"
+            | "manage_organizations"
+            | "enum_crawl_same_origin_urls"
+            | "enum_preflight_web_origins"
+            | "browser_collect_js_api"
+            | "js_extract_apis"
+            | "route_probe_paths"
+    ) {
         return false;
     }
     if !tool_args.is_object() {
@@ -1714,14 +2847,17 @@ fn inject_harness_org_id_arg(
 mod tests {
     use super::{
         annotate_list_tools_with_guard, background_failure_runtime_correction,
-        execute_registry_tool_with_active_org, model_visible_tool_result, registry_tool_outcome,
-        structured_storage_hook_payload, submit_coverage_gap_repair_mode_from_reasons,
-        submit_needs_fix_runtime_correction, submit_repair_update,
-        use_sub_agent_outer_tool_timeout, SubmitRepairModeUpdate,
+        execute_registry_tool_with_active_org, inject_harness_org_id_arg,
+        model_visible_tool_result, registry_tool_outcome, structured_storage_hook_payload,
+        submit_coverage_gap_repair_mode_from_reasons, submit_needs_fix_runtime_correction,
+        submit_repair_update, tool_result_for_history, use_sub_agent_outer_tool_timeout,
+        SubmitRepairModeUpdate, MAX_ROUTE_PROBE_MODEL_BATCH_BYTES,
+        MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
     };
     use crate::SubmitRepairKind;
     use golish_core::Tool;
     use golish_tools::ToolRegistry;
+    use rig::message::{ToolCall, ToolFunction, UserContent};
     use std::path::Path;
     use std::sync::Arc;
     use tokio::sync::{mpsc, Mutex, RwLock};
@@ -1729,6 +2865,28 @@ mod tests {
 
     struct ObserveActiveOrgTool {
         active_org_id: Arc<RwLock<Option<Uuid>>>,
+    }
+
+    #[test]
+    fn barrier_history_result_preserves_the_provider_call_id() {
+        let call = ToolCall {
+            id: "tool-id".to_string(),
+            call_id: Some("call-provider-123".to_string()),
+            function: ToolFunction {
+                name: "submit_result".to_string(),
+                arguments: serde_json::json!({"result": "done"}),
+            },
+            signature: None,
+            additional_params: None,
+        };
+
+        let UserContent::ToolResult(result) =
+            tool_result_for_history(&call, serde_json::json!({"status": "result submitted"}))
+        else {
+            panic!("expected tool result content");
+        };
+        assert_eq!(result.id, "tool-id");
+        assert_eq!(result.call_id.as_deref(), Some("call-provider-123"));
     }
 
     #[async_trait::async_trait]
@@ -1807,6 +2965,7 @@ mod tests {
             provider_name: "test",
             model_name: "test",
             session_id: None,
+            persistence_session_id: None,
             transcript_base_dir: None,
             api_request_stats: None,
             cancelled: None,
@@ -1821,6 +2980,7 @@ mod tests {
             sub_tool_router: None,
             active_org_id_source: Some(active_org_id.clone()),
             active_org_id_override: Some(child_org),
+            operation_id: None,
             post_tool_result_hook: None,
             tool_observer: None,
             initial_submit_repair_mode: None,
@@ -1867,6 +3027,7 @@ mod tests {
             provider_name: "test",
             model_name: "test",
             session_id: None,
+            persistence_session_id: None,
             transcript_base_dir: None,
             api_request_stats: None,
             cancelled: None,
@@ -1881,6 +3042,7 @@ mod tests {
             sub_tool_router: None,
             active_org_id_source: Some(active_org_id.clone()),
             active_org_id_override: Some(child_org),
+            operation_id: None,
             post_tool_result_hook: None,
             tool_observer: None,
             initial_submit_repair_mode: None,
@@ -1906,6 +3068,47 @@ mod tests {
             Some(parent_org),
             "manage_targets must not rely on temporarily mutating the global active org"
         );
+    }
+
+    #[test]
+    fn enumeration_tools_get_hidden_harness_org_arg() {
+        let org_id = Uuid::new_v4();
+        for tool_name in [
+            "enum_crawl_same_origin_urls",
+            "enum_preflight_web_origins",
+            "browser_collect_js_api",
+            "js_extract_apis",
+            "route_probe_paths",
+        ] {
+            let mut args = serde_json::json!({"target_url": "https://app.example/"});
+            assert!(
+                inject_harness_org_id_arg(tool_name, &mut args, Some(org_id)),
+                "{tool_name} must receive the per-org harness binding"
+            );
+            assert_eq!(args["__harness_org_id"], org_id.to_string());
+        }
+    }
+
+    #[test]
+    fn enum_preflight_compaction_preserves_stable_origin_partitions() {
+        let value = serde_json::json!({
+            "status": "complete",
+            "input_count": 3,
+            "reachable_count": 1,
+            "blocked_count": 1,
+            "incomplete_count": 1,
+            "reachable_origins": [{"target_id": "a", "target_url": "https://a:443/"}],
+            "blocked_origins": [{"target_id": "b", "target_url": "https://b:443/"}],
+            "pending_origins": [{"target_id": "c", "target_url": "https://c:443/"}],
+            "results": [{"large": "detail"}],
+            "next_action": "continue"
+        });
+        let compact = model_visible_tool_result("enum_preflight_web_origins", &value);
+        assert_eq!(compact["reachable_origins"], value["reachable_origins"]);
+        assert_eq!(compact["blocked_origins"], value["blocked_origins"]);
+        assert_eq!(compact["pending_origins"], value["pending_origins"]);
+        assert!(compact.get("results").is_none());
+        assert_eq!(compact["raw_result_retained_in_transcript"], true);
     }
 
     #[test]
@@ -1978,59 +3181,494 @@ mod tests {
     }
 
     #[test]
+    fn route_probe_model_compactor_honors_finite_manual_recovery_contract() {
+        let result = serde_json::json!({
+            "success": true,
+            "base_url": "https://example.test/",
+            "outcome": "partial",
+            "attempted_outcome": "partial",
+            "completion_state": "partial",
+            "outcome_persisted": true,
+            "status": "incomplete_partial",
+            "queue_completed": false,
+            "queue_remaining": 1,
+            "checkpoint_persisted": true,
+            "checkpoint_pending_candidates": 0,
+            "checkpoint_pending_directory_writes": 1,
+            "automatic_retry_allowed": false,
+            "persistence_recovery_exhausted": true,
+            "retry_exhausted_persistence": false,
+            "manual_repair_reason": "repair conflict, then retry with retry_exhausted_persistence=true",
+            "recovery_action": "repair row conflict, then retry only this root",
+            "persistence_errors": [{"error": "row conflict"}],
+            "dry_run": false
+        });
+
+        let compact = model_visible_tool_result("route_probe_paths", &result);
+
+        assert_eq!(compact["retry"]["recommended"], false);
+        assert_eq!(compact["automatic_retry_allowed"], false);
+        assert_eq!(compact["persistence_recovery_exhausted"], true);
+        assert_eq!(compact["checkpoint_pending_directory_writes"], 1);
+        assert_eq!(
+            compact["recovery_action"],
+            "repair row conflict, then retry only this root"
+        );
+        assert!(compact["retry"]["reason_codes"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("persistence_recovery_exhausted")));
+        assert!(compact["next_action"]
+            .as_str()
+            .unwrap()
+            .starts_with("Stop automatic retry."));
+    }
+
+    #[test]
+    fn route_probe_terminal_breaker_remains_visible_and_not_recommended() {
+        let result = serde_json::json!({
+            "success": true,
+            "base_url": "https://example.test/",
+            "outcome": "partial",
+            "attempted_outcome": "found",
+            "completion_state": "partial",
+            "outcome_persisted": false,
+            "status": "incomplete_partial",
+            "queue_completed": true,
+            "queue_remaining": 0,
+            "checkpoint_persisted": true,
+            "terminalization_pending": true,
+            "automatic_retry_allowed": false,
+            "terminal_publication_recovery_exhausted": true,
+            "terminal_publication_total_failures": 2,
+            "terminal_publication_stable_failures": 2,
+            "terminal_publication_last_failure_kind": "conditional_outcome_upsert_failed",
+            "terminal_publication_last_error_preview": "database unavailable",
+            "retry_exhausted_terminalization": false,
+            "manual_repair_reason": "repair publication, then retry with retry_exhausted_terminalization=true",
+            "recovery_action": "repair terminal publication and retry only this root",
+            "dry_run": false
+        });
+
+        let compact = model_visible_tool_result("route_probe_paths", &result);
+
+        assert_eq!(compact["retry"]["recommended"], false);
+        assert_eq!(compact["terminalization_pending"], true);
+        assert_eq!(compact["terminal_publication_recovery_exhausted"], true);
+        assert_eq!(compact["terminal_publication_total_failures"], 2);
+        assert_eq!(
+            compact["terminal_publication_last_failure_kind"],
+            "conditional_outcome_upsert_failed"
+        );
+        assert_eq!(
+            compact["recovery_action"],
+            "repair terminal publication and retry only this root"
+        );
+        assert!(compact["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("retry_exhausted_terminalization=true"));
+    }
+
+    #[test]
     fn route_probe_batch_model_visible_result_keeps_nested_counts() {
+        let nested_result = serde_json::json!({
+            "success": true,
+            "base_url": "https://example.test/",
+            "outcome": "found",
+            "outcome_persisted": true,
+            "status": "request_limited_partial",
+            "timed_out": false,
+            "request_limited": true,
+            "candidate_generation_limited": false,
+            "queue_completed": false,
+            "queue_remaining": 13,
+            "max_requests": 2000,
+            "requests_sent": 2000,
+            "candidate_requests_sent": 1999,
+            "baseline_requests_sent": 1,
+            "persisted_directory_entries": 1,
+            "matches_found": 1,
+            "checkpoint_resumed": true,
+            "checkpoint_resume_count": 2,
+            "checkpoint_persisted": true,
+            "checkpoint_pending_candidates": 13,
+            "matches": [{"url": "https://example.test/api", "status": 200}],
+            "rejected_candidates": [],
+            "errors": [],
+            "prefixes_tested": ["/"],
+            "wordlist": {"entries_loaded": 1882},
+            "seed_paths": {"total_after_dedupe": 5},
+            "run_id": "run-1",
+            "dry_run": false
+        });
         let result = serde_json::json!({
             "batch": true,
-            "status": "ok",
+            "status": "incomplete_partial",
             "timed_out": false,
             "count": 1,
+            "processed": 1,
             "succeeded": 1,
+            "terminal_completed": 0,
+            "incomplete_targets": 1,
             "failed": 0,
-            "dir_found_targets": 1,
+            "dir_found_targets": 0,
             "elapsed_ms": 39_557,
             "max_runtime_ms": 60_000,
+            "serialized_size_limit_bytes": 512 * 1024,
             "results": [{
+                "target_id": "11111111-1111-1111-1111-111111111111",
                 "base_url": "https://example.test/",
-                "result": {
-                    "success": true,
-                    "base_url": "https://example.test/",
-                    "outcome": "found",
-                    "outcome_persisted": true,
-                    "status": "request_limited_partial",
-                    "timed_out": false,
-                    "request_limited": true,
-                    "candidate_generation_limited": false,
-                    "queue_completed": false,
-                    "queue_remaining": 13,
-                    "max_requests": 2000,
-                    "requests_sent": 2000,
-                    "candidate_requests_sent": 1999,
-                    "baseline_requests_sent": 1,
-                    "persisted_directory_entries": 1,
-                    "matches": [{"url": "https://example.test/api", "status": 200}],
-                    "rejected_candidates": [],
-                    "errors": [],
-                    "prefixes_tested": ["/"],
-                    "wordlist": {"entries_loaded": 1882},
-                    "seed_paths": {"total_after_dedupe": 5},
-                    "run_id": "run-1",
-                    "dry_run": false
-                }
+                "result": nested_result
             }],
             "errors": [],
             "skipped": []
         });
 
         let compact = model_visible_tool_result("route_probe_paths", &result);
-        let nested = &compact["results_sample"][0]["result"];
+        let nested = &compact["results"][0]["result"];
 
         assert_eq!(compact["batch"], true);
         assert_eq!(compact["results_count"], 1);
+        assert_eq!(compact["status"], "incomplete_partial");
+        assert_eq!(compact["processed"], 1);
+        assert_eq!(compact["terminal_completed"], 0);
+        assert_eq!(compact["incomplete_targets"], 1);
+        assert_eq!(
+            compact["results"][0]["target_id"],
+            "11111111-1111-1111-1111-111111111111"
+        );
         assert_eq!(nested["matches_count"], 1);
+        assert_eq!(nested["matches_found"], 1);
         assert_eq!(nested["request_limited"], true);
         assert_eq!(nested["max_requests"], 2000);
         assert_eq!(nested["queue_completed"], false);
+        assert_eq!(nested["checkpoint_resumed"], true);
+        assert_eq!(nested["checkpoint_persisted"], true);
+        assert_eq!(nested["retry"]["recommended"], true);
         assert!(nested.get("matches").is_none());
+    }
+
+    #[test]
+    fn route_probe_model_compactor_keeps_all_targets_below_transcript_limit() {
+        let large = "x".repeat(100_000);
+        let results = (0..MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS)
+            .map(|index| {
+                serde_json::json!({
+                    "target_id": format!("00000000-0000-0000-0000-{index:012}"),
+                    "base_url": format!("https://host-{index}.example.test:443/"),
+                    "result": {
+                        "success": true,
+                        "base_url": format!("https://host-{index}.example.test:443/"),
+                        "status": "timeout_partial",
+                        "completion_state": "partial",
+                        "outcome": "partial",
+                        "outcome_persisted": true,
+                        "timed_out": true,
+                        "queue_completed": false,
+                        "queue_remaining": 25,
+                        "checkpoint_resumed": true,
+                        "checkpoint_resume_count": 2,
+                        "checkpoint_persisted": true,
+                        "checkpoint_pending_candidates": 25,
+                        "matches_found": 5,
+                        "rejected_count": 1_000,
+                        "matches": vec![serde_json::json!({"url": large, "body": large}); 100],
+                        "rejected_candidates": vec![serde_json::json!({"url": large, "reason": large}); 100],
+                        "errors": vec![serde_json::json!({"error": large}); 100],
+                        "prefixes_tested": vec![large.clone(); 100],
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let raw = serde_json::json!({
+            "batch": true,
+            "status": "incomplete_partial",
+            "count": MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
+            "processed": MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
+            "succeeded": MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
+            "terminal_completed": 0,
+            "incomplete_targets": MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
+            "failed": 0,
+            "results": results,
+            "errors": [],
+            "skipped": [],
+        });
+
+        let compact = model_visible_tool_result("route_probe_paths", &raw);
+        let encoded = serde_json::to_vec(&compact).expect("model summary serializes");
+
+        assert_eq!(
+            compact["results"].as_array().unwrap().len(),
+            MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS
+        );
+        assert!(compact["results"].as_array().unwrap().iter().all(|item| {
+            item.get("target_id").is_some()
+                && item.pointer("/result/completion_state") == Some(&serde_json::json!("partial"))
+                && item.pointer("/result/outcome_persisted") == Some(&serde_json::json!(true))
+                && item.pointer("/result/checkpoint_persisted") == Some(&serde_json::json!(true))
+        }));
+        assert!(
+            encoded.len() <= MAX_ROUTE_PROBE_MODEL_BATCH_BYTES,
+            "{} > {} bytes",
+            encoded.len(),
+            MAX_ROUTE_PROBE_MODEL_BATCH_BYTES
+        );
+    }
+
+    #[test]
+    fn route_probe_retry_reason_codes_remain_a_complete_string_array() {
+        let reason_codes = serde_json::json!([
+            "completion_incomplete",
+            "timed_out",
+            "request_limited",
+            "candidate_generation_limited",
+            "queue_incomplete",
+            "probe_errors",
+            "persistence_errors",
+            "checkpoint_error",
+            "authorization_drift",
+            "outcome_not_persisted"
+        ]);
+        let raw = serde_json::json!({
+            "batch": true,
+            "count": 1,
+            "succeeded": 1,
+            "failed": 0,
+            "results": [{
+                "target_id": "11111111-1111-1111-1111-111111111111",
+                "base_url": "https://example.test:443/",
+                "result": {
+                    "detail_contract": "bounded_batch_summary_v1",
+                    "status": "partial",
+                    "completion_state": "partial",
+                    "outcome": "partial",
+                    "outcome_persisted": false,
+                    "queue_completed": false,
+                    "retry": {
+                        "recommended": true,
+                        "reason_codes": reason_codes,
+                        "checkpoint_available": true,
+                        "queue_remaining": 17
+                    }
+                }
+            }],
+            "errors": [],
+            "skipped": []
+        });
+
+        let compact = model_visible_tool_result("route_probe_paths", &raw);
+
+        assert_eq!(
+            compact["results"][0]["result"]["retry"]["reason_codes"],
+            reason_codes
+        );
+        assert!(compact["results"][0]["result"]["retry"]["reason_codes"]
+            .as_array()
+            .is_some());
+    }
+
+    #[test]
+    fn browser_batch_model_visible_result_keeps_per_root_resume_diagnostics() {
+        let result = serde_json::json!({
+            "batch": true,
+            "input_count": 2,
+            "accepted": 2,
+            "succeeded": 2,
+            "failed": 0,
+            "results": [
+                {
+                    "target_id": "11111111-1111-1111-1111-111111111111",
+                    "target_url": "https://one.example:443/",
+                    "result": {
+                        "status": "closure_partial",
+                        "completion_state": "partial",
+                        "closure_complete": false,
+                        "closure_incomplete_reasons": ["page_queue_remaining"],
+                        "page_queue_remaining": 7,
+                        "page_resume_applied": true,
+                        "page_resume_count": 2,
+                        "page_resume_prior_visited": 100,
+                        "pages_visited_this_run": ["https://one.example:443/a"],
+                        "js_outcome": "partial",
+                        "jsapi_outcome": "partial",
+                        "param_outcome": "partial",
+                        "scripts": [{"url": "https://one.example:443/app.js", "body": "large"}]
+                    }
+                },
+                {
+                    "target_id": "22222222-2222-2222-2222-222222222222",
+                    "target_url": "https://two.example:443/",
+                    "result": {
+                        "status": "ok",
+                        "completion_state": "complete",
+                        "closure_complete": true,
+                        "closure_incomplete_reasons": [],
+                        "page_queue_remaining": 0,
+                        "page_resume_applied": false,
+                        "page_resume_count": 0,
+                        "pages_visited_this_run": ["https://two.example:443/"],
+                        "js_outcome": "empty",
+                        "jsapi_outcome": "empty",
+                        "param_outcome": "empty"
+                    }
+                }
+            ],
+            "errors": [],
+            "omissions": []
+        });
+
+        let compact = model_visible_tool_result("browser_collect_js_api", &result);
+        let roots = compact["root_diagnostics"].as_array().unwrap();
+
+        assert_eq!(roots.len(), 2);
+        assert_eq!(
+            roots[0]["target_id"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(roots[0]["completion_state"], "partial");
+        assert_eq!(
+            roots[0]["closure_incomplete_reasons"],
+            serde_json::json!(["page_queue_remaining"])
+        );
+        assert_eq!(roots[0]["page_queue_remaining"], 7);
+        assert_eq!(roots[0]["page_resume_applied"], true);
+        assert_eq!(roots[0]["page_resume_count"], 2);
+        assert_eq!(roots[0]["pages_visited_this_run_count"], 1);
+        assert_eq!(roots[1]["completion_state"], "complete");
+        assert!(roots[0].get("scripts").is_none());
+        assert!(roots[0].get("scripts_sample").is_none());
+        assert!(roots[0].get("api_requests_sample").is_none());
+        assert!(compact.get("results").is_none());
+    }
+
+    #[test]
+    fn js_extract_batch_model_visible_result_keeps_per_root_counts_and_outcomes() {
+        let result = serde_json::json!({
+            "batch": true,
+            "input_count": 2,
+            "accepted": 2,
+            "succeeded": 2,
+            "failed": 0,
+            "jsapi_found_targets": 1,
+            "param_found_targets": 1,
+            "result_contract": "bounded_batch_summary_v1",
+            "per_target_result_max_bytes": 8192,
+            "results": [
+                {
+                    "target_id": "11111111-1111-1111-1111-111111111111",
+                    "target_url": "https://one.example:443/",
+                    "result": {
+                        "detail_contract": "bounded_batch_summary_v1",
+                        "status": "ok",
+                        "completion_state": "complete",
+                        "endpoints_total": 321,
+                        "endpoints_unique": 300,
+                        "rule_matches_total": 900,
+                        "hae_route_candidates_total": 700,
+                        "persisted_endpoint_rows": 300,
+                        "jsapi_outcome": "found",
+                        "outcome_persisted": true,
+                        "param_endpoints": 22,
+                        "param_outcome": "found",
+                        "param_outcome_persisted": true,
+                        "endpoints_sample": [{"method": "GET", "path": "/api/users"}],
+                        "retry": {"recommended": false, "reason_codes": []}
+                    }
+                },
+                {
+                    "target_id": "22222222-2222-2222-2222-222222222222",
+                    "target_url": "https://two.example:443/",
+                    "result": {
+                        "detail_contract": "bounded_batch_summary_v1",
+                        "status": "partial",
+                        "completion_state": "partial",
+                        "endpoints_total": 0,
+                        "endpoints_unique": 0,
+                        "jsapi_outcome": "partial",
+                        "outcome_persisted": true,
+                        "param_endpoints": 0,
+                        "param_outcome": "partial",
+                        "param_outcome_persisted": true,
+                        "retry": {"recommended": true, "reason_codes": ["read_errors"]},
+                        "read_errors_detail_count": 1,
+                        "read_errors_sample": ["one source could not be read"]
+                    }
+                }
+            ],
+            "errors": [],
+            "omissions": []
+        });
+
+        let compact = model_visible_tool_result("js_extract_apis", &result);
+        let roots = compact["root_diagnostics"].as_array().unwrap();
+
+        assert_eq!(roots.len(), 2);
+        assert_eq!(
+            roots[0]["target_id"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(roots[0]["endpoints_count"], 321);
+        assert_eq!(roots[0]["jsapi_outcome"], "found");
+        assert_eq!(roots[0]["outcome_persisted"], true);
+        assert_eq!(roots[0]["param_endpoints"], 22);
+        assert_eq!(roots[1]["completion_state"], "partial");
+        assert_eq!(roots[1]["retry"]["recommended"], true);
+        assert_eq!(roots[1]["read_errors_detail_count"], 1);
+        assert_eq!(
+            roots[1]["partial_diagnostics"]["read_errors_sample"],
+            serde_json::json!(["one source could not be read"])
+        );
+        assert_eq!(compact["result_contract"], "bounded_batch_summary_v1");
+        assert_eq!(compact["per_target_result_max_bytes"], 8192);
+        assert!(compact.get("results").is_none());
+    }
+
+    #[test]
+    fn js_extract_batch_model_visible_result_keeps_all_fifty_failed_roots() {
+        let errors = (0..50)
+            .map(|index| {
+                serde_json::json!({
+                    "target_id": format!("00000000-0000-0000-0000-{index:012}"),
+                    "target_url": format!("https://failed-{index}.example.test:443/"),
+                    "error": format!("read failed for root {index}"),
+                    "outcome_marker": {
+                        "jsapi": true,
+                        "param": true
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let raw = serde_json::json!({
+            "batch": true,
+            "input_count": 50,
+            "accepted": 50,
+            "rejected": 0,
+            "truncated": 0,
+            "skipped": 0,
+            "count": 50,
+            "succeeded": 0,
+            "failed": 50,
+            "jsapi_found_targets": 0,
+            "param_found_targets": 0,
+            "result_contract": "bounded_batch_summary_v1",
+            "per_target_result_max_bytes": 8192,
+            "results": [],
+            "errors": errors,
+            "omissions": []
+        });
+
+        let compact = model_visible_tool_result("js_extract_apis", &raw);
+        let roots = compact["root_diagnostics"].as_array().unwrap();
+
+        assert_eq!(roots.len(), 50);
+        assert_eq!(roots[0]["completion_state"], "error");
+        assert_eq!(
+            roots[49]["target_id"],
+            "00000000-0000-0000-0000-000000000049"
+        );
+        assert_eq!(roots[49]["retry"]["recommended"], true);
+        assert_eq!(roots[49]["outcome_marker"]["jsapi"], true);
     }
 
     #[test]
@@ -2044,6 +3682,85 @@ mod tests {
         let compact = model_visible_tool_result("some_small_tool", &result);
 
         assert_eq!(compact, result);
+    }
+
+    #[test]
+    fn stage_preflight_compaction_preserves_exact_origin_page_and_submit_contract() {
+        let coverage_to_submit = (0..32)
+            .map(|index| {
+                serde_json::json!({
+                    "asset": format!("https://blocked-{index}.example.com:443"),
+                    "technique": "GOLISH-ENUM-DIR",
+                    "status": "blocked",
+                    "note": format!("same-environment timeout for exact origin {index}")
+                })
+            })
+            .collect::<Vec<_>>();
+        let items = (0..200)
+            .map(|index| {
+                serde_json::json!({
+                    "work_item_id": format!("item-{index}"),
+                    "target_id": format!("target-{index}"),
+                    "asset": format!("https://host-{index}.example.com:443"),
+                    "technique": "GOLISH-ENUM-DIR",
+                    "state": "pending",
+                    "root_url": format!("https://host-{index}.example.com:443/"),
+                    "padding_not_for_model": "x".repeat(500)
+                })
+            })
+            .collect::<Vec<_>>();
+        let result = serde_json::json!({
+            "tool": "stage_worklist_next",
+            "stage": "enumeration",
+            "ready_to_submit": false,
+            "root_limit": 50,
+            "root_count": 50,
+            "matching_root_count": 60,
+            "omitted_root_count": 10,
+            "items": items,
+            "terminal_exceptions_preview": {
+                "preview_only": true,
+                "persisted": false,
+                "accepted_cells": 32,
+                "coverage_to_submit": coverage_to_submit,
+                "contract": "copy unchanged"
+            }
+        });
+
+        for tool_name in [
+            "stage_worklist_status",
+            "stage_worklist_next",
+            "check_stage_asset_coverage",
+        ] {
+            let compact = model_visible_tool_result(tool_name, &result);
+            assert_eq!(compact["model_visible_compacted"], true);
+            assert_eq!(compact["raw_result_retained_in_transcript"], true);
+            assert_eq!(compact["root_count"], 50);
+            assert_eq!(compact["omitted_root_count"], 10);
+            assert!(compact.get("items").is_none());
+            assert_eq!(compact["exact_origin_page"].as_array().unwrap().len(), 50);
+            assert_eq!(compact["exact_origin_page"][0]["target_id"], "target-0");
+            assert_eq!(
+                compact["exact_origin_page"][49]["target_url"],
+                "https://host-49.example.com:443"
+            );
+            assert_eq!(
+                compact["exact_origin_page"][49]["unfinished_techniques"][0]["technique"],
+                "GOLISH-ENUM-DIR"
+            );
+            assert!(serde_json::to_vec(&compact).unwrap().len() < 32 * 1024);
+            assert_eq!(
+                compact["terminal_exceptions_preview"]["coverage_to_submit"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                32
+            );
+            assert_eq!(
+                compact["terminal_exceptions_preview"]["coverage_to_submit"],
+                result["terminal_exceptions_preview"]["coverage_to_submit"]
+            );
+        }
     }
 
     #[test]
@@ -2087,6 +3804,24 @@ mod tests {
             "naabu -list /tmp/targets -top-ports 1000 -s c -silent"
         );
         assert_eq!(payload.stdout, "192.0.2.10:80");
+    }
+
+    #[test]
+    fn self_landed_eas_wrapper_skips_generic_structured_storage_hook() {
+        let payload = structured_storage_hook_payload(
+            "eas_discover_ports",
+            &serde_json::json!({"targets": ["192.0.2.10"]}),
+            &serde_json::json!({
+                "wrapped_tool_name": "naabu",
+                "wrapped_args": "-list {input_file} -silent",
+                "stdout": "192.0.2.10:80",
+                "exit_code": 0,
+                "structured_storage_disabled": true,
+                "generic_evidence_disabled": true
+            }),
+            true,
+        );
+        assert!(payload.is_none());
     }
 
     #[test]
@@ -2282,6 +4017,7 @@ mod tests {
         assert!(mode.block_result("list_recent_evidence").is_none());
         assert!(mode.allows("eas_probe_http_liveness"));
         assert!(mode.allows("eas_fingerprint_services"));
+        assert!(mode.allows("eas_fingerprint_web_stack"));
         assert!(mode
             .block_result_with_args(
                 "eas_probe_http_liveness",
@@ -2304,13 +4040,20 @@ mod tests {
             .block_result("subfinder")
             .expect("unknown fresh discovery tool remains blocked");
         assert_eq!(blocked["repair_kind"], "coverage_gap");
+        let projection = blocked["coverage_gap_actions"]
+            .as_object()
+            .expect("bounded action projection included in block payload");
+        assert_eq!(projection.get("total"), Some(&serde_json::json!(2)));
+        assert_eq!(projection.get("sample_count"), Some(&serde_json::json!(2)));
+        assert_eq!(projection.get("omitted"), Some(&serde_json::json!(0)));
         assert_eq!(
-            blocked["coverage_gap_actions"]
-                .as_array()
-                .expect("actions included in block payload")
-                .len(),
-            2
+            projection.get("next_page_tool"),
+            Some(&serde_json::json!("stage_worklist_next"))
         );
+        assert!(projection
+            .get("stable_hash")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty()));
         assert!(blocked["error"]
             .as_str()
             .unwrap()
@@ -2398,7 +4141,7 @@ mod tests {
         assert!(mode.block_result("list_enumeration_web_roots").is_none());
         assert!(mode.block_result("list_recent_evidence").is_none());
         assert!(mode.allows("browser_collect_js_api"));
-        assert!(mode.allows("js_collect"));
+        assert!(!mode.allows("js_collect"));
         assert!(mode.allows("js_extract_apis"));
         assert!(mode.allows("route_probe_paths"));
         assert!(mode
@@ -2659,6 +4402,36 @@ mod tests {
     }
 
     #[test]
+    fn coverage_gap_repair_allows_eas_web_wrapper_from_technique_without_hint() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: web fingerprint never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "https://app.example.com",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "reason": "missing_terminal_coverage"
+            }]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        assert!(mode.allows("eas_fingerprint_web_stack"));
+        assert!(mode
+            .block_result_with_args(
+                "eas_fingerprint_web_stack",
+                &serde_json::json!({
+                    "target_urls": ["https://app.example.com"]
+                }),
+            )
+            .is_none());
+        assert!(mode.block_result("whatweb").is_some());
+        assert!(mode.block_result("pentest_run").is_some());
+    }
+
+    #[test]
     fn coverage_gap_repair_blocks_raw_pentest_run_for_eas_actions() {
         let v = serde_json::json!({
             "status": "needs_fix",
@@ -2838,6 +4611,37 @@ mod tests {
         assert!(note.contains("targeted stage-allowed probes"));
         assert!(!note.contains("Do NOT launch more scans"));
         assert!(v.get("runtime_correction").is_some());
+    }
+
+    #[test]
+    fn submit_needs_fix_runtime_correction_reuses_bounded_recovery_projection() {
+        let actions = (0..1_176)
+            .map(|index| {
+                serde_json::json!({
+                    "asset": format!("https://root-{index:04}.example:443"),
+                    "technique": "GOLISH-ENUM-DIR",
+                    "reason": "missing_terminal_coverage",
+                    "suggested_tools": ["route_probe_paths"]
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut value = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["enumeration coverage cells remain unfinished"],
+            "coverage_gap_actions": actions,
+        });
+
+        let note = submit_needs_fix_runtime_correction("submit_stage_deliverable", &mut value)
+            .expect("coverage needs_fix should produce a correction");
+
+        assert!(note.contains("Recovery actions: total=1176"));
+        assert!(note.contains("stable_hash="));
+        assert!(note.contains("stage_worklist_next"));
+        assert!(note.contains("root-0019.example"));
+        assert!(!note.contains("root-0020.example"));
+        assert!(!note.contains("root-1175.example"));
+        assert!(note.len() <= 40 * 1024);
+        assert_eq!(value["runtime_correction"], serde_json::json!(note));
     }
 
     #[test]
