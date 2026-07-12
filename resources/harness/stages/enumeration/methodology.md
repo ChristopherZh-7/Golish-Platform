@@ -15,6 +15,14 @@ become the coverage denominator for `vuln_triage`.
    target list when the worklist already named gaps. `terminal_exceptions` is a
    deprecated compatibility input: omit it or pass `[]`; any non-empty array is
    rejected and cannot turn pending work into terminal truth.
+   Worklist construction already removes an exact `(target_id, canonical origin)`
+   only when the same operation carries both three guarded same-class WhatWeb
+   failures and a separately guarded fixed-transport failure from EAS. The
+   response exposes these as `eas_transport_excluded_origins` diagnostics. A
+   WhatWeb-only blocker, a model-authored note, malformed/stale evidence, or a
+   failure belonging to another target/origin cannot remove work. The durable
+   target and open-port facts remain unchanged, and sibling Host/SNI origins stay
+   eligible.
 2. Run the trusted transport preflight once for the distinct roots on this page:
    `enum_preflight_web_origins(origins=[{target_id,target_url}, ...])`. The
    backend performs fixed-timeout HEAD then only-if-needed GET Range requests,

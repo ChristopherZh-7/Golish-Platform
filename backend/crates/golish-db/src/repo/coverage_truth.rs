@@ -162,14 +162,24 @@ fn build_in_scope_values_sql(join: &str, filter: &str, window: Option<&str>) -> 
 }
 
 /// 该 org 下 scope='in' 的 target 中，哪些 `value` 真有 `asset_type='subdomain'` 子资产行。
-/// `apply_window` (Phase B, freshness_window on) ⇒ 只数本次 stage-run 期间发现的子域
-/// 子资产行（`target_assets.discovered_at >= $2`）。
+/// `apply_window` (Phase B, freshness_window on) ⇒ 只数本次 stage-run 期间首次发现
+/// 或重新观察的子域资产行。
 fn build_subdomain_target_values_sql(apply_window: bool) -> String {
     build_in_scope_values_sql(
         "JOIN target_assets ta ON ta.target_id = t.id",
         "AND ta.project_path IS NOT DISTINCT FROM t.project_path
-         AND ta.asset_type = 'subdomain'",
-        apply_window.then_some("ta.discovered_at"),
+         AND ta.asset_type = 'subdomain'
+         AND EXISTS (
+           SELECT 1
+           FROM targets child
+           WHERE child.organization_id = t.organization_id
+             AND child.project_path IS NOT DISTINCT FROM t.project_path
+             AND child.scope::text = 'in'
+             AND child.target_type::text = 'domain'
+             AND lower(trim(trailing '.' FROM child.value)) =
+                 lower(trim(trailing '.' FROM ta.value))
+         )",
+        apply_window.then_some("GREATEST(ta.discovered_at, ta.updated_at)"),
     )
 }
 
@@ -372,22 +382,6 @@ fn fresh_ports_sql(alias: &str, apply_window: bool) -> String {
     }
 }
 
-fn real_ip_fresh_ports_exists_sql(apply_window: bool) -> String {
-    format!(
-        "EXISTS (
-            SELECT 1
-              FROM targets ip
-             WHERE t.real_ip <> ''
-               AND ip.value = t.real_ip
-               AND ip.scope::text = 'in'
-               AND ($1 IS NULL OR ip.organization_id = $1)
-               AND ip.target_type::text IN {IP_TYPE_IN_LIST}
-               AND {fresh_ports}
-        )",
-        fresh_ports = fresh_ports_sql("ip", apply_window)
-    )
-}
-
 fn fingerprint_exists_sql(alias: &str, apply_window: bool) -> String {
     if apply_window {
         format!(
@@ -443,22 +437,6 @@ fn service_from_ports_sql(alias: &str, apply_window: bool) -> String {
     )
 }
 
-fn real_ip_service_exists_sql(apply_window: bool) -> String {
-    format!(
-        "EXISTS (
-            SELECT 1
-              FROM targets ip
-             WHERE t.real_ip <> ''
-               AND ip.value = t.real_ip
-               AND ip.scope::text = 'in'
-               AND ($1 IS NULL OR ip.organization_id = $1)
-               AND ip.target_type::text IN {IP_TYPE_IN_LIST}
-               AND {service_from_ports}
-        )",
-        service_from_ports = service_from_ports_sql("ip", apply_window)
-    )
-}
-
 fn only_dns_port_without_service_surface_sql(alias: &str, apply_window: bool) -> String {
     let ports = ports_array_expr(alias);
     let fresh_ports = fresh_ports_sql(alias, apply_window);
@@ -486,22 +464,21 @@ fn only_dns_port_without_service_surface_sql(alias: &str, apply_window: bool) ->
     )
 }
 
-/// EAS-LIVENESS：httpx 探活/解析 IP（`http_status` 非空或 `real_ip` 非空）；
-/// 端口扫描得到新鲜端口也证明 host 存活。Phase D：`apply_window` ⇒ 只数本次
-/// stage-run 探的活性（`t.liveness_checked_at` / `t.ports_scanned_at >= $2`）。
+/// EAS-LIVENESS：httpx 响应、nmap explicit `Host is up`, or an open port proves
+/// host liveness; passive `real_ip` cache never participates. Phase D:
+/// `apply_window` only consumes this stage-run's liveness/port timestamps.
 fn build_liveness_values_sql(apply_window: bool) -> String {
     let filter = if apply_window {
         format!(
-            "AND (((t.http_status IS NOT NULL OR t.real_ip <> '') AND t.liveness_checked_at >= $2) \
-              OR {fresh_ports} OR {real_ip_ports})",
+            "AND (((t.http_status IS NOT NULL OR t.liveness_state = 'alive') \
+                    AND t.liveness_checked_at >= $2) \
+              OR {fresh_ports})",
             fresh_ports = fresh_ports_sql("t", true),
-            real_ip_ports = real_ip_fresh_ports_exists_sql(true)
         )
     } else {
         format!(
-            "AND (t.http_status IS NOT NULL OR t.real_ip <> '' OR {fresh_ports} OR {real_ip_ports})",
+            "AND (t.http_status IS NOT NULL OR t.liveness_state = 'alive' OR {fresh_ports})",
             fresh_ports = fresh_ports_sql("t", false),
-            real_ip_ports = real_ip_fresh_ports_exists_sql(false)
         )
     };
     build_in_scope_values_sql("", &filter, None)
@@ -563,11 +540,10 @@ fn build_eas_web_capable_values_sql(apply_window: bool) -> String {
 /// 'array'` + 比较式（不裸调 `jsonb_array_length`，否则非数组 `ports` 会抛
 /// `cannot get array length of a non-array`），与 `engagement_truth` 同款守卫。
 fn build_port_values_sql(apply_window: bool) -> String {
-    let filter = format!(
-        "AND ({fresh_ports} OR {real_ip_ports})",
-        fresh_ports = fresh_ports_sql("t", apply_window),
-        real_ip_ports = real_ip_fresh_ports_exists_sql(apply_window)
-    );
+    // PORT belongs to the concrete target row that was scanned. `real_ip` is a
+    // passive convenience cache for domain→IP display and must never project an
+    // IP target's active result onto another domain/URL identity.
+    let filter = format!("AND {}", fresh_ports_sql("t", apply_window));
     build_in_scope_values_sql("", &filter, None)
 }
 
@@ -583,12 +559,9 @@ fn build_port_values_sql(apply_window: bool) -> String {
 ///（`t.ports_scanned_at >= $2` / `f.detected_at >= $2`）。
 fn build_service_fp_values_sql(apply_window: bool) -> String {
     let ports_clause = service_from_ports_sql("t", apply_window);
-    let real_ip_service = real_ip_service_exists_sql(apply_window);
-    build_in_scope_values_sql(
-        "",
-        &format!("AND ({ports_clause} OR {real_ip_service})"),
-        None,
-    )
+    // SERVICE is likewise target+port identity, never a relation-cache
+    // projection through `targets.real_ip`.
+    build_in_scope_values_sql("", &format!("AND {ports_clause}"), None)
 }
 
 /// EAS-WEB-FINGERPRINT：WhatWeb web-origin stack facts. This is deliberately
@@ -1237,6 +1210,12 @@ mod tests {
         assert!(sql.contains("ta.asset_type = 'subdomain'"));
         assert!(sql.contains("JOIN target_assets ta ON ta.target_id = t.id"));
         assert!(sql.contains("ta.project_path IS NOT DISTINCT FROM t.project_path"));
+        assert!(sql.contains("FROM targets child"));
+        assert!(sql.contains("child.organization_id = t.organization_id"));
+        assert!(sql.contains("child.project_path IS NOT DISTINCT FROM t.project_path"));
+        assert!(sql.contains("child.scope::text = 'in'"));
+        assert!(sql.contains("child.target_type::text = 'domain'"));
+        assert!(sql.contains("trim(trailing '.' FROM ta.value)"));
     }
 
     #[test]
@@ -1252,14 +1231,14 @@ mod tests {
     }
 
     #[test]
-    fn subdomain_sql_on_windows_target_assets_discovered_at() {
+    fn subdomain_sql_on_windows_target_assets_latest_observation() {
         // freshness_window ON (Phase B, design 2026-06-22 §3.3): the SUBDOMAIN
         // dimension only counts in-scope targets whose subdomain child rows were
         // discovered this stage-run (`target_assets.discovered_at >= $2`).
         let sql = build_subdomain_target_values_sql(true);
         assert!(
-            sql.contains("ta.discovered_at >= $2"),
-            "on must window target_assets.discovered_at: {sql}"
+            sql.contains("GREATEST(ta.discovered_at, ta.updated_at) >= $2"),
+            "on must window the latest target_assets observation: {sql}"
         );
         // windowing is additive — scope/org/asset_type predicates survive.
         assert!(sql.contains("ta.asset_type = 'subdomain'"));
@@ -1288,11 +1267,23 @@ mod tests {
     #[test]
     fn active_dimension_sqls_target_the_right_tables() {
         let live = build_liveness_values_sql(false);
-        assert!(live.contains("t.http_status IS NOT NULL OR t.real_ip"));
+        assert!(live.contains("t.http_status IS NOT NULL"));
+        assert!(
+            !live.contains("t.http_status IS NOT NULL OR t.real_ip"),
+            "passive real_ip cache must not close EAS liveness: {live}"
+        );
         assert!(live.contains("jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb"));
         assert!(build_port_values_sql(false)
             .contains("jsonb_typeof(t.ports) = 'array' AND t.ports <> '[]'::jsonb"));
+        assert!(
+            !build_port_values_sql(false).contains("t.real_ip"),
+            "passive real_ip cache must not close another target's PORT cell"
+        );
         let service = build_service_fp_values_sql(false);
+        assert!(
+            !service.contains("t.real_ip"),
+            "passive real_ip cache must not close another target's SERVICE cell"
+        );
         assert!(service.contains("FROM fingerprints f"));
         assert!(service.contains("f.project_path IS NOT DISTINCT FROM t.project_path"));
         assert!(service.contains("lower(COALESCE(f.source, '')) = 'nmap'"));
@@ -1513,6 +1504,10 @@ mod tests {
         // SERVICE-FP/DIR/PARAM/JSAPI = existing child-table row timestamps.
         let live = build_liveness_values_sql(true);
         assert!(live.contains("t.liveness_checked_at >= $2"));
+        assert!(
+            live.contains("t.liveness_state = 'alive'"),
+            "an explicit nmap Host-is-up observation must corroborate LIVENESS without an open port"
+        );
         assert!(live.contains("t.ports_scanned_at >= $2"));
         assert!(build_port_values_sql(true).contains("t.ports_scanned_at >= $2"));
         assert!(build_ipwhois_values_sql(true).contains("t.ip_whois_collected_at >= $2"));

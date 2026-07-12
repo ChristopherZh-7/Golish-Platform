@@ -283,6 +283,11 @@ pub struct GateContext {
     /// needing the model to hand-copy a coverage row. Used for narrow EAS cases
     /// such as DNS-only real_ip rows where SERVICE-FINGERPRINT does not apply.
     pub not_applicable_coverage: Option<std::collections::HashSet<(String, String)>>,
+    /// Authoritative exact-origin EAS barrier. `Some(empty)` means the DB query
+    /// succeeded and proved there is no confirmed Web denominator; `None`
+    /// preserves compatibility for non-DB/test callers that did not load it.
+    pub eas_required_web_origins: Option<std::collections::HashSet<String>>,
+    pub eas_completed_web_origins: Option<std::collections::HashSet<String>>,
     pub expected_techniques: Option<Vec<String>>,
     /// PR3 (设计 2026-06-11-coverage-auto-derive §5.2) · 证据账本投影事实：
     /// 从 `audit_log` 三列 (`evidence_asset/technique/outcome`) 注入的只读三元组。
@@ -502,17 +507,21 @@ const ALL_TERMINAL: [CoverageStatus; 4] = [
 /// subdomains passively discovered + registered as `scope='in'` during a "no
 /// enumeration denominator" stage (target_intel) do not inflate the (asset ×
 /// technique) matrix — the root's own SUBDOMAIN cell already represents the
-/// enumeration. Pure (no IO). The leading dot in the `.{parent}` suffix check stops
-/// `ba.com` matching parent `a.com`. Maximal roots have no in-set parent so they
-/// always remain ⇒ a non-empty input never yields an empty output (so this filter
-/// can never trigger the empty-matrix BLOCK).
+/// enumeration. Wildcard anchors cover strict children but never their apex;
+/// wildcard candidates remain independent authorization patterns. Pure (no IO).
+/// Maximal roots have no in-set parent so they always remain ⇒ a non-empty input
+/// never yields an empty output (so this filter can never trigger the empty-matrix
+/// BLOCK).
 fn anchor_only_axis<'a>(assets: &[&'a str]) -> Vec<&'a str> {
     assets
         .iter()
         .copied()
         .filter(|a| {
             !assets.iter().any(|parent| {
-                *parent != *a && a.len() > parent.len() && a.ends_with(&format!(".{parent}"))
+                *parent != *a
+                    && crate::harness::technique_resolver::target_intel_anchor_covers_child(
+                        parent, a,
+                    )
             })
         })
         .collect()
@@ -627,6 +636,25 @@ fn coverage_join_asset_key(stage: StageKind, asset: &str) -> String {
     canon_asset(asset)
 }
 
+/// Evidence-side join key for one coverage technique.
+///
+/// EAS Web fingerprint producers are deliberately exact-origin keyed
+/// (`https://host:443`) while the current asset wave is target keyed (for
+/// example `host`).  The separate exact-origin barrier verifies that *every*
+/// confirmed scheme/host/port origin has a guarded current-run outcome.  The
+/// parent target's ordinary WEB cell therefore joins the completed origin back
+/// to its host identity; keeping the generic URL/port key here would leave the
+/// parent cell permanently pending even after that stricter barrier is
+/// satisfied.
+fn coverage_fact_join_asset_key(stage: StageKind, technique: &str, asset: &str) -> String {
+    if stage == StageKind::ExternalAttackSurface && technique == "GOLISH-EAS-WEB-FINGERPRINT" {
+        return golish_pentest_domain::canonical_asset_key(asset)
+            .map(|key| key.key)
+            .unwrap_or_else(|| canon_asset(asset));
+    }
+    coverage_join_asset_key(stage, asset)
+}
+
 /// `coverage_complete` 求值（纯函数，设计 §4.2 + Phase 2 ①③ seam）。期望技术取
 /// `ctx.expected_techniques`（③ 动态注入）否则 `spec.expected_techniques`（静态），空 →
 /// no-op Pass。资产维度取 `ctx.in_scope_assets`（① 权威注入）否则 deliverable.coverage
@@ -732,7 +760,8 @@ fn coverage_complete(
     let mut gaps: Vec<CoverageGapAction> = Vec::new();
     for asset in &assets {
         let class = if spec.host_aware_coverage {
-            crate::harness::technique_resolver::AssetClass::classify(
+            crate::harness::technique_resolver::classify_stage_asset(
+                spec.kind,
                 ctx.asset_types
                     .as_ref()
                     .and_then(|m| m.get(*asset))
@@ -792,18 +821,13 @@ fn coverage_complete(
             let has_fact = |want: EvidenceOutcome| {
                 ctx.evidence_facts.as_deref().is_some_and(|facts| {
                     facts.iter().any(|f| {
-                        coverage_join_asset_key(spec.kind, &f.asset) == asset_key
+                        coverage_fact_join_asset_key(spec.kind, tech, &f.asset)
+                            == coverage_fact_join_asset_key(spec.kind, tech, asset)
                             && f.technique == *tech
                             && f.outcome == want
                     })
                 })
             };
-            // Enumeration's `error_is_terminal=false` contract also uses Error as
-            // the current-run marker for `partial`. A current non-terminal marker
-            // outranks every deliverable-side assertion (including a noted
-            // blocked/not_applicable cell); only a later complete outcome upsert
-            // removes it.
-            let current_nonterminal_marker = !error_is_terminal && has_fact(EvidenceOutcome::Error);
             // P5 派生（D1/D2）：technique 标注且 subject == asset 的 claim/finding 视作
             // found（仅旧自报路径用；authoritative 模式下不再算 found）。
             let tagged_found = d.claims.iter().any(|c| {
@@ -840,11 +864,16 @@ fn coverage_complete(
                     cell_status(CoverageStatus::CheckedEmpty)
                         || (derive_from_evidence && has_fact(EvidenceOutcome::Empty))
                 };
-            // Enumeration's blocked state is also authoritative. It closes a
-            // cell only when a trusted current-run producer projected a real
-            // evidence-backed Blocked fact; a model-authored coverage row can
-            // never mint this fact or mirror it into truth.
-            let trusted_blocked_ok = spec.kind == StageKind::Enumeration
+            // Enumeration and the exact EAS Web transport terminal are
+            // producer-owned blocked states. They close a cell only when the
+            // trusted upstream projector emitted a current-run evidence-backed
+            // Blocked fact; a model-authored coverage row cannot mint or mirror
+            // either state into truth. Other EAS techniques retain their
+            // previous noted-cell contract.
+            let producer_owned_blocked = spec.kind == StageKind::Enumeration
+                || (spec.kind == StageKind::ExternalAttackSurface
+                    && tech == "GOLISH-EAS-WEB-FINGERPRINT");
+            let trusted_blocked_ok = producer_owned_blocked
                 && terminal.contains(&CoverageStatus::Blocked)
                 && derive_from_evidence
                 && has_fact(EvidenceOutcome::Blocked);
@@ -862,15 +891,40 @@ fn coverage_complete(
                 })
             };
             let other_ok = spec.kind != StageKind::Enumeration
-                && ((terminal.contains(&CoverageStatus::Blocked)
+                && ((!producer_owned_blocked
+                    && terminal.contains(&CoverageStatus::Blocked)
                     && cell_other_ok(CoverageStatus::Blocked))
                     || (terminal.contains(&CoverageStatus::NotApplicable)
                         && cell_other_ok(CoverageStatus::NotApplicable)));
+            let context_not_applicable_ok = terminal.contains(&CoverageStatus::NotApplicable)
+                && ctx.not_applicable_coverage.as_ref().is_some_and(|pairs| {
+                    pairs.contains(&(asset_key.clone(), tech.to_string()))
+                        || pairs.contains(&((*asset).to_string(), tech.to_string()))
+                });
+            // A provider error with an empty target is an org-wide marker for
+            // applicable rows, but it must not reopen a cell that the trusted
+            // backend context says is structurally inapplicable. Keep exact
+            // EvidenceOutcome::Error below as a fail-closed veto.
+            let source_nonterminal_marker = !context_not_applicable_ok
+                && ctx.source_queries.as_deref().is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        source_row_nonterminal_for_coverage(row, spec.kind, tech, &asset_key)
+                    })
+                });
+            // Any stage with `error_is_terminal=false` uses Error as the
+            // current-run marker for an execution error or `partial`. It vetoes
+            // found/empty truth until a later complete outcome overwrites it.
+            // Target Intel may still close a bounded unavailable source through
+            // its explicit noted blocked/N/A contract; Enumeration blocked is
+            // producer-owned, so its marker remains an unconditional veto.
+            let current_nonterminal_marker = !error_is_terminal
+                && (has_fact(EvidenceOutcome::Error) || source_nonterminal_marker)
+                && (spec.kind == StageKind::Enumeration || !other_ok);
 
             // T2（设计 2026-06-23-failure-outcome-not-checked-empty）：旧合同把
             // error 事实当作非 found 终态，避免无限重试。`error_is_terminal=false`
-            // 的 stage（当前仅 Enumeration）改为保持未完成，与 worklist 的 error
-            // 语义一致；其他 stage 通过缺省 true 保留旧行为。
+            // 的 stage（Target Intel / Enumeration）改为保持未完成，与各自
+            // retry/worklist 的 error 语义一致；其他 stage 通过缺省 true 保留旧行为。
             let error_ok = error_is_terminal
                 && derive_from_evidence
                 && has_fact(EvidenceOutcome::Error)
@@ -888,14 +942,8 @@ fn coverage_complete(
                 && derive_from_evidence
                 && ctx.source_queries.as_deref().is_some_and(|rows| {
                     rows.iter().any(|row| {
-                        source_row_terminal_for_coverage(row, tech, &asset_key, terminal)
+                        source_row_terminal_for_coverage(row, spec.kind, tech, &asset_key, terminal)
                     })
-                });
-
-            let context_not_applicable_ok = terminal.contains(&CoverageStatus::NotApplicable)
-                && ctx.not_applicable_coverage.as_ref().is_some_and(|pairs| {
-                    pairs.contains(&(asset_key.clone(), tech.to_string()))
-                        || pairs.contains(&((*asset).to_string(), tech.to_string()))
                 });
 
             if current_nonterminal_marker
@@ -1244,6 +1292,7 @@ fn provider_survey_covers_tech(row: &SourceQueryFact, tech: &str) -> bool {
 
 fn source_row_terminal_for_coverage(
     row: &SourceQueryFact,
+    stage: StageKind,
     tech: &str,
     asset_key: &str,
     terminal: &[CoverageStatus],
@@ -1252,33 +1301,65 @@ fn source_row_terminal_for_coverage(
         return false;
     }
 
+    // Provider-wide survey rows prove that `map_assets` was attempted, but do
+    // not prove any one technique was exhaustively empty/blocked. Only an
+    // explicitly technique-scoped source row may terminalize coverage; generic
+    // rows remain available to `source_coverage` as attempt evidence.
     let exact_technique = row.technique.as_deref() == Some(tech);
-    let provider_survey = row.technique.is_none() && provider_survey_covers_tech(row, tech);
-    if !exact_technique && !provider_survey {
+    if !exact_technique {
         return false;
     }
 
-    // Exact technique rows may be either org-wide (`target` empty) or asset-specific.
-    // Provider survey rows are org-wide by construction, so do not match their
-    // `target` field against each asset.
-    if exact_technique && !row.target.trim().is_empty() && canon_asset(&row.target) != asset_key {
+    // Exact technique rows may be either org-wide (`target` empty) or
+    // asset-specific. Wildcard expansion is executed against the base domain,
+    // but its one passive Target Intel responsibility belongs to `*.base`.
+    if !row.target.trim().is_empty()
+        && !source_target_matches_coverage_asset(stage, tech, &row.target, asset_key)
+    {
         return false;
     }
 
     match row.status.as_str() {
         "empty" | "checked_empty" => terminal.contains(&CoverageStatus::CheckedEmpty),
         "blocked" => terminal.contains(&CoverageStatus::Blocked),
-        "found" if provider_survey => terminal.contains(&CoverageStatus::CheckedEmpty),
-        // A source error is terminal for loop-breaking purposes, but it remains
-        // non-found. Accept either blocked or checked_empty terminal sets because
-        // older gate rules used checked_empty as the only non-found terminal.
-        "error" => {
-            terminal.contains(&CoverageStatus::Blocked)
-                || terminal.contains(&CoverageStatus::CheckedEmpty)
-        }
-        "found" => false,
+        // Source rows prove that a provider was attempted; they do not invent
+        // coverage facts. A generic provider survey that found *something*
+        // cannot close every provider-backed technique as checked-empty, and a
+        // transport/runtime error is neither checked-empty nor an explicit
+        // noted block.
+        "found" | "error" => false,
         _ => false,
     }
+}
+
+fn source_row_nonterminal_for_coverage(
+    row: &SourceQueryFact,
+    stage: StageKind,
+    tech: &str,
+    asset_key: &str,
+) -> bool {
+    if !matches!(row.status.as_str(), "error" | "partial" | "running")
+        || row.technique.as_deref() != Some(tech)
+    {
+        return false;
+    }
+    row.target.trim().is_empty()
+        || source_target_matches_coverage_asset(stage, tech, &row.target, asset_key)
+}
+
+fn source_target_matches_coverage_asset(
+    stage: StageKind,
+    tech: &str,
+    source_target: &str,
+    asset_key: &str,
+) -> bool {
+    let source_key = canon_asset(source_target);
+    if source_key == asset_key {
+        return true;
+    }
+    stage == StageKind::TargetIntel
+        && tech == "GOLISH-INTEL-SUBDOMAIN"
+        && asset_key.strip_prefix("*.") == Some(source_key.as_str())
 }
 
 enum ItemRef<'a> {
@@ -1877,6 +1958,72 @@ mod tests {
     }
 
     #[test]
+    fn eas_exact_origin_web_fact_closes_its_parent_target_web_cell() {
+        let technique = "GOLISH-EAS-WEB-FINGERPRINT";
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["moresec.cn".to_string()]),
+            asset_types: Some(std::collections::HashMap::from([(
+                "moresec.cn".to_string(),
+                "domain".to_string(),
+            )])),
+            expected_techniques: Some(vec![technique.to_string()]),
+            evidence_facts: Some(vec![fact(
+                "https://moresec.cn:443",
+                technique,
+                EvidenceOutcome::Found,
+                13,
+            )]),
+            source_queries: None,
+            web_capable_assets: Some(std::collections::HashSet::from(["moresec.cn".to_string()])),
+            not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
+        };
+        let spec = host_aware_spec("external_attack_surface", "external_attack_surface", true);
+        let outcomes = eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &spec,
+            &[evidence_derive_rule(None)],
+            &ctx,
+        );
+
+        assert!(outcomes[0].is_pass());
+    }
+
+    #[test]
+    fn eas_exact_origin_web_fact_cannot_close_a_different_hostname() {
+        let technique = "GOLISH-EAS-WEB-FINGERPRINT";
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["moresec.cn".to_string()]),
+            asset_types: Some(std::collections::HashMap::from([(
+                "moresec.cn".to_string(),
+                "domain".to_string(),
+            )])),
+            expected_techniques: Some(vec![technique.to_string()]),
+            evidence_facts: Some(vec![fact(
+                "https://www.moresec.cn:443",
+                technique,
+                EvidenceOutcome::Found,
+                13,
+            )]),
+            source_queries: None,
+            web_capable_assets: Some(std::collections::HashSet::from(["moresec.cn".to_string()])),
+            not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
+        };
+        let spec = host_aware_spec("external_attack_surface", "external_attack_surface", true);
+        let outcomes = eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &spec,
+            &[evidence_derive_rule(None)],
+            &ctx,
+        );
+
+        assert!(!outcomes[0].is_pass());
+    }
+
+    #[test]
     fn coverage_complete_bad_terminal_status_fails_closed() {
         // status 写错值（不在闭合枚举）→ serde 解析报错。
         assert!(serde_json::from_str::<GateRule>(
@@ -1917,6 +2064,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         }
     }
 
@@ -1973,6 +2122,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         let rule = coverage_complete_rule();
 
@@ -2005,6 +2156,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         // 只覆盖了 a，没覆盖 b → 两个都在轴里时必 BLOCK（证明 b 没被剔除）。
         let d = deliverable_with_coverage(vec![cov_cell(
@@ -2018,6 +2171,24 @@ mod tests {
         assert!(
             !eval_with_context(&d, &spec_on, &[rule], &ctx)[0].is_pass(),
             "siblings with no in-axis parent are all kept → b.pa18.com still required → BLOCK"
+        );
+    }
+
+    #[test]
+    fn wildcard_anchor_drops_only_promoted_strict_children() {
+        assert_eq!(
+            anchor_only_axis(&["*.moresec.cn", "app.moresec.cn"]),
+            vec!["*.moresec.cn"]
+        );
+        assert_eq!(
+            anchor_only_axis(&["*.moresec.cn", "moresec.cn"]),
+            vec!["*.moresec.cn", "moresec.cn"],
+            "wildcard authorization must not absorb its apex"
+        );
+        assert_eq!(
+            anchor_only_axis(&["*.moresec.cn", "app.vendor.net"]),
+            vec!["*.moresec.cn", "app.vendor.net"],
+            "unrelated siblings remain independent anchors"
         );
     }
 
@@ -2053,6 +2224,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -2116,6 +2289,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -2131,6 +2306,42 @@ mod tests {
         assert!(
             eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &ctx)[0].is_pass(),
             "host-aware on: URL endpoint no longer asked for PORT/SERVICE-FINGERPRINT → PASS"
+        );
+    }
+
+    #[test]
+    fn host_aware_eas_keeps_authoritative_ip_origin_url_off_port_service_axis() {
+        let asset = "http://127.0.0.1:54537";
+        let techs = [
+            "GOLISH-EAS-LIVENESS",
+            "GOLISH-EAS-PORT",
+            "GOLISH-EAS-SERVICE-FINGERPRINT",
+        ];
+        let ctx = GateContext {
+            in_scope_assets: Some(vec![asset.to_string()]),
+            asset_types: Some(std::collections::HashMap::from([(
+                asset.to_string(),
+                "url".to_string(),
+            )])),
+            expected_techniques: Some(techs.iter().map(|tech| (*tech).to_string()).collect()),
+            evidence_facts: Some(vec![fact(
+                asset,
+                "GOLISH-EAS-LIVENESS",
+                EvidenceOutcome::Found,
+                1,
+            )]),
+            ..GateContext::default()
+        };
+
+        assert!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &host_aware_spec("external_attack_surface", "external_attack_surface", true),
+                &[evidence_derive_rule(None)],
+                &ctx,
+            )[0]
+            .is_pass(),
+            "an authoritative URL target must not inherit the IP host PORT/SERVICE axis"
         );
     }
 
@@ -2157,6 +2368,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -2196,6 +2409,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: Some(web_capable_assets.clone()),
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         let d = deliverable_with_coverage(vec![]);
         let spec_on = host_aware_spec("enumeration", "enumeration", true);
@@ -2220,6 +2435,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: Some(web_capable_assets),
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         assert!(
             eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &covered_ip_ctx)[0]
@@ -2260,6 +2477,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         let d = deliverable_with_coverage(vec![]);
         // host-aware ON：权威类型=域名 ⇒ 核全 6，缺 3 → BLOCK（若只按 from_value 会判 IP 而 PASS）。
@@ -2832,6 +3051,62 @@ mod tests {
     }
 
     #[test]
+    fn intel_provider_error_requires_but_does_not_override_explicit_noted_block() {
+        let tech = "GOLISH-INTEL-OSINT";
+        let d = deliverable_with_coverage(vec![cov_cell_noted(
+            "a.com",
+            tech,
+            CoverageStatus::Blocked,
+            "provider transport failed after the bounded attempt",
+        )]);
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec![tech.to_string()]),
+            evidence_facts: Some(vec![fact("a.com", tech, EvidenceOutcome::Error, 7)]),
+            ..Default::default()
+        };
+        let rule = parse(
+            r#"{ "op":"coverage_complete","derive_from_evidence":true,
+                 "require_note_for_other":true,"error_is_terminal":false,
+                 "on_fail":{"reason":"coverage incomplete"} }"#,
+        );
+
+        assert!(
+            eval_with_context(&d, &target_intel_spec(false), &[rule], &ctx)[0].is_pass(),
+            "a real error is not checked-empty, but a separate explicit blocked+note must close the bounded unavailable source"
+        );
+    }
+
+    #[test]
+    fn intel_partial_marker_vetoes_business_found_until_retry_completes() {
+        let tech = "GOLISH-INTEL-DNS";
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec![tech.to_string()]),
+            evidence_facts: Some(vec![
+                fact("a.com", tech, EvidenceOutcome::Found, 0),
+                fact("a.com", tech, EvidenceOutcome::Error, 7),
+            ]),
+            ..Default::default()
+        };
+        let rule = parse(
+            r#"{ "op":"coverage_complete","derive_from_evidence":true,
+                 "authoritative_found":true,"error_is_terminal":false,
+                 "on_fail":{"reason":"coverage incomplete"} }"#,
+        );
+
+        assert!(matches!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &target_intel_spec(false),
+                &[rule],
+                &ctx
+            )[0],
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
     fn require_note_for_other_whitespace_note_does_not_count() {
         // 仅空白 note 视同空（trim 后为空）→ Block。
         let spec = spec_with_expected(&["idor"]);
@@ -3048,6 +3323,77 @@ mod tests {
         assert!(
             outcomes.iter().all(GateCheckOutcome::is_pass),
             "trusted current-run Blocked fact must close the cell without deliverable coverage"
+        );
+    }
+
+    #[test]
+    fn eas_web_accepts_only_producer_projected_blocked_without_generalizing_eas() {
+        let web = "GOLISH-EAS-WEB-FINGERPRINT";
+        let spec = host_aware_spec("external_attack_surface", "external_attack_surface", true);
+        let web_ctx = GateContext {
+            in_scope_assets: Some(vec!["app.example.com".to_string()]),
+            asset_types: Some(std::collections::HashMap::from([(
+                "app.example.com".to_string(),
+                "domain".to_string(),
+            )])),
+            web_capable_assets: Some(std::collections::HashSet::from([
+                "app.example.com".to_string()
+            ])),
+            expected_techniques: Some(vec![web.to_string()]),
+            evidence_facts: Some(vec![fact(
+                "https://app.example.com:443",
+                web,
+                EvidenceOutcome::Blocked,
+                81,
+            )]),
+            ..GateContext::default()
+        };
+
+        assert!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &spec,
+                &[evidence_derive_rule(None)],
+                &web_ctx,
+            )[0]
+            .is_pass(),
+            "producer-projected EAS Web Blocked must terminalize the parent WEB cell"
+        );
+
+        let mut no_fact = web_ctx.clone();
+        no_fact.evidence_facts = None;
+        assert!(
+            !eval_with_context(
+                &deliverable_with_coverage(vec![cov_cell_noted(
+                    "app.example.com",
+                    web,
+                    CoverageStatus::Blocked,
+                    "model-authored transport claim",
+                )]),
+                &spec,
+                &[evidence_derive_rule(None)],
+                &no_fact,
+            )[0]
+            .is_pass(),
+            "a deliverable-authored EAS Web Blocked cell must not mint terminal truth"
+        );
+
+        let port = "GOLISH-EAS-PORT";
+        let port_ctx = GateContext {
+            in_scope_assets: Some(vec!["192.0.2.10".to_string()]),
+            expected_techniques: Some(vec![port.to_string()]),
+            evidence_facts: Some(vec![fact("192.0.2.10", port, EvidenceOutcome::Blocked, 82)]),
+            ..GateContext::default()
+        };
+        assert!(
+            !eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &host_aware_spec("external_attack_surface", "external_attack_surface", false),
+                &[evidence_derive_rule(None)],
+                &port_ctx,
+            )[0]
+            .is_pass(),
+            "producer-derived Blocked trust must stay scoped to the EAS Web technique"
         );
     }
 
@@ -3316,23 +3662,286 @@ mod tests {
     }
 
     #[test]
-    fn provider_survey_found_closes_provider_backed_coverage_as_non_found_terminal() {
+    fn provider_survey_found_does_not_fake_checked_empty_for_other_techniques() {
         let ctx = GateContext {
             in_scope_assets: Some(vec!["www.a.com".to_string()]),
             expected_techniques: Some(vec!["GOLISH-INTEL-SUBDOMAIN".to_string()]),
             source_queries: Some(vec![source_query("quake", "map_assets", None, "found")]),
             ..Default::default()
         };
-        assert!(
+        assert!(matches!(
             eval_with_context(
                 &deliverable_with_coverage(vec![]),
                 &target_intel_spec(false),
-                &[authoritative_rule(None)],
+                &[parse(
+                    r#"{ "op":"coverage_complete","authoritative_found":true,
+                         "derive_from_evidence":true,"error_is_terminal":false,
+                         "on_fail":{"reason":"coverage incomplete"} }"#,
+                )],
                 &ctx
-            )[0]
-            .is_pass(),
-            "an org-level provider survey row should close provider-backed cells the DB did not mark found"
+            )[0],
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn generic_provider_empty_or_blocked_does_not_terminalize_specific_intel_technique() {
+        for status in ["empty", "blocked"] {
+            let ctx = GateContext {
+                in_scope_assets: Some(vec!["a.com".to_string()]),
+                expected_techniques: Some(vec!["GOLISH-INTEL-CT".to_string()]),
+                source_queries: Some(vec![source_query("quake", "map_assets", None, status)]),
+                ..Default::default()
+            };
+            assert!(matches!(
+                eval_with_context(
+                    &deliverable_with_coverage(vec![]),
+                    &target_intel_spec(false),
+                    &[authoritative_rule(None)],
+                    &ctx
+                )[0],
+                GateCheckOutcome::Block { .. }
+            ), "a provider-wide {status} row has no per-technique witness for CT and must not close it");
+        }
+    }
+
+    #[test]
+    fn source_error_is_attempt_proof_but_not_checked_empty_or_blocked_coverage() {
+        let row = source_query(
+            "quake",
+            "map_assets",
+            Some("GOLISH-INTEL-SUBDOMAIN"),
+            "error",
         );
+        assert!(!source_row_terminal_for_coverage(
+            &row,
+            StageKind::TargetIntel,
+            "GOLISH-INTEL-SUBDOMAIN",
+            "a.com",
+            &[CoverageStatus::CheckedEmpty, CoverageStatus::Blocked],
+        ));
+    }
+
+    #[test]
+    fn wildcard_subdomain_cell_consumes_base_domain_source_outcomes() {
+        let technique = "GOLISH-INTEL-SUBDOMAIN";
+        let evaluate = |status: &str, evidence_facts: Option<Vec<EvidenceFact>>| {
+            let mut row = source_query(
+                "domain-expansion",
+                "map_assets:GOLISH-INTEL-SUBDOMAIN",
+                Some(technique),
+                status,
+            );
+            row.target = "moresec.cn".to_string();
+            let ctx = GateContext {
+                in_scope_assets: Some(vec!["*.moresec.cn".to_string()]),
+                expected_techniques: Some(vec![technique.to_string()]),
+                evidence_facts,
+                source_queries: Some(vec![row]),
+                ..Default::default()
+            };
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &target_intel_spec(true),
+                &[authoritative_rule(None)],
+                &ctx,
+            )[0]
+            .clone()
+        };
+
+        assert!(matches!(evaluate("empty", None), GateCheckOutcome::Pass));
+        assert!(matches!(
+            evaluate("error", None),
+            GateCheckOutcome::Block { .. }
+        ));
+        assert!(matches!(
+            evaluate(
+                "found",
+                Some(vec![fact(
+                    "*.moresec.cn",
+                    technique,
+                    EvidenceOutcome::Found,
+                    0,
+                )]),
+            ),
+            GateCheckOutcome::Pass
+        ));
+    }
+
+    #[test]
+    fn exact_source_error_vetoes_business_found_for_same_target_and_technique() {
+        let technique = "GOLISH-INTEL-DNS";
+        let mut row = source_query(
+            "resolver",
+            "map_assets:GOLISH-INTEL-DNS",
+            Some(technique),
+            "error",
+        );
+        row.target = "a.com".to_string();
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec![technique.to_string()]),
+            evidence_facts: Some(vec![fact("a.com", technique, EvidenceOutcome::Found, 0)]),
+            source_queries: Some(vec![row]),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            eval_with_context(
+                &deliverable_with_coverage(vec![]),
+                &target_intel_spec(false),
+                &[parse(
+                    r#"{ "op":"coverage_complete","authoritative_found":true,
+                         "derive_from_evidence":true,"error_is_terminal":false,
+                         "on_fail":{"reason":"coverage incomplete"} }"#,
+                )],
+                &ctx
+            )[0],
+            GateCheckOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn source_error_for_another_target_does_not_veto_business_found() {
+        let technique = "GOLISH-INTEL-DNS";
+        let mut row = source_query(
+            "resolver",
+            "map_assets:GOLISH-INTEL-DNS",
+            Some(technique),
+            "error",
+        );
+        row.target = "b.com".to_string();
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec![technique.to_string()]),
+            evidence_facts: Some(vec![fact("a.com", technique, EvidenceOutcome::Found, 0)]),
+            source_queries: Some(vec![row]),
+            ..Default::default()
+        };
+
+        assert!(eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &target_intel_spec(false),
+            &[parse(
+                r#"{ "op":"coverage_complete","authoritative_found":true,
+                     "derive_from_evidence":true,"error_is_terminal":false,
+                     "on_fail":{"reason":"coverage incomplete"} }"#,
+            )],
+            &ctx
+        )[0]
+        .is_pass());
+    }
+
+    #[test]
+    fn deterministic_context_not_applicable_is_not_vetoed_by_source_error() {
+        let asset = "organization:00000000-0000-0000-0000-000000000007";
+        let technique = "GOLISH-INTEL-SUBDOMAIN";
+        let ctx = GateContext {
+            in_scope_assets: Some(vec![asset.to_string()]),
+            expected_techniques: Some(vec![technique.to_string()]),
+            source_queries: Some(vec![source_query(
+                "quake",
+                "map_assets:GOLISH-INTEL-SUBDOMAIN",
+                Some(technique),
+                "error",
+            )]),
+            not_applicable_coverage: Some(std::collections::HashSet::from([(
+                asset.to_string(),
+                technique.to_string(),
+            )])),
+            ..Default::default()
+        };
+
+        let outcome = eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &target_intel_spec(false),
+            &[parse(
+                r#"{ "op":"coverage_complete","authoritative_found":true,
+                     "derive_from_evidence":true,"error_is_terminal":false,
+                     "on_fail":{"reason":"coverage incomplete"} }"#,
+            )],
+            &ctx,
+        );
+
+        assert!(
+            outcome[0].is_pass(),
+            "trusted deterministic not_applicable must take precedence over an irrelevant source error: {:?}",
+            outcome[0]
+        );
+    }
+
+    #[test]
+    fn deterministic_not_applicable_for_another_asset_does_not_hide_source_error() {
+        let asset = "a.com";
+        let technique = "GOLISH-INTEL-SUBDOMAIN";
+        let ctx = GateContext {
+            in_scope_assets: Some(vec![asset.to_string()]),
+            expected_techniques: Some(vec![technique.to_string()]),
+            source_queries: Some(vec![source_query(
+                "quake",
+                "map_assets:GOLISH-INTEL-SUBDOMAIN",
+                Some(technique),
+                "error",
+            )]),
+            not_applicable_coverage: Some(std::collections::HashSet::from([(
+                "b.com".to_string(),
+                technique.to_string(),
+            )])),
+            ..Default::default()
+        };
+
+        let outcome = eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &target_intel_spec(false),
+            &[parse(
+                r#"{ "op":"coverage_complete","authoritative_found":true,
+                     "derive_from_evidence":true,"error_is_terminal":false,
+                     "on_fail":{"reason":"coverage incomplete"} }"#,
+            )],
+            &ctx,
+        );
+
+        assert!(
+            matches!(outcome[0], GateCheckOutcome::Block { .. }),
+            "deterministic not_applicable for another asset must not hide this asset's source error: {:?}",
+            outcome[0]
+        );
+    }
+
+    #[test]
+    fn noted_not_applicable_can_close_bounded_source_error() {
+        let technique = "GOLISH-INTEL-OSINT";
+        let row = source_query(
+            "quake",
+            "map_assets:GOLISH-INTEL-OSINT",
+            Some(technique),
+            "error",
+        );
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec![technique.to_string()]),
+            source_queries: Some(vec![row]),
+            ..Default::default()
+        };
+        let deliverable = deliverable_with_coverage(vec![cov_cell_noted(
+            "a.com",
+            technique,
+            CoverageStatus::NotApplicable,
+            "provider is unavailable in this engagement",
+        )]);
+
+        assert!(eval_with_context(
+            &deliverable,
+            &target_intel_spec(false),
+            &[parse(
+                r#"{ "op":"coverage_complete","authoritative_found":true,
+                     "derive_from_evidence":true,"require_note_for_other":true,
+                     "error_is_terminal":false,
+                     "on_fail":{"reason":"coverage incomplete"} }"#,
+            )],
+            &ctx
+        )[0]
+        .is_pass());
     }
 
     #[test]
@@ -3726,6 +4335,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         let d = deliverable_with_coverage(vec![]);
         assert!(
@@ -3759,6 +4370,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         let d = deliverable_with_coverage(vec![]);
         assert!(
@@ -3790,6 +4403,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         let d = deliverable_with_coverage(vec![]);
         match &eval_with_context(
@@ -3829,6 +4444,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         let d = deliverable_with_coverage(vec![]);
         let spec = host_aware_spec("external_attack_surface", "external_attack_surface", false);
@@ -3857,6 +4474,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         assert!(
             !eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &host_only_ctx)[0]
@@ -3877,6 +4496,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
         assert!(
             eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &endpoint_ctx)[0].is_pass(),
@@ -3911,6 +4532,8 @@ mod tests {
             source_queries: None,
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
         };
 
         assert!(

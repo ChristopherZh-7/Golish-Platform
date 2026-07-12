@@ -106,7 +106,6 @@ export function NewEngagementDialog({
   const [minOwnership, setMinOwnership] = useState("");
   const [depth, setDepth] = useState("");
   const [includeBranches, setIncludeBranches] = useState(false);
-  const [createCandidates, setCreateCandidates] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lookupRunning, setLookupRunning] = useState(false);
@@ -131,7 +130,6 @@ export function NewEngagementDialog({
     setMinOwnership("");
     setDepth("");
     setIncludeBranches(false);
-    setCreateCandidates(true);
     setError(null);
     setLookupRunning(false);
     setLookupError(null);
@@ -205,7 +203,6 @@ export function NewEngagementDialog({
             min_ownership_percent: mode === "discover_assets" ? minOwnership.trim() : undefined,
             depth: mode === "discover_assets" ? depth.trim() : undefined,
             include_branches: mode === "discover_assets" ? includeBranches : undefined,
-            create_candidates: mode === "discover_assets" ? createCandidates : undefined,
             created_at: Date.now(),
             lookup_match: selectedMatch
               ? {
@@ -470,18 +467,10 @@ export function NewEngagementDialog({
                   />
                   Include branches
                 </label>
-                <label className="inline-flex items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    checked={createCandidates}
-                    onChange={(e) => setCreateCandidates(e.target.checked)}
-                  />
-                  Create target candidates after review
-                </label>
               </div>
               <p className="text-[10px] text-amber-400/80">
-                This creates the organization and saves discovery settings. From the org workspace,
-                run subsidiary discovery, enrich fields, then promote approved targets into scope.
+                This creates the organization and saves discovery settings. From the organization
+                workspace, run subsidiary discovery and enrich approved organization profiles.
               </p>
             </section>
           )}

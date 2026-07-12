@@ -41,6 +41,26 @@ pub(crate) fn parse_query_type(s: &str) -> QueryType {
     }
 }
 
+fn summarize_native_run(
+    attempted: usize,
+    succeeded: usize,
+    record_count: usize,
+) -> AssetIntelProviderRunState {
+    if attempted == 0 {
+        AssetIntelProviderRunState::Unavailable
+    } else if succeeded != attempted {
+        // Partial records are useful evidence, but they do not make the whole
+        // provider attempt terminal: a sibling query still failed and must stay
+        // retryable. In particular, do not let `record_count > 0` turn a mixed
+        // success/error run into the generic `Completed` source row.
+        AssetIntelProviderRunState::Failed
+    } else if record_count > 0 {
+        AssetIntelProviderRunState::Completed
+    } else {
+        AssetIntelProviderRunState::CheckedEmpty
+    }
+}
+
 /// Append a `ProfileFieldEntry` when `src_key` is present and non-empty.
 fn push_field(
     out: &mut Vec<ProfileFieldEntry>,
@@ -73,7 +93,6 @@ pub(crate) fn bridge_record(
     let f = &rec.fields;
     let mut profile = Vec::new();
     push_field(&mut profile, f, T::Scalar, "domains".into(), "domain");
-    push_field(&mut profile, f, T::Scalar, "ip_ranges".into(), "ip");
     push_field(&mut profile, f, T::Scalar, "certificates".into(), "cert");
     push_field(
         &mut profile,
@@ -108,6 +127,11 @@ pub(crate) fn bridge_record(
         evidence: serde_json::json!({
             "provider": provider_id,
             "query_type": rec.query_type.as_str(),
+            // Landing consumes the normalized field map deterministically for
+            // exact host↔IP pairs; preserve the provider payload separately for
+            // audit without coupling landing to provider-specific JSON shapes.
+            "raw": rec.fields,
+            "provider_raw": rec.raw,
         }),
         created_at: golish_core::time::now_ms(),
     });
@@ -222,6 +246,8 @@ pub(crate) async fn run_native_provider(
     let mut candidates = OrganizationCandidates::default();
     let mut profile_entries: Vec<ProfileFieldEntry> = Vec::new();
     let mut request_evidence = Vec::new();
+    let mut attempted = 0usize;
+    let mut succeeded = 0usize;
     // b1 (design 2026-06-24): domain-keyed survey value (None = legacy company
     // survey). Gates which queries fire (see `query_applies`).
     let domain = config
@@ -233,6 +259,7 @@ pub(crate) async fn run_native_provider(
         if !query_applies(&q.template, domain.is_some()) {
             continue;
         }
+        attempted += 1;
         let mut rendered = q.template.replace("{{company_name}}", company_name);
         if let Some(d) = domain {
             rendered = rendered.replace("{{domain}}", d);
@@ -249,6 +276,7 @@ pub(crate) async fn run_native_provider(
         );
         match provider.query(qt, &rendered, &key).await {
             Ok(records) => {
+                succeeded += 1;
                 for rec in &records {
                     let (cand, profile) = bridge_record(&provider_id, rec);
                     profile_entries.extend(profile);
@@ -258,6 +286,8 @@ pub(crate) async fn run_native_provider(
                 }
                 request_evidence.push(serde_json::json!({
                     "query": rendered,
+                    "queryType": q.query_type,
+                    "status": if records.is_empty() { "empty" } else { "found" },
                     "records": records.len(),
                 }));
             }
@@ -270,6 +300,8 @@ pub(crate) async fn run_native_provider(
                 );
                 request_evidence.push(serde_json::json!({
                     "query": rendered,
+                    "queryType": q.query_type,
+                    "status": "error",
                     "error": e.to_string(),
                 }));
             }
@@ -278,22 +310,28 @@ pub(crate) async fn run_native_provider(
 
     let candidate_count = candidates.organizations.len() + candidates.targets.len();
     let record_count = candidate_count + profile_entries.len();
-    let state = if record_count == 0 {
-        AssetIntelProviderRunState::CheckedEmpty
-    } else {
-        AssetIntelProviderRunState::Completed
+    let state = summarize_native_run(attempted, succeeded, record_count);
+    let state_label = match &state {
+        AssetIntelProviderRunState::Completed => "completed",
+        AssetIntelProviderRunState::CheckedEmpty => "checked_empty",
+        AssetIntelProviderRunState::Unavailable => "unavailable",
+        AssetIntelProviderRunState::Failed => "failed",
     };
     tracing::info!(
         provider = %provider_id,
         run_id,
         candidate_count,
         profile_field_count = profile_entries.len(),
+        attempted,
+        succeeded,
         "asset_intel native provider completed"
     );
     let status = AssetIntelProviderRunStatus {
         provider_id: provider_id.clone(),
         status: state,
-        message: format!("{provider_id} produced {record_count} record(s)"),
+        message: format!(
+            "{provider_id} produced {record_count} record(s); {succeeded}/{attempted} queries succeeded"
+        ),
     };
     finish_provider_run(
         sink,
@@ -304,9 +342,12 @@ pub(crate) async fn run_native_provider(
         serde_json::json!({
             "provider": provider_id,
             "runId": run_id,
-            "state": if record_count == 0 { "checked_empty" } else { "completed" },
+            "state": state_label,
             "candidateCount": candidate_count,
             "profileFieldCount": profile_entries.len(),
+            "attemptedQueries": attempted,
+            "succeededQueries": succeeded,
+            "failedQueries": attempted.saturating_sub(succeeded),
             "queries": request_evidence,
         }),
         profile_entries,
@@ -315,7 +356,8 @@ pub(crate) async fn run_native_provider(
 
 #[cfg(test)]
 mod tests {
-    use super::query_applies;
+    use super::{query_applies, summarize_native_run};
+    use crate::asset_intel::AssetIntelProviderRunState;
 
     #[test]
     fn query_applies_gates_by_domain_mode() {
@@ -324,5 +366,46 @@ mod tests {
         assert!(!query_applies("org=\"{{company_name}}\"", true));
         assert!(query_applies("domain=\"{{domain}}\"", true));
         assert!(!query_applies("domain=\"{{domain}}\"", false));
+    }
+
+    #[test]
+    fn native_all_error_is_failed_not_checked_empty() {
+        assert_eq!(
+            summarize_native_run(2, 0, 0),
+            AssetIntelProviderRunState::Failed
+        );
+    }
+
+    #[test]
+    fn native_all_attempts_succeeded_empty_is_checked_empty() {
+        assert_eq!(
+            summarize_native_run(2, 2, 0),
+            AssetIntelProviderRunState::CheckedEmpty
+        );
+    }
+
+    #[test]
+    fn native_mixed_success_and_error_without_records_is_not_checked_empty() {
+        assert_eq!(
+            summarize_native_run(2, 1, 0),
+            AssetIntelProviderRunState::Failed
+        );
+    }
+
+    #[test]
+    fn native_partial_records_do_not_hide_a_sibling_query_error() {
+        assert_eq!(
+            summarize_native_run(2, 1, 7),
+            AssetIntelProviderRunState::Failed,
+            "partial records remain useful, but the provider must stay retryable"
+        );
+    }
+
+    #[test]
+    fn native_no_applicable_query_is_blocked_as_unavailable() {
+        assert_eq!(
+            summarize_native_run(0, 0, 0),
+            AssetIntelProviderRunState::Unavailable
+        );
     }
 }

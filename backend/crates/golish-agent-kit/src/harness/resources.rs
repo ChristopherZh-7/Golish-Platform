@@ -153,6 +153,7 @@ pub fn load_embedded_sprint_skeleton(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::gate::rule_engine::GateRule;
 
     #[test]
     fn all_thirteen_stage_specs_load_and_kind_matches() {
@@ -175,6 +176,18 @@ mod tests {
                 .unwrap_or_else(|e| panic!("load {:?} failed: {}", kind, e));
             assert_eq!(spec.kind, kind, "spec.kind must match requested kind");
         }
+    }
+
+    #[test]
+    fn eas_retryable_errors_do_not_close_coverage() {
+        let spec = load_embedded_stage_spec(StageKind::ExternalAttackSurface).unwrap();
+        assert!(spec.gate_rules.iter().any(|rule| matches!(
+            rule,
+            GateRule::CoverageComplete {
+                error_is_terminal: false,
+                ..
+            }
+        )));
     }
 
     #[test]

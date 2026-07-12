@@ -8,7 +8,7 @@
  */
 
 /** Right-side workspace tabs in the org workspace panel. */
-export type WorkspaceTab = "overview" | "fields" | "scope" | "targets" | "candidates" | "activity";
+export type WorkspaceTab = "overview" | "fields" | "scope" | "targets" | "activity";
 
 /** Loosely-typed engagement metadata bag stored under `org.intel.engagement`. */
 export type EngagementRecord = Record<string, unknown>;
@@ -18,7 +18,6 @@ export type OrgActionKind =
   | "hydrate_subsidiaries"
   | "enrich_organization"
   | "choose_next_step"
-  | "review_scope"
   | "add_child";
 
 export type AssetIntelOrgActionKind = "hydrate_subsidiaries" | "enrich_organization";

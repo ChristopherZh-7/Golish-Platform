@@ -28,6 +28,7 @@ import {
 } from "./surface/surfaceModel";
 import { EvidenceTab } from "./surface/tabs/EvidenceTab";
 import { IdentityTab } from "./surface/tabs/IdentityTab";
+import { IpFingerprintTab } from "./surface/tabs/IpFingerprintTab";
 import { NetworkEndpointsTab } from "./surface/tabs/NetworkEndpointsTab";
 import { RelatedDomainsTab } from "./surface/tabs/RelatedDomainsTab";
 import { SensitiveTab } from "./surface/tabs/SensitiveTab";
@@ -36,7 +37,14 @@ import { SurfaceTabView } from "./surface/tabs/SurfaceTabView";
 import { WebOriginsTab } from "./surface/tabs/WebOriginsTab";
 import { SURFACE_TABS, type SurfaceTab } from "./surface/types";
 
-type IpSurfaceTab = "overview" | "endpoints" | "origins" | "domains" | "sensitive" | "evidence";
+type IpSurfaceTab =
+  | "overview"
+  | "endpoints"
+  | "origins"
+  | "domains"
+  | "fingerprints"
+  | "sensitive"
+  | "evidence";
 type WorkbenchTab = SurfaceTab | IpSurfaceTab;
 
 export const IP_SURFACE_TABS: Array<{ id: IpSurfaceTab; label: string }> = [
@@ -44,6 +52,7 @@ export const IP_SURFACE_TABS: Array<{ id: IpSurfaceTab; label: string }> = [
   { id: "endpoints", label: "Network Endpoints" },
   { id: "origins", label: "Web Origins" },
   { id: "domains", label: "Related Domains" },
+  { id: "fingerprints", label: "Fingerprints" },
   { id: "sensitive", label: "Sensitive" },
   { id: "evidence", label: "Evidence" },
 ];
@@ -349,6 +358,7 @@ export function TargetSurfaceWorkbench({
         endpoints: hierarchy.summary.endpointCount,
         origins: hierarchy.summary.webOriginCount,
         domains: hierarchy.summary.domainCount,
+        fingerprints: data.fingerprints.length,
         sensitive: sensitiveCount,
         evidence: hierarchy.summary.evidenceCount,
       }
@@ -570,6 +580,13 @@ export function TargetSurfaceWorkbench({
               setSelectedOriginId(id);
               setActiveTab("origins");
             }}
+          />
+        )}
+        {isIpSurface && activeTab === "fingerprints" && (
+          <IpFingerprintTab
+            fingerprints={data.fingerprints}
+            webOrigins={hierarchy.webOrigins}
+            loading={loading}
           />
         )}
         {!isIpSurface && activeTab === "identity" && (

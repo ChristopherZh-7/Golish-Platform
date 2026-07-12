@@ -1,6 +1,7 @@
 //! `#[tauri::command]` entry points for managing targets from the GUI.
 
 use golish_app_core::GolishError;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use golish_app_core::DbState;
@@ -122,9 +123,26 @@ pub async fn target_batch_add(
         .transpose()
         .map_err(|e: uuid::Error| e.to_string())?;
 
+    // An org-bound customer import is an authorization write. Fail closed when
+    // the supplied organization belongs to another workspace instead of
+    // attaching or creating targets across the project boundary (I2).
+    if let Some(org_id) = org_id {
+        let expected_project = project_path.as_deref().unwrap_or("");
+        let organization = golish_db::repo::organizations::get_one(pool, org_id)
+            .await?
+            .ok_or_else(|| GolishError::NotFound(format!("organization {org_id}")))?;
+        if organization.project_path != expected_project {
+            return Err(GolishError::Validation(
+                "organization does not belong to the requested project".to_string(),
+            ));
+        }
+    }
+
     let mut existing: Vec<String> =
         golish_db::repo::targets::list_values_by_project_exact(pool, project_path.as_deref())
             .await?;
+    let customer_intake = src.eq_ignore_ascii_case("customer_provided") && org_id.is_some();
+    let mut requested = HashSet::new();
 
     let mut added = Vec::new();
     for line in values.lines() {
@@ -132,11 +150,35 @@ pub async fn target_batch_add(
         if v.is_empty() || v.starts_with('#') {
             continue;
         }
-        if existing.iter().any(|e| e == v) {
+        if !requested.insert(v.to_string()) {
+            continue;
+        }
+        let tt = detect_type(v);
+
+        if customer_intake {
+            let organization_id = org_id.expect("customer intake requires an organization");
+            let claimed = sqlx::query_as::<_, TargetRow>(customer_intake_reusable_target_sql())
+                .bind(v)
+                .bind(tt.as_str())
+                .bind(project_path.as_deref())
+                .bind(organization_id)
+                .bind(&src)
+                .bind(&g)
+                .fetch_optional(pool)
+                .await?;
+            if let Some(row) = claimed {
+                added.push(Target::from(row));
+                continue;
+            }
+
+            // No same-org or legacy-unbound exact identity was reusable. A row
+            // owned by a sibling organization is intentionally ignored above;
+            // identical values across organizations are separate authorization
+            // roots, so create this org's own customer-provided row.
+        } else if should_skip_project_duplicate(customer_intake, existing.iter().any(|e| e == v)) {
             continue;
         }
         existing.push(v.to_string());
-        let tt = detect_type(v);
         let row = sqlx::query_as::<_, TargetRow>(
             r#"INSERT INTO targets (name, target_type, value, tags, scope, grp, organization_id, project_path, source)
                VALUES ($1, $2::target_type, $3, '[]', 'in'::scope_type, $4, $5, $6, $7)
@@ -157,6 +199,45 @@ pub async fn target_batch_add(
         added.push(Target::from(row));
     }
     Ok(added)
+}
+
+fn customer_intake_reusable_target_sql() -> &'static str {
+    r#"WITH reusable AS (
+           SELECT id
+           FROM targets
+           WHERE value = $1
+             AND target_type::text = $2
+             AND project_path IS NOT DISTINCT FROM $3
+             AND (organization_id = $4 OR organization_id IS NULL)
+           ORDER BY (organization_id = $4) DESC, created_at ASC, id ASC
+           LIMIT 1
+       ), claimed AS (
+           UPDATE targets AS t
+           SET organization_id = $4,
+               source = CASE
+                   WHEN lower(COALESCE(t.source, '')) IN
+                       ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli')
+                   THEN t.source
+                   ELSE $5
+               END,
+               scope = 'in'::scope_type,
+               grp = $6,
+               updated_at = NOW()
+           FROM reusable AS r
+           WHERE t.id = r.id
+             AND (t.organization_id = $4 OR t.organization_id IS NULL)
+           RETURNING t.*
+       )
+       SELECT id, name, target_type::text, value, tags, notes, scope::text,
+              status::text, grp, owner, time_window_start, time_window_end,
+              organization_id, source, parent_id, ports, real_ip, cdn_waf,
+              http_title, http_status, webserver, os_info, content_type,
+              liveness_state, liveness_reason, created_at, updated_at
+       FROM claimed"#
+}
+
+fn should_skip_project_duplicate(customer_intake: bool, project_value_exists: bool) -> bool {
+    !customer_intake && project_value_exists
 }
 
 #[tauri::command]
@@ -345,4 +426,29 @@ pub async fn target_update_status(
     .await?;
 
     Ok(Target::from(row))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{customer_intake_reusable_target_sql, should_skip_project_duplicate};
+
+    #[test]
+    fn customer_intake_dedupe_is_org_and_identity_scoped() {
+        let sql = customer_intake_reusable_target_sql();
+        assert!(sql.contains("value = $1"));
+        assert!(sql.contains("target_type::text = $2"));
+        assert!(sql.contains("project_path IS NOT DISTINCT FROM $3"));
+        assert!(sql.contains("organization_id = $4 OR organization_id IS NULL"));
+        assert!(sql.contains("ORDER BY (organization_id = $4) DESC"));
+        assert!(sql.contains("t.organization_id = $4 OR t.organization_id IS NULL"));
+        assert!(sql.contains("'customer_provided'"));
+        assert!(sql.contains("ELSE $5"));
+    }
+
+    #[test]
+    fn sibling_project_value_does_not_swallow_org_bound_customer_intake() {
+        assert!(!should_skip_project_duplicate(true, true));
+        assert!(should_skip_project_duplicate(false, true));
+        assert!(!should_skip_project_duplicate(false, false));
+    }
 }

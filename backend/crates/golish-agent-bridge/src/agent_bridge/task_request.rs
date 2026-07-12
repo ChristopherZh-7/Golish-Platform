@@ -194,6 +194,7 @@ mod tests {
 
     use async_trait::async_trait;
     use golish_agent_kit::harness::StageKind;
+    use golish_agent_kit::task_orchestrator::AgentExecutor;
     use golish_core::runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
 
     use crate::agentic_loop::StageRunReentryGuard;
@@ -556,6 +557,10 @@ mod tests {
         bridge
             .stage_run_reentry_guard
             .mark_exhausted(StageKind::Enumeration);
+        assert!(
+            executor.stage_run_retry_budget_exhausted(StageKind::Enumeration),
+            "the orchestrator-facing executor must observe exhaustion from this request"
+        );
         let nested = BridgeAgentExecutor::from_request(bridge.clone(), lead_owner.clone())
             .expect("same request does not recursively acquire");
         assert!(bridge
@@ -566,7 +571,16 @@ mod tests {
         drop(nested);
         drop(executor);
         drop(lead_owner);
-        assert!(bridge.begin_top_level_request().await.is_ok());
+        let next_owner = bridge
+            .begin_top_level_request()
+            .await
+            .expect("a separate user request acquires a fresh lease");
+        let next_executor = BridgeAgentExecutor::from_request(bridge.clone(), next_owner)
+            .expect("separate user request initializes a fresh Task budget");
+        assert!(
+            !next_executor.stage_run_retry_budget_exhausted(StageKind::Enumeration),
+            "a separate user continuation must see the request-scoped guard reset"
+        );
     }
 
     #[tokio::test]

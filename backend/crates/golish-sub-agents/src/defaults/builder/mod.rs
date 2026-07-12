@@ -125,7 +125,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         SubAgentDefinition::new(
             "recon",
             "Recon",
-            "Passive target-intelligence collector for the target_intel stage. Enriches one organization's footprint via providers (0.zone/quake/ENScan) plus passive subdomain + URL history, and registers discovered assets as in-scope targets. ZERO-TOUCH: no live probing or exploitation — that stays with the Pentester. The stage_run tool fans one Recon out per org.",
+            "Passive target-intelligence collector for the target_intel stage. Enriches one organization's footprint via providers (0.zone/quake/ENScan) plus passive subdomain + URL history. Deterministic backend landing registers only authorized domain identities; DNS/provider IP observations remain relationships, not scan targets. ZERO-TOUCH: no live probing or exploitation — that stays with the Pentester. The stage_run tool fans one Recon out per org.",
             build_recon_prompt(),
         )
         .with_tools(vec![
@@ -133,7 +133,10 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "recon_discover_subsidiaries".to_string(),
             "recon_map_assets".to_string(),
             "recon_lookup_whois".to_string(),
-            "manage_targets".to_string(),
+            "check_stage_asset_coverage".to_string(),
+            "stage_worklist_status".to_string(),
+            "stage_worklist_next".to_string(),
+            "query_target_data".to_string(),
             "submit_stage_deliverable".to_string(),
             "record_finding".to_string(),
             "search_knowledge_base".to_string(),

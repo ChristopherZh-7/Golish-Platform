@@ -39,6 +39,7 @@ target 域的数据层。`types` core DTO + DB row 适配；`recon` 扩展扫描
 ## 注意事项 / 坑
 
 - 部分 DTO 与 `golish-app-core::domain::targets`（跨服务共享）对应——跨服务读写走 ports，本地命令走 repo。
+- `target_batch_add(source="customer_provided", organization_id=...)` 是授权写，不得用 project-wide value 去重吞掉显式 seed。复用身份必须是 exact project + target type + value，且只允许 current org 或 `organization_id IS NULL` legacy 行；current org 优先，legacy 认领带 `organization_id IS NULL` CAS，sibling org 同值必须插入独立行。写前先核对 organization 属于请求 project；已有 provider source 只在同 org/legacy claim 时升级，绝不能跨 org 改绑。
 - `directory_entry_list(target_id=...)` 不能调用裸 `directory_entries::list_by_target`；必须要求 current target 仍 in-scope 且 row project 与 current target project 一致。无 target_id 的 project-wide list 保持显式 `project_path` 语义。
 - `db` helper 无 Tauri 注解，是 recon 内/scan_runner 回调的直写点；active scan 回调必须用 `db_directory_entry_add_guarded`，把 launch `TargetWriteGuard` 传到 repo 同事务锁校验；改签名要查所有调用方。
 

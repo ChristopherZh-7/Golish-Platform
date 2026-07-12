@@ -28,6 +28,249 @@ const GET_OPERATION_EPOCH_SQL: &str = r#"SELECT operation_id, current_stage, sta
        FROM operation_state
        WHERE operation_id = $1"#;
 
+pub const EAS_WEB_TRANSPORT_FAILURES_NAMESPACE: &str = "eas_web_transport_failures";
+const MAX_EAS_WEB_TRANSPORT_FAILURE_SLOTS: i64 = 512;
+const MAX_EAS_WEB_TRANSPORT_FAILURE_BYTES: i32 = 262_144;
+
+const INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL: &str = r#"UPDATE operation_state
+SET state_blob = jsonb_set(
+    jsonb_set(
+        CASE WHEN jsonb_typeof(state_blob) = 'object' THEN state_blob ELSE '{}'::jsonb END,
+        ARRAY[$3],
+        CASE
+            WHEN jsonb_typeof(state_blob -> $3) = 'object' THEN state_blob -> $3
+            ELSE '{}'::jsonb
+        END,
+        true
+    ),
+    ARRAY[$3, $4],
+    jsonb_build_object(
+        'epoch_started_at', to_jsonb($2::timestamptz),
+        'organization_id', $5::text,
+        'target_id', $6::text,
+        'origin', $7::text,
+        'technique', $8::text,
+        'failure_class', $9::text,
+        'attempts', CASE
+            WHEN state_blob #> ARRAY[$3, $4, 'epoch_started_at'] = to_jsonb($2::timestamptz)
+             AND state_blob #>> ARRAY[$3, $4, 'organization_id'] = $5::text
+             AND state_blob #>> ARRAY[$3, $4, 'target_id'] = $6::text
+             AND state_blob #>> ARRAY[$3, $4, 'origin'] = $7::text
+             AND state_blob #>> ARRAY[$3, $4, 'technique'] = $8::text
+             AND state_blob #>> ARRAY[$3, $4, 'failure_class'] = $9::text
+            THEN COALESCE((state_blob #>> ARRAY[$3, $4, 'attempts'])::int, 0) + 1
+            ELSE 1
+        END,
+        'independently_confirmed', false,
+        'updated_at', to_jsonb(NOW())
+    ),
+    true
+)
+WHERE operation_id = $1
+  AND current_stage = 'external_attack_surface'
+  AND stage_started_at = $2
+  AND superseded_by IS NULL
+  AND (
+      COALESCE(state_blob -> $3, '{}'::jsonb) ? $4
+      OR (
+          (SELECT COUNT(*) FROM jsonb_object_keys(
+              CASE WHEN jsonb_typeof(state_blob -> $3) = 'object'
+                   THEN state_blob -> $3 ELSE '{}'::jsonb END
+          )) < $10
+          AND pg_column_size(COALESCE(state_blob -> $3, '{}'::jsonb)) < $11
+      )
+  )
+RETURNING (state_blob #>> ARRAY[$3, $4, 'attempts'])::int"#;
+
+const CLEAR_EAS_WEB_TRANSPORT_FAILURES_SQL: &str = r#"UPDATE operation_state
+SET state_blob = jsonb_set(
+    CASE WHEN jsonb_typeof(state_blob) = 'object' THEN state_blob ELSE '{}'::jsonb END,
+    ARRAY[$3],
+    CASE WHEN jsonb_typeof(state_blob -> $3) = 'object'
+         THEN (state_blob -> $3) - $4::text[] ELSE '{}'::jsonb END,
+    true
+)
+WHERE operation_id = $1
+  AND current_stage = 'external_attack_surface'
+  AND stage_started_at = $2
+  AND superseded_by IS NULL"#;
+
+const MARK_EAS_WEB_FINGERPRINT_PRODUCER_BLOCKED_SQL: &str = r#"UPDATE operation_state
+SET state_blob = jsonb_set(
+    CASE WHEN jsonb_typeof(state_blob) = 'object' THEN state_blob ELSE '{}'::jsonb END,
+    ARRAY[$3, $4],
+    (state_blob #> ARRAY[$3, $4]) || jsonb_build_object(
+        'producer_blocked', true,
+        'producer_evidence_id', $10::bigint,
+        'producer_run_id', $11::text,
+        'producer_blocked_at', to_jsonb(NOW())
+    ) || CASE WHEN $12::bigint IS NOT NULL THEN jsonb_build_object(
+        'independently_confirmed', true,
+        'evidence_id', $12::bigint,
+        'producer', $13::text,
+        'kind', $14::text,
+        'confirmed_at', to_jsonb(NOW())
+    ) ELSE '{}'::jsonb END,
+    true
+)
+WHERE operation_id = $1
+  AND current_stage = 'external_attack_surface'
+  AND stage_started_at = $2
+  AND superseded_by IS NULL
+  AND state_blob #> ARRAY[$3, $4, 'epoch_started_at'] = to_jsonb($2::timestamptz)
+  AND state_blob #>> ARRAY[$3, $4, 'organization_id'] = $5::text
+  AND state_blob #>> ARRAY[$3, $4, 'target_id'] = $6::text
+  AND state_blob #>> ARRAY[$3, $4, 'origin'] = $7::text
+  AND state_blob #>> ARRAY[$3, $4, 'technique'] = $8::text
+  AND state_blob #>> ARRAY[$3, $4, 'failure_class'] = $9::text
+  AND COALESCE((state_blob #>> ARRAY[$3, $4, 'attempts'])::int, 0) >= 3
+RETURNING 1"#;
+
+const LIST_EAS_WEB_FINGERPRINT_PRODUCER_BLOCKED_SQL: &str = r#"SELECT entry.value->>'target_id' AS target_id,
+       entry.value->>'origin' AS origin,
+       entry.value->>'producer_evidence_id' AS producer_evidence_id
+FROM operation_state os
+CROSS JOIN LATERAL jsonb_each(
+    CASE WHEN jsonb_typeof(os.state_blob -> $4) = 'object'
+         THEN os.state_blob -> $4 ELSE '{}'::jsonb END
+) AS entry(key, value)
+JOIN audit_log al
+  ON al.id = CASE
+      WHEN entry.value->>'producer_evidence_id' ~ '^[1-9][0-9]*$'
+      THEN (entry.value->>'producer_evidence_id')::bigint
+      ELSE NULL
+  END
+ AND al.audit_role = 'evidence'
+ AND al.run_id = os.operation_id
+ AND al.target_id::text = entry.value->>'target_id'
+ AND al.tool_name = 'whatweb'
+ AND al.detail->>'kind' = 'eas.fingerprint_web_stack'
+ AND al.detail->>'organization_id' = entry.value->>'organization_id'
+ AND al.evidence_asset = entry.value->>'origin'
+ AND al.evidence_technique = entry.value->>'technique'
+ AND al.evidence_outcome = 'blocked'
+ AND al.created_at >= $2
+JOIN targets t
+  ON t.id::text = entry.value->>'target_id'
+ AND t.scope::text = 'in'
+ AND t.organization_id = $3
+ AND t.project_path IS NOT DISTINCT FROM al.project_path
+JOIN technique_outcomes outcome
+  ON outcome.organization_id = $3
+ AND outcome.run_id = entry.value->>'producer_run_id'
+ AND outcome.asset = entry.value->>'origin'
+ AND outcome.technique = entry.value->>'technique'
+ AND outcome.outcome = 'blocked'
+ AND outcome.source = 'eas_fingerprint_web_stack'
+ AND al.id = ANY(outcome.evidence_ids)
+ AND outcome.collected_at >= $2
+WHERE os.operation_id = $1
+  AND os.current_stage = 'external_attack_surface'
+  AND os.stage_started_at = $2
+  AND os.superseded_by IS NULL
+  AND entry.value->>'organization_id' = $3::text
+  AND entry.value #> ARRAY['epoch_started_at'] = to_jsonb($2::timestamptz)
+  AND entry.value->>'producer_blocked' = 'true'
+  AND COALESCE((entry.value->>'attempts')::int, 0) >= 3"#;
+
+const LIST_EAS_WEB_TRANSPORT_BLOCKED_SQL: &str = r#"SELECT entry.value->>'target_id' AS target_id,
+       entry.value->>'origin' AS origin
+FROM operation_state os
+CROSS JOIN LATERAL jsonb_each(
+    CASE WHEN jsonb_typeof(os.state_blob -> $3) = 'object'
+         THEN os.state_blob -> $3 ELSE '{}'::jsonb END
+) AS entry(key, value)
+JOIN audit_log al
+  ON al.id = CASE
+      WHEN entry.value->>'evidence_id' ~ '^[1-9][0-9]*$'
+      THEN (entry.value->>'evidence_id')::bigint
+      ELSE NULL
+  END
+ AND al.id > 0
+ AND al.audit_role = 'evidence'
+ AND al.run_id = os.operation_id
+ AND al.target_id::text = entry.value->>'target_id'
+ AND al.tool_name = entry.value->>'producer'
+ AND al.detail->>'kind' = entry.value->>'kind'
+ AND al.detail->>'organization_id' = entry.value->>'organization_id'
+ AND al.evidence_asset = entry.value->>'origin'
+ AND al.evidence_technique = entry.value->>'technique'
+ AND al.evidence_outcome = 'blocked'
+JOIN targets t
+  ON t.id::text = entry.value->>'target_id'
+ AND t.scope::text = 'in'
+ AND t.organization_id = $2
+ AND t.project_path IS NOT DISTINCT FROM al.project_path
+JOIN audit_log producer_al
+  ON producer_al.id = CASE
+      WHEN entry.value->>'producer_evidence_id' ~ '^[1-9][0-9]*$'
+      THEN (entry.value->>'producer_evidence_id')::bigint
+      ELSE NULL
+  END
+ AND producer_al.audit_role = 'evidence'
+ AND producer_al.run_id = os.operation_id
+ AND producer_al.target_id = t.id
+ AND producer_al.tool_name = 'whatweb'
+ AND producer_al.detail->>'kind' = 'eas.fingerprint_web_stack'
+ AND producer_al.evidence_asset = entry.value->>'origin'
+ AND producer_al.evidence_technique = entry.value->>'technique'
+ AND producer_al.evidence_outcome = 'blocked'
+ AND producer_al.project_path IS NOT DISTINCT FROM t.project_path
+JOIN technique_outcomes producer_outcome
+  ON producer_outcome.organization_id = $2
+ AND producer_outcome.run_id = entry.value->>'producer_run_id'
+ AND producer_outcome.asset = entry.value->>'origin'
+ AND producer_outcome.technique = entry.value->>'technique'
+ AND producer_outcome.outcome = 'blocked'
+ AND producer_outcome.source = 'eas_fingerprint_web_stack'
+ AND producer_al.id = ANY(producer_outcome.evidence_ids)
+WHERE os.operation_id = $1
+  AND os.current_stage = 'enumeration'
+  AND os.superseded_by IS NULL
+  AND entry.value->>'organization_id' = $2::text
+  AND entry.value->>'independently_confirmed' = 'true'
+  AND entry.value->>'producer_blocked' = 'true'
+  AND COALESCE((entry.value->>'attempts')::int, 0) >= 3
+  AND entry.value->>'producer' = 'eas_transport_preflight'
+  AND entry.value->>'kind' = 'eas_transport_preflight_blocked'
+  AND entry.value->>'technique' = 'GOLISH-EAS-WEB-FINGERPRINT'"#;
+
+const WRITE_STATE_BLOB_SQL: &str = r#"UPDATE operation_state
+SET state_blob = jsonb_set(
+    CASE WHEN jsonb_typeof($2::jsonb) = 'object' THEN $2::jsonb ELSE '{}'::jsonb END,
+    ARRAY[$3],
+    CASE WHEN jsonb_typeof(state_blob -> $3) = 'object'
+         THEN state_blob -> $3 ELSE '{}'::jsonb END,
+    true
+)
+WHERE operation_id = $1"#;
+
+const ADVANCE_STAGE_SQL: &str = r#"UPDATE operation_state
+SET current_stage = $2,
+    stage_started_at = NOW(),
+    state_blob = CASE WHEN $2 = 'external_attack_surface'
+        THEN jsonb_set(
+            CASE WHEN jsonb_typeof(state_blob) = 'object' THEN state_blob ELSE '{}'::jsonb END,
+            ARRAY[$3],
+            '{}'::jsonb,
+            true
+        )
+        ELSE state_blob
+    END
+WHERE operation_id = $1"#;
+
+#[derive(Debug, Clone)]
+pub struct EasWebTransportFailureInput {
+    pub operation_id: Uuid,
+    pub stage_started_at: DateTime<Utc>,
+    pub slot_key: String,
+    pub organization_id: Uuid,
+    pub target_id: Uuid,
+    pub origin: String,
+    pub technique: String,
+    pub failure_class: String,
+}
+
 /// `operation_state` 行映射 (`sqlx::FromRow`).
 #[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
 pub struct OperationStateRow {
@@ -130,16 +373,12 @@ pub async fn advance_cursor(
 
 /// 切换 current_stage + 写新 stage_started_at = NOW().
 pub async fn advance_stage(pool: &PgPool, operation_id: Uuid, new_stage: &str) -> Result<()> {
-    sqlx::query(
-        r#"UPDATE operation_state
-           SET current_stage = $2,
-               stage_started_at = NOW()
-           WHERE operation_id = $1"#,
-    )
-    .bind(operation_id)
-    .bind(new_stage)
-    .execute(pool)
-    .await?;
+    sqlx::query(ADVANCE_STAGE_SQL)
+        .bind(operation_id)
+        .bind(new_stage)
+        .bind(EAS_WEB_TRANSPORT_FAILURES_NAMESPACE)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -164,22 +403,146 @@ pub async fn supersede(
     Ok(())
 }
 
-/// 写入 harness 私有 resume 状态 (state_blob JSONB · 整段覆盖).
+/// 写入 harness 私有 resume 状态，同时原子保留 EAS transport breaker 的
+/// reserved namespace；其它 checkpoint 字段仍以调用方 payload 为准。
 pub async fn write_state_blob(
     pool: &PgPool,
     operation_id: Uuid,
     state_blob: serde_json::Value,
 ) -> Result<()> {
-    sqlx::query(
-        r#"UPDATE operation_state
-           SET state_blob = $2
-           WHERE operation_id = $1"#,
+    sqlx::query(WRITE_STATE_BLOB_SQL)
+        .bind(operation_id)
+        .bind(state_blob)
+        .bind(EAS_WEB_TRANSPORT_FAILURES_NAMESPACE)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Atomically advance one EAS exact-origin transport failure counter without
+/// replacing any sibling `state_blob` namespace. `None` means the trusted EAS
+/// operation epoch changed or the bounded namespace refused a new slot.
+pub async fn increment_eas_web_transport_failure(
+    pool: &PgPool,
+    input: &EasWebTransportFailureInput,
+) -> Result<Option<i32>> {
+    let attempts = sqlx::query_scalar::<_, i32>(INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL)
+        .bind(input.operation_id)
+        .bind(input.stage_started_at)
+        .bind(EAS_WEB_TRANSPORT_FAILURES_NAMESPACE)
+        .bind(&input.slot_key)
+        .bind(input.organization_id)
+        .bind(input.target_id)
+        .bind(&input.origin)
+        .bind(&input.technique)
+        .bind(&input.failure_class)
+        .bind(MAX_EAS_WEB_TRANSPORT_FAILURE_SLOTS)
+        .bind(MAX_EAS_WEB_TRANSPORT_FAILURE_BYTES)
+        .fetch_optional(pool)
+        .await?;
+    Ok(attempts)
+}
+
+/// Clear all known failure-class slots for one exact owner/origin after an HTTP
+/// response or successful producer observation. The epoch guard prevents a
+/// late completion from deleting counters from a newer EAS attempt.
+pub async fn clear_eas_web_transport_failures(
+    pool: &PgPool,
+    operation_id: Uuid,
+    stage_started_at: DateTime<Utc>,
+    slot_keys: &[String],
+) -> Result<bool> {
+    let result = sqlx::query(CLEAR_EAS_WEB_TRANSPORT_FAILURES_SQL)
+        .bind(operation_id)
+        .bind(stage_started_at)
+        .bind(EAS_WEB_TRANSPORT_FAILURES_NAMESPACE)
+        .bind(slot_keys)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn mark_eas_web_fingerprint_producer_blocked(
+    pool: &PgPool,
+    input: &EasWebTransportFailureInput,
+    evidence_id: i64,
+    run_id: &str,
+    independent_handoff: Option<(i64, &str, &str)>,
+) -> Result<bool> {
+    if evidence_id <= 0 || run_id.trim().is_empty() {
+        return Ok(false);
+    }
+    let (independent_evidence_id, independent_producer, independent_kind) = independent_handoff
+        .map(|(id, producer, kind)| (Some(id), Some(producer), Some(kind)))
+        .unwrap_or((None, None, None));
+    if independent_evidence_id.is_some_and(|id| id <= 0) {
+        return Ok(false);
+    }
+    let applied = sqlx::query_scalar::<_, i32>(MARK_EAS_WEB_FINGERPRINT_PRODUCER_BLOCKED_SQL)
+        .bind(input.operation_id)
+        .bind(input.stage_started_at)
+        .bind(EAS_WEB_TRANSPORT_FAILURES_NAMESPACE)
+        .bind(&input.slot_key)
+        .bind(input.organization_id)
+        .bind(input.target_id)
+        .bind(&input.origin)
+        .bind(&input.technique)
+        .bind(&input.failure_class)
+        .bind(evidence_id)
+        .bind(run_id)
+        .bind(independent_evidence_id)
+        .bind(independent_producer)
+        .bind(independent_kind)
+        .fetch_optional(pool)
+        .await?;
+    Ok(applied.is_some())
+}
+
+pub async fn list_eas_web_fingerprint_producer_blocked_origins(
+    pool: &PgPool,
+    operation_id: Uuid,
+    stage_started_at: DateTime<Utc>,
+    organization_id: Uuid,
+) -> Result<Vec<(Uuid, String, i64)>> {
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        LIST_EAS_WEB_FINGERPRINT_PRODUCER_BLOCKED_SQL,
     )
     .bind(operation_id)
-    .bind(state_blob)
-    .execute(pool)
+    .bind(stage_started_at)
+    .bind(organization_id)
+    .bind(EAS_WEB_TRANSPORT_FAILURES_NAMESPACE)
+    .fetch_all(pool)
     .await?;
-    Ok(())
+    Ok(rows
+        .into_iter()
+        .filter_map(|(target_id, origin, evidence_id)| {
+            Some((
+                Uuid::parse_str(&target_id).ok()?,
+                origin,
+                evidence_id.parse::<i64>().ok().filter(|id| *id > 0)?,
+            ))
+        })
+        .collect())
+}
+
+/// Read exact operation/org/target/origin exclusions after the operation has
+/// entered Enumeration. Every row is joined back to its guarded audit evidence;
+/// a bare JSON boolean or malformed evidence id is never trusted.
+pub async fn list_eas_web_transport_blocked_origins(
+    pool: &PgPool,
+    operation_id: Uuid,
+    organization_id: Uuid,
+) -> Result<Vec<(Uuid, String)>> {
+    let rows = sqlx::query_as::<_, (String, String)>(LIST_EAS_WEB_TRANSPORT_BLOCKED_SQL)
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(EAS_WEB_TRANSPORT_FAILURES_NAMESPACE)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(target_id, origin)| Uuid::parse_str(&target_id).ok().map(|id| (id, origin)))
+        .collect())
 }
 
 /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): bind this
@@ -254,6 +617,20 @@ mod tests {
     }
 
     #[test]
+    fn generic_state_blob_checkpoint_preserves_reserved_transport_namespace() {
+        assert!(WRITE_STATE_BLOB_SQL.contains("jsonb_set"));
+        assert!(WRITE_STATE_BLOB_SQL.contains("state_blob -> $3"));
+        assert!(!WRITE_STATE_BLOB_SQL.contains("SET state_blob = $2"));
+    }
+
+    #[test]
+    fn stage_advance_resets_breaker_only_on_new_eas_epoch() {
+        assert!(ADVANCE_STAGE_SQL.contains("$2 = 'external_attack_surface'"));
+        assert!(ADVANCE_STAGE_SQL.contains("ARRAY[$3]"));
+        assert!(ADVANCE_STAGE_SQL.contains("ELSE state_blob"));
+    }
+
+    #[test]
     fn operation_epoch_row_serde_roundtrip() {
         let row = OperationEpochRow {
             operation_id: Uuid::new_v4(),
@@ -283,5 +660,130 @@ mod tests {
         assert!(sql.contains("UPDATE operation_state"));
         assert!(sql.contains("SET engagement_org_id = NULL"));
         assert!(sql.contains("engagement_org_id IN (SELECT id FROM subtree)"));
+    }
+
+    #[test]
+    fn eas_transport_counter_sql_is_epoch_guarded_and_preserves_sibling_namespaces() {
+        assert!(INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL.contains("jsonb_set"));
+        assert!(INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL.contains("state_blob"));
+        assert!(INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL
+            .contains("current_stage = 'external_attack_surface'"));
+        assert!(INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL.contains("stage_started_at = $2"));
+        assert!(INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL.contains("superseded_by IS NULL"));
+        assert!(INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL.contains("epoch_started_at"));
+        assert!(INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL.contains("failure_class'] = $9::text"));
+        assert!(INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL.contains("jsonb_object_keys"));
+        assert!(INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL.contains("pg_column_size"));
+        assert!(!INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL.contains("SET state_blob = $"));
+    }
+
+    #[test]
+    fn independent_transport_handoff_read_is_operation_org_target_and_origin_scoped() {
+        assert!(LIST_EAS_WEB_TRANSPORT_BLOCKED_SQL.contains("operation_id = $1"));
+        assert!(LIST_EAS_WEB_TRANSPORT_BLOCKED_SQL.contains("current_stage = 'enumeration'"));
+        assert!(LIST_EAS_WEB_TRANSPORT_BLOCKED_SQL.contains("organization_id"));
+        assert!(LIST_EAS_WEB_TRANSPORT_BLOCKED_SQL.contains("target_id"));
+        assert!(LIST_EAS_WEB_TRANSPORT_BLOCKED_SQL.contains("origin"));
+        assert!(LIST_EAS_WEB_TRANSPORT_BLOCKED_SQL.contains("independently_confirmed"));
+    }
+
+    #[tokio::test]
+    async fn transport_state_sql_explains_against_migrated_db_when_configured() {
+        let Ok(database_url) = std::env::var("GOLISH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("connect GOLISH_TEST_DATABASE_URL");
+        let operation_id = Uuid::new_v4();
+        let organization_id = Uuid::new_v4();
+        let target_id = Uuid::new_v4();
+        let epoch = Utc::now();
+        let slot = "explain-only-slot";
+        let namespace = EAS_WEB_TRANSPORT_FAILURES_NAMESPACE;
+
+        let sql = format!("EXPLAIN {INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL}");
+        sqlx::query(&sql)
+            .bind(operation_id)
+            .bind(epoch)
+            .bind(namespace)
+            .bind(slot)
+            .bind(organization_id)
+            .bind(target_id)
+            .bind("https://example.test:443")
+            .bind("GOLISH-EAS-WEB-FINGERPRINT")
+            .bind("timeout")
+            .bind(MAX_EAS_WEB_TRANSPORT_FAILURE_SLOTS)
+            .bind(MAX_EAS_WEB_TRANSPORT_FAILURE_BYTES)
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN counter increment");
+
+        let sql = format!("EXPLAIN {CLEAR_EAS_WEB_TRANSPORT_FAILURES_SQL}");
+        sqlx::query(&sql)
+            .bind(operation_id)
+            .bind(epoch)
+            .bind(namespace)
+            .bind(vec![slot.to_string()])
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN counter clear");
+
+        let sql = format!("EXPLAIN {MARK_EAS_WEB_FINGERPRINT_PRODUCER_BLOCKED_SQL}");
+        sqlx::query(&sql)
+            .bind(operation_id)
+            .bind(epoch)
+            .bind(namespace)
+            .bind(slot)
+            .bind(organization_id)
+            .bind(target_id)
+            .bind("https://example.test:443")
+            .bind("GOLISH-EAS-WEB-FINGERPRINT")
+            .bind("timeout")
+            .bind(1_i64)
+            .bind("run")
+            .bind(Option::<i64>::None)
+            .bind(Option::<String>::None)
+            .bind(Option::<String>::None)
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN atomic producer/handoff seal");
+
+        let sql = format!("EXPLAIN {LIST_EAS_WEB_FINGERPRINT_PRODUCER_BLOCKED_SQL}");
+        sqlx::query(&sql)
+            .bind(operation_id)
+            .bind(epoch)
+            .bind(organization_id)
+            .bind(namespace)
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN producer-blocked read");
+
+        let sql = format!("EXPLAIN {LIST_EAS_WEB_TRANSPORT_BLOCKED_SQL}");
+        sqlx::query(&sql)
+            .bind(operation_id)
+            .bind(organization_id)
+            .bind(namespace)
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN Enumeration handoff read");
+
+        let sql = format!("EXPLAIN {WRITE_STATE_BLOB_SQL}");
+        sqlx::query(&sql)
+            .bind(operation_id)
+            .bind(serde_json::json!({"graph_flow": {}}))
+            .bind(namespace)
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN namespace-preserving checkpoint write");
+
+        let sql = format!("EXPLAIN {ADVANCE_STAGE_SQL}");
+        sqlx::query(&sql)
+            .bind(operation_id)
+            .bind("enumeration")
+            .bind(namespace)
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN stage transition");
     }
 }

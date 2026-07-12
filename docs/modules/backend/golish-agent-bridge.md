@@ -25,6 +25,7 @@
 | `AgentBridge` | 桥接主体（生命周期 + 派发 + generation-bound request owner） |
 | `SessionRequestSlot` / `SessionRequestTransitionLease` | 跨 bridge generation 的 stable logical-session request authority / init reservation |
 | `BridgeBackends` | bridge 后端装配束 |
+| `set_tracker_session_uuid` | Task/stage 执行前把 durable `sessions.id` 绑定到共享 `DbTracker` identity；已存在的 tracker clones 同步可见 |
 | `bridge_executor` | 依赖 `AgentBridge` 的编排器实现 |
 | `contributors` | prompt 贡献者 |
 | re-export：`agent_kit::{tool_execution, tool_executors, planner, hitl, tool_policy, …}` | 兼容旧 `crate::` 路径 |
@@ -55,6 +56,8 @@
 - crate 根的大量 `pub use` 是**有意的兼容垫片**（迁移自 `golish-ai`），不要误删——删了会断开历史 `crate::agentic_loop` 等路径。
 - 桥接层不应直接持有 Tauri 类型业务逻辑；Tauri command 在 `golish-agent-app`。
 - 同一 logical session 的 GUI text/attachments、Chat/Task/profile lead、CLI/stage-run 和 history clear/restore 共用 stable slot 的 universal fail-fast owner；GUI bridge replacement 只能推进 generation，不能创建独立 gate。Task handoff 必须用同一 token 构造 `BridgeAgentExecutor`，不能绕过 ownership 或递归 acquire，否则 cancel/history/harness side-channel 隔离失效。
+- GUI TaskMode 解析出 chat key 对应的 durable `sessions.id` 后，必须在任何 stage executor/tool dispatch 前调用 `set_tracker_session_uuid`。该绑定更新的是所有 `DbTracker` clones 共享的身份，不是只改 bridge 内的一份值拷贝；否则工具生命周期会落到随机 tracker session，而 gate 在 durable session 下查不到记录并持续 BLOCK。
+- `BridgeAgentExecutor` 必须把共享 `StageRunReentryGuard` 的 exhausted 状态通过 `AgentExecutor::stage_run_retry_budget_exhausted` 暴露给 TaskOrchestrator；同一 top-level request 的 reflector 不能只看到工具级 `reentry_blocked` 后继续自动重启。只有新的 `TopLevelRequestLease` 首次初始化 Task 才 reset guard，所以显式用户 continuation 仍获得 fresh bounded budget，nested/automatic pass 不得重置。
 
 ## 测试入口
 

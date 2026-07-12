@@ -259,6 +259,16 @@ async fn persist_sub_agent_submit_repair_checkpoint(
         .flatten()
         .map(|state| state.state_blob)
         .unwrap_or_default();
+    let mode = agent_run_from_state_blob(&current)
+        .filter(|checkpoint| checkpoint.agent_path == agent_path)
+        .and_then(|checkpoint| submit_repair_mode_from_agent_run(&checkpoint))
+        .map(|active_mode| {
+            golish_sub_agents::retain_eas_web_repair_targets_for_same_gap(
+                mode.clone(),
+                &active_mode,
+            )
+        })
+        .unwrap_or(mode);
     let message = mode.model_instruction();
     let job_ids = background_job_ids_from_submit_result(&result);
     let evidence_ids = evidence_ids_from_submit_result(&result);
@@ -308,6 +318,83 @@ async fn persist_sub_agent_submit_repair_checkpoint(
     }
 }
 
+fn state_blob_with_refined_eas_web_repair_checkpoint(
+    current: Value,
+    agent_path: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    result: &Value,
+    updated_at: chrono::DateTime<chrono::Utc>,
+) -> Option<Value> {
+    if !matches!(
+        tool_name,
+        "stage_worklist_next" | "check_stage_asset_coverage"
+    ) {
+        return None;
+    }
+    let mut checkpoint = agent_run_from_state_blob(&current)?;
+    if checkpoint.agent_path != agent_path {
+        return None;
+    }
+    let active_mode = submit_repair_mode_from_agent_run(&checkpoint)?;
+    let refined =
+        golish_sub_agents::refine_eas_web_repair_mode_from_worklist(&active_mode, result)?;
+    checkpoint.submit_repair_mode = serde_json::to_value(refined).ok();
+    checkpoint.last_tool = Some(ToolCheckpoint {
+        tool_call_id: tool_call_id.to_string(),
+        tool_name: tool_name.to_string(),
+        state: ToolCheckpointState::Completed,
+        result_ref: None,
+    });
+    checkpoint.updated_at = updated_at;
+    Some(state_blob_with_agent_run(current, &checkpoint))
+}
+
+async fn persist_refined_eas_web_repair_checkpoint(
+    tracker: Option<golish_agent_kit::db_tracking::DbTracker>,
+    operation_id: Option<uuid::Uuid>,
+    agent_path: String,
+    tool_call_id: String,
+    tool_name: String,
+    result: Value,
+) {
+    let (Some(tracker), Some(operation_id)) = (tracker, operation_id) else {
+        return;
+    };
+    let Some(repo) = tracker.repo() else {
+        return;
+    };
+    let Some(current) = golish_agent_kit::db_shim::operation_state::get(repo, operation_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|state| state.state_blob)
+    else {
+        return;
+    };
+    let Some(next) = state_blob_with_refined_eas_web_repair_checkpoint(
+        current,
+        &agent_path,
+        &tool_call_id,
+        &tool_name,
+        &result,
+        chrono::Utc::now(),
+    ) else {
+        return;
+    };
+    if let Err(error) =
+        golish_agent_kit::db_shim::operation_state::write_state_blob(repo, operation_id, next).await
+    {
+        tracing::warn!(
+            target: "harness::sub_agent_resume",
+            agent_path = %agent_path,
+            tool = %tool_name,
+            %error,
+            "failed to persist refined EAS WEB repair checkpoint"
+        );
+    }
+}
+
 async fn clear_sub_agent_submit_repair_checkpoint(
     tracker: Option<golish_agent_kit::db_tracking::DbTracker>,
     operation_id: Option<uuid::Uuid>,
@@ -346,6 +433,14 @@ async fn clear_sub_agent_submit_repair_checkpoint(
     }
 }
 
+fn sub_agent_tool_observer_needed(
+    has_execution_monitor: bool,
+    has_db_tracker: bool,
+    has_harness_operation: bool,
+) -> bool {
+    has_execution_monitor || (has_db_tracker && has_harness_operation)
+}
+
 fn build_sub_agent_tool_observer(
     ctx: &AgenticLoopContext<'_>,
     agent_id: &str,
@@ -353,7 +448,14 @@ fn build_sub_agent_tool_observer(
     task_desc: &str,
     restored_submit_repair_mode: Option<SubmitRepairMode>,
 ) -> Option<golish_sub_agents::SubAgentToolObserver> {
-    let monitor = ctx.execution_monitor.as_ref()?.clone();
+    let monitor = ctx.execution_monitor.as_ref().cloned();
+    if !sub_agent_tool_observer_needed(
+        monitor.is_some(),
+        ctx.events.db_tracker.is_some(),
+        ctx.harness_operation_id.is_some(),
+    ) {
+        return None;
+    }
     let llm_client = std::sync::Arc::clone(ctx.llm.client);
     let event_tx = (*ctx.events.event_tx).clone();
     let operation_id = ctx
@@ -391,6 +493,22 @@ fn build_sub_agent_tool_observer(
             );
             let db_tracker = db_tracker.clone();
             Box::pin(async move {
+                if observation.success
+                    && matches!(
+                        observation.tool_name.as_str(),
+                        "stage_worklist_next" | "check_stage_asset_coverage"
+                    )
+                {
+                    persist_refined_eas_web_repair_checkpoint(
+                        db_tracker.clone(),
+                        harness_operation_id,
+                        agent_path.clone(),
+                        observation.tool_call_id.clone(),
+                        observation.tool_name.clone(),
+                        observation.result.clone(),
+                    )
+                    .await;
+                }
                 if observation.tool_name == "submit_stage_deliverable" {
                     if let Some(directive) = repair_directive_from_submit_result(
                         harness_stage,
@@ -425,7 +543,7 @@ fn build_sub_agent_tool_observer(
                                 harness_operation_id,
                                 harness_stage,
                                 agent_path.clone(),
-                                observation.parent_request_id.clone(),
+                                observation.tool_call_id.clone(),
                                 directive,
                                 mode,
                                 observation.result.clone(),
@@ -444,6 +562,8 @@ fn build_sub_agent_tool_observer(
                         .await;
                     }
                 }
+
+                let monitor = monitor?;
 
                 let args_summary =
                     serde_json::to_string(&observation.tool_args).unwrap_or_default();
@@ -747,28 +867,50 @@ where
             let harness_org_id = effective_harness_org_id;
             let hook: golish_sub_agents::SubAgentToolResultHook = std::sync::Arc::new(
                 move |tool_name: String,
-                      _tool_args: serde_json::Value,
+                      tool_args: serde_json::Value,
                       mut result: serde_json::Value,
                       success: bool| {
                     let tracker = tracker.clone();
                     let session_id = session_id.clone();
                     Box::pin(async move {
-                        if let Some(id) = super::record_recon_passive_evidence(
+                        let mut persisted_success = success;
+                        match super::record_recon_passive_evidence(
                             tracker.as_ref(),
                             session_id.as_deref(),
                             Some(stage),
                             harness_org_id,
                             &tool_name,
+                            &tool_args,
                             &result,
                             success,
                         )
                         .await
                         {
-                            if let Some(obj) = result.as_object_mut() {
-                                obj.insert("_evidence_id".to_string(), json!(id));
+                            Ok(Some(id)) => {
+                                if let Some(obj) = result.as_object_mut() {
+                                    obj.insert("_evidence_id".to_string(), json!(id));
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::warn!(
+                                    target: "harness::evidence",
+                                    tool = %tool_name,
+                                    %error,
+                                    "sub-agent Target Intel persistence incomplete; returning retryable error"
+                                );
+                                persisted_success = false;
+                                if let Some(obj) = result.as_object_mut() {
+                                    obj.insert(
+                                        "error".to_string(),
+                                        json!("Target Intel evidence/source status persistence was incomplete; retry this recon action"),
+                                    );
+                                    obj.insert("completion_state".to_string(), json!("partial"));
+                                    obj.insert("outcome_persisted".to_string(), json!(false));
+                                }
                             }
                         }
-                        (result, success)
+                        (result, persisted_success)
                     })
                         as std::pin::Pin<
                             Box<dyn std::future::Future<Output = (serde_json::Value, bool)> + Send>,
@@ -1094,13 +1236,16 @@ fn stage_run_org_id_from_request_id(request_id: &str) -> Option<uuid::Uuid> {
 #[cfg(test)]
 mod tests {
     use super::{
-        dispatch_status_for_sub_agent_success, stage_run_org_id_from_request_id,
+        agent_run_from_state_blob, dispatch_status_for_sub_agent_success,
+        stage_run_org_id_from_request_id, state_blob_with_refined_eas_web_repair_checkpoint,
         sub_agent_checkpoint_agent_path, sub_agent_execution_error_result,
-        sub_agent_tool_execution_result, submit_repair_mode_from_agent_run,
+        sub_agent_tool_execution_result, sub_agent_tool_observer_needed,
+        submit_repair_mode_from_agent_run,
     };
     use golish_agent_kit::harness::StageKind;
     use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
-        AgentRunCheckpoint, AgentRunStatus,
+        state_blob_with_agent_run, AgentRunCheckpoint, AgentRunStatus, RuntimeCorrectionCheckpoint,
+        ToolCheckpointState,
     };
     use golish_sub_agents::{SubAgentContext, SubAgentResult, SubmitRepairKind, SubmitRepairMode};
 
@@ -1248,6 +1393,14 @@ mod tests {
     }
 
     #[test]
+    fn worklist_checkpoint_observer_does_not_require_execution_monitor() {
+        assert!(sub_agent_tool_observer_needed(false, true, true));
+        assert!(sub_agent_tool_observer_needed(true, false, false));
+        assert!(!sub_agent_tool_observer_needed(false, true, false));
+        assert!(!sub_agent_tool_observer_needed(false, false, true));
+    }
+
+    #[test]
     fn checkpoint_agent_path_uses_stage_run_org_when_present() {
         let org_id = "fb90ef2a-eb1c-4288-8f7c-97dc957a26c0";
         let request_id = format!("call_00::org::{org_id}");
@@ -1277,6 +1430,7 @@ mod tests {
             reason: "real ids are [101]".to_string(),
             missing_required_checks: vec!["http_probe".to_string()],
             coverage_gap_actions: Vec::new(),
+            eas_web_repair_targets: None,
             allowed_tools_override: Vec::new(),
             forbidden_tools: Vec::new(),
             directive_message: None,
@@ -1322,6 +1476,7 @@ mod tests {
                 suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["httpx".to_string()],
             }],
+            eas_web_repair_targets: None,
             allowed_tools_override: Vec::new(),
             forbidden_tools: Vec::new(),
             directive_message: None,
@@ -1352,6 +1507,110 @@ mod tests {
         assert!(
             restored.block_result("pentest_run").is_some(),
             "EAS coverage repair must keep raw pentest_run blocked after checkpoint restore"
+        );
+    }
+
+    #[test]
+    fn refreshed_eas_web_lock_checkpoint_round_trips_and_preserves_sibling_state() {
+        let mode = SubmitRepairMode {
+            kind: SubmitRepairKind::CoverageGap,
+            reason: "WEB exact-origin coverage remains".to_string(),
+            missing_required_checks: Vec::new(),
+            coverage_gap_actions: vec![golish_sub_agents::CoverageGapAction {
+                asset: "app.example.com".to_string(),
+                technique: "GOLISH-EAS-WEB-FINGERPRINT".to_string(),
+                reason: "missing_exact_origin".to_string(),
+                suggested_capabilities: Vec::new(),
+                suggested_tools: vec!["eas_fingerprint_web_stack".to_string()],
+            }],
+            eas_web_repair_targets: None,
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
+        };
+        let repair_directive = serde_json::json!({"sentinel": "keep-directive"});
+        let checkpoint = AgentRunCheckpoint {
+            schema_v: 1,
+            operation_id: None,
+            stage: Some(StageKind::ExternalAttackSurface.as_str().to_string()),
+            stage_attempt_id: None,
+            agent_path: "main>stage_run:external_attack_surface>org:abc>prober".to_string(),
+            status: AgentRunStatus::RuntimeCorrectionQueued,
+            llm_turn_index: Some(2),
+            message_chain_ref: Some("chain-1".to_string()),
+            pending_gate_correction: Some("close exact origins".to_string()),
+            pending_submit_only: true,
+            submit_repair_mode: Some(serde_json::to_value(&mode).unwrap()),
+            repair_directive: Some(repair_directive.clone()),
+            runtime_corrections: vec![RuntimeCorrectionCheckpoint {
+                source: "stage_refiner".to_string(),
+                kind: "submit_coverage_gap".to_string(),
+                message: "keep correction".to_string(),
+                job_ids: Vec::new(),
+                evidence_ids: vec![42],
+                submit_allowed: false,
+            }],
+            background_job_ids: vec!["job-1".to_string()],
+            evidence_watermark: Some(42),
+            last_tool: None,
+            updated_at: chrono::DateTime::parse_from_rfc3339("2026-07-12T00:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        };
+        let current = state_blob_with_agent_run(
+            serde_json::json!({
+                "graph_flow": {"next_node": "external_attack_surface"},
+                "stage_run_workers": {"external_attack_surface": {"abc": {"chain_id": "chain-1"}}}
+            }),
+            &checkpoint,
+        );
+        let worklist = serde_json::json!({
+            "ready_to_submit": false,
+            "items": [{
+                "asset": "app.example.com",
+                "target_id": "target-app",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "details": {"recommended_args": {"target_urls": [{
+                    "target_id": "target-app",
+                    "target_url": "https://app.example.com:443"
+                }]}}
+            }]
+        });
+        let updated_at = chrono::DateTime::parse_from_rfc3339("2026-07-12T00:01:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let next = state_blob_with_refined_eas_web_repair_checkpoint(
+            current,
+            &checkpoint.agent_path,
+            "call-worklist-1",
+            "stage_worklist_next",
+            &worklist,
+            updated_at,
+        )
+        .expect("a successful DB-backed refresh updates the durable exact lock");
+        let restored = agent_run_from_state_blob(&next).expect("agent checkpoint remains present");
+        let restored_mode = submit_repair_mode_from_agent_run(&restored).expect("mode restores");
+
+        assert_eq!(
+            restored_mode.eas_web_repair_targets,
+            Some(vec![golish_sub_agents::EasWebRepairTarget {
+                target_id: "target-app".to_string(),
+                target_url: "https://app.example.com:443".to_string(),
+            }])
+        );
+        assert_eq!(restored.repair_directive, Some(repair_directive));
+        assert_eq!(restored.runtime_corrections, checkpoint.runtime_corrections);
+        assert_eq!(restored.background_job_ids, vec!["job-1"]);
+        assert_eq!(restored.updated_at, updated_at);
+        let last_tool = restored.last_tool.expect("refresh tool checkpoint");
+        assert_eq!(last_tool.tool_call_id, "call-worklist-1");
+        assert_eq!(last_tool.tool_name, "stage_worklist_next");
+        assert_eq!(last_tool.state, ToolCheckpointState::Completed);
+        assert_eq!(next["graph_flow"]["next_node"], "external_attack_surface");
+        assert_eq!(
+            next["stage_run_workers"]["external_attack_surface"]["abc"]["chain_id"],
+            "chain-1"
         );
     }
 }

@@ -263,3 +263,21 @@ pub(crate) fn provider_output_is_trusted(status: &AssetIntelProviderRunStatus) -
         AssetIntelProviderRunState::Completed | AssetIntelProviderRunState::CheckedEmpty
     )
 }
+
+/// Decide whether normalized records may be landed independently of the
+/// provider-wide terminal state. Native multi-query providers can return real
+/// records from successful queries while a sibling query fails; those records
+/// remain valid observations even though the provider must stay retryable.
+/// Other failed runtimes do not get this exception because they lack typed
+/// successful-query evidence.
+pub(crate) fn provider_output_has_landable_records(
+    status: &AssetIntelProviderRunStatus,
+    evidence: &serde_json::Value,
+) -> bool {
+    provider_output_is_trusted(status)
+        || (status.status == AssetIntelProviderRunState::Failed
+            && evidence
+                .get("succeededQueries")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|count| count > 0))
+}

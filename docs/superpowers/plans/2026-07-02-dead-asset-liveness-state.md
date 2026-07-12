@@ -1,5 +1,7 @@
 # 死資產標記（target liveness_state）實現計畫（問題一）
 
+> Superseded by [`2026-07-11-intel-eas-asset-identity-closure.md`](../../design/2026-07-11-intel-eas-asset-identity-closure.md) for `real_ip`/liveness semantics. Do not implement this draft's `set_real_ip_by_id -> alive` path.
+
 > **面向 AI 代理的工作者：** 用 `.cursor/skills/executing-plans` 逐任務實現。每任務單獨 commit。設計依據：[`docs/design/2026-07-02-dead-asset-liveness-state.md`](../../design/2026-07-02-dead-asset-liveness-state.md)。
 
 **目標：** 給 `targets` 一個一等持久欄位 `liveness_state`（`alive`/`dead`/`unreachable`，NULL=未探），EAS 探活後蓋值；下游 enumeration/vuln_triage 把確認死亡的資產剔出覆蓋率分母。

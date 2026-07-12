@@ -20,6 +20,7 @@ pub enum ConditionalDirectoryEntryWrite<T> {
 
 const DIR_ENTRY_COLS: &str =
     "id, target_id, url, status_code, content_length, lines, words, content_type, tool, created_at";
+const CURRENT_OWNER_DIR_ENTRY_COLS: &str = "de.id, de.target_id, de.url, de.status_code, de.content_length, de.lines, de.words, de.content_type, de.tool, de.created_at";
 
 fn build_list_by_target_sql() -> String {
     format!(
@@ -41,7 +42,7 @@ fn build_list_by_target_project_sql() -> String {
 
 fn build_list_by_current_target_owner_sql() -> String {
     format!(
-        "SELECT {DIR_ENTRY_COLS} FROM directory_entries de JOIN targets t ON t.id = de.target_id WHERE de.target_id = $1 AND t.scope::text = 'in' AND de.project_path IS NOT DISTINCT FROM t.project_path ORDER BY de.created_at"
+        "SELECT {CURRENT_OWNER_DIR_ENTRY_COLS} FROM directory_entries de JOIN targets t ON t.id = de.target_id WHERE de.target_id = $1 AND t.scope::text = 'in' AND de.project_path IS NOT DISTINCT FROM t.project_path ORDER BY de.created_at"
     )
 }
 
@@ -296,6 +297,9 @@ mod tests {
     #[test]
     fn current_owner_list_checks_scope_and_project() {
         let sql = build_list_by_current_target_owner_sql();
+        assert!(sql.starts_with(
+            "SELECT de.id, de.target_id, de.url, de.status_code, de.content_length, de.lines, de.words, de.content_type, de.tool, de.created_at FROM"
+        ));
         assert!(sql.contains("JOIN targets t ON t.id = de.target_id"));
         assert!(sql.contains("t.scope::text = 'in'"));
         assert!(sql.contains("de.project_path IS NOT DISTINCT FROM t.project_path"));

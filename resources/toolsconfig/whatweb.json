@@ -113,12 +113,12 @@
     "output": {
       "format": "text",
       "produces": ["fingerprint"],
-      "detect": "WhatWeb|\\[ \\d{3} ",
+      "detect": "(?i)whatweb|https?://\\S+\\s+\\[\\d{3}(?:\\s+[^\\]]+)?\\]",
       "db_action": "target_update_recon",
       "patterns": [
         {
           "type": "fingerprint",
-          "regex": "^(https?://\\S+)\\s+\\[(\\d{3})\\]\\s+(.+)$",
+          "regex": "^(https?://\\S+)\\s+\\[(\\d{3})(?:\\s+[^\\]]+)?\\](?:\\s+(.*))?$",
           "fields": {
             "url": "$1",
             "status": "$2",

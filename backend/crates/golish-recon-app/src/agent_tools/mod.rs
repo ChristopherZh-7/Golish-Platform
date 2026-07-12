@@ -20,6 +20,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use golish_core::Tool;
+use golish_pentest_domain::{canonical_asset_key, AssetClass};
 
 use crate::asset_intel::ToolsConfigState;
 use crate::asset_intel::{
@@ -88,8 +89,55 @@ fn subsidiary_intel_parameters() -> Value {
     })
 }
 
+fn organization_visible_in_workspace(organization_project_path: &str, workspace: &Path) -> bool {
+    organization_project_path.is_empty()
+        || organization_project_path == workspace.to_string_lossy().as_ref()
+}
+
+fn resolve_bound_organization_id(requested: Uuid, bound: Option<Uuid>) -> Result<Uuid, String> {
+    if let Some(bound) = bound {
+        if requested != bound {
+            return Err(
+                "organization_id does not match the current stage-run organization".to_string(),
+            );
+        }
+        return Ok(bound);
+    }
+    Ok(requested)
+}
+
+fn requested_domain_within_authorized_hosts(
+    requested: &str,
+    authorized_hosts: &[String],
+) -> Option<String> {
+    let requested = canonical_asset_key(requested)?;
+    if requested.class != AssetClass::Domain {
+        return None;
+    }
+    authorized_hosts
+        .iter()
+        .filter_map(|host| {
+            let wildcard = host.trim().starts_with("*.");
+            canonical_asset_key(host.trim().trim_start_matches("*.")).map(|key| (key, wildcard))
+        })
+        .filter(|(host, _)| host.class == AssetClass::Domain)
+        .any(|(host, wildcard)| {
+            (!wildcard && requested.key == host.key)
+                || (requested.key != host.key
+                    && requested
+                        .key
+                        .strip_suffix(&host.key)
+                        .is_some_and(|prefix| prefix.ends_with('.')))
+        })
+        .then_some(requested.key)
+}
+
 /// Resolve + IDOR-check the org, run the requested passive phase, and shape the
 /// agent-facing result. Shared by both tool impls.
+fn candidate_queue_enabled_for_phase(phase: PassiveIntelPhase) -> bool {
+    matches!(phase, PassiveIntelPhase::Subsidiaries)
+}
+
 async fn run_phase(
     pool: &Arc<PgPool>,
     tools: &ToolsConfigState,
@@ -106,12 +154,17 @@ async fn run_phase(
         Ok(u) => u,
         Err(_) => return Ok(json!({"error": format!("invalid organization_id: {id}")})),
     };
-    let project_path = workspace.to_string_lossy().to_string();
-
+    let uid = match resolve_bound_organization_id(
+        uid,
+        golish_core::current_agent_tool_context().and_then(|context| context.organization_id),
+    ) {
+        Ok(uid) => uid,
+        Err(error) => return Ok(json!({"error": error})),
+    };
     // IDOR guard (AGENTS.md I2): the org must belong to this project (or be a
     // legacy global row, project_path = '').
     match golish_db::repo::organizations::get_one(pool.as_ref(), uid).await {
-        Ok(Some(o)) if o.project_path == project_path || o.project_path.is_empty() => {}
+        Ok(Some(o)) if organization_visible_in_workspace(&o.project_path, workspace) => {}
         Ok(_) => return Ok(json!({"error": "organization not found in this project"})),
         Err(e) => return Ok(json!({"error": e.to_string()})),
     }
@@ -127,16 +180,33 @@ async fn run_phase(
     // b1 (design 2026-06-24): optional targeted domain-keyed repair
     // (recon_map_assets only). None = normal company-name survey; the asset-intel
     // facade may auto-expand discovered owned apexes after that first run.
-    let domain = args
+    let requested_domain = args
         .get("domain")
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let domain = if let Some(requested_domain) = requested_domain {
+        let authorized_hosts =
+            match crate::asset_intel::authorized_domain_scope_hosts(pool.as_ref(), uid).await {
+                Ok(hosts) => hosts,
+                Err(error) => return Ok(json!({"error": error.to_string()})),
+            };
+        match requested_domain_within_authorized_hosts(&requested_domain, &authorized_hosts) {
+            Some(domain) => Some(domain),
+            None => {
+                return Ok(json!({
+                    "error": "domain is outside this organization's authorized target roots"
+                }))
+            }
+        }
+    } else {
+        None
+    };
     let config = AssetIntelHydrateConfig {
         min_ownership_percent,
         depth: None,
         include_branches,
-        create_candidates: Some(true),
+        create_candidates: Some(candidate_queue_enabled_for_phase(phase)),
         domain,
     };
 
@@ -215,7 +285,7 @@ impl Tool for ReconMapAssetsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Survey an organization's external footprint via cyberspace/intel providers (0.zone / quake / fofa / hunter / shodan / ENScan): domains, IP ranges, ASN, subdomains, certificates, ICP records, apps/mini-programs, exposed emails, and OSINT — landed to the org profile + target_assets (host↔IP pairs carry the surveyed real_ip). Zero-touch. Use during target_intel after the engagement subject is confirmed. The normal org/company survey automatically expands bounded owned apex domains it discovers using DOMAIN-keyed provider templates; optional `domain` is only for targeted repair/manual supplement. WHOIS is a separate tool (recon_lookup_whois). Returns a summary with counts, provider ids, and domainExpansions when apex expansion ran."
+        "Survey an organization's external footprint via every configured cyberspace/intel provider (0.zone / quake / fofa / hunter / shodan / ENScan). The backend canonicalizes and deduplicates this invocation's domains and IPs, writes them directly as organization-bound Targets, preserves every hostname↔IP edge in dns_records, and lands service/subdomain relationships; no manual target-candidate approval step is involved. Organization profile fields (ASN, certificates, ICP, apps/mini-programs, exposed emails, OSINT) are updated in the same zero-touch pass. Use during target_intel after the engagement subject is confirmed. Optional `domain` is only for a targeted repair within a pre-authorized query root; provider-discovered Targets do not recursively expand query scope. WHOIS is a separate tool (recon_lookup_whois). Returns separate observation and durable landing counts."
     }
 
     fn parameters(&self) -> Value {
@@ -256,14 +326,14 @@ impl Tool for ReconLookupWhoisTool {
     }
 
     fn description(&self) -> &'static str {
-        "Look up domain registration (WHOIS via RDAP) for an organization — once per org across its registrable domains — and land it to organizations.whois (the target_intel WHOIS coverage cell). Zero-touch HTTP, best-effort (only fills when empty). Use during target_intel. Args: organization_id. Returns whether a whois record landed."
+        "Look up fresh domain registration data (WHOIS via RDAP) for an organization across its registrable domains and land it to organizations.whois (the target_intel WHOIS coverage cell). Zero-touch HTTP. Use during target_intel. Args: organization_id. Returns typed whois_status=found|empty|error|blocked plus attempt counts; an old stored value never substitutes for this run's request."
     }
 
     fn parameters(&self) -> Value {
         passive_intel_parameters("to look up WHOIS for")
     }
 
-    async fn execute(&self, args: Value, _workspace: &Path) -> Result<Value> {
+    async fn execute(&self, args: Value, workspace: &Path) -> Result<Value> {
         let org_id = match args.get("organization_id").and_then(Value::as_str) {
             Some(s) => match Uuid::parse_str(s.trim()) {
                 Ok(id) => id,
@@ -271,16 +341,37 @@ impl Tool for ReconLookupWhoisTool {
             },
             None => return Ok(json!({"error": "'organization_id' is required"})),
         };
+        let org_id = match resolve_bound_organization_id(
+            org_id,
+            golish_core::current_agent_tool_context().and_then(|context| context.organization_id),
+        ) {
+            Ok(org_id) => org_id,
+            Err(error) => return Ok(json!({"error": error})),
+        };
+        // Same project ownership guard as recon_map_assets. WHOIS performs a real
+        // external request, so resolving an arbitrary cross-workspace org id must
+        // fail closed before RDAP is invoked.
         let org = match golish_db::repo::organizations::get_one(self.pool.as_ref(), org_id).await {
-            Ok(Some(org)) => org,
-            Ok(None) => return Ok(json!({"error": format!("organization {org_id} not found")})),
+            Ok(Some(org)) if organization_visible_in_workspace(&org.project_path, workspace) => org,
+            Ok(_) => return Ok(json!({"error": "organization not found in this project"})),
             Err(e) => return Ok(json!({"error": e.to_string()})),
         };
-        match crate::organization_recon::land_whois(self.pool.as_ref(), &org).await {
-            Ok(landed) => Ok(json!({
+        let authorized_hosts =
+            match crate::asset_intel::whois_domain_scope_hosts(self.pool.as_ref(), org_id).await {
+                Ok(hosts) => hosts,
+                Err(error) => return Ok(json!({"error": error.to_string()})),
+            };
+        match crate::organization_recon::land_whois(self.pool.as_ref(), &org, &authorized_hosts)
+            .await
+        {
+            Ok(outcome) => Ok(json!({
                 "action": "lookup_whois",
                 "organization_id": org_id.to_string(),
-                "whois_landed": landed,
+                "whois_landed": matches!(outcome.state, crate::organization_recon::WhoisLandingState::Found),
+                "whois_status": outcome.state.as_str(),
+                "attempted": outcome.attempted,
+                "succeeded": outcome.succeeded,
+                "reason": outcome.reason,
             })),
             Err(e) => Ok(json!({"error": e.to_string()})),
         }
@@ -425,6 +516,80 @@ mod tests {
         assert!(required.iter().any(|r| r == "organization_id"));
         assert!(!required.iter().any(|r| r == "domain"));
         assert!(p["properties"].get("domain").is_some());
+    }
+
+    #[test]
+    fn asset_map_disables_target_candidate_queue_but_subsidiary_review_keeps_it() {
+        assert!(!candidate_queue_enabled_for_phase(
+            PassiveIntelPhase::Enrich
+        ));
+        assert!(candidate_queue_enabled_for_phase(
+            PassiveIntelPhase::Subsidiaries
+        ));
+    }
+
+    #[test]
+    fn whois_project_guard_rejects_cross_workspace_org() {
+        let workspace = Path::new("/tmp/current-project");
+        assert!(organization_visible_in_workspace(
+            "/tmp/current-project",
+            workspace
+        ));
+        assert!(organization_visible_in_workspace("", workspace));
+        assert!(
+            !organization_visible_in_workspace("/tmp/other-project", workspace),
+            "WHOIS must not load an organization owned by another workspace"
+        );
+    }
+
+    #[test]
+    fn stage_bound_organization_cannot_be_overridden_by_model_args() {
+        let bound = Uuid::new_v4();
+        let sibling = Uuid::new_v4();
+        assert_eq!(resolve_bound_organization_id(bound, Some(bound)), Ok(bound));
+        assert!(resolve_bound_organization_id(sibling, Some(bound))
+            .expect_err("sibling org override must be rejected")
+            .contains("current stage-run organization"));
+        assert_eq!(
+            resolve_bound_organization_id(sibling, None),
+            Ok(sibling),
+            "standalone GUI/direct calls keep the project-scoped legacy path"
+        );
+    }
+
+    #[test]
+    fn targeted_domain_repair_never_expands_upward_or_to_third_party() {
+        let roots = vec![
+            "www.moresec.cn".to_string(),
+            "api.example.com".to_string(),
+            "*.wild.moresec.cn".to_string(),
+        ];
+        assert_eq!(
+            requested_domain_within_authorized_hosts("WWW.MoreSec.CN.", &roots).as_deref(),
+            Some("www.moresec.cn")
+        );
+        assert_eq!(
+            requested_domain_within_authorized_hosts("a.www.moresec.cn", &roots).as_deref(),
+            Some("a.www.moresec.cn")
+        );
+        assert_eq!(
+            requested_domain_within_authorized_hosts("moresec.cn", &roots),
+            None,
+            "an approved child host must not authorize its parent/apex"
+        );
+        assert_eq!(
+            requested_domain_within_authorized_hosts("cdn.vendor.net", &roots),
+            None
+        );
+        assert_eq!(
+            requested_domain_within_authorized_hosts("wild.moresec.cn", &roots),
+            None,
+            "wildcard scope authorizes strict children, not its base/apex"
+        );
+        assert_eq!(
+            requested_domain_within_authorized_hosts("a.wild.moresec.cn", &roots).as_deref(),
+            Some("a.wild.moresec.cn")
+        );
     }
 
     #[test]

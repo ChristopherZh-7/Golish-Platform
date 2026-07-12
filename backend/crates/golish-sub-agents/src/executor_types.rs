@@ -232,6 +232,7 @@ pub struct SubAgentToolObservation {
     pub agent_id: String,
     pub agent_name: String,
     pub parent_request_id: String,
+    pub tool_call_id: String,
     pub tool_name: String,
     pub tool_args: serde_json::Value,
     pub result: serde_json::Value,
@@ -306,6 +307,16 @@ pub struct CoverageGapAction {
     pub suggested_tools: Vec<String>,
 }
 
+/// Exact DB-backed EAS WEB repair input returned by the stage worklist.  The
+/// pair is authorization data for the submit-repair guard, not a model hint:
+/// object-form wrapper inputs must match both fields and bare URL inputs must
+/// match `target_url` exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EasWebRepairTarget {
+    pub target_id: String,
+    pub target_url: String,
+}
+
 /// Deterministic refiner directive produced from `submit_stage_deliverable`
 /// `needs_fix`. It is intentionally small and serializable so upper runtime
 /// layers can persist it in `operation_state.state_blob.agent_run`, then inject
@@ -318,6 +329,12 @@ pub struct SubmitRepairMode {
     pub missing_required_checks: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub coverage_gap_actions: Vec<CoverageGapAction>,
+    /// `None` means the host-level gate actions have not yet been refined by a
+    /// current DB worklist page. `Some`, including an empty vector, means a
+    /// DB-backed refresh occurred and is the sole exact-origin authorization
+    /// source for EAS WEB calls in this repair turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eas_web_repair_targets: Option<Vec<EasWebRepairTarget>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools_override: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -383,6 +400,7 @@ impl SubmitRepairMode {
         if self.kind == SubmitRepairKind::CoverageGap {
             append_coverage_gap_worklist_tools(&mut tools, &self.coverage_gap_actions);
             if !self.coverage_gap_actions.is_empty() {
+                append_direct_intel_repair_tools(&mut tools, &self.coverage_gap_actions);
                 append_direct_enumeration_repair_tools(&mut tools, &self.coverage_gap_actions);
                 append_direct_eas_repair_tools(&mut tools, &self.coverage_gap_actions);
                 append_direct_vuln_repair_tools(&mut tools, &self.coverage_gap_actions);
@@ -547,6 +565,7 @@ impl SubmitRepairMode {
                     tool_name,
                     tool_args,
                     &self.coverage_gap_actions,
+                    self.eas_web_repair_targets.as_deref(),
                 ) {
                     return Some(self.block_payload(tool_name, Some(reason)));
                 }
@@ -603,7 +622,10 @@ pub(crate) fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> 
          (browser_collect_js_api/js_extract_apis/route_probe_paths/enum_crawl_same_origin_urls) may be called by \
          name when suggested here; directory discovery must use route_probe_paths, not external \
          ffuf/gobuster/feroxbuster. Bounded crawler URL supplements must use \
-         enum_crawl_same_origin_urls, not raw katana or pentest_run.",
+         enum_crawl_same_origin_urls, not raw katana or pentest_run. For EAS \
+         WEB-FINGERPRINT gaps, copy details.recommended_args.target_urls directly when present, \
+         or pair the work item target_id with each exact details.missing_origins value. Never \
+         guess or rewrite an origin scheme from its port.",
         actions.len(),
         stable_action_hash(actions),
         actions.len().min(MODEL_RECOVERY_ACTION_SAMPLE_LIMIT)
@@ -803,6 +825,31 @@ fn utf8_boundary_at_or_before(value: &str, max_bytes: usize) -> usize {
     end
 }
 
+fn append_direct_intel_repair_tools(tools: &mut Vec<String>, actions: &[CoverageGapAction]) {
+    for action in actions
+        .iter()
+        .filter(|action| action.technique.starts_with("GOLISH-INTEL-"))
+    {
+        for suggested in &action.suggested_tools {
+            let suggested = suggested
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            if matches!(
+                suggested.as_str(),
+                "recon_map_assets" | "recon_lookup_whois"
+            ) {
+                push_unique_tool(tools, &suggested);
+            }
+        }
+        if action.technique == "GOLISH-INTEL-WHOIS" {
+            push_unique_tool(tools, "recon_lookup_whois");
+        }
+    }
+}
+
 fn append_direct_enumeration_repair_tools(tools: &mut Vec<String>, actions: &[CoverageGapAction]) {
     if has_enumeration_gap_actions(actions) {
         push_unique_tool(tools, "enum_preflight_web_origins");
@@ -933,16 +980,26 @@ fn coverage_gap_eas_wrapper_target_block_reason(
     tool_name: &str,
     tool_args: &serde_json::Value,
     actions: &[CoverageGapAction],
+    eas_web_repair_targets: Option<&[EasWebRepairTarget]>,
 ) -> Option<String> {
     if actions.is_empty() {
         return None;
     }
-    let mut targets = Vec::new();
     let batch_key = if tool_name == "eas_fingerprint_web_stack" {
         "target_urls"
     } else {
         "targets"
     };
+
+    if tool_name == "eas_fingerprint_web_stack" {
+        return coverage_gap_eas_web_target_block_reason(
+            tool_args,
+            actions,
+            eas_web_repair_targets,
+        );
+    }
+
+    let mut targets = Vec::new();
     if let Some(batch) = tool_args.get(batch_key).and_then(|v| v.as_array()) {
         for item in batch {
             if let Some(candidate) = item.as_str().map(str::trim).filter(|s| !s.is_empty()) {
@@ -972,6 +1029,153 @@ fn coverage_gap_eas_wrapper_target_block_reason(
     Some(format!(
         "coverage-gap repair blocks {tool_name} target '{blocked}' because it is not in the EAS coverage_gap_actions"
     ))
+}
+
+#[derive(Debug)]
+enum EasWebWrapperTarget<'a> {
+    Bare(&'a str),
+    Bound {
+        target_id: &'a str,
+        target_url: &'a str,
+    },
+}
+
+fn coverage_gap_eas_web_target_block_reason(
+    tool_args: &serde_json::Value,
+    actions: &[CoverageGapAction],
+    eas_web_repair_targets: Option<&[EasWebRepairTarget]>,
+) -> Option<String> {
+    let Some(batch) = tool_args
+        .get("target_urls")
+        .and_then(|value| value.as_array())
+    else {
+        return Some(
+            "coverage-gap repair requires eas_fingerprint_web_stack target_urls[] so exact DB-backed origins can be checked"
+                .to_string(),
+        );
+    };
+    if batch.is_empty() {
+        return Some(
+            "coverage-gap repair requires eas_fingerprint_web_stack target_urls[] so exact DB-backed origins can be checked"
+                .to_string(),
+        );
+    }
+
+    let mut requested = Vec::with_capacity(batch.len());
+    for item in batch {
+        if let Some(target_url) = item
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            requested.push(EasWebWrapperTarget::Bare(target_url));
+            continue;
+        }
+        let target_id = item
+            .get("target_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let target_url = item
+            .get("target_url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let (Some(target_id), Some(target_url)) = (target_id, target_url) else {
+            return Some(
+                "coverage-gap repair requires every eas_fingerprint_web_stack object entry to contain the exact DB-backed target_id and target_url"
+                    .to_string(),
+            );
+        };
+        requested.push(EasWebWrapperTarget::Bound {
+            target_id,
+            target_url,
+        });
+    }
+
+    // A refreshed worklist/check-coverage page is authoritative even when it
+    // contains no WEB rows. Host-level coverage actions must never broaden it.
+    if let Some(authoritative) = eas_web_repair_targets {
+        let allowed_pairs = authoritative
+            .iter()
+            .filter_map(|target| {
+                Some((
+                    target.target_id.trim(),
+                    normalize_exact_web_origin(&target.target_url)?,
+                ))
+            })
+            .collect::<HashSet<_>>();
+        let allowed_urls = allowed_pairs
+            .iter()
+            .map(|(_, target_url)| target_url.clone())
+            .collect::<HashSet<_>>();
+
+        for target in requested {
+            let blocked = match target {
+                EasWebWrapperTarget::Bare(target_url) => normalize_exact_web_origin(target_url)
+                    .is_none_or(|target_url| !allowed_urls.contains(&target_url)),
+                EasWebWrapperTarget::Bound {
+                    target_id,
+                    target_url,
+                } => normalize_exact_web_origin(target_url).is_none_or(|target_url| {
+                    !allowed_pairs.contains(&(target_id.trim(), target_url))
+                }),
+            };
+            if blocked {
+                let display = match target {
+                    EasWebWrapperTarget::Bare(target_url) => target_url,
+                    EasWebWrapperTarget::Bound { target_url, .. } => target_url,
+                };
+                return Some(format!(
+                    "coverage-gap repair blocks eas_fingerprint_web_stack target '{display}' because its exact target_id/origin pair is not in the current DB-backed stage worklist"
+                ));
+            }
+        }
+        return None;
+    }
+
+    // Some legacy gates already name an exact absolute origin as the action
+    // asset. Preserve that narrow authority for bare URL input only. A host/IP
+    // action has no scheme/port identity, and object input has no trusted ID,
+    // so both must refresh the DB worklist before active scanning.
+    let exact_action_urls = actions
+        .iter()
+        .filter(|action| action.technique == "GOLISH-EAS-WEB-FINGERPRINT")
+        .filter_map(|action| normalize_exact_web_origin(&action.asset))
+        .collect::<HashSet<_>>();
+    if exact_action_urls.is_empty() {
+        return Some(
+            "coverage-gap repair has only host-level WEB actions; call stage_worklist_next (or check_stage_asset_coverage) before eas_fingerprint_web_stack so exact DB-backed target_id/target_url pairs can be enforced"
+                .to_string(),
+        );
+    }
+    for target in requested {
+        let EasWebWrapperTarget::Bare(target_url) = target else {
+            return Some(
+                "coverage-gap repair cannot authorize an object-form EAS WEB target from a host-level action; refresh stage_worklist_next for its exact DB-backed target_id/target_url pair"
+                    .to_string(),
+            );
+        };
+        if normalize_exact_web_origin(target_url)
+            .is_none_or(|target_url| !exact_action_urls.contains(&target_url))
+        {
+            return Some(format!(
+                "coverage-gap repair blocks eas_fingerprint_web_stack target '{target_url}' because it is not an exact EAS WEB origin named by the gate"
+            ));
+        }
+    }
+    None
+}
+
+fn normalize_exact_web_origin(value: &str) -> Option<String> {
+    let value = value.trim().trim_end_matches('/');
+    let authority = value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"))?;
+    if authority.is_empty() || authority.contains(['/', '?', '#']) {
+        return None;
+    }
+    Some(value.to_ascii_lowercase())
 }
 
 fn coverage_gap_vuln_wrapper_block_reason(
@@ -1341,7 +1545,7 @@ fn looks_like_output_path(token_lc: &str) -> bool {
     )
 }
 
-fn normalize_probe_target(value: &str) -> String {
+pub(crate) fn normalize_probe_target(value: &str) -> String {
     let mut s = clean_probe_token(value).trim().to_ascii_lowercase();
     if let Some(rest) = s.strip_prefix("http://") {
         s = rest.to_string();
@@ -1493,12 +1697,36 @@ mod tests {
     }
 
     #[test]
+    fn target_intel_repair_allows_only_the_suggested_recon_tool() {
+        let mode = SubmitRepairMode {
+            kind: SubmitRepairKind::CoverageGap,
+            reason: "OSINT is non-terminal".to_string(),
+            missing_required_checks: Vec::new(),
+            coverage_gap_actions: vec![CoverageGapAction {
+                asset: "moresec.cn".to_string(),
+                technique: "GOLISH-INTEL-OSINT".to_string(),
+                reason: "missing_terminal_coverage".to_string(),
+                suggested_capabilities: Vec::new(),
+                suggested_tools: vec!["recon_map_assets".to_string()],
+            }],
+            eas_web_repair_targets: None,
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
+        };
+
+        assert!(mode.allows("recon_map_assets"));
+        assert!(!mode.allows("recon_discover_subsidiaries"));
+    }
+
+    #[test]
     fn recovery_projection_bounds_1176_actions_and_block_payload() {
         let mode = SubmitRepairMode {
             kind: SubmitRepairKind::CoverageGap,
             reason: "enumeration coverage has pending cells".to_string(),
             missing_required_checks: Vec::new(),
             coverage_gap_actions: many_coverage_gap_actions(1_176),
+            eas_web_repair_targets: None,
             allowed_tools_override: Vec::new(),
             forbidden_tools: Vec::new(),
             directive_message: None,

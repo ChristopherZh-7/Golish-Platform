@@ -167,7 +167,7 @@
     ],
     "output": {
       "format": "text",
-      "produces": ["host", "port", "service", "state"],
+      "produces": ["host", "port", "service", "version", "state", "liveness"],
       "detect": "Nmap scan report|PORT\\s+STATE\\s+SERVICE",
       "db_action": "target_update_recon",
       "patterns": [
@@ -184,10 +184,17 @@
         },
         {
           "type": "host_status",
-          "regex": "Nmap scan report for ([\\w\\.-]+)(?:\\s+\\(([\\d\\.]+)\\))?",
+          "regex": "^Nmap scan report for (.+?)(?:\\s+\\(([^)]+)\\))?$",
           "fields": {
             "hostname": "$1",
             "ip": "$2"
+          }
+        },
+        {
+          "type": "host_up",
+          "regex": "^(Host is up)(?:[ .].*)?$",
+          "fields": {
+            "liveness": "$1"
           }
         }
       ]

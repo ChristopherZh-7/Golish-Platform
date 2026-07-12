@@ -2075,6 +2075,14 @@ async function main() {
       failure,
     ]),
   );
+  for (const [signature, failure] of recoveryFailures) {
+    if (
+      failure.kind === "script_body" &&
+      scriptsByUrl.has(canonicalScriptUrl(failure.url))
+    ) {
+      recoveryFailures.delete(signature);
+    }
+  }
   const pendingRecoveryPages = new Set();
   const recoveryFailureList = () =>
     [...recoveryFailures.values()].sort(

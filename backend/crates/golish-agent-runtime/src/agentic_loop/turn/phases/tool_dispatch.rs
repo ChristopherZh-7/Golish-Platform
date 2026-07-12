@@ -21,6 +21,7 @@ use golish_sub_agents::SubAgentContext;
 use super::super::super::context::{AgenticLoopContext, LoopCaptureContext};
 use super::super::super::llm_stream_start::SUBMIT_STAGE_DELIVERABLE_TOOL;
 use super::super::super::tool_dispatch::dispatch_tool_calls;
+use super::super::super::tool_dispatch::ToolDispatchOutcome;
 use super::super::super::tool_gate::{decide_tool_intent, ToolGateDecision};
 use super::super::super::tool_intent::{ToolIntent, ToolIntentSource};
 use super::super::super::unified_helpers::push_unavailable_tool_results;
@@ -49,7 +50,8 @@ pub async fn run<M>(
     chat_history: &mut Vec<Message>,
     submit_only_lock: bool,
     forced_tool_lock: Option<&str>,
-) where
+) -> ToolDispatchOutcome
+where
     M: rig::completion::CompletionModel + Sync,
 {
     // 防御 B · submit-only 闭锁：锁定期只放过 submit_stage_deliverable，其余（含
@@ -146,7 +148,7 @@ pub async fn run<M>(
     }
 
     if !permitted.is_empty() {
-        dispatch_tool_calls(
+        return dispatch_tool_calls(
             permitted,
             ctx,
             capture_ctx,
@@ -158,6 +160,7 @@ pub async fn run<M>(
         )
         .await;
     }
+    ToolDispatchOutcome::default()
 }
 
 async fn emit_policy_denials_for_rejected(

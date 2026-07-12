@@ -37,6 +37,18 @@ enum PhaseGateDecision {
     Rework(String),
 }
 
+/// The generic reflector bound and the request-scoped `stage_run` circuit
+/// breaker are independent limits. A gate BLOCK may open another automatic
+/// repair turn only while both still permit it. A later explicit user
+/// continuation gets a new top-level request lease, so its stage-run guard is
+/// reset before this policy is evaluated.
+fn should_retry_gate_block(
+    reflector_attempt: usize,
+    stage_run_retry_budget_exhausted: bool,
+) -> bool {
+    reflector_attempt < MAX_REFLECTOR_RETRIES && !stage_run_retry_budget_exhausted
+}
+
 impl TaskOrchestrator {
     /// Execute a single subtask with enrichment, planning, reflector retry,
     /// and optional user input pause.
@@ -239,7 +251,10 @@ impl TaskOrchestrator {
 
             match exec_result {
                 Ok(agent_result) => {
-                    if reflector_attempt < MAX_REFLECTOR_RETRIES
+                    let stage_run_retry_budget_exhausted = exec_ctx
+                        .harness_stage
+                        .is_some_and(|stage| executor.stage_run_retry_budget_exhausted(stage));
+                    if should_retry_gate_block(reflector_attempt, stage_run_retry_budget_exhausted)
                         && looks_like_text_only_response(&agent_result.content)
                     {
                         // 设计 2026-06-12-unified-refiner (PR-R4) · F 类：确定性
@@ -340,7 +355,10 @@ impl TaskOrchestrator {
                             // C4 · gate BLOCK with retries left → feed the
                             // correction back into the loop; defer transition until
                             // the gate settles (PASS, or BLOCK with no retries left).
-                            if reflector_attempt < MAX_REFLECTOR_RETRIES {
+                            if should_retry_gate_block(
+                                reflector_attempt,
+                                stage_run_retry_budget_exhausted,
+                            ) {
                                 tracing::info!(
                                     "[TaskMode/Harness] Gate BLOCK on '{}' (attempt {}/{}), \
                                      feeding correction back (submit_only={})",
@@ -356,6 +374,12 @@ impl TaskOrchestrator {
                                     ..agent_result
                                 });
                                 continue;
+                            } else if stage_run_retry_budget_exhausted {
+                                tracing::info!(
+                                    target: "harness::hook",
+                                    stage = %outcome.gated_stage.as_str(),
+                                    "stage_run retry budget exhausted in this top-level request; stopping automatic gate-repair turns"
+                                );
                             }
                         }
                         self.consume_gate_outcome(task_id, outcome).await;
@@ -1448,7 +1472,9 @@ impl TaskOrchestrator {
             .active_stage_started_at_for_gate(planned, task_id)
             .await;
         let wave_cutoff = self.asset_wave_cutoff_for_gate(planned, task_id).await;
-        let result = match wave_cutoff {
+        let asset_axis_cutoff =
+            crate::harness::org_gate::stage_asset_axis_cutoff(stage, stage_started_at, wave_cutoff);
+        let result = match asset_axis_cutoff {
             Some(cutoff) => {
                 self.repo
                     .in_scope_assets_created_before(self.harness_org_id, cutoff)
@@ -1465,7 +1491,8 @@ impl TaskOrchestrator {
                     {
                         if let Ok(snapshot) = self
                             .repo
-                            .stage_asset_coverage(
+                            .stage_asset_coverage_for_operation(
+                                Some(task_id),
                                 org_id,
                                 stage.as_str(),
                                 Some(session_id),
@@ -1496,7 +1523,7 @@ impl TaskOrchestrator {
                     target: "harness::hook",
                     asset_count = v.len(),
                     org_id = ?self.harness_org_id,
-                    wave_cutoff = ?wave_cutoff,
+                    asset_axis_cutoff = ?asset_axis_cutoff,
                     "injecting authoritative in-scope assets into coverage gate"
                 );
                 Some(v)
@@ -1829,19 +1856,24 @@ impl TaskOrchestrator {
             );
         }
         let now = chrono::Utc::now();
+        let expected_stage_run_id = task_id.to_string();
         let fresh: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>)> = self
             .repo
-            .org_stage_completions_get(stage.as_str(), &org_ids)
+            .org_stage_completions_get_with_run_id(stage.as_str(), &org_ids)
             .await
             .unwrap_or_default()
             .into_iter()
-            .filter(|(_, at)| {
-                completion_is_fresh_for_stage(
-                    *at,
+            .filter_map(|(organization_id, passed_at, row_stage_run_id)| {
+                (completion_row_belongs_to_task(
+                    row_stage_run_id.as_deref(),
+                    &expected_stage_run_id,
+                ) && completion_is_fresh_for_stage(
+                    passed_at,
                     now,
                     STAGE_COMPLETION_TTL_SECS,
                     completion_not_before,
-                )
+                ))
+                .then_some((organization_id, passed_at))
             })
             .collect();
         let have: std::collections::HashSet<uuid::Uuid> = fresh.iter().map(|(o, _)| *o).collect();
@@ -2062,7 +2094,17 @@ impl TaskOrchestrator {
         }
         let org_id = self.harness_org_id?;
         let sid = self.chat_session_id.as_deref()?;
-        let rows = self.repo.source_query_facts(org_id, sid).await;
+        let rows = match self.repo.source_query_facts(org_id, sid).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    %error,
+                    "source_query_facts read failed; specialist org gate will fail closed"
+                );
+                return None;
+            }
+        };
         if rows.is_empty() {
             return None;
         }
@@ -2187,16 +2229,19 @@ impl TaskOrchestrator {
     /// §3.4 P1 强化). The deterministic gate only checks that a `scope_human_approved`
     /// claim EXISTS — which a weak model can fabricate without doing the work. For
     /// red_team profiles (`scoping_policy.require_unit_candidates`) cross-verify
-    /// against this session's REAL `tool_calls` that the model actually invoked
-    /// `ask_human(input_type="unit_review")`. Earlier versions also forced a
+    /// against this session's REAL `tool_calls` that the human either explicitly
+    /// chose root-only scope, or completed a same-root candidate proposal followed
+    /// by `ask_human(input_type="unit_review")`. Earlier versions also forced a
     /// `manage_organizations(action="create")`, but that made REUSE mode unsafe:
     /// an existing root org/tree would be re-created or expanded just to appease
     /// the gate. Creation is still fine when the org is missing or the user
     /// explicitly added units, but a human-confirmed existing tree is already a
-    /// persisted record. Missing unit_review ⇒ flip PASS→BLOCK + corrective hint.
-    /// Fails OPEN when the
-    /// action set can't be verified (no tool_calls recorded), mirroring the
-    /// evidence cross-checks (never block on infra absence).
+    /// persisted record. An incomplete selected branch flips PASS→BLOCK with a
+    /// corrective hint.
+    /// The current operation's persisted tool lifecycle is authoritative. A
+    /// required unit review or a non-empty target review fails closed when that
+    /// lifecycle is missing; an organization-only flow with no target snapshot
+    /// does not manufacture an empty target-table review.
     async fn enforce_scoping_red_team_flow(
         &self,
         outcome: &mut HarnessGateOutcome,
@@ -2209,31 +2254,148 @@ impl TaskOrchestrator {
         if !crate::harness::feature_flags::scoping_human_gate_enabled() {
             return;
         }
-        // Only red_team-style profiles (require_unit_candidates) enforce the
-        // unit-candidate review flow.
-        if !scoping_policy_for_ctx(exec_ctx).require_unit_candidates {
+        let policy = scoping_policy_for_ctx(exec_ctx);
+        let scope_alignment_enabled = policy.require_human_scope_approval
+            && matches!(
+                policy.asset_confirmation,
+                crate::harness::profile::AssetConfirmation::Interactive
+            );
+        if !policy.require_unit_candidates && !scope_alignment_enabled {
             return;
         }
-        let seen = match self.repo.scoping_actions_for_session(self.session_id).await {
+        let trusted_bound_org = self.harness_org_id.or(exec_ctx.harness_org_id);
+        let review_organization_id =
+            match resolve_scoping_review_org(trusted_bound_org, outcome.engagement_org_id) {
+                Ok(organization_id) => organization_id,
+                Err(correction) => {
+                    outcome.gate_allowed = false;
+                    outcome.red_team_flow_correction = Some(correction);
+                    return;
+                }
+            };
+        let trusted_snapshot = if scope_alignment_enabled {
+            match self
+                .repo
+                .scoping_target_snapshot(review_organization_id)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    outcome.gate_allowed = false;
+                    outcome.red_team_flow_correction = Some(format!(
+                        "SCOPING TARGET REVIEW INCOMPLETE — trusted target snapshot read failed: {error}"
+                    ));
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        let requires_scope_review = scope_alignment_enabled && !trusted_snapshot.is_empty();
+        let requires_lifecycle = policy.require_unit_candidates || requires_scope_review;
+
+        // For an empty snapshot, an absent scope_review is correct. We still
+        // inspect an existing lifecycle when available so a model-authored
+        // non-empty proposal cannot masquerade as trusted scope.
+        let inspect_optional_empty_review = scope_alignment_enabled && trusted_snapshot.is_empty();
+        if !requires_lifecycle && !inspect_optional_empty_review {
+            return;
+        }
+        let review_not_before = match exec_ctx.operation_id {
+            Some(operation_id) => {
+                match crate::db_shim::operation_state::get(&*self.repo, operation_id).await {
+                    Ok(Some(state))
+                        if crate::harness::StageKind::try_parse(&state.current_stage)
+                            == Some(crate::harness::StageKind::Scoping) =>
+                    {
+                        state.stage_started_at
+                    }
+                    Ok(Some(_)) => {
+                        if requires_lifecycle {
+                            outcome.gate_allowed = false;
+                            outcome.red_team_flow_correction = Some(
+                                "SCOPING HUMAN REVIEW INCOMPLETE — the operation is not durably bound to the current Scoping stage; refusing to reuse session-level approval history."
+                                    .to_string(),
+                            );
+                        }
+                        return;
+                    }
+                    Ok(None) | Err(_) => {
+                        if requires_lifecycle {
+                            outcome.gate_allowed = false;
+                            outcome.red_team_flow_correction = Some(
+                                "SCOPING HUMAN REVIEW INCOMPLETE — the current operation's Scoping start time is unavailable; refusing to reuse session-level approval history."
+                                    .to_string(),
+                            );
+                        }
+                        return;
+                    }
+                }
+            }
+            None => {
+                if requires_lifecycle {
+                    outcome.gate_allowed = false;
+                    outcome.red_team_flow_correction = Some(
+                        "SCOPING HUMAN REVIEW INCOMPLETE — no current operation id is available; refusing to reuse session-level approval history."
+                            .to_string(),
+                    );
+                }
+                return;
+            }
+        };
+        let seen = match self
+            .repo
+            .scoping_actions_for_session(self.session_id, review_organization_id, review_not_before)
+            .await
+        {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(
                     target: "harness::hook",
                     error = %e,
-                    "scoping red_team flow cross-check failed; not blocking on infra error"
+                    "scoping red_team flow cross-check failed"
                 );
+                if requires_lifecycle {
+                    outcome.gate_allowed = false;
+                    outcome.red_team_flow_correction = Some(format!(
+                        "SCOPING HUMAN REVIEW INCOMPLETE — approval verification failed: {e}. A scope_human_approved claim alone cannot prove the required review."
+                    ));
+                }
                 return;
             }
         };
-        if let Some(correction) = evaluate_red_team_scoping_flow(seen) {
+        let Some(seen) = seen else {
+            if requires_lifecycle {
+                outcome.gate_allowed = false;
+                outcome.red_team_flow_correction = Some(
+                    "SCOPING HUMAN REVIEW INCOMPLETE — approval verification is unavailable because no persisted tool-call lifecycle exists for this durable session; a scope_human_approved claim alone cannot prove the required review."
+                        .to_string(),
+                );
+            }
+            return;
+        };
+        let mut corrections = Vec::new();
+        if policy.require_unit_candidates {
+            if let Some(correction) = evaluate_red_team_scoping_flow(Some(seen.clone())) {
+                corrections.push(correction);
+            }
+        }
+        if scope_alignment_enabled
+            && (requires_scope_review || !seen.scope_review_targets.is_empty())
+        {
+            if let Some(correction) = evaluate_scope_review_alignment(&seen, &trusted_snapshot) {
+                corrections.push(correction);
+            }
+        }
+        if !corrections.is_empty() {
             tracing::warn!(
                 target: "harness::hook",
                 stage = %outcome.gated_stage.as_str(),
-                "gate BLOCK: red_team scoping skipped the unit-candidate review flow"
+                "gate BLOCK: red_team scoping review is not aligned with trusted scope state"
             );
             // 设计 2026-06-12-unified-refiner · 只置事实标记，Refiner G 类透传该文本。
             outcome.gate_allowed = false;
-            outcome.red_team_flow_correction = Some(correction);
+            outcome.red_team_flow_correction = Some(corrections.join("\n"));
         }
     }
 
@@ -2338,6 +2500,10 @@ impl TaskOrchestrator {
         outcome.gate_allowed = false;
         outcome.expired = expired;
     }
+}
+
+fn completion_row_belongs_to_task(row_stage_run_id: Option<&str>, task_id: &str) -> bool {
+    row_stage_run_id == Some(task_id)
 }
 
 /// Pure core of the evidence-existence gate: the cited ids absent from the
@@ -3120,26 +3286,177 @@ fn scoping_policy_for_ctx(exec_ctx: &ExecutionContext) -> crate::harness::profil
 
 /// Pure decision for [`TaskOrchestrator::enforce_scoping_red_team_flow`]: given the
 /// cross-verified scoping actions, return `Some(correction)` when the red_team
-/// unit-review flow was skipped (⇒ BLOCK), or `None` to allow. `None` actions
-/// (unverifiable, e.g. no recorded tool_calls) allow (fail open).
+/// unit-review flow was skipped (⇒ BLOCK), or `None` to allow. This pure helper
+/// treats `None` as no correction; the outer gate separately fails closed when
+/// a required lifecycle is unavailable.
 fn evaluate_red_team_scoping_flow(
     seen: Option<crate::db_traits::ScopingActionsSeen>,
 ) -> Option<String> {
-    let seen = seen?; // unverifiable → fail open (allow)
-    if seen.unit_review_invoked {
+    let seen = seen?;
+    if seen.subsidiaries_excluded {
+        return None;
+    }
+    if seen.unit_candidates_proposed && seen.unit_review_invoked {
         return None;
     }
     let mut missing = Vec::new();
-    missing
-        .push("ask_human(input_type=\"unit_review\") for the user to confirm/edit candidate units");
+    if !seen.unit_candidates_proposed {
+        missing.push("manage_organizations(action=\"propose_candidates\")");
+    }
+    if !seen.unit_review_invoked {
+        missing.push(
+            "ask_human(input_type=\"unit_review\") for the user to confirm/edit candidate units",
+        );
+    }
     Some(format!(
         "RED-TEAM SCOPING INCOMPLETE — a `scope_human_approved` claim is present but this run never \
-         performed the required human unit-review flow. Missing: {}. Before you submit the scoping \
-         deliverable you MUST actually call manage_organizations(action=\"propose_candidates\"), then \
-         ask_human(input_type=\"unit_review\") so the user judges the candidate units. If the root \
-         org/tree already exists, DO NOT call create/create_batch just to satisfy the gate; only create \
-         a missing root or units the user explicitly added/confirmed. A claim alone is not sufficient.",
+         completed the required subsidiary-scope branch. Missing: {}. If the human explicitly chooses \
+         parent/root-only scope in ask_human(input_type=\"choice\", context containing \
+         decision=\"subsidiary_scope\"), do not manufacture a candidate or unit-review table. Otherwise, \
+         before submit you MUST call manage_organizations(action=\"propose_candidates\"), then \
+         ask_human(input_type=\"unit_review\") so the user judges candidate units. If the root org/tree \
+         already exists, DO NOT call create/create_batch just to satisfy the gate; only create a missing \
+         root or units the user explicitly added/confirmed. A claim alone is not sufficient.",
         missing.join(" and ")
+    ))
+}
+
+fn resolve_scoping_review_org(
+    trusted_bound_org: Option<uuid::Uuid>,
+    claimed_org: Option<uuid::Uuid>,
+) -> Result<uuid::Uuid, String> {
+    match (trusted_bound_org, claimed_org) {
+        (Some(bound), Some(claimed)) if bound != claimed => Err(format!(
+            "SCOPING TARGET REVIEW INCOMPLETE — scope claim organization {claimed} does not match the trusted operation organization {bound}."
+        )),
+        (Some(bound), _) => Ok(bound),
+        (None, Some(claimed)) => Ok(claimed),
+        (None, None) => Err(
+            "SCOPING TARGET REVIEW INCOMPLETE — the approved scope cannot be matched to a trusted organization because the scope claim subject is not an organization UUID."
+                .to_string(),
+        ),
+    }
+}
+
+fn canonical_scoping_target(row: &crate::db_traits::ScopingReviewedTarget) -> Option<String> {
+    let target_type = row.target_type.trim().to_ascii_lowercase();
+    let scope = row.scope.trim().to_ascii_lowercase();
+    if !matches!(scope.as_str(), "in" | "out") {
+        return None;
+    }
+    let raw = row.value.trim();
+    let identity = match target_type.as_str() {
+        "url" => golish_pentest_domain::canonical_web_origin(raw)?.key,
+        "wildcard" => {
+            let base = raw.strip_prefix("*.")?;
+            let key = golish_pentest_domain::canonical_asset_key(base)?;
+            if key.class != golish_pentest_domain::AssetClass::Domain {
+                return None;
+            }
+            format!("*.{}", key.key)
+        }
+        "domain" => {
+            if raw.to_ascii_lowercase().starts_with("http://")
+                || raw.to_ascii_lowercase().starts_with("https://")
+                || raw.starts_with("*.")
+            {
+                return None;
+            }
+            let key = golish_pentest_domain::canonical_asset_key(raw)?;
+            (key.class == golish_pentest_domain::AssetClass::Domain).then_some(key.key)?
+        }
+        "ip" => {
+            let key = golish_pentest_domain::canonical_asset_key(raw)?;
+            (key.class == golish_pentest_domain::AssetClass::Ip).then_some(key.key)?
+        }
+        "cidr" => canonical_scoping_cidr(raw)?,
+        _ => return None,
+    };
+    Some(format!("{scope}|{target_type}|{identity}"))
+}
+
+fn canonical_scoping_cidr(raw: &str) -> Option<String> {
+    let (address, prefix) = raw.trim().split_once('/')?;
+    let address: std::net::IpAddr = address.trim().parse().ok()?;
+    let prefix: u8 = prefix.trim().parse().ok()?;
+    match address {
+        std::net::IpAddr::V4(address) if prefix <= 32 => {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
+            let network = std::net::Ipv4Addr::from(u32::from(address) & mask);
+            Some(format!("{network}/{prefix}"))
+        }
+        std::net::IpAddr::V6(address) if prefix <= 128 => {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - prefix)
+            };
+            let network = std::net::Ipv6Addr::from(u128::from(address) & mask);
+            Some(format!("{network}/{prefix}"))
+        }
+        _ => None,
+    }
+}
+
+fn evaluate_scope_review_alignment(
+    seen: &crate::db_traits::ScopingActionsSeen,
+    persisted: &[crate::db_traits::ScopingReviewedTarget],
+) -> Option<String> {
+    // Company-name / organization-only Scoping has no concrete trusted target
+    // snapshot to approve. Do not manufacture an empty target-table review. A
+    // non-empty human proposal against an empty store still falls through to the
+    // mismatch check below and cannot expand authorization.
+    if persisted.is_empty() && seen.scope_review_targets.is_empty() {
+        return None;
+    }
+    if seen.scope_review_attempts != 1 {
+        let detail = if seen.scope_review_attempts == 0 {
+            "no successful parseable scope_review was persisted"
+        } else {
+            "multiple scope_review lifecycles were persisted; an earlier human edit/rejection cannot be replaced by a later confirmation"
+        };
+        return Some(format!(
+            "SCOPING TARGET REVIEW INCOMPLETE — exactly one scope_review is required for a non-empty trusted snapshot, but {} were observed; {detail}.",
+            seen.scope_review_attempts
+        ));
+    }
+    if !seen.scope_review_approved {
+        return Some(
+            "SCOPING TARGET REVIEW INCOMPLETE — this run has no successful parseable ask_human(input_type=\"scope_review\") response; a claim alone cannot approve scope."
+                .to_string(),
+        );
+    }
+    let reviewed: std::collections::BTreeSet<String> = seen
+        .scope_review_targets
+        .iter()
+        .filter_map(canonical_scoping_target)
+        .collect();
+    let stored: std::collections::BTreeSet<String> = persisted
+        .iter()
+        .filter_map(canonical_scoping_target)
+        .collect();
+    if reviewed.len() != seen.scope_review_targets.len() || stored.len() != persisted.len() {
+        return Some(
+            "SCOPING TARGET REVIEW INCOMPLETE — the reviewed or stored target list contains an invalid type/value/scope row."
+                .to_string(),
+        );
+    }
+    if reviewed.is_empty() {
+        return Some(
+            "SCOPING TARGET REVIEW INCOMPLETE — no concrete target seed was approved.".to_string(),
+        );
+    }
+    if reviewed == stored {
+        return None;
+    }
+    let missing_from_store = reviewed.difference(&stored).cloned().collect::<Vec<_>>();
+    let not_reviewed = stored.difference(&reviewed).cloned().collect::<Vec<_>>();
+    Some(format!(
+        "SCOPING TARGET REVIEW INCOMPLETE — the human-edited list does not match the trusted pre-stage target snapshot. missing_from_store={missing_from_store:?}; not_reviewed={not_reviewed:?}. Update scope through the trusted UI/CLI ingestion path, then rerun Scoping; do not call manage_targets inside the stage."
     ))
 }
 
@@ -3200,7 +3517,7 @@ fn synthesize_stage_subtask(
             }
             if scoping_policy.require_unit_candidates {
                 steps.push_str(
-                    "2) Call manage_organizations(action=\"propose_candidates\") to list candidate unit/organization names (subsidiaries, aliases), then ask_human(input_type=\"unit_review\") so the user can judge/edit them. If the engagement root/tree already exists, reuse it and do not create more orgs; only call manage_organizations(action=\"create\"/\"create_batch\") for a missing root or units the user explicitly added/confirmed. ",
+                    "2) Ask the human whether subsidiaries/branches are in scope using ask_human(input_type=\"choice\", context=\"{\\\"decision\\\":\\\"subsidiary_scope\\\",\\\"organization_id\\\":\\\"<root-id>\\\"}\"). If they explicitly choose parent/root-only scope, persist that decision and skip discovery, propose_candidates, and unit_review. Only when subsidiaries may be included, call manage_organizations(action=\"propose_candidates\") and then ask_human(input_type=\"unit_review\") so the user can judge/edit candidates. If the engagement root/tree already exists, reuse it and do not create more orgs; only call manage_organizations(action=\"create\"/\"create_batch\") for a missing root or units the user explicitly added/confirmed. ",
                 );
             }
             if matches!(
@@ -3208,12 +3525,12 @@ fn synthesize_stage_subtask(
                 AssetConfirmation::Interactive
             ) {
                 steps.push_str(
-                    "3) Parse the user input into a candidate target list (mark in/out of scope), call ask_human(input_type=\"scope_review\") so the user can add/remove/edit, and ONLY AFTER approval write them via manage_targets(action=\"add\", with scope/organization_id). ",
+                    "3) Inspect the concrete domain/IP/CIDR/URL seeds already ingested by the trusted UI/CLI before this stage. Only when that trusted snapshot is NON-EMPTY, call ask_human(input_type=\"scope_review\") EXACTLY ONCE so the user can confirm or reject the exact list; after an edit/rejection, stop instead of opening a second review. For company/organization-only input with an EMPTY snapshot, do not ask for an empty target review; the applicable organization/unit confirmation is sufficient. Do NOT call manage_targets or create assets from organization OSINT; if a proposed approved seed is absent from the scoped target store, stop with a concrete ingestion blocker instead of inventing it. ",
                 );
             }
             if scoping_policy.require_human_scope_approval {
                 steps.push_str(
-                    "4) After human approval, record a claim {kind:\"scope_human_approved\", subject:<engagement subject>} citing the ask_human request_id, then submit_stage_deliverable. ",
+                    "4) After the applicable human approval, record a claim {kind:\"scope_human_approved\", subject:<engagement subject>} citing the applicable ask_human request_id (the `subsidiary_scope` choice for parent-only scope, `unit_review` when subsidiaries were reviewed, or `scope_review` for a non-empty concrete snapshot), then submit_stage_deliverable. ",
                 );
             }
             steps.push_str("Do NOT perform any active scanning in this stage.");
@@ -3362,6 +3679,22 @@ mod dag_driven_helper_tests {
     use crate::harness::StageKind;
 
     #[test]
+    fn final_fanout_gate_rejects_another_operations_completion() {
+        assert!(completion_row_belongs_to_task(
+            Some("operation-b"),
+            "operation-b"
+        ));
+        assert!(
+            !completion_row_belongs_to_task(Some("operation-a"), "operation-b"),
+            "a fresh timestamp from a concurrent operation must not satisfy this task"
+        );
+        assert!(
+            !completion_row_belongs_to_task(None, "operation-b"),
+            "legacy unbound completion rows fail closed at the operation final gate"
+        );
+    }
+
+    #[test]
     fn request_local_resume_input_overrides_durable_original_without_merging() {
         let durable = "A: run Enumeration over the original exact-origin set".to_string();
         let resumed = "B: do not call producers for the five unreachable exact origins";
@@ -3386,6 +3719,22 @@ mod dag_driven_helper_tests {
         assert_eq!(
             resolve_request_local_task_input(durable.clone(), Some("  \n\t")),
             durable
+        );
+    }
+
+    #[test]
+    fn same_request_stage_run_exhaustion_stops_automatic_gate_repair_only() {
+        assert!(
+            should_retry_gate_block(0, false),
+            "a request whose bounded stage_run budget is still open may use the normal repair loop"
+        );
+        assert!(
+            !should_retry_gate_block(0, true),
+            "once stage_run exhausts this top-level request's budget, the orchestrator must not open another automatic repair turn"
+        );
+        assert!(
+            !should_retry_gate_block(MAX_REFLECTOR_RETRIES, false),
+            "the ordinary reflector bound remains authoritative"
         );
     }
 
@@ -3497,9 +3846,14 @@ mod dag_driven_helper_tests {
         };
         let intel = IntelPolicy::default();
         let s = synthesize_stage_subtask(StageKind::Scoping, "acme corp", &red, &intel);
+        assert!(s.description.contains("subsidiary_scope"));
+        assert!(s.description.contains("parent/root-only"));
+        assert!(s.description.contains("propose_candidates"));
         assert!(s.description.contains("unit_review"));
         assert!(s.description.contains("scope_review"));
         assert!(s.description.contains("scope_human_approved"));
+        assert!(s.description.contains("EXACTLY ONCE"));
+        assert!(s.description.contains("Do NOT call manage_targets"));
 
         let smoke = ScopingPolicy {
             require_human_scope_approval: false,
@@ -3511,35 +3865,49 @@ mod dag_driven_helper_tests {
         assert!(!s2.description.contains("unit_review"));
     }
 
-    /// 红队 scoping 防偷懒硬门禁 (设计 2026-06-06 §3.4 P1 强化): 仅凭 claim 不够,
-    /// 必须真的 invoke 了 unit_review；已有树可复用，不再强制建组织。
-    /// 无法核验 (None) → 放行.
+    /// 红队 scoping 防偷懒硬门禁 (设计 2026-06-06 §3.4 P1 强化): 仅凭 claim 不够。
+    /// 明确 root-only 的持久化 choice 可完成分支；纳入子公司时必须真实完成
+    /// propose_candidates + unit_review。已有树可复用，不再强制建组织。
+    /// pure helper 的 None 不产生 correction；outer gate 负责 required lifecycle fail-closed.
     #[test]
     fn red_team_scoping_flow_blocks_when_steps_skipped() {
         use crate::db_traits::ScopingActionsSeen;
 
         // Unit review plus creation → allow.
         assert!(evaluate_red_team_scoping_flow(Some(ScopingActionsSeen {
+            unit_candidates_proposed: true,
             unit_review_invoked: true,
             organization_created: true,
+            ..Default::default()
         }))
         .is_none());
 
         // REUSE mode: the existing org tree was human-reviewed, so a fresh create
         // is not required. This prevents runaway create_batch expansion.
         assert!(evaluate_red_team_scoping_flow(Some(ScopingActionsSeen {
+            unit_candidates_proposed: true,
             unit_review_invoked: true,
             organization_created: false,
+            ..Default::default()
         }))
         .is_none());
 
         // Missing unit_review → BLOCK, correction names it.
         let c = evaluate_red_team_scoping_flow(Some(ScopingActionsSeen {
+            unit_candidates_proposed: true,
             unit_review_invoked: false,
             organization_created: true,
+            ..Default::default()
         }))
         .expect("missing unit_review must block");
         assert!(c.contains("unit_review"));
+
+        let c = evaluate_red_team_scoping_flow(Some(ScopingActionsSeen {
+            unit_review_invoked: true,
+            ..Default::default()
+        }))
+        .expect("unit review without a candidate proposal must block");
+        assert!(c.contains("propose_candidates"));
 
         // Both missing (the shortcut) → BLOCK, names unit_review but does not
         // instruct the model to create more orgs.
@@ -3550,6 +3918,123 @@ mod dag_driven_helper_tests {
 
         // Unverifiable (no recorded tool_calls) → fail open (allow).
         assert!(evaluate_red_team_scoping_flow(None).is_none());
+    }
+
+    #[test]
+    fn explicit_subsidiary_exclusion_needs_no_empty_unit_review() {
+        let seen = crate::db_traits::ScopingActionsSeen {
+            subsidiaries_excluded: true,
+            ..Default::default()
+        };
+        assert!(
+            evaluate_red_team_scoping_flow(Some(seen)).is_none(),
+            "a persisted parent-only decision must not manufacture an empty unit review"
+        );
+    }
+
+    #[test]
+    fn scope_review_must_exactly_match_trusted_seed_snapshot() {
+        use crate::db_traits::{ScopingActionsSeen, ScopingReviewedTarget};
+
+        let seed = ScopingReviewedTarget {
+            value: "MoreSec.CN.".to_string(),
+            target_type: "domain".to_string(),
+            scope: "in".to_string(),
+        };
+        let approved = ScopingActionsSeen {
+            scope_review_approved: true,
+            scope_review_attempts: 1,
+            scope_review_targets: vec![ScopingReviewedTarget {
+                value: "moresec.cn".to_string(),
+                target_type: "domain".to_string(),
+                scope: "in".to_string(),
+            }],
+            ..Default::default()
+        };
+        assert!(evaluate_scope_review_alignment(&approved, std::slice::from_ref(&seed)).is_none());
+
+        let edited = ScopingActionsSeen {
+            scope_review_targets: vec![ScopingReviewedTarget {
+                value: "vendor.example".to_string(),
+                target_type: "domain".to_string(),
+                scope: "in".to_string(),
+            }],
+            ..approved.clone()
+        };
+        let correction = evaluate_scope_review_alignment(&edited, &[seed])
+            .expect("human edits absent from trusted ingestion must block");
+        assert!(correction.contains("missing_from_store"));
+        assert!(correction.contains("trusted UI/CLI"));
+    }
+
+    #[test]
+    fn scope_review_skip_or_free_text_cannot_be_replaced_by_claim() {
+        let seed = crate::db_traits::ScopingReviewedTarget {
+            value: "moresec.cn".to_string(),
+            target_type: "domain".to_string(),
+            scope: "in".to_string(),
+        };
+        let correction = evaluate_scope_review_alignment(
+            &crate::db_traits::ScopingActionsSeen::default(),
+            &[seed],
+        )
+        .expect("missing approved review must block when trusted targets exist");
+        assert!(correction.contains("no successful parseable"));
+    }
+
+    #[test]
+    fn repeated_scope_review_cannot_replace_an_edited_response() {
+        let seed = crate::db_traits::ScopingReviewedTarget {
+            value: "moresec.cn".to_string(),
+            target_type: "domain".to_string(),
+            scope: "in".to_string(),
+        };
+        let repeated = crate::db_traits::ScopingActionsSeen {
+            scope_review_approved: true,
+            scope_review_attempts: 2,
+            scope_review_targets: vec![seed.clone()],
+            ..Default::default()
+        };
+        let correction = evaluate_scope_review_alignment(&repeated, &[seed])
+            .expect("a second review must not wash away the first human edit");
+        assert!(correction.contains("exactly one"));
+    }
+
+    #[test]
+    fn organization_only_scope_does_not_require_an_empty_target_review() {
+        assert!(evaluate_scope_review_alignment(
+            &crate::db_traits::ScopingActionsSeen::default(),
+            &[]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn scope_claim_cannot_override_prebound_operation_org() {
+        let bound = uuid::Uuid::new_v4();
+        let sibling = uuid::Uuid::new_v4();
+        assert_eq!(
+            resolve_scoping_review_org(Some(bound), Some(bound)),
+            Ok(bound)
+        );
+        assert_eq!(resolve_scoping_review_org(Some(bound), None), Ok(bound));
+        assert!(resolve_scoping_review_org(Some(bound), Some(sibling))
+            .expect_err("claim must not override trusted operation org")
+            .contains("does not match"));
+        assert_eq!(resolve_scoping_review_org(None, Some(sibling)), Ok(sibling));
+    }
+
+    #[test]
+    fn scope_review_cidr_identity_masks_host_bits_and_rejects_invalid_prefix() {
+        assert_eq!(
+            canonical_scoping_cidr("203.0.113.7/24").as_deref(),
+            Some("203.0.113.0/24")
+        );
+        assert_eq!(
+            canonical_scoping_cidr("2001:db8::1234/64").as_deref(),
+            Some("2001:db8::/64")
+        );
+        assert!(canonical_scoping_cidr("203.0.113.7/99").is_none());
     }
 
     /// target_intel is a specialist stage: the primary prompt must route through

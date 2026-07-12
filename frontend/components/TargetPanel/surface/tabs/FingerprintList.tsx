@@ -2,19 +2,27 @@ import { ScanSearch } from "lucide-react";
 import type { Fingerprint } from "@/lib/security-analysis";
 import { EmptyInline, Section } from "../SurfaceParts";
 
+function confidencePercent(confidence: number): number {
+  if (!Number.isFinite(confidence)) return 0;
+  const normalized = confidence >= 0 && confidence <= 1 ? confidence * 100 : confidence;
+  return Math.round(Math.min(100, Math.max(0, normalized)));
+}
+
 export function FingerprintList({
   fingerprints,
   loading = false,
   limit = 50,
+  title = "Fingerprints",
   emptyLabel = "No service/version fingerprint yet (nmap -sV / whatweb / httpx)",
 }: {
   fingerprints: Fingerprint[];
   loading?: boolean;
   limit?: number;
+  title?: string;
   emptyLabel?: string;
 }) {
   return (
-    <Section title="Fingerprints" subtitle={`${fingerprints.length} detected`}>
+    <Section title={title} subtitle={`${fingerprints.length} detected`}>
       {fingerprints.length === 0 ? (
         <EmptyInline loading={loading} label={emptyLabel} />
       ) : (
@@ -31,7 +39,7 @@ export function FingerprintList({
                   <span className="font-mono text-[10px] text-muted-foreground">{fp.version}</span>
                 )}
                 <span className="text-[9px] text-muted-foreground">
-                  {Math.round(fp.confidence)}%
+                  {confidencePercent(fp.confidence)}%
                 </span>
               </div>
               {fp.cpe && (

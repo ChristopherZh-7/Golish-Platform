@@ -114,6 +114,18 @@ fn provider_supports_domain(tool: &ToolConfig) -> bool {
         .is_some_and(|s| s.contains("{{domain}}"))
 }
 
+/// Passive surface providers observe addresses behind hostnames; they do not
+/// grant direct network-scan authorization. Keep those values in pair evidence /
+/// `dns_records`, but never merge provider-authored `ip_ranges` into the org's
+/// authorized profile. Derived ASN entries and all non-scope profile fields stay.
+fn remove_passive_ip_scope_entries(entries: &mut Vec<ProfileFieldEntry>) {
+    entries.retain(|entry| entry.target_field != "ip_ranges");
+}
+
+fn candidate_queue_enabled(config: &AssetIntelHydrateConfig) -> bool {
+    config.create_candidates.unwrap_or(false)
+}
+
 /// Run a set of asset-intel providers against a single organization, writing
 /// candidates + master-record profile fields back to **that org's** id.
 ///
@@ -235,13 +247,14 @@ pub(crate) async fn run_providers_for_org(
     .await;
     for provider_run in provider_runs {
         let (status, next_candidates, next_evidence, next_profile) = provider_run?;
-        evidence.push(next_evidence);
-        if provider_output_is_trusted(&status) {
+        if provider_output_has_landable_records(&status, &next_evidence) {
             merge_candidates(&mut candidates, next_candidates);
             profile_entries.extend(next_profile);
         }
+        evidence.push(next_evidence);
         provider_status.push(status);
     }
+    remove_passive_ip_scope_entries(&mut profile_entries);
 
     // Master record write happens *before* candidate upsert. If the patch is
     // empty (no descriptor profile_fields fired) we skip the DB roundtrip to
@@ -278,10 +291,13 @@ pub(crate) async fn run_providers_for_org(
         }
     }
 
-    if config.create_candidates.unwrap_or(true) {
+    if candidate_queue_enabled(config) {
         let flat = flatten_candidates(&candidates);
         if !flat.is_empty() {
-            candidates =
+            // Persist into the cumulative review queue, but keep the returned
+            // candidates scoped to this provider run. Landing/freshness must not
+            // mistake historical queue entries for fresh observations.
+            let _persisted =
                 upsert_organization_candidates_for_org(pool, organization_id, flat).await?;
         }
     }
@@ -301,6 +317,16 @@ pub(crate) async fn run_providers_for_org(
     } else {
         AssetIntelRunStatus::Partial
     };
+    let observed_domain_hosts = profile_entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.target_kind,
+                golish_pentest::models::AssetIntelProfileFieldTarget::Scalar
+            ) && entry.target_field == "domains"
+        })
+        .map(|entry| entry.value.clone())
+        .collect();
 
     Ok(AssetIntelRun {
         run_id,
@@ -308,5 +334,41 @@ pub(crate) async fn run_providers_for_org(
         provider_status,
         candidates,
         evidence,
+        observed_domain_hosts,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_queue_is_opt_in_for_legacy_compatibility() {
+        assert!(!candidate_queue_enabled(&AssetIntelHydrateConfig::default()));
+        assert!(candidate_queue_enabled(&AssetIntelHydrateConfig {
+            create_candidates: Some(true),
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn passive_provider_ip_ranges_do_not_expand_authorized_profile() {
+        use golish_pentest::models::AssetIntelProfileFieldTarget as T;
+        let mut entries = vec![
+            ProfileFieldEntry {
+                target_kind: T::Scalar,
+                target_field: "ip_ranges".to_string(),
+                value: "203.0.113.10".to_string(),
+            },
+            ProfileFieldEntry {
+                target_kind: T::Scalar,
+                target_field: "asns".to_string(),
+                value: "AS64500".to_string(),
+            },
+        ];
+
+        remove_passive_ip_scope_entries(&mut entries);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].target_field, "asns");
+    }
 }

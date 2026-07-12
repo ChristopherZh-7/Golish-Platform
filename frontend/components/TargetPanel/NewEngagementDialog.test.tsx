@@ -238,6 +238,7 @@ describe("NewEngagementDialog", () => {
     );
 
     await user.type(screen.getByLabelText(/organization name/i), "Ping An");
+    expect(screen.queryByText(/create target candidates after review/i)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /create & prepare discovery/i }));
 
     await waitFor(() => expect(onUpdateOrganizationProfile).toHaveBeenCalledTimes(1));
@@ -250,10 +251,11 @@ describe("NewEngagementDialog", () => {
             min_ownership_percent: "",
             depth: "",
             include_branches: false,
-            create_candidates: true,
           }),
         }),
       })
     );
+    const profilePatch = onUpdateOrganizationProfile.mock.calls[0]?.[1];
+    expect(profilePatch?.intel?.engagement).not.toHaveProperty("create_candidates");
   });
 });

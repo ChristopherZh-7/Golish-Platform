@@ -2,103 +2,25 @@
  * Asset-intel domain helpers for the Target panel.
  *
  * Pure logic extracted from `TargetGroupedView.tsx`:
- *  - discovery/enrichment candidate filtering (`getCandidate*`),
  *  - the streaming hydrate-activity reducer (`applyStreamEvent`),
  *  - post-run workspace routing (`getNextWorkspaceTabAfterAssetIntelRun`),
- *  - provider status tone + evidence raw-row extraction.
+ *  - provider status tone.
  */
 
 import type {
-  AssetIntelProviderDescriptor,
   AssetIntelProviderRunStatus,
   AssetIntelProviderRuntimeKind,
   AssetIntelRun,
   AssetIntelStreamEvent,
 } from "@/lib/api/asset-intel";
-import type { OrganizationCandidate, OrganizationCandidates } from "@/lib/api/organizations";
-import type { AssetIntelOrgActionKind, EngagementRecord, WorkspaceTab } from "./types";
-
-export function getCandidateCounts(
-  engagement: EngagementRecord | null | undefined,
-  allowedSources?: ReadonlySet<string>
-): {
-  organizations: number;
-  targets: number;
-} {
-  const candidates = engagement?.candidates;
-  if (!candidates || typeof candidates !== "object" || Array.isArray(candidates)) {
-    return { organizations: 0, targets: 0 };
-  }
-  const record = candidates as { organizations?: unknown; targets?: unknown };
-  if (allowedSources) {
-    return {
-      organizations: getCandidateItems(engagement, "organizations", allowedSources).length,
-      targets: getCandidateItems(engagement, "targets", allowedSources).length,
-    };
-  }
-  return {
-    organizations: Array.isArray(record.organizations) ? record.organizations.length : 0,
-    targets: Array.isArray(record.targets) ? record.targets.length : 0,
-  };
-}
-
-function normalizeCandidateSource(source: unknown): string {
-  return typeof source === "string" ? source.trim().toLowerCase() : "";
-}
-
-export function getCandidateItems(
-  engagement: EngagementRecord | null | undefined,
-  kind: "organizations" | "targets",
-  allowedSources?: ReadonlySet<string>
-): OrganizationCandidate[] {
-  const candidates = engagement?.candidates;
-  if (!candidates || typeof candidates !== "object" || Array.isArray(candidates)) return [];
-  const items = (candidates as Record<string, unknown>)[kind];
-  if (!Array.isArray(items)) return [];
-  const typed = items as OrganizationCandidate[];
-  if (!allowedSources) return typed;
-  return typed.filter((item) => {
-    const source = normalizeCandidateSource(item.source);
-    return !source || allowedSources.has(source);
-  });
-}
-
-export function getCandidateSourceFilter(
-  providers: AssetIntelProviderDescriptor[],
-  phase: "discovery" | "enrichment" | null
-): ReadonlySet<string> | undefined {
-  if (!phase) return undefined;
-  const sources = new Set<string>();
-  for (const provider of providers) {
-    const isDiscovery = provider.capabilities.includes("subsidiaries");
-    if ((phase === "discovery" && isDiscovery) || (phase === "enrichment" && !isDiscovery)) {
-      sources.add(provider.id.trim().toLowerCase());
-      sources.add(provider.displayName.trim().toLowerCase());
-    }
-  }
-  return sources.size > 0 ? sources : undefined;
-}
-
-export function getVisibleCandidateBuckets(
-  engagement: EngagementRecord | null | undefined,
-  phase: "discovery" | "enrichment" | null,
-  allowedSources?: ReadonlySet<string>
-): OrganizationCandidates {
-  return {
-    organizations: getCandidateItems(engagement, "organizations", allowedSources),
-    targets: phase === "discovery" ? [] : getCandidateItems(engagement, "targets", allowedSources),
-  };
-}
+import type { AssetIntelOrgActionKind, WorkspaceTab } from "./types";
 
 export function getNextWorkspaceTabAfterAssetIntelRun(
   action: AssetIntelOrgActionKind,
-  run: AssetIntelRun
+  _run: AssetIntelRun
 ): WorkspaceTab | null {
   if (action !== "hydrate_subsidiaries") return null;
-  if (run.status !== "completed") return "activity";
-  const candidateCount =
-    (run.candidates.organizations?.length ?? 0) + (run.candidates.targets?.length ?? 0);
-  return candidateCount > 0 ? "candidates" : "activity";
+  return "activity";
 }
 
 /**
@@ -225,72 +147,4 @@ export function getProviderStatusClass(status: string): string {
     return "border-red-500/30 bg-red-500/5 text-red-300";
   }
   return "border-border/40 bg-muted/10 text-muted-foreground";
-}
-
-/**
- * Keys we surface from `candidate.evidence.raw` in the inline "Details" panel.
- * Picked from ENScan_GO + 0.zone common output shapes so the user can sanity
- * check why a row was promoted to a candidate (e.g. invest scale, registration
- * code, address, legal rep, ICP info, app store link). Anything else is hidden
- * to keep the panel scannable; full raw JSON is still on disk via evidence.run.
- */
-const EVIDENCE_RAW_KEY_WHITELIST: Array<{ field: string; label: string }> = [
-  { field: "name", label: "Name" },
-  { field: "company_name", label: "Company" },
-  { field: "reg_code", label: "Credit code" },
-  { field: "credit_code", label: "Credit code" },
-  { field: "scale", label: "Ownership %" },
-  { field: "pid", label: "Provider company id" },
-  { field: "legal", label: "Legal representative" },
-  { field: "legal_person", label: "Legal representative" },
-  { field: "industry", label: "Industry" },
-  { field: "addr", label: "Address" },
-  { field: "address", label: "Address" },
-  { field: "reg_date", label: "Registered at" },
-  { field: "establish_date", label: "Established" },
-  { field: "phone", label: "Phone" },
-  { field: "email", label: "Email" },
-  { field: "domain", label: "Domain" },
-  { field: "url", label: "URL" },
-  { field: "link", label: "App URL" },
-  { field: "app_id", label: "App id" },
-  { field: "app_url", label: "App URL" },
-  { field: "type", label: "Type" },
-  { field: "entity_type", label: "Entity type" },
-  { field: "status", label: "Status" },
-];
-
-export interface EvidenceRawRow {
-  field: string;
-  label: string;
-  value: string;
-}
-
-/**
- * Extract a flat (field, label, value) list from a candidate's evidence.raw
- * payload, keeping only the curated keys above. Returns [] when raw is
- * missing / not an object — callers should treat that as "no details to show".
- */
-export function getEvidenceRawRows(evidence: unknown): EvidenceRawRow[] {
-  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return [];
-  const raw = (evidence as { raw?: unknown }).raw;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
-  const record = raw as Record<string, unknown>;
-  const seen = new Set<string>();
-  const out: EvidenceRawRow[] = [];
-  for (const entry of EVIDENCE_RAW_KEY_WHITELIST) {
-    if (seen.has(entry.label)) continue;
-    const value = record[entry.field];
-    if (value === null || value === undefined) continue;
-    const text =
-      typeof value === "string"
-        ? value.trim()
-        : typeof value === "number" || typeof value === "boolean"
-          ? String(value)
-          : null;
-    if (!text) continue;
-    seen.add(entry.label);
-    out.push({ field: entry.field, label: entry.label, value: text });
-  }
-  return out;
 }

@@ -9,6 +9,7 @@
 
 pub mod context_builder;
 pub mod contract_check;
+mod eas_web_origin_check;
 pub mod finding_verification_check;
 pub mod freshness_check;
 pub mod min_invocations_check;
@@ -19,6 +20,7 @@ pub mod surface_coverage_check;
 pub mod vacuous_check;
 
 pub use context_builder::GateContextBuilder;
+pub use eas_web_origin_check::completed_from_guarded_outcomes;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -155,6 +157,8 @@ pub fn validate_stage_gate_with_context(
         web_capable_assets: ctx.web_capable_assets.clone(),
         // DB-derived terminal not_applicable coverage cells 原样透传。
         not_applicable_coverage: ctx.not_applicable_coverage.clone(),
+        eas_required_web_origins: ctx.eas_required_web_origins.clone(),
+        eas_completed_web_origins: ctx.eas_completed_web_origins.clone(),
         expected_techniques: ctx.expected_techniques.clone().or_else(|| {
             skeleton
                 .map(|s| s.expected_techniques.clone())
@@ -178,6 +182,7 @@ pub fn validate_stage_gate_with_context(
         &spec.gate_rules,
         &effective_ctx,
     ));
+    outcomes.push(eas_web_origin_check::run(spec, &effective_ctx));
 
     aggregate(outcomes)
 }
@@ -198,7 +203,7 @@ pub fn scoping_human_gate_rule() -> rule_engine::GateRule {
         on_fail: rule_engine::OnFail {
             reason: "scope must be human-confirmed before leaving scoping".to_string(),
             hints: vec![
-                "call ask_human(input_type=\"scope_review\") and let the user confirm/edit the target list".to_string(),
+                "call ask_human(input_type=\"scope_review\") and obtain an unchanged exact confirmation of the trusted pre-stage target snapshot; edits are proposals and require updating trusted UI/CLI intake before rerunning Scoping".to_string(),
                 "after the user approves, add a claim {kind:\"scope_human_approved\", subject:<engagement subject>} that cites the ask_human request_id".to_string(),
             ],
             repair_tool_calls: vec!["ask_human".to_string()],
@@ -279,6 +284,84 @@ mod tests {
             recovery: HarnessRecoveryActions::default(),
         };
         assert!(!block.is_pass());
+    }
+
+    #[test]
+    fn eas_parent_web_cell_and_exact_origin_barrier_remain_independent() {
+        use super::super::stage_spec::load_stage_spec_from_json;
+        use super::rule_engine::{EvidenceFact, EvidenceOutcome, GateContext};
+        use std::collections::{HashMap, HashSet};
+
+        let spec = load_stage_spec_from_json(
+            r#"{
+                "id":"external_attack_surface",
+                "kind":"external_attack_surface",
+                "risk_level":"medium",
+                "deliverable_schema":"StageDeliverable",
+                "gate_validator":"validate_stage_gate",
+                "host_aware_coverage":true,
+                "facts_from_db_truth":true,
+                "gate_rules":[{
+                    "op":"coverage_complete",
+                    "derive_from_evidence":true,
+                    "authoritative_found":true,
+                    "on_fail":{"reason":"coverage incomplete"}
+                }]
+            }"#,
+        )
+        .unwrap();
+        let deliverable = StageDeliverable {
+            stage_id: "external_attack_surface".to_string(),
+            stage_run_id: Uuid::new_v4(),
+            claims: vec![],
+            evidence_refs: vec![],
+            skipped_checks: vec![],
+            findings: vec![],
+            required_checks_done: vec![],
+            coverage: vec![],
+            candidates: vec![],
+        };
+        let mut ctx = GateContext {
+            in_scope_assets: Some(vec!["moresec.cn".to_string()]),
+            asset_types: Some(HashMap::from([(
+                "moresec.cn".to_string(),
+                "domain".to_string(),
+            )])),
+            web_capable_assets: Some(HashSet::from(["moresec.cn".to_string()])),
+            not_applicable_coverage: None,
+            eas_required_web_origins: Some(HashSet::from([
+                "http://moresec.cn:80".to_string(),
+                "https://moresec.cn:443".to_string(),
+            ])),
+            eas_completed_web_origins: Some(HashSet::from(["https://moresec.cn:443".to_string()])),
+            expected_techniques: Some(vec!["GOLISH-EAS-WEB-FINGERPRINT".to_string()]),
+            evidence_facts: Some(vec![EvidenceFact {
+                asset: "https://moresec.cn:443".to_string(),
+                technique: "GOLISH-EAS-WEB-FINGERPRINT".to_string(),
+                outcome: EvidenceOutcome::Found,
+                evidence_id: 13,
+            }]),
+            source_queries: None,
+        };
+
+        let missing_http = validate_stage_gate_with_context(&deliverable, &spec, None, None, &ctx);
+        assert!(!missing_http.allowed);
+        assert!(missing_http
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("http://moresec.cn:80")));
+        assert!(!missing_http
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("moresec.cn × GOLISH-EAS-WEB-FINGERPRINT")));
+
+        ctx.eas_completed_web_origins = ctx.eas_required_web_origins.clone();
+        let complete = validate_stage_gate_with_context(&deliverable, &spec, None, None, &ctx);
+        assert!(
+            complete.allowed,
+            "all exact origins completed: {:?}",
+            complete.reasons
+        );
     }
 
     #[test]

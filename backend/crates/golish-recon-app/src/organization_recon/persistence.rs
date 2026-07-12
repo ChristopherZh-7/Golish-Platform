@@ -1,8 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::net::IpAddr;
 
 use golish_app_core::GolishError;
+use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::proto::rr::{RData, RecordType};
-use hickory_resolver::TokioResolver;
+use hickory_resolver::{Resolver, TokioResolver};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sqlx::{Postgres, Transaction};
@@ -84,7 +87,14 @@ pub(crate) async fn persist_normalized_records(
 
     let mut profile = ProfileAccumulator::from_organization(organization);
     for record in records {
-        if let Some(target_type) = target_type_for_record(organization, record) {
+        let target_type = if matches!(record.kind, ReconRecordKind::Ip) {
+            ip_record_is_authorized(&mut tx, organization, record)
+                .await?
+                .then_some("ip")
+        } else {
+            target_type_for_record(organization, record)
+        };
+        if let Some(target_type) = target_type {
             let existed = persist_target_record(&mut tx, organization, record, target_type).await?;
             if existed {
                 summary.target_existing += 1;
@@ -105,6 +115,21 @@ pub(crate) async fn persist_normalized_records(
                     None,
                 );
             }
+            continue;
+        }
+
+        if matches!(record.kind, ReconRecordKind::Ip) {
+            summary.unsupported_records += 1;
+            summary.push_result(
+                record,
+                PersistenceRecordStatus::Unsupported,
+                "passive_ip_observation_only",
+                None,
+                Some(
+                    "IP observation has no confirmed organization IP/CIDR authorization"
+                        .to_string(),
+                ),
+            );
             continue;
         }
 
@@ -147,12 +172,18 @@ pub(crate) async fn persist_normalized_records(
         .filter(|r| matches!(r.kind, ReconRecordKind::Domain))
         .map(|r| r.value.clone())
         .collect();
-    let landed = land_target_intel_coverage(pool, organization, run_id, &subdomain_hosts).await;
-    tracing::info!(
-        organization_id = %organization.id,
-        subdomains = landed.subdomains,
-        "target_intel coverage landing (org-recon path)"
-    );
+    match land_target_intel_coverage(pool, organization, run_id, &subdomain_hosts).await {
+        Ok(landed) => tracing::info!(
+            organization_id = %organization.id,
+            subdomains = landed.subdomains,
+            "target_intel coverage landing (org-recon path)"
+        ),
+        Err(error) => tracing::warn!(
+            organization_id = %organization.id,
+            %error,
+            "target_intel coverage landing failed after org-recon persistence committed"
+        ),
+    }
 
     Ok(summary)
 }
@@ -179,18 +210,9 @@ pub(crate) async fn land_target_intel_coverage(
     organization: &golish_db::models::Organization,
     run_id: &str,
     subdomain_hosts: &[String],
-) -> CoverageLandingSummary {
-    let subdomains = land_subdomain_assets(pool, organization, run_id, subdomain_hosts)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(
-                organization_id = %organization.id,
-                %error,
-                "subdomain target_assets landing failed (recon persistence already committed)"
-            );
-            0
-        });
-    CoverageLandingSummary { subdomains }
+) -> Result<CoverageLandingSummary, GolishError> {
+    let subdomains = land_subdomain_assets(pool, organization, run_id, subdomain_hosts).await?;
+    Ok(CoverageLandingSummary { subdomains })
 }
 
 /// What a per-asset coverage refresh observed/wrote for target-intel.
@@ -198,7 +220,11 @@ pub(crate) async fn land_target_intel_coverage(
 pub struct PerAssetLandingSummary {
     pub subdomains: usize,
     pub dns_records: usize,
+    pub dns_found_hosts: Vec<String>,
     pub dns_empty_hosts: Vec<String>,
+    pub dns_partial_hosts: Vec<String>,
+    pub dns_error_hosts: Vec<String>,
+    pub dns_refresh_failed: bool,
 }
 
 /// Re-run ONLY the per-asset coverage landing (subdomains + DNS) for an org whose
@@ -223,17 +249,45 @@ pub async fn refresh_per_asset_landing_summary(
     pool: &sqlx::PgPool,
     org_id: Uuid,
 ) -> PerAssetLandingSummary {
-    let Ok(Some(org)) = golish_db::repo::organizations::get_one(pool, org_id).await else {
-        return PerAssetLandingSummary::default();
+    let org = match golish_db::repo::organizations::get_one(pool, org_id).await {
+        Ok(Some(org)) => org,
+        Ok(None) => {
+            tracing::warn!(%org_id, "per-asset landing organization no longer exists");
+            return PerAssetLandingSummary {
+                dns_refresh_failed: true,
+                ..Default::default()
+            };
+        }
+        Err(error) => {
+            tracing::warn!(%org_id, %error, "per-asset landing organization lookup failed");
+            return PerAssetLandingSummary {
+                dns_refresh_failed: true,
+                ..Default::default()
+            };
+        }
     };
     let subdomains = land_subdomain_assets(pool, &org, "gate-refresh", &[])
         .await
         .unwrap_or(0);
-    let dns = land_dns_records(pool, &org).await.unwrap_or_default();
+    let (dns, dns_refresh_failed) = match land_dns_records(pool, &org).await {
+        Ok(summary) => (summary, false),
+        Err(error) => {
+            tracing::warn!(
+                organization_id = %org.id,
+                %error,
+                "target_intel DNS refresh failed before per-host outcomes were available"
+            );
+            (DnsLandingSummary::default(), true)
+        }
+    };
     PerAssetLandingSummary {
         subdomains,
         dns_records: dns.records,
+        dns_found_hosts: dns.found_hosts,
         dns_empty_hosts: dns.empty_hosts,
+        dns_partial_hosts: dns.partial_hosts,
+        dns_error_hosts: dns.error_hosts,
+        dns_refresh_failed,
     }
 }
 
@@ -256,14 +310,10 @@ fn collect_subdomain_pairs(
         let Some(host) = normalized_host(raw) else {
             continue;
         };
-        // Host that *is* an owned root is the asset itself, not a subdomain of it.
-        if roots.iter().any(|root| root == &host) {
-            continue;
-        }
         let Some(root) = roots
             .iter()
-            .filter(|root| host.ends_with(&format!(".{root}")))
-            .max_by_key(|root| root.len())
+            .filter(|root| strict_subdomain_of_scope_pattern(&host, root))
+            .max_by_key(|root| root.trim_start_matches("*.").len())
         else {
             continue;
         };
@@ -278,13 +328,10 @@ fn collect_subdomain_pairs(
 /// strict subdomain of. Hosts that are nobody's subdomain (apex roots, IPs) yield
 /// no pair. Pure (no IO) for unit testing.
 ///
-/// This is the in-scope-`targets` source for subdomain landing. The agent's
-/// subfinder/amass discoveries are registered as `scope='in'` target rows (not
-/// into the junk `organizations.domains` OSINT list), so `collect_subdomain_pairs`
-/// — whose roots AND candidate hosts both come from `organizations.domains` — pairs
-/// nothing for the agent enrich path (every host equals an owned root ⇒ skipped:
-/// the "same-source" landing gap). Pairing within the in-scope target set recovers
-/// the real `(root, subdomain)` edges the coverage gate reads from `target_assets`.
+/// Retained as a pure regression helper only. Production landing deliberately
+/// does not run this over the cumulative target set because doing so would refresh
+/// stale SUBDOMAIN observations without a current provider result.
+#[cfg(test)]
 fn pair_subdomains_within(hosts: &[String]) -> Vec<(String, String)> {
     let norm: Vec<String> = hosts.iter().filter_map(|h| normalized_host(h)).collect();
     let mut seen = HashSet::new();
@@ -292,7 +339,7 @@ fn pair_subdomains_within(hosts: &[String]) -> Vec<(String, String)> {
     for host in &norm {
         let Some(root) = norm
             .iter()
-            .filter(|root| *root != host && host.ends_with(&format!(".{root}")))
+            .filter(|root| *root != host && strict_subdomain_of_scope_pattern(host, root))
             .max_by_key(|root| root.len())
         else {
             continue;
@@ -315,35 +362,31 @@ async fn land_subdomain_assets(
 ) -> Result<usize, GolishError> {
     // Source 1 (legacy): the owned-domain list the caller passed (org-recon:
     // `Domain` records; agent enrich: `organizations.domains`).
-    let mut pair_set: HashSet<(String, String)> =
+    let pair_set: HashSet<(String, String)> =
         collect_subdomain_pairs(organization, subdomain_hosts)
             .into_iter()
             .collect();
-    // Source 2 (fix 2026-06-16 enrich-same-source): the in-scope `targets` the
-    // agent actually registered — subfinder/amass discoveries land there as
-    // scope='in' rows, NOT into the junk `organizations.domains` OSINT list that
-    // self-cancels in `collect_subdomain_pairs`. Seed the root→target_id cache from
-    // them, then pair within the set so each discovered subdomain lands as a
-    // `target_assets(asset_type='subdomain')` child of its in-scope root.
+    // Only the caller's current-run observations may create or refresh a
+    // SUBDOMAIN relation. Re-pairing every historical in-scope target here used
+    // to update `target_assets.updated_at` on every retry, falsely making an old
+    // child satisfy the current stage freshness window.
+    if pair_set.is_empty() {
+        return Ok(0);
+    }
+
+    // Resolve the current observation's authorized root rows. This read is only
+    // an identity lookup; it does not treat the full target set as observations.
     let in_scope: Vec<(Uuid, String)> = sqlx::query_as::<_, (Uuid, String)>(
         "SELECT id, value FROM targets WHERE scope::text = 'in' AND organization_id = $1",
     )
     .bind(organization.id)
     .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    .await?;
     let mut root_targets: HashMap<String, Option<Uuid>> = HashMap::new();
     for (id, value) in &in_scope {
         if let Some(host) = normalized_host(value) {
             root_targets.entry(host).or_insert(Some(*id));
         }
-    }
-    let in_scope_values: Vec<String> = in_scope.into_iter().map(|(_, value)| value).collect();
-    for pair in pair_subdomains_within(&in_scope_values) {
-        pair_set.insert(pair);
-    }
-    if pair_set.is_empty() {
-        return Ok(0);
     }
     // HashSet iteration order is nondeterministic → sort for reproducible upserts/logs.
     let mut pairs: Vec<(String, String)> = pair_set.into_iter().collect();
@@ -360,11 +403,14 @@ async fn land_subdomain_assets(
                 let resolved: Option<Uuid> = sqlx::query_scalar(
                     r#"SELECT id FROM targets
                        WHERE value = $1
-                         AND project_path IS NOT DISTINCT FROM $2
+                         AND target_type::text = 'domain'
+                         AND organization_id = $2
+                         AND project_path IS NOT DISTINCT FROM $3
                        ORDER BY (scope::text = 'in') DESC, updated_at DESC
                        LIMIT 1"#,
                 )
                 .bind(&root)
+                .bind(organization.id)
                 .bind(&organization.project_path)
                 .fetch_optional(pool)
                 .await?;
@@ -375,7 +421,7 @@ async fn land_subdomain_assets(
         let Some(target_id) = target_id else {
             continue;
         };
-        match golish_db::repo::target_assets::upsert(
+        golish_db::repo::target_assets::upsert(
             pool,
             target_id,
             Some(organization.project_path.as_str()),
@@ -387,64 +433,54 @@ async fn land_subdomain_assets(
             None,
             &metadata,
         )
-        .await
-        {
-            Ok(_) => {
-                landed += 1;
-                // PR-C step2b: 同步 upsert technique_outcomes（SUBDOMAIN found provenance）。
-                // asset 走 canonical_asset_key（E1）；evidence_ids 空（landing 无 ledger
-                // 行）；collected_at None（landing 时刻非该维证据时刻）；非致命 warn。
-                // coverage 仍由 db_truth 提供——本表此处仅记 provenance。
-                let canonical = golish_pentest_domain::canonical_asset_key(&subdomain)
-                    .map(|k| k.key)
-                    .unwrap_or_else(|| subdomain.clone());
-                let w = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
-                    organization_id: organization.id,
-                    run_id: run_id.to_string(),
-                    asset: canonical,
-                    technique: "GOLISH-INTEL-SUBDOMAIN".to_string(),
-                    outcome: "found".to_string(),
-                    source: Some("organization_recon".to_string()),
-                    query: Some(root.clone()),
-                    result_count: None,
-                    confidence: None,
-                    evidence_ids: Vec::new(),
-                    collected_at: None,
-                };
-                if let Err(e) = golish_db::repo::technique_outcomes::upsert(pool, &w).await {
-                    tracing::warn!(
-                        %subdomain,
-                        error = %e,
-                        "technique_outcomes upsert (enrich subdomain landing) failed"
-                    );
-                }
-            }
-            Err(error) => tracing::warn!(
-                %root,
-                %subdomain,
-                %error,
-                "target_assets subdomain upsert failed"
-            ),
-        }
+        .await?;
+        landed += 1;
+        // PR-C step2b: 同步 upsert technique_outcomes（SUBDOMAIN found provenance）。
+        // asset 走 canonical_asset_key（E1）；evidence_ids 空（landing 无 ledger
+        // 行）；collected_at None（landing 时刻非该维证据时刻）；非致命 warn。
+        // coverage 仍由 db_truth 提供——本表此处仅记 provenance。
+        let canonical = golish_pentest_domain::canonical_asset_key(&subdomain)
+            .map(|k| k.key)
+            .unwrap_or_else(|| subdomain.clone());
+        let w = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
+            organization_id: organization.id,
+            run_id: run_id.to_string(),
+            asset: canonical,
+            technique: "GOLISH-INTEL-SUBDOMAIN".to_string(),
+            outcome: "found".to_string(),
+            source: Some("organization_recon".to_string()),
+            query: Some(root.clone()),
+            result_count: None,
+            confidence: None,
+            evidence_ids: Vec::new(),
+            collected_at: None,
+        };
+        golish_db::repo::technique_outcomes::upsert(pool, &w).await?;
     }
     Ok(landed)
 }
 
-/// Resolve in-scope **domain** targets of this org that have no DNS record yet and
+/// Resolve in-scope **domain** targets of this org and
 /// land their A/AAAA/CNAME/MX/TXT answers into `dns_records` — the table the
 /// target_intel DNS coverage cell reads (`dns_records::present_target_values` /
 /// `coverage_truth`). enrich records carry domains and IPs unpaired, so we do a
-/// bounded best-effort resolve (the honest way to produce real records). A/AAAA
-/// use the system stub resolver; CNAME/MX/TXT use a hickory resolver because
-/// `tokio::net::lookup_host` only returns address records. No stage drives `dig`
+/// bounded best-effort resolve (the honest way to produce real records). When
+/// hickory is available A and AAAA are queried explicitly, so an authoritative
+/// no-record response can become `checked_empty`; the OS resolver is only a
+/// positive fallback for unusable/failed hickory resolution and never proves a
+/// negative. CNAME/MX/TXT use the same typed hickory resolver. No stage drives `dig`
 /// (target_intel forbids scan-tool fallback, EAS reuses inherited DNS), so this
 /// landing is the only place those record types can be collected. DNS queries
 /// hit the resolver, not the target's own hosts, so it stays zero-touch.
-/// failures/timeouts are skipped, never fatal.
+/// failures/timeouts are non-fatal but remain typed `error`; they are never
+/// projected as checked-empty.
 #[derive(Debug, Default)]
 struct DnsLandingSummary {
     records: usize,
+    found_hosts: Vec<String>,
     empty_hosts: Vec<String>,
+    partial_hosts: Vec<String>,
+    error_hosts: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -452,137 +488,417 @@ struct DnsResolveOutcome {
     target_id: Uuid,
     host: String,
     records: Vec<(&'static str, String, String)>,
+    state: DnsAttemptState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DnsAttemptState {
+    Found,
+    Empty,
+    Partial,
+    Error,
+}
+
+const DNS_QUERY_GROUP_COUNT: usize = 4;
+const DNS_MAX_RESOLVE_CONCURRENCY: usize = 128;
+
+fn dns_target_query_sql() -> &'static str {
+    r#"SELECT t.id, t.value FROM targets t
+       WHERE t.organization_id = $1
+         AND t.scope::text = 'in'
+         AND t.target_type::text = 'domain'
+       ORDER BY t.created_at ASC, t.value ASC, t.id ASC"#
+}
+
+fn resolv_conf_nameservers(contents: &str) -> Vec<IpAddr> {
+    let mut out = Vec::new();
+    for line in contents.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let Some(raw) = line.strip_prefix("nameserver").map(str::trim) else {
+            continue;
+        };
+        // A scoped link-local address needs an interface id that hickory's
+        // NameServerConfig cannot represent. Skip it; another ordinary resolver
+        // from the same system file remains usable.
+        if raw.contains('%') {
+            continue;
+        }
+        if let Ok(ip) = raw.parse::<IpAddr>() {
+            if !out.contains(&ip) {
+                out.push(ip);
+            }
+        }
+    }
+    out
+}
+
+fn fallback_resolver_from_resolv_conf() -> Option<TokioResolver> {
+    let contents = std::fs::read_to_string("/etc/resolv.conf").ok()?;
+    let nameservers = resolv_conf_nameservers(&contents)
+        .into_iter()
+        .map(NameServerConfig::udp_and_tcp)
+        .collect::<Vec<_>>();
+    if nameservers.is_empty() {
+        return None;
+    }
+    Resolver::builder_with_config(
+        ResolverConfig::from_parts(None, Vec::new(), nameservers),
+        TokioRuntimeProvider::default(),
+    )
+    .build()
+    .ok()
+}
+
+fn classify_dns_host_attempt(attempts: &[DnsAttemptState]) -> DnsAttemptState {
+    let found =
+        attempts.contains(&DnsAttemptState::Found) || attempts.contains(&DnsAttemptState::Partial);
+    let incomplete = attempts.len() != DNS_QUERY_GROUP_COUNT
+        || attempts.contains(&DnsAttemptState::Error)
+        || attempts.contains(&DnsAttemptState::Partial);
+    if found && incomplete {
+        DnsAttemptState::Partial
+    } else if found {
+        DnsAttemptState::Found
+    } else if incomplete {
+        DnsAttemptState::Error
+    } else {
+        DnsAttemptState::Empty
+    }
+}
+
+fn classify_dns_address_attempts(attempts: &[DnsAttemptState]) -> DnsAttemptState {
+    let found =
+        attempts.contains(&DnsAttemptState::Found) || attempts.contains(&DnsAttemptState::Partial);
+    let incomplete = attempts.len() != 2
+        || attempts.contains(&DnsAttemptState::Error)
+        || attempts.contains(&DnsAttemptState::Partial);
+    if found && incomplete {
+        DnsAttemptState::Partial
+    } else if found {
+        DnsAttemptState::Found
+    } else if attempts.len() == 2
+        && attempts
+            .iter()
+            .all(|state| *state == DnsAttemptState::Empty)
+    {
+        DnsAttemptState::Empty
+    } else {
+        DnsAttemptState::Error
+    }
+}
+
+async fn resolve_address_records(
+    resolver: Option<&TokioResolver>,
+    fqdn: &str,
+    host: &str,
+    os_timeout: std::time::Duration,
+) -> (Vec<(&'static str, String, String)>, DnsAttemptState) {
+    let mut records = Vec::new();
+    let mut typed_attempts = Vec::with_capacity(2);
+
+    if let Some(resolver) = resolver {
+        for record_type in [RecordType::A, RecordType::AAAA] {
+            let expected = if record_type == RecordType::A {
+                "A"
+            } else {
+                "AAAA"
+            };
+            let before = records.len();
+            let state = match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                resolver.lookup(fqdn.to_string(), record_type),
+            )
+            .await
+            {
+                Ok(Ok(lookup)) => {
+                    for record in lookup.answers() {
+                        if let Some((actual, value)) = rdata_to_dns_record(&record.data) {
+                            if actual == expected {
+                                records.push((actual, host.to_string(), value));
+                            }
+                        }
+                    }
+                    if records.len() > before {
+                        DnsAttemptState::Found
+                    } else {
+                        DnsAttemptState::Empty
+                    }
+                }
+                Ok(Err(error)) if error.is_no_records_found() => DnsAttemptState::Empty,
+                Ok(Err(error)) => {
+                    tracing::warn!(%host, %record_type, %error, "typed DNS address lookup failed");
+                    DnsAttemptState::Error
+                }
+                Err(_) => {
+                    tracing::warn!(%host, %record_type, "typed DNS address lookup timed out");
+                    DnsAttemptState::Error
+                }
+            };
+            typed_attempts.push(state);
+        }
+    }
+
+    let mut state = classify_dns_address_attempts(&typed_attempts);
+    let needs_positive_os_fallback =
+        resolver.is_none() || typed_attempts.contains(&DnsAttemptState::Error);
+    if needs_positive_os_fallback {
+        match tokio::time::timeout(os_timeout, tokio::net::lookup_host((host, 0))).await {
+            Ok(Ok(lookup)) => {
+                let before = records.len();
+                for socket in lookup {
+                    let ip = socket.ip();
+                    let record_type = if ip.is_ipv4() { "A" } else { "AAAA" };
+                    records.push((record_type, host.to_string(), ip.to_string()));
+                }
+                if records.len() > before {
+                    state =
+                        if resolver.is_some() && typed_attempts.contains(&DnsAttemptState::Error) {
+                            DnsAttemptState::Partial
+                        } else {
+                            DnsAttemptState::Found
+                        };
+                }
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%host, %error, "OS DNS positive fallback failed");
+            }
+            Err(_) => {
+                tracing::warn!(%host, "OS DNS positive fallback timed out");
+            }
+        }
+    }
+
+    records.sort_by(|left, right| left.0.cmp(right.0).then(left.2.cmp(&right.2)));
+    records.dedup();
+    (records, state)
 }
 
 async fn land_dns_records(
     pool: &sqlx::PgPool,
     organization: &golish_db::models::Organization,
 ) -> Result<DnsLandingSummary, GolishError> {
-    const MAX_RESOLVE: i64 = 128;
-    let targets: Vec<(Uuid, String)> = sqlx::query_as(
-        r#"SELECT t.id, t.value FROM targets t
-           WHERE t.organization_id = $1
-             AND t.scope::text = 'in'
-             AND t.target_type::text = 'domain'
-             AND NOT EXISTS (SELECT 1 FROM dns_records dr WHERE dr.target_id = t.id)
-           ORDER BY t.updated_at DESC
-           LIMIT $2"#,
-    )
-    .bind(organization.id)
-    .bind(MAX_RESOLVE)
-    .fetch_all(pool)
-    .await?;
+    // macOS SystemConfiguration may need several seconds to traverse scoped
+    // resolvers after hickory rejects a `%en0` link-local nameserver. Three
+    // seconds caused real public A records to be mislabeled as transport errors
+    // in the MoreSec acceptance run. Keep this bounded, but leave enough room
+    // for the platform resolver's blocking-pool hop and first lookup.
+    const ADDRESS_RESOLVE_TIMEOUT_SECS: u64 = 10;
+    let targets: Vec<(Uuid, String)> = sqlx::query_as(dns_target_query_sql())
+        .bind(organization.id)
+        .fetch_all(pool)
+        .await?;
     if targets.is_empty() {
         return Ok(DnsLandingSummary::default());
     }
     // Built once from the system resolver config and cloned into each task (the
-    // resolver is cheap to clone — Arc inside). If construction fails we still
-    // land A/AAAA from the stub resolver below.
-    let dns_resolver: Option<TokioResolver> = hickory_resolver::Resolver::builder_tokio()
-        .ok()
-        .and_then(|builder| builder.build().ok());
-    let mut set = tokio::task::JoinSet::new();
-    for (target_id, value) in targets {
-        let resolver = dns_resolver.clone();
-        set.spawn(async move {
-            let host = normalized_host(&value)?;
-            let mut records: Vec<(&'static str, String, String)> = Vec::new();
-            // A/AAAA via the system stub resolver (unchanged real_ip semantics).
-            if let Ok(Ok(addrs)) = tokio::time::timeout(
-                std::time::Duration::from_secs(3),
-                tokio::net::lookup_host(format!("{host}:0")),
-            )
-            .await
-            {
-                for addr in addrs {
-                    let ip = addr.ip();
-                    let record_type = if ip.is_ipv4() { "A" } else { "AAAA" };
-                    records.push((record_type, host.clone(), ip.to_string()));
-                }
+    // resolver is cheap to clone — Arc inside). Construction failure is a typed
+    // error for every host, never a fabricated checked-empty.
+    let dns_resolver: Option<TokioResolver> = match hickory_resolver::Resolver::builder_tokio() {
+        Ok(builder) => match builder.build() {
+            Ok(resolver) => Some(resolver),
+            Err(error) => {
+                let fallback = fallback_resolver_from_resolv_conf();
+                tracing::warn!(
+                    %error,
+                    fallback_available = fallback.is_some(),
+                    "DNS system resolver build failed; tried filtered /etc/resolv.conf fallback"
+                );
+                fallback
             }
-            // CNAME / MX / TXT via hickory (additive, each query independently
-            // bounded and non-fatal). CNAME backs CDN / subdomain-takeover
-            // analysis; MX / TXT back mail / SPF / DMARC intel.
-            if let Some(resolver) = resolver {
-                let fqdn = format!("{host}.");
-                for record_type in [RecordType::CNAME, RecordType::MX, RecordType::TXT] {
-                    let Ok(Ok(lookup)) = tokio::time::timeout(
-                        std::time::Duration::from_secs(3),
-                        resolver.lookup(fqdn.clone(), record_type),
-                    )
-                    .await
-                    else {
-                        continue;
+        },
+        Err(error) => {
+            // macOS may expose a scoped link-local nameserver (`fe80::...%en0`)
+            // that hickory 0.26 cannot parse as `IpAddr`. Do not lose ordinary
+            // address resolution just because the auxiliary resolver is absent.
+            let fallback = fallback_resolver_from_resolv_conf();
+            tracing::warn!(
+                %error,
+                fallback_available = fallback.is_some(),
+                "DNS system resolver config failed; tried filtered /etc/resolv.conf fallback"
+            );
+            fallback
+        }
+    };
+    let mut summary = DnsLandingSummary::default();
+    // Target Intel has no asset-wave denominator of its own. Resolve every
+    // current in-scope domain, but in bounded chunks so >128 targets cannot
+    // starve forever behind a fixed newest-only LIMIT or explode concurrency.
+    for chunk in targets.chunks(DNS_MAX_RESOLVE_CONCURRENCY) {
+        let mut set = tokio::task::JoinSet::new();
+        for (target_id, value) in chunk.iter().cloned() {
+            let resolver = dns_resolver.clone();
+            set.spawn(async move {
+                let Some(host) = normalized_host(&value) else {
+                    return DnsResolveOutcome {
+                        target_id,
+                        host: value,
+                        records: Vec::new(),
+                        state: DnsAttemptState::Error,
                     };
-                    for record in lookup.answers() {
-                        if let Some((rt, value)) = rdata_to_dns_record(&record.data) {
-                            records.push((rt, host.clone(), value));
+                };
+                let mut records: Vec<(&'static str, String, String)> = Vec::new();
+                let mut attempts = Vec::with_capacity(DNS_QUERY_GROUP_COUNT);
+                let fqdn = format!("{host}.");
+
+                let (address_records, address_state) = resolve_address_records(
+                    resolver.as_ref(),
+                    &fqdn,
+                    &host,
+                    std::time::Duration::from_secs(ADDRESS_RESOLVE_TIMEOUT_SECS),
+                )
+                .await;
+                records.extend(address_records);
+                attempts.push(address_state);
+
+                // CNAME / MX / TXT are additive and independently bounded. A successful
+                // no-record response is Empty; only usable persisted answers are Found.
+                for record_type in [RecordType::CNAME, RecordType::MX, RecordType::TXT] {
+                    let state = if let Some(resolver) = resolver.as_ref() {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(3),
+                            resolver.lookup(fqdn.clone(), record_type),
+                        )
+                        .await
+                        {
+                            Ok(Ok(lookup)) => {
+                                let before = records.len();
+                                let expected = match record_type {
+                                    RecordType::CNAME => "CNAME",
+                                    RecordType::MX => "MX",
+                                    RecordType::TXT => "TXT",
+                                    _ => unreachable!("fixed auxiliary DNS record types"),
+                                };
+                                for record in lookup.answers() {
+                                    if let Some((rt, value)) = rdata_to_dns_record(&record.data) {
+                                        if rt == expected {
+                                            records.push((rt, host.clone(), value));
+                                        }
+                                    }
+                                }
+                                if records.len() > before {
+                                    DnsAttemptState::Found
+                                } else {
+                                    DnsAttemptState::Empty
+                                }
+                            }
+                            Ok(Err(error)) if error.is_no_records_found() => DnsAttemptState::Empty,
+                            Ok(Err(_)) | Err(_) => DnsAttemptState::Error,
                         }
+                    } else {
+                        DnsAttemptState::Error
+                    };
+                    attempts.push(state);
+                }
+                DnsResolveOutcome {
+                    target_id,
+                    host,
+                    records,
+                    state: classify_dns_host_attempt(&attempts),
+                }
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let Ok(outcome) = joined else {
+                tracing::warn!("target_intel DNS resolver task failed to join");
+                continue;
+            };
+            match outcome.state {
+                DnsAttemptState::Empty => {
+                    summary.empty_hosts.push(outcome.host);
+                    continue;
+                }
+                DnsAttemptState::Error => {
+                    summary.error_hosts.push(outcome.host);
+                    continue;
+                }
+                DnsAttemptState::Found | DnsAttemptState::Partial => {}
+            }
+            // Primary IP is a deterministic cache only: IPv4 first, then lexical
+            // canonical address. Full multi-address truth remains in dns_records.
+            let primary_ip = deterministic_primary_dns_ip(&outcome.records);
+            let mut write_failed = false;
+            let mut host_records_stored = 0usize;
+            for (record_type, name, value) in &outcome.records {
+                match golish_db::repo::dns_records::upsert(
+                    pool,
+                    outcome.target_id,
+                    organization.project_path.as_str(),
+                    record_type,
+                    name,
+                    value,
+                    "resolver",
+                )
+                .await
+                {
+                    Ok(_) => {
+                        summary.records += 1;
+                        host_records_stored += 1;
+                    }
+                    Err(error) => {
+                        write_failed = true;
+                        tracing::warn!(
+                            host = %outcome.host,
+                            %record_type,
+                            %value,
+                            %error,
+                            "target_intel DNS record upsert failed"
+                        );
                     }
                 }
             }
-            Some(DnsResolveOutcome {
-                target_id,
-                host,
-                records,
-            })
-        });
-    }
-    let mut summary = DnsLandingSummary::default();
-    while let Some(joined) = set.join_next().await {
-        let Ok(Some(outcome)) = joined else {
-            continue;
-        };
-        if outcome.records.is_empty() {
-            summary.empty_hosts.push(outcome.host);
-            continue;
-        }
-        // Primary IP for the host tree (design 2026-06-15 Phase 0): first A
-        // answer, else first AAAA. Only address records may set real_ip — a
-        // CNAME/MX/TXT value would corrupt it. Captured before the consuming
-        // upsert loop below moves `records`.
-        let primary_ip: Option<String> = outcome
-            .records
-            .iter()
-            .find(|(record_type, _, _)| *record_type == "A")
-            .or_else(|| {
-                outcome
-                    .records
-                    .iter()
-                    .find(|(record_type, _, _)| *record_type == "AAAA")
-            })
-            .map(|(_, _, ip)| ip.clone());
-        for (record_type, name, value) in outcome.records {
-            if golish_db::repo::dns_records::upsert(
-                pool,
-                outcome.target_id,
-                organization.project_path.as_str(),
-                record_type,
-                &name,
-                &value,
-                "resolver",
-            )
-            .await
-            .is_ok()
-            {
-                summary.records += 1;
+            if !write_failed {
+                match outcome.state {
+                    DnsAttemptState::Found => summary.found_hosts.push(outcome.host.clone()),
+                    DnsAttemptState::Partial => summary.partial_hosts.push(outcome.host.clone()),
+                    DnsAttemptState::Empty | DnsAttemptState::Error => unreachable!(),
+                }
+            } else if host_records_stored > 0 {
+                summary.partial_hosts.push(outcome.host.clone());
+            } else {
+                summary.error_hosts.push(outcome.host.clone());
             }
-        }
-        if let Some(ip) = primary_ip {
-            let _ = golish_db::repo::targets::set_real_ip_by_id(pool, outcome.target_id, &ip).await;
+            if !write_failed {
+                if let Some(ip) = primary_ip {
+                    let _ =
+                        golish_db::repo::targets::set_real_ip_by_id(pool, outcome.target_id, &ip)
+                            .await;
+                }
+            }
         }
     }
     summary.empty_hosts.sort();
     summary.empty_hosts.dedup();
+    summary.found_hosts.sort();
+    summary.found_hosts.dedup();
+    summary.partial_hosts.sort();
+    summary.partial_hosts.dedup();
+    summary.error_hosts.sort();
+    summary.error_hosts.dedup();
     Ok(summary)
 }
 
+fn deterministic_primary_dns_ip(records: &[(&'static str, String, String)]) -> Option<String> {
+    let mut ips: Vec<std::net::IpAddr> = records
+        .iter()
+        .filter(|(record_type, _, _)| matches!(*record_type, "A" | "AAAA"))
+        .filter_map(|(_, _, value)| value.parse().ok())
+        .collect();
+    ips.sort_by(|left, right| match (left, right) {
+        (std::net::IpAddr::V4(_), std::net::IpAddr::V6(_)) => std::cmp::Ordering::Less,
+        (std::net::IpAddr::V6(_), std::net::IpAddr::V4(_)) => std::cmp::Ordering::Greater,
+        _ => left.to_string().cmp(&right.to_string()),
+    });
+    ips.dedup();
+    ips.first().map(ToString::to_string)
+}
+
 /// Map a hickory `RData` answer to a `(record_type, value)` tuple for
-/// `dns_records`. Only CNAME / MX / TXT are lifted here (A/AAAA come from the
-/// stub resolver). Returns `None` for record types we do not persist or an empty
+/// `dns_records`. Returns `None` for record types we do not persist or an empty
 /// TXT payload.
 fn rdata_to_dns_record(rdata: &RData) -> Option<(&'static str, String)> {
     match rdata {
+        RData::A(address) => Some(("A", address.0.to_string())),
+        RData::AAAA(address) => Some(("AAAA", address.0.to_string())),
         RData::CNAME(name) => Some(("CNAME", normalize_dns_target(&name.0.to_utf8()))),
         RData::MX(mx) => Some(("MX", format_mx_value(mx.preference, &mx.exchange.to_utf8()))),
         RData::TXT(txt) => {
@@ -638,10 +954,18 @@ fn registrable_domain(host: &str) -> String {
     golish_pentest_domain::registrable_apex(host)
 }
 
-/// Unique registrable apex domains owned by the org (capped), for CT/WHOIS queries.
-fn registrable_domains(organization: &golish_db::models::Organization) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for host in organization_owned_domains(organization) {
+/// Unique registrable apex domains from the pre-provider authorized target
+/// snapshot (capped), for WHOIS queries. Organization profile fields are not
+/// accepted here: providers write `domains`/`app_domains`, so consuming those
+/// fields would let a third-party observation authorize its own RDAP request on
+/// this or a later retry.
+fn registrable_domains_from_authorized_hosts(authorized_hosts: &[String]) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    for host in authorized_hosts
+        .iter()
+        .filter_map(|value| normalized_host(value))
+    {
+        let host = host.trim_start_matches("*.").to_string();
         // Never CT/WHOIS-query an IP literal: a bare IP has no registrable apex or
         // CT log, and `registrable_domain` would mangle it into a junk 2-label
         // fragment (e.g. `124.196.77.48` -> `77.48`) that consumes the limited
@@ -653,22 +977,56 @@ fn registrable_domains(organization: &golish_db::models::Organization) -> Vec<St
             continue;
         }
         let apex = registrable_domain(&host);
-        if !apex.is_empty() && !out.contains(&apex) {
-            out.push(apex);
-        }
-        if out.len() >= 3 {
-            break;
+        if !apex.is_empty() {
+            out.insert(apex);
         }
     }
-    out
+    out.into_iter().take(3).collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WhoisLandingState {
+    Found,
+    Empty,
+    Error,
+    Blocked,
+}
+
+impl WhoisLandingState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Found => "found",
+            Self::Empty => "empty",
+            Self::Error => "error",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WhoisLandingOutcome {
+    pub(crate) state: WhoisLandingState,
+    pub(crate) attempted: usize,
+    pub(crate) succeeded: usize,
+    pub(crate) reason: Option<String>,
+}
+
+fn classify_whois_landing(attempted: usize, succeeded: usize, found: bool) -> WhoisLandingState {
+    if attempted == 0 {
+        WhoisLandingState::Blocked
+    } else if succeeded < attempted {
+        WhoisLandingState::Error
+    } else if found {
+        WhoisLandingState::Found
+    } else {
+        WhoisLandingState::Empty
+    }
 }
 
 /// Land WHOIS (RDAP) → `organizations.whois` — the org-level column the
 /// target_intel WHOIS coverage cell reads (`coverage_truth::build_org_intel_
-/// presence_sql`). HTTP, bounded, best-effort: only fills when the column is
-/// currently empty; failures are skipped, never fatal. (`whois` is a schema-ahead
-/// column not on the model, so it is read/written via direct SQL.) Returns whether
-/// a whois object was landed.
+/// presence_sql`). HTTP, bounded, best-effort, and always performs a fresh query;
+/// an old stored value cannot turn this run into a fabricated empty result.
 ///
 /// CT (crt.sh) is intentionally NOT done here anymore: crt.sh was the 300s-timeout
 /// culprit and only produced junk for polluted registrable domains. CT now comes
@@ -677,47 +1035,72 @@ fn registrable_domains(organization: &golish_db::models::Organization) -> Vec<St
 pub(crate) async fn land_whois(
     pool: &sqlx::PgPool,
     organization: &golish_db::models::Organization,
-) -> Result<bool, GolishError> {
-    let whois_existing: Option<Value> =
-        sqlx::query_scalar::<_, Option<Value>>("SELECT whois FROM organizations WHERE id = $1")
-            .bind(organization.id)
-            .fetch_one(pool)
-            .await?;
-    if whois_existing
-        .as_ref()
-        .is_some_and(|v| !json_value_is_empty(v))
-    {
-        return Ok(false);
-    }
-    let domains = registrable_domains(organization);
+    authorized_hosts: &[String],
+) -> Result<WhoisLandingOutcome, GolishError> {
+    let domains = registrable_domains_from_authorized_hosts(authorized_hosts);
     if domains.is_empty() {
-        return Ok(false);
+        return Ok(WhoisLandingOutcome {
+            state: WhoisLandingState::Blocked,
+            attempted: 0,
+            succeeded: 0,
+            reason: Some("no registrable domain".to_string()),
+        });
     }
     let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .user_agent("golish-recon/1.0")
         .build()
     else {
-        return Ok(false);
+        return Ok(WhoisLandingOutcome {
+            state: WhoisLandingState::Error,
+            attempted: domains.len(),
+            succeeded: 0,
+            reason: Some("failed to construct RDAP client".to_string()),
+        });
     };
 
     let mut whois_value: Option<Value> = None;
+    let attempted = domains.len();
+    let mut succeeded = 0usize;
+    let mut last_error = None;
     for domain in &domains {
         let url = format!("https://rdap.org/domain/{domain}");
-        let Ok(resp) = client.get(&url).send().await else {
-            continue;
+        let resp = match client.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                last_error = Some(error.to_string());
+                continue;
+            }
         };
-        if !resp.status().is_success() {
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            succeeded += 1;
             continue;
         }
-        let Ok(text) = resp.text().await else {
+        if !resp.status().is_success() {
+            last_error = Some(format!("RDAP HTTP {}", resp.status()));
             continue;
-        };
-        if let Ok(value) = serde_json::from_str::<Value>(&text) {
-            if value.is_object() && !json_value_is_empty(&value) {
-                whois_value = Some(value);
-                break;
+        }
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                last_error = Some(error.to_string());
+                continue;
             }
+        };
+        let value = match serde_json::from_str::<Value>(&text) {
+            Ok(value) if value.is_object() => value,
+            Ok(_) => {
+                last_error = Some("RDAP response was not an object".to_string());
+                continue;
+            }
+            Err(error) => {
+                last_error = Some(error.to_string());
+                continue;
+            }
+        };
+        succeeded += 1;
+        if whois_value.is_none() && !json_value_is_empty(&value) {
+            whois_value = Some(value);
         }
     }
 
@@ -734,7 +1117,107 @@ pub(crate) async fn land_whois(
             .execute(pool)
             .await?;
     }
-    Ok(whois_landed)
+    let state = classify_whois_landing(attempted, succeeded, whois_landed);
+    Ok(WhoisLandingOutcome {
+        state,
+        attempted,
+        succeeded,
+        reason: matches!(state, WhoisLandingState::Error)
+            .then(|| last_error.unwrap_or_else(|| "all RDAP requests failed".to_string())),
+    })
+}
+
+const AUTHORIZED_IP_CONTEXT_SQL: &str = r#"SELECT target_type::text, value
+       FROM targets
+       WHERE organization_id = $1
+         AND project_path IS NOT DISTINCT FROM $2
+         AND scope::text = 'in'
+         AND target_type::text IN ('ip', 'cidr')
+       ORDER BY id"#;
+
+async fn ip_record_is_authorized(
+    tx: &mut Transaction<'_, Postgres>,
+    organization: &golish_db::models::Organization,
+    record: &NormalizedReconRecord,
+) -> Result<bool, GolishError> {
+    let Ok(candidate) = record.value.trim().parse::<IpAddr>() else {
+        return Ok(false);
+    };
+
+    if organization_ip_ranges_contain_ip(organization, candidate) {
+        return Ok(true);
+    }
+
+    let authorized_targets: Vec<(String, String)> = sqlx::query_as(AUTHORIZED_IP_CONTEXT_SQL)
+        .bind(organization.id)
+        .bind(&organization.project_path)
+        .fetch_all(&mut **tx)
+        .await?;
+    Ok(authorized_target_rows_contain_ip(
+        candidate,
+        &authorized_targets,
+    ))
+}
+
+fn organization_ip_ranges_contain_ip(
+    organization: &golish_db::models::Organization,
+    candidate: IpAddr,
+) -> bool {
+    json_atom_values(&organization.ip_ranges)
+        .iter()
+        .any(|value| ip_authorization_value_contains(value, candidate))
+}
+
+fn ip_authorization_value_contains(value: &str, candidate: IpAddr) -> bool {
+    value
+        .trim()
+        .parse::<IpAddr>()
+        .is_ok_and(|authorized| authorized == candidate)
+        || cidr_contains_ip(value, candidate)
+}
+
+fn authorized_target_rows_contain_ip(candidate: IpAddr, rows: &[(String, String)]) -> bool {
+    rows.iter()
+        .any(|(target_type, value)| match target_type.as_str() {
+            "ip" => value
+                .trim()
+                .parse::<IpAddr>()
+                .is_ok_and(|authorized| authorized == candidate),
+            "cidr" => cidr_contains_ip(value, candidate),
+            _ => false,
+        })
+}
+
+fn cidr_contains_ip(cidr: &str, candidate: IpAddr) -> bool {
+    let Some((network, prefix)) = cidr.trim().split_once('/') else {
+        return false;
+    };
+    let Ok(network) = network.trim().parse::<IpAddr>() else {
+        return false;
+    };
+    let Ok(prefix) = prefix.trim().parse::<u8>() else {
+        return false;
+    };
+
+    match (network, candidate) {
+        (IpAddr::V4(network), IpAddr::V4(candidate)) if prefix <= 32 => {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
+            u32::from(network) & mask == u32::from(candidate) & mask
+        }
+        (IpAddr::V6(network), IpAddr::V6(candidate)) if prefix <= 128 => {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - prefix)
+            };
+            u128::from(network) & mask == u128::from(candidate) & mask
+        }
+        _ => false,
+    }
 }
 
 fn target_type_for_record(
@@ -745,7 +1228,7 @@ fn target_type_for_record(
         ReconRecordKind::Domain if record_belongs_to_organization(organization, record) => {
             Some("domain")
         }
-        ReconRecordKind::Ip => Some("ip"),
+        ReconRecordKind::Ip => None,
         ReconRecordKind::Url if record_belongs_to_organization(organization, record) => Some("url"),
         ReconRecordKind::Site
             if url::Url::parse(&record.value).is_ok()
@@ -788,7 +1271,26 @@ pub(crate) fn value_belongs_to_organization(
     }
     domains
         .iter()
-        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+        .any(|domain| host_matches_scope_pattern(&host, domain))
+}
+
+fn strict_subdomain_of_scope_pattern(host: &str, pattern: &str) -> bool {
+    // Wildcards are authorization patterns, never concrete discovered hosts.
+    // Reject both a pattern echo (`*.base`) and nested wildcard values before
+    // suffix matching so they cannot become `target_assets(subdomain)` rows.
+    if host.starts_with("*.") {
+        return false;
+    }
+    let base = pattern.strip_prefix("*.").unwrap_or(pattern);
+    host != base && host.ends_with(&format!(".{base}"))
+}
+
+fn host_matches_scope_pattern(host: &str, pattern: &str) -> bool {
+    if pattern.starts_with("*.") {
+        strict_subdomain_of_scope_pattern(host, pattern)
+    } else {
+        host == pattern || strict_subdomain_of_scope_pattern(host, pattern)
+    }
 }
 
 pub(crate) fn organization_owned_domains(
@@ -846,13 +1348,14 @@ pub(crate) fn normalized_host(value: &str) -> Option<String> {
     if value.is_empty() || value.parse::<std::net::IpAddr>().is_ok() {
         return None;
     }
+    if let Some(base) = value.strip_prefix("*.") {
+        return looks_like_domain(base).then(|| format!("*.{base}"));
+    }
     if let Ok(url) = url::Url::parse(&value) {
-        return url
-            .host_str()
-            .map(|host| host.trim_start_matches("www.").to_string());
+        return url.host_str().map(str::to_string);
     }
     if looks_like_domain(&value) {
-        return Some(value.trim_start_matches("www.").to_string());
+        return Some(value);
     }
     None
 }
@@ -912,28 +1415,32 @@ async fn persist_target_record(
     record: &NormalizedReconRecord,
     target_type: &str,
 ) -> Result<bool, GolishError> {
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        r#"SELECT id FROM targets
-           WHERE value = $1
-             AND project_path IS NOT DISTINCT FROM $2
-           LIMIT 1"#,
-    )
-    .bind(&record.value)
-    .bind(&organization.project_path)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let existing: Option<Uuid> = sqlx::query_scalar(build_persist_target_lookup_sql())
+        .bind(&record.value)
+        .bind(target_type)
+        .bind(&organization.project_path)
+        .bind(organization.id)
+        .fetch_optional(&mut **tx)
+        .await?;
 
     if let Some(id) = existing {
-        sqlx::query(
+        let claimed = sqlx::query(
             r#"UPDATE targets
-               SET organization_id = COALESCE(organization_id, $2),
+               SET organization_id = $2,
                    updated_at = NOW()
-               WHERE id = $1"#,
+               WHERE id = $1
+                 AND (organization_id = $2 OR organization_id IS NULL)"#,
         )
         .bind(id)
         .bind(organization.id)
         .execute(&mut **tx)
         .await?;
+        if claimed.rows_affected() == 0 {
+            return Err(GolishError::Validation(format!(
+                "target ownership changed while claiming {target_type}:{}",
+                record.value
+            )));
+        }
         return Ok(true);
     }
 
@@ -953,6 +1460,16 @@ async fn persist_target_record(
     .execute(&mut **tx)
     .await?;
     Ok(false)
+}
+
+fn build_persist_target_lookup_sql() -> &'static str {
+    r#"SELECT id FROM targets
+       WHERE value = $1
+         AND target_type::text = $2
+         AND project_path IS NOT DISTINCT FROM $3
+         AND (organization_id = $4 OR organization_id IS NULL)
+       ORDER BY (organization_id = $4) DESC NULLS LAST, updated_at DESC
+       LIMIT 1"#
 }
 
 async fn write_audit(
@@ -1068,7 +1585,11 @@ impl ProfileAccumulator {
                     push_json_array(&mut self.domains, &record.value)
                 }
             }
-            ReconRecordKind::Ip => push_json_array(&mut self.ip_ranges, &record.value),
+            // IP observations never expand authorization. Confirmed organization
+            // `ip_ranges` are read above by `ip_record_is_authorized`; an
+            // unconfirmed passive IP must remain evidence-only instead of
+            // authorizing itself for the next run.
+            ReconRecordKind::Ip => false,
             ReconRecordKind::Url | ReconRecordKind::Site => {
                 self.touched_osint = true;
                 push_json_array(&mut self.business_systems, &record.value)
@@ -1356,6 +1877,94 @@ mod tests {
             ),
             Some("url")
         );
+
+        let passive_ip = record(ReconRecordKind::Ip, "203.0.113.42", "");
+        assert_eq!(
+            target_type_for_record(&org, &passive_ip),
+            None,
+            "a passive IP observation must not become an executable in-scope target"
+        );
+        let mut profile = ProfileAccumulator::from_organization(&org);
+        assert!(
+            !profile.merge_record(&passive_ip),
+            "a rejected passive IP must not backfill organization.ip_ranges and authorize itself later"
+        );
+    }
+
+    #[test]
+    fn confirmed_org_ip_ranges_authorize_only_exact_or_contained_ips() {
+        let mut org = org_with_domains(json!(["example.com"]));
+        org.ip_ranges = json!([
+            "203.0.113.42",
+            "198.51.100.0/24",
+            "2001:db8::/32",
+            "malformed"
+        ]);
+
+        assert!(organization_ip_ranges_contain_ip(
+            &org,
+            "203.0.113.42".parse().unwrap()
+        ));
+        assert!(organization_ip_ranges_contain_ip(
+            &org,
+            "198.51.100.255".parse().unwrap()
+        ));
+        assert!(organization_ip_ranges_contain_ip(
+            &org,
+            "2001:db8:abcd::1".parse().unwrap()
+        ));
+        assert!(!organization_ip_ranges_contain_ip(
+            &org,
+            "198.51.101.1".parse().unwrap()
+        ));
+        assert!(!organization_ip_ranges_contain_ip(
+            &org,
+            "2001:db9::1".parse().unwrap()
+        ));
+    }
+
+    #[test]
+    fn authorized_target_rows_require_exact_ip_or_containing_cidr() {
+        let rows = vec![
+            ("ip".to_string(), "203.0.113.42".to_string()),
+            ("cidr".to_string(), "198.51.100.0/24".to_string()),
+            ("domain".to_string(), "192.0.2.10".to_string()),
+            ("cidr".to_string(), "2001:db8::/32".to_string()),
+            ("cidr".to_string(), "malformed".to_string()),
+        ];
+
+        assert!(authorized_target_rows_contain_ip(
+            "203.0.113.42".parse().unwrap(),
+            &rows
+        ));
+        assert!(authorized_target_rows_contain_ip(
+            "198.51.100.88".parse().unwrap(),
+            &rows
+        ));
+        assert!(authorized_target_rows_contain_ip(
+            "2001:db8::42".parse().unwrap(),
+            &rows
+        ));
+        assert!(!authorized_target_rows_contain_ip(
+            "203.0.113.43".parse().unwrap(),
+            &rows
+        ));
+        assert!(!authorized_target_rows_contain_ip(
+            "192.0.2.10".parse().unwrap(),
+            &rows
+        ));
+    }
+
+    #[test]
+    fn authorized_ip_context_query_is_strictly_owned_scoped_and_project_bound() {
+        assert!(AUTHORIZED_IP_CONTEXT_SQL.contains("organization_id = $1"));
+        assert!(AUTHORIZED_IP_CONTEXT_SQL.contains("project_path IS NOT DISTINCT FROM $2"));
+        assert!(AUTHORIZED_IP_CONTEXT_SQL.contains("scope::text = 'in'"));
+        assert!(AUTHORIZED_IP_CONTEXT_SQL.contains("target_type::text IN ('ip', 'cidr')"));
+        assert!(
+            !AUTHORIZED_IP_CONTEXT_SQL.contains("organization_id IS NULL"),
+            "legacy/null-org rows must never authorize active IP promotion"
+        );
     }
 
     #[test]
@@ -1447,7 +2056,7 @@ mod tests {
             "stock.pingan.com",
             // root itself → not a subdomain of itself
             "pingan.com",
-            // www is normalized to the root → dropped
+            // www remains a distinct exact hostname below the authorized root.
             "www.pingan.com",
             // duplicate → deduped
             "life.pingan.com",
@@ -1464,6 +2073,7 @@ mod tests {
             vec![
                 ("pingan.com".to_string(), "life.pingan.com".to_string()),
                 ("pingan.com".to_string(), "stock.pingan.com".to_string()),
+                ("pingan.com".to_string(), "www.pingan.com".to_string()),
             ]
         );
     }
@@ -1486,12 +2096,31 @@ mod tests {
     }
 
     #[test]
+    fn wildcard_scope_matches_children_but_never_authorizes_apex() {
+        let org = org_with_domains(json!(["*.moresec.cn"]));
+        assert!(value_belongs_to_organization(&org, "www.moresec.cn"));
+        assert!(value_belongs_to_organization(&org, "a.www.moresec.cn"));
+        assert!(!value_belongs_to_organization(&org, "moresec.cn"));
+        assert_eq!(
+            collect_subdomain_pairs(
+                &org,
+                &[
+                    "*.moresec.cn".to_string(),
+                    "*.sub.moresec.cn".to_string(),
+                    "moresec.cn".to_string(),
+                    "www.moresec.cn".to_string(),
+                ]
+            ),
+            vec![("*.moresec.cn".to_string(), "www.moresec.cn".to_string())]
+        );
+    }
+
+    #[test]
     fn pair_subdomains_within_maps_subdomains_to_in_scope_root() {
         // The agent registers roots AND discovered subdomains as scope='in'
         // targets; pairing within that set recovers the (root, subdomain) edges
         // the enrich path can't (same-source skip-all — see fn doc). IPs/apexes
-        // are nobody's subdomain → no pair; `www.` is normalized to the apex
-        // (consistent with collect_subdomain_pairs) → dropped, not an asset.
+        // are nobody's subdomain → no pair; `www.` remains an exact host asset.
         let hosts: Vec<String> = [
             "pa18.com",
             "pingan.com",
@@ -1500,8 +2129,8 @@ mod tests {
             "um.pa18.com",
             "act.pa18.com",
             "sub.pingan.com",
-            "www.pingan.com", // normalizes to pingan.com (apex) → dropped
-            "202.69.26.13",   // IP → never a subdomain → no pair
+            "www.pingan.com",
+            "202.69.26.13", // IP → never a subdomain → no pair
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1514,7 +2143,45 @@ mod tests {
                 ("pa18.com".to_string(), "act.pa18.com".to_string()),
                 ("pa18.com".to_string(), "um.pa18.com".to_string()),
                 ("pingan.com".to_string(), "sub.pingan.com".to_string()),
+                ("pingan.com".to_string(), "www.pingan.com".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn normalized_host_preserves_www_identity() {
+        assert_eq!(
+            normalized_host("WWW.MoreSec.CN."),
+            Some("www.moresec.cn".to_string())
+        );
+        assert_eq!(
+            normalized_host("https://WWW.MoreSec.CN/path"),
+            Some("www.moresec.cn".to_string())
+        );
+        assert_eq!(
+            normalized_host("*.MoreSec.CN."),
+            Some("*.moresec.cn".to_string())
+        );
+    }
+
+    #[test]
+    fn persistence_target_lookup_is_org_type_scoped_with_legacy_claim() {
+        let sql = build_persist_target_lookup_sql();
+        assert!(
+            sql.contains("organization_id"),
+            "missing org ownership: {sql}"
+        );
+        assert!(
+            sql.contains("target_type::text"),
+            "missing type identity: {sql}"
+        );
+        assert!(
+            sql.contains("organization_id IS NULL"),
+            "legacy claim path missing: {sql}"
+        );
+        assert!(
+            sql.contains("DESC NULLS LAST"),
+            "owned row must beat legacy row: {sql}"
         );
     }
 
@@ -1543,17 +2210,21 @@ mod tests {
 
     #[test]
     fn registrable_domains_skips_ip_garbage_and_keeps_real_roots() {
-        // Regression: a domains list polluted with URL-wrapped IPs made
+        // Regression: an authorized-host input polluted with URL-wrapped IPs made
         // `registrable_domains` return IP fragments (`124.196.77.48` -> `77.48`),
-        // so crt.sh was queried for junk and CT never landed. IP hosts must be
-        // skipped, leaving the real owned roots for the CT/WHOIS query.
-        let org = org_with_domains(json!([
-            "http://124.196.77.48", // url-wrapped IP -> host 124.196.77.48 -> skip
-            "https://61.241.22.10", // url-wrapped IP -> skip
-            "pingan.com",
-            "life.pingan.com", // -> apex pingan.com (deduped)
-        ]));
-        let domains = registrable_domains(&org);
+        // so RDAP was queried for junk. IP hosts must be skipped, leaving the
+        // real authorized roots for the WHOIS query.
+        let domains = registrable_domains_from_authorized_hosts(
+            &[
+                "http://124.196.77.48", // url-wrapped IP -> host 124.196.77.48 -> skip
+                "https://61.241.22.10", // url-wrapped IP -> skip
+                "pingan.com",
+                "life.pingan.com", // -> apex pingan.com (deduped)
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        );
         assert!(
             domains.contains(&"pingan.com".to_string()),
             "real root must be queried: {domains:?}"
@@ -1568,6 +2239,16 @@ mod tests {
                 .any(|d| d.parse::<std::net::IpAddr>().is_ok()),
             "no IP literal may be CT-queried: {domains:?}"
         );
+    }
+
+    #[test]
+    fn registrable_domains_include_only_authorized_target_values() {
+        let domains = registrable_domains_from_authorized_hosts(&[
+            "moresec.cn".to_string(),
+            "https://www.moresec.cn/login".to_string(),
+            "115.28.135.55".to_string(),
+        ]);
+        assert_eq!(domains, vec!["moresec.cn".to_string()]);
     }
 
     #[test]
@@ -1594,6 +2275,28 @@ mod tests {
     }
 
     #[test]
+    fn whois_terminal_state_distinguishes_empty_error_and_blocked() {
+        assert_eq!(
+            classify_whois_landing(0, 0, false),
+            WhoisLandingState::Blocked
+        );
+        assert_eq!(
+            classify_whois_landing(2, 0, false),
+            WhoisLandingState::Error
+        );
+        assert_eq!(
+            classify_whois_landing(2, 1, false),
+            WhoisLandingState::Error
+        );
+        assert_eq!(classify_whois_landing(2, 1, true), WhoisLandingState::Error);
+        assert_eq!(
+            classify_whois_landing(2, 2, false),
+            WhoisLandingState::Empty
+        );
+        assert_eq!(classify_whois_landing(2, 2, true), WhoisLandingState::Found);
+    }
+
+    #[test]
     fn normalize_dns_target_strips_root_dot_and_lowercases() {
         // CNAME/MX answers arrive FQDN-style (trailing root dot) and mixed-case;
         // collapse them so duplicate rows hit the dns_records unique key.
@@ -1603,6 +2306,114 @@ mod tests {
             "alias.example.net"
         );
         assert_eq!(normalize_dns_target("."), "");
+    }
+
+    #[test]
+    fn deterministic_primary_dns_ip_is_ipv4_first_and_order_independent() {
+        let records = vec![
+            (
+                "AAAA",
+                "www.moresec.cn".to_string(),
+                "2001:db8::2".to_string(),
+            ),
+            (
+                "A",
+                "www.moresec.cn".to_string(),
+                "203.0.113.20".to_string(),
+            ),
+            (
+                "A",
+                "www.moresec.cn".to_string(),
+                "203.0.113.10".to_string(),
+            ),
+        ];
+        assert_eq!(
+            deterministic_primary_dns_ip(&records),
+            Some("203.0.113.10".to_string())
+        );
+    }
+
+    #[test]
+    fn dns_host_attempt_does_not_treat_query_error_as_empty() {
+        assert_eq!(
+            classify_dns_host_attempt(&[
+                DnsAttemptState::Empty,
+                DnsAttemptState::Empty,
+                DnsAttemptState::Error,
+                DnsAttemptState::Empty,
+            ]),
+            DnsAttemptState::Error,
+            "one resolver/transport error makes an otherwise empty host non-terminal"
+        );
+        assert_eq!(
+            classify_dns_host_attempt(&[DnsAttemptState::Empty; DNS_QUERY_GROUP_COUNT]),
+            DnsAttemptState::Empty
+        );
+        assert_eq!(
+            classify_dns_host_attempt(&[
+                DnsAttemptState::Found,
+                DnsAttemptState::Empty,
+                DnsAttemptState::Error,
+                DnsAttemptState::Empty,
+            ]),
+            DnsAttemptState::Partial,
+            "real A/AAAA data must land without hiding an auxiliary query failure"
+        );
+    }
+
+    #[test]
+    fn typed_a_and_aaaa_negatives_can_close_the_address_group() {
+        assert_eq!(
+            classify_dns_address_attempts(&[DnsAttemptState::Empty, DnsAttemptState::Empty]),
+            DnsAttemptState::Empty,
+            "two explicit no-record answers prove the address group was checked empty"
+        );
+        assert_eq!(
+            classify_dns_address_attempts(&[DnsAttemptState::Empty, DnsAttemptState::Error]),
+            DnsAttemptState::Error,
+            "a transport error cannot be promoted to a negative DNS fact"
+        );
+        assert_eq!(
+            classify_dns_address_attempts(&[]),
+            DnsAttemptState::Error,
+            "an unavailable typed resolver leaves OS lookup as positive-only fallback"
+        );
+        assert_eq!(
+            classify_dns_address_attempts(&[DnsAttemptState::Found, DnsAttemptState::Error]),
+            DnsAttemptState::Partial,
+            "a real address lands, but its failed sibling family remains retryable"
+        );
+    }
+
+    #[test]
+    fn resolv_conf_fallback_skips_unrepresentable_scoped_nameserver() {
+        let servers = resolv_conf_nameservers(
+            "nameserver fe80::5e7d:aeff:fe2d:4f3d%en0\n\
+             nameserver 192.168.0.1\n\
+             nameserver 2001:4860:4860::8888\n",
+        );
+        assert_eq!(
+            servers,
+            vec![
+                "192.168.0.1".parse::<IpAddr>().unwrap(),
+                "2001:4860:4860::8888".parse::<IpAddr>().unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn dns_refresh_has_no_fixed_target_limit_and_batches_every_domain() {
+        let sql = dns_target_query_sql();
+        assert!(!sql.to_ascii_uppercase().contains("LIMIT"));
+        assert!(sql.contains("ORDER BY t.created_at ASC, t.value ASC, t.id ASC"));
+
+        let targets = (0..401).collect::<Vec<_>>();
+        let batch_sizes = targets
+            .chunks(DNS_MAX_RESOLVE_CONCURRENCY)
+            .map(<[_]>::len)
+            .collect::<Vec<_>>();
+        assert_eq!(batch_sizes, vec![128, 128, 128, 17]);
+        assert_eq!(batch_sizes.iter().sum::<usize>(), targets.len());
     }
 
     #[test]

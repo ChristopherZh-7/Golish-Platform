@@ -151,7 +151,14 @@ fn test_recon_has_passive_tools_only() {
     assert!(has_tool(recon, "recon_discover_subsidiaries"));
     assert!(has_tool(recon, "recon_map_assets"));
     assert!(has_tool(recon, "recon_lookup_whois"));
-    assert!(has_tool(recon, "manage_targets"));
+    assert!(has_tool(recon, "check_stage_asset_coverage"));
+    assert!(has_tool(recon, "stage_worklist_status"));
+    assert!(has_tool(recon, "stage_worklist_next"));
+    assert!(has_tool(recon, "query_target_data"));
+    assert!(
+        !has_tool(recon, "manage_targets"),
+        "Target Intel observations must land through deterministic recon wrappers; the model cannot promote provider/DNS observations into active scope"
+    );
     assert!(has_tool(recon, "submit_stage_deliverable"));
     assert!(has_tool(recon, "record_finding"));
     assert!(has_tool(recon, "search_knowledge_base"));
@@ -174,6 +181,12 @@ fn test_recon_prompt_is_zero_touch() {
     assert!(prompt.contains("ZERO-TOUCH"));
     assert!(prompt.contains("recon_map_assets"));
     assert!(prompt.contains("submit_stage_deliverable"));
+    assert!(prompt.contains("ready_to_submit=true"));
+    assert!(prompt.contains("terminal_exceptions_preview.coverage_to_submit"));
+    assert!(prompt.contains("status `accepted` is terminal"));
+    assert!(prompt.contains("do not invent"));
+    assert!(prompt.contains("do not register targets yourself"));
+    assert!(prompt.contains("Do not call manage_targets"));
     // Passive identity: must not describe itself as doing exploitation.
     assert!(prompt.contains("passive"));
     assert!(!prompt.contains("list_in_scope_targets"));
@@ -254,6 +267,13 @@ fn test_prober_prompt_is_active_surface() {
     assert!(prompt.contains("HTTP liveness alone"));
     assert!(prompt.contains("do NOT call httpx or pentest_run directly"));
     assert!(prompt.contains("do NOT call nmap/naabu/masscan or pentest_run directly"));
+    assert!(prompt.contains("terminal_exceptions_preview.coverage_to_submit"));
+    assert!(prompt.contains("returns `accepted`, stop immediately"));
+    assert!(prompt.contains("details.missing_origins"));
+    assert!(prompt.contains("details.recommended_args.target_urls"));
+    assert!(prompt.contains("Copy those exact origins unchanged"));
+    assert!(prompt.contains("Never guess, infer, or rewrite the scheme"));
+    assert!(!prompt.contains("via manage_targets"));
     // Prober is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
     // describe itself as zero-touch.
     assert!(!prompt.contains("ZERO-TOUCH"));

@@ -1,13 +1,12 @@
-//! Phase B of the passive-intel pairing closure (design 2026-06-17): turn
-//! survey-discovered, scope-filtered assets into `targets` carrying the
-//! surveyed `real_ip`.
+//! Asset-map landing: turn one provider invocation's normalized domain/IP
+//! observations into org-bound `targets`, complete DNS edges, and service/
+//! subdomain relationships. The current invocation is the freshness boundary.
 //!
-//! Pure planning (`plan_promotable_assets`, `pairs_from_candidates`) is
-//! unit-tested without a DB; the writes (`promote_profile_assets_to_targets`)
-//! are idempotent and non-fatal — a failure only warns and never rolls back the
-//! committed enrich (sibling of the `land_*` coverage hooks, invariant D4).
+//! Pure planning (`plan_current_run_targets`, `pairs_from_candidates`) is
+//! unit-tested without a DB; writes are exact org/type/value upserts and do not
+//! reactivate a pre-existing `scope=out` row.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
 
 use serde_json::Value;
@@ -17,7 +16,7 @@ use golish_app_core::GolishError;
 
 use crate::asset_intel::types::HostIpPair;
 use crate::asset_intel::{extract_host_ip_pairs, resolve_field_ref};
-use crate::organization_recon::value_belongs_to_organization;
+use crate::organization_recon::{normalized_host, value_belongs_to_organization};
 use crate::organizations::OrganizationCandidates;
 
 /// Host-side fields tried (in priority order) when a provider declares no
@@ -43,9 +42,12 @@ fn single_record_rule(
 
 /// Lift `(host, ip)` pairs out of the in-memory candidates of a provider run.
 ///
-/// Each target candidate keeps the full provider record in `evidence.raw`; we
-/// apply that provider's `normalize.pairs` field lists (or a default set) to the
-/// single record and dedupe by host (first IP wins). Pure — no DB.
+/// Each target candidate keeps the full provider record in `evidence.raw`.
+/// Cross-provider candidate dedupe moves every contributing evidence object
+/// into `evidence.sources`, so all of those records must be inspected with the
+/// rule belonging to their own provider. Results are deduped by the exact
+/// `(hostname, canonical IP)` pair. Pure — no DB. A hostname may legitimately
+/// have multiple A/AAAA observations.
 pub(crate) fn pairs_from_candidates(
     candidates: &OrganizationCandidates,
     rules_by_provider: &HashMap<String, Vec<golish_pentest::models::AssetIntelPairRule>>,
@@ -53,24 +55,49 @@ pub(crate) fn pairs_from_candidates(
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for candidate in &candidates.targets {
-        let Some(raw) = candidate.evidence.get("raw") else {
-            continue;
+        let evidence_sources = candidate
+            .evidence
+            .get("sources")
+            .and_then(Value::as_array)
+            .filter(|sources| !sources.is_empty());
+        let evidence_records: Vec<&Value> = match evidence_sources {
+            Some(sources) => sources.iter().collect(),
+            None => vec![&candidate.evidence],
         };
-        let record_rules: Vec<golish_pentest::models::AssetIntelPairRule> =
-            match rules_by_provider.get(&candidate.source) {
-                Some(rules) if !rules.is_empty() => rules
-                    .iter()
-                    .map(|rule| single_record_rule(rule.host_field.clone(), rule.ip_field.clone()))
-                    .collect(),
-                _ => vec![single_record_rule(
-                    DEFAULT_HOST_FIELDS.iter().map(|s| s.to_string()).collect(),
-                    DEFAULT_IP_FIELDS.iter().map(|s| s.to_string()).collect(),
-                )],
+
+        for evidence in evidence_records {
+            let Some(raw) = evidence.get("raw") else {
+                continue;
             };
-        for rule in &record_rules {
-            for pair in extract_host_ip_pairs(raw, rule) {
-                if seen.insert(pair.host.clone()) {
-                    out.push(pair);
+            let provider = evidence
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or(&candidate.source);
+            let record_rules: Vec<golish_pentest::models::AssetIntelPairRule> =
+                match rules_by_provider.get(provider) {
+                    Some(rules) if !rules.is_empty() => rules
+                        .iter()
+                        .map(|rule| {
+                            single_record_rule(rule.host_field.clone(), rule.ip_field.clone())
+                        })
+                        .collect(),
+                    _ => vec![single_record_rule(
+                        DEFAULT_HOST_FIELDS.iter().map(|s| s.to_string()).collect(),
+                        DEFAULT_IP_FIELDS.iter().map(|s| s.to_string()).collect(),
+                    )],
+                };
+            for rule in &record_rules {
+                for pair in extract_host_ip_pairs(raw, rule) {
+                    let Some(host) = normalize_concrete_landing_host(&pair.host) else {
+                        continue;
+                    };
+                    let Ok(ip) = pair.ip.trim().parse::<IpAddr>() else {
+                        continue;
+                    };
+                    let ip = ip.to_string();
+                    if seen.insert((host.clone(), ip.clone())) {
+                        out.push(HostIpPair { host, ip });
+                    }
                 }
             }
         }
@@ -78,70 +105,133 @@ pub(crate) fn pairs_from_candidates(
     out
 }
 
-/// Read the org profile's `ip_ranges` as plain IP strings. Only bare addresses
-/// survive downstream (CIDRs / non-IP atoms are dropped by the parse filter in
-/// [`plan_promotable_assets`]).
-pub(crate) fn profile_ip_strings(org: &golish_db::models::Organization) -> Vec<String> {
-    json_atom_strings(&org.ip_ranges)
+fn normalize_landing_identity(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('.');
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        return Some(ip.to_string());
+    }
+    normalized_host(trimmed)
 }
 
-fn normalize_landing_host(host: &str) -> String {
-    host.trim().trim_end_matches('.').to_ascii_lowercase()
+fn normalize_concrete_landing_host(value: &str) -> Option<String> {
+    let host = normalize_landing_identity(value)?;
+    (!host.starts_with("*.") && host.parse::<IpAddr>().is_err()).then_some(host)
 }
 
 fn is_ip_literal(value: &str) -> bool {
-    normalize_landing_host(value).parse::<IpAddr>().is_ok()
+    normalize_landing_identity(value).is_some_and(|identity| identity.parse::<IpAddr>().is_ok())
 }
 
 fn target_accepts_real_ip(target_type: &str, value: &str) -> bool {
     !matches!(target_type, "ip" | "ipv4" | "ip_address" | "cidr") && !is_ip_literal(value)
 }
 
-fn landing_alias_host_key(host: &str) -> String {
-    let normalized = normalize_landing_host(host);
-    normalized
-        .strip_prefix("www.")
-        .unwrap_or(normalized.as_str())
-        .to_string()
-}
-
-fn is_www_alias_host(host: &str) -> bool {
-    normalize_landing_host(host)
-        .strip_prefix("www.")
-        .is_some_and(|rest| rest.contains('.'))
-}
-
-fn prefer_landing_host(candidate: &str, current: &str) -> bool {
-    let candidate_is_www = is_www_alias_host(candidate);
-    let current_is_www = is_www_alias_host(current);
-    if candidate_is_www != current_is_www {
-        return !candidate_is_www;
-    }
-    candidate.len() < current.len()
-}
-
 fn dedupe_landing_hosts<I>(hosts: I) -> Vec<String>
 where
     I: IntoIterator<Item = String>,
 {
-    let mut out: Vec<String> = Vec::new();
-    let mut index_by_alias: HashMap<String, usize> = HashMap::new();
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
     for host in hosts {
-        let host = normalize_landing_host(&host);
-        if host.is_empty() {
+        let Some(host) = normalize_concrete_landing_host(&host) else {
             continue;
+        };
+        if seen.insert(host.clone()) {
+            out.push(host);
         }
-        let alias_key = landing_alias_host_key(&host);
-        if let Some(index) = index_by_alias.get(&alias_key).copied() {
-            if prefer_landing_host(&host, out[index].as_str()) {
-                out[index] = host;
-            }
-            continue;
-        }
-        index_by_alias.insert(alias_key, out.len());
-        out.push(host);
     }
     out
+}
+
+fn canonical_ip(raw: &str) -> Option<String> {
+    raw.trim().parse::<IpAddr>().ok().map(|ip| ip.to_string())
+}
+
+fn deterministic_primary_ip<I>(ips: I) -> Option<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut ips: Vec<IpAddr> = ips
+        .into_iter()
+        .filter_map(|ip| ip.parse::<IpAddr>().ok())
+        .collect();
+    ips.sort_by(|left, right| match (left, right) {
+        (IpAddr::V4(_), IpAddr::V6(_)) => std::cmp::Ordering::Less,
+        (IpAddr::V6(_), IpAddr::V4(_)) => std::cmp::Ordering::Greater,
+        _ => left.to_string().cmp(&right.to_string()),
+    });
+    ips.dedup();
+    ips.first().map(ToString::to_string)
+}
+
+/// One canonical Target identity planned from a single provider invocation.
+/// This is an execution handoff, not the legacy durable candidate-review row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CurrentRunTarget {
+    pub value: String,
+    pub target_type: &'static str,
+    pub real_ip: Option<String>,
+}
+
+/// Turn only the current provider invocation's normalized observations into a
+/// deterministic domain/IP Target plan. No organization profile or historical
+/// candidate queue is accepted as input, so an old observation cannot become
+/// fresh merely because another survey ran.
+pub(crate) fn plan_current_run_targets(
+    candidates: &OrganizationCandidates,
+    observed_domain_hosts: &[String],
+    pairs: &[HostIpPair],
+) -> Vec<CurrentRunTarget> {
+    let mut domains: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut ips = BTreeSet::new();
+
+    {
+        let mut add_identity = |raw: &str| match normalize_landing_identity(raw) {
+            Some(identity) if identity.parse::<IpAddr>().is_ok() => {
+                ips.insert(identity);
+            }
+            Some(identity) if !identity.starts_with("*.") => {
+                domains.entry(identity).or_default();
+            }
+            _ => {}
+        };
+
+        for candidate in &candidates.targets {
+            add_identity(&candidate.value);
+        }
+        for host in observed_domain_hosts {
+            add_identity(host);
+        }
+    }
+
+    for pair in pairs {
+        let Some(host) = normalize_concrete_landing_host(&pair.host) else {
+            continue;
+        };
+        let Some(ip) = canonical_ip(&pair.ip) else {
+            continue;
+        };
+        let resolved = domains.entry(host).or_default();
+        if !resolved.contains(&ip) {
+            resolved.push(ip.clone());
+        }
+        ips.insert(ip);
+    }
+
+    let mut planned = domains
+        .into_iter()
+        .map(|(value, resolved)| CurrentRunTarget {
+            value,
+            target_type: "domain",
+            real_ip: deterministic_primary_ip(resolved),
+        })
+        .collect::<Vec<_>>();
+    planned.extend(ips.into_iter().map(|value| CurrentRunTarget {
+        value,
+        target_type: "ip",
+        real_ip: None,
+    }));
+    planned
 }
 
 fn json_atom_strings(value: &Value) -> Vec<String> {
@@ -161,78 +251,72 @@ fn json_atom_strings(value: &Value) -> Vec<String> {
 }
 
 /// Decide which discovered assets belong to `org` and should be upserted as
-/// targets: owned hosts keep their surveyed `real_ip`; profile IPs that parse as
-/// bare addresses become IP targets. Third-party hosts (shared-tenant rDNS like
-/// `*.163data.com.cn`) are dropped via `value_belongs_to_organization`. Pure.
+/// targets: owned exact hosts keep a deterministic primary `real_ip` cache;
+/// provider pair IPs — whether carried as the pair value or as an IP-literal host
+/// — remain relationship evidence and do not become executable targets. The
+/// organization profile is metadata, not an authorization source: explicit
+/// IP/CIDR scope must already exist as a trusted target row from scoping/CLI.
+/// Third-party hosts (shared-tenant rDNS like `*.163data.com.cn`) are dropped via
+/// `value_belongs_to_organization`. Pure.
+#[allow(dead_code)]
 pub(crate) fn plan_promotable_assets(
     org: &golish_db::models::Organization,
     pairs: &[HostIpPair],
-    profile_ips: &[String],
-) -> (Vec<(String, Option<String>)>, Vec<String>) {
+) -> Vec<(String, Option<String>)> {
     let mut domains: Vec<(String, Option<String>)> = Vec::new();
-    let mut ips: Vec<String> = Vec::new();
-    let mut seen_hosts = HashSet::new();
-    let mut seen_ips = HashSet::new();
-    let mut index_by_alias_and_ip: HashMap<String, usize> = HashMap::new();
+    let mut host_order = Vec::new();
+    let mut resolved_by_host: HashMap<String, Vec<String>> = HashMap::new();
     for pair in pairs {
-        let host = normalize_landing_host(&pair.host);
-        let ip = pair.ip.trim().to_string();
-        if ip.parse::<IpAddr>().is_err() {
+        let Some(host) = normalize_concrete_landing_host(&pair.host) else {
             continue;
-        }
+        };
+        let Some(ip) = canonical_ip(&pair.ip) else {
+            continue;
+        };
         if !value_belongs_to_organization(org, &host) {
             continue;
         }
-        if is_ip_literal(&host) {
-            if seen_ips.insert(host.clone()) {
-                ips.push(host);
-            }
-            continue;
-        }
-        if !seen_hosts.insert(host.clone()) {
-            continue;
-        }
-        let alias_key = format!("{}\0{}", landing_alias_host_key(&host), ip);
-        if let Some(index) = index_by_alias_and_ip.get(&alias_key).copied() {
-            if prefer_landing_host(&host, domains[index].0.as_str()) {
-                domains[index] = (host, Some(ip));
-            }
-            continue;
-        }
-        index_by_alias_and_ip.insert(alias_key, domains.len());
-        domains.push((host, Some(ip)));
-    }
-    for raw in profile_ips {
-        let ip = raw.trim();
-        if ip.parse::<IpAddr>().is_ok() && seen_ips.insert(ip.to_string()) {
-            ips.push(ip.to_string());
+        let entry = resolved_by_host.entry(host.clone()).or_insert_with(|| {
+            host_order.push(host.clone());
+            Vec::new()
+        });
+        if !entry.contains(&ip) {
+            entry.push(ip);
         }
     }
-    (domains, ips)
+    for host in host_order {
+        let primary = resolved_by_host
+            .remove(&host)
+            .and_then(deterministic_primary_ip);
+        domains.push((host, primary));
+    }
+    domains
 }
 
-/// Keep only well-formed CIDR networks (atoms carrying a `/prefix`) from the
-/// org's `ip_ranges`, deduped. Bare IPs are handled by [`plan_promotable_assets`]
-/// (they are NOT returned here); non-CIDR / malformed atoms are dropped so junk
-/// never becomes a scan target (design 2026-06-24-intel-to-eas-handoff §4 L0a).
-/// `target_type='cidr'` is an existing enum value (no schema change).
-pub(crate) fn plan_promotable_cidrs(profile_ips: &[String]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    profile_ips
-        .iter()
-        .filter_map(|raw| {
-            let s = raw.trim();
-            let (addr, prefix) = s.split_once('/')?;
-            let ip: IpAddr = addr.trim().parse().ok()?;
-            let bits: u8 = prefix.trim().parse().ok()?;
-            let max = if ip.is_ipv4() { 32 } else { 128 };
-            if bits > max {
-                return None;
-            }
-            Some(s.to_string())
-        })
-        .filter(|cidr| seen.insert(cidr.clone()))
-        .collect()
+/// Merge provider-discovered hostnames into the pair-backed promotion plan.
+/// A concrete owned hostname is an asset identity even when the provider did not
+/// return A/AAAA data; it becomes a domain target with `real_ip=None`. Valid
+/// host/IP pairs still supply the deterministic cache and all DNS relationships.
+/// Wildcard apexes, third-party hosts, IP literals and malformed names remain
+/// excluded by the same organization-scope predicate.
+#[allow(dead_code)]
+pub(crate) fn plan_promotable_assets_with_hosts(
+    org: &golish_db::models::Organization,
+    pairs: &[HostIpPair],
+    discovered_hosts: &[String],
+) -> Vec<(String, Option<String>)> {
+    let mut planned = plan_promotable_assets(org, pairs);
+    let mut seen: HashSet<String> = planned.iter().map(|(host, _)| host.clone()).collect();
+    for raw in discovered_hosts {
+        let Some(host) = normalize_concrete_landing_host(raw) else {
+            continue;
+        };
+        if !value_belongs_to_organization(org, &host) || !seen.insert(host.clone()) {
+            continue;
+        }
+        planned.push((host, None));
+    }
+    planned
 }
 
 /// Extract candidate hostnames from the org's `certificates` JSON (CT coverage),
@@ -241,6 +325,7 @@ pub(crate) fn plan_promotable_cidrs(profile_ips: &[String]) -> Vec<String> {
 /// strips `*.` wildcards to their parent, drops IPs and non-host tokens), dedupe.
 /// The caller scope-filters via `value_belongs_to_organization` before
 /// materialising (design 2026-06-24-intel-to-eas-handoff §4 L0b). Pure.
+#[allow(dead_code)]
 pub(crate) fn hostnames_from_certificates(certificates: &Value) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -311,28 +396,25 @@ async fn upsert_target(
     target_type: &str,
     real_ip: Option<&str>,
 ) -> Result<Uuid, GolishError> {
-    let existing: Option<(Uuid, String)> = sqlx::query_as(
-        r#"SELECT id, target_type::text FROM targets
-           WHERE value = $1
-             AND project_path IS NOT DISTINCT FROM $2
-           LIMIT 1"#,
-    )
-    .bind(value)
-    .bind(&org.project_path)
-    .fetch_optional(pool)
-    .await?;
+    let existing: Option<(Uuid, String)> = sqlx::query_as(build_target_lookup_sql())
+        .bind(value)
+        .bind(target_type)
+        .bind(&org.project_path)
+        .bind(org.id)
+        .fetch_optional(pool)
+        .await?;
 
     if let Some((id, existing_target_type)) = existing {
-        sqlx::query(
-            r#"UPDATE targets
-               SET organization_id = COALESCE(organization_id, $2),
-                   updated_at = NOW()
-               WHERE id = $1"#,
-        )
-        .bind(id)
-        .bind(org.id)
-        .execute(pool)
-        .await?;
+        let claimed = sqlx::query(build_target_claim_sql())
+            .bind(id)
+            .bind(org.id)
+            .execute(pool)
+            .await?;
+        if claimed.rows_affected() == 0 {
+            return Err(GolishError::Validation(format!(
+                "target ownership changed while claiming {target_type}:{value}"
+            )));
+        }
         if target_accepts_real_ip(&existing_target_type, value) {
             if let Some(ip) = real_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
                 golish_db::repo::targets::set_real_ip_by_id(pool, id, ip).await?;
@@ -346,24 +428,55 @@ async fn upsert_target(
     } else {
         ""
     };
-    let new_id: Uuid = sqlx::query_scalar(
-        r#"INSERT INTO targets
-              (name, target_type, value, tags, notes, scope, grp, owner,
-               organization_id, project_path, source, parent_id, real_ip)
-           VALUES
-              ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, 'default', '',
-               $4, $5, 'asset_intel', NULL, $6)
-           RETURNING id"#,
-    )
-    .bind(value)
-    .bind(target_type)
-    .bind(value)
-    .bind(org.id)
-    .bind(&org.project_path)
-    .bind(landed_real_ip)
-    .fetch_one(pool)
-    .await?;
+    let new_id: Uuid = sqlx::query_scalar(build_target_insert_sql())
+        .bind(value)
+        .bind(target_type)
+        .bind(value)
+        .bind(org.id)
+        .bind(&org.project_path)
+        .bind(landed_real_ip)
+        .fetch_one(pool)
+        .await?;
     Ok(new_id)
+}
+
+fn build_target_lookup_sql() -> &'static str {
+    r#"SELECT id, target_type::text FROM targets
+       WHERE value = $1
+         AND target_type::text = $2
+         AND project_path IS NOT DISTINCT FROM $3
+         AND (organization_id = $4 OR organization_id IS NULL)
+       ORDER BY (organization_id = $4) DESC NULLS LAST, updated_at DESC
+       LIMIT 1"#
+}
+
+fn build_target_claim_sql() -> &'static str {
+    r#"UPDATE targets
+       SET organization_id = $2,
+           updated_at = NOW()
+       WHERE id = $1
+         AND (organization_id = $2 OR organization_id IS NULL)"#
+}
+
+fn build_target_insert_sql() -> &'static str {
+    r#"INSERT INTO targets
+          (name, target_type, value, tags, notes, scope, grp, owner,
+           organization_id, project_path, source, parent_id, real_ip)
+       VALUES
+          ($1, $2::target_type, $3, '[]', '', 'in'::scope_type, 'default', '',
+           $4, $5, 'asset_intel', NULL, $6)
+       RETURNING id"#
+}
+
+fn build_service_target_lookup_sql() -> &'static str {
+    r#"SELECT id FROM targets
+       WHERE value = $1
+         AND target_type::text = $2
+         AND organization_id = $3
+         AND project_path IS NOT DISTINCT FROM $4
+         AND scope::text = 'in'
+       ORDER BY updated_at DESC
+       LIMIT 1"#
 }
 
 /// Classify a provider-paired `(host, ip)` into a DNS record tuple
@@ -371,95 +484,101 @@ async fn upsert_target(
 /// 2026-06-23). Returns `None` for an empty host or an unparseable IP — so junk
 /// never lands. IPv4 → `"A"`, IPv6 → `"AAAA"`.
 fn provider_dns_record(host: &str, ip: &str) -> Option<(&'static str, String, String)> {
-    let host = host.trim();
-    let ip = ip.trim();
-    if host.is_empty() || is_ip_literal(host) {
-        return None;
-    }
-    let parsed: IpAddr = ip.parse().ok()?;
+    let host = normalize_concrete_landing_host(host)?;
+    let parsed: IpAddr = ip.trim().parse().ok()?;
     let record_type = if parsed.is_ipv4() { "A" } else { "AAAA" };
-    Some((record_type, host.to_string(), ip.to_string()))
+    Some((record_type, host, parsed.to_string()))
 }
 
-/// Promote scope-filtered survey assets into `targets` with their surveyed
-/// `real_ip`. Non-fatal: each failure only warns. Returns how many rows were
-/// inserted or updated.
-pub(crate) async fn promote_profile_assets_to_targets(
-    pool: &sqlx::PgPool,
+fn provider_dns_records_for_pairs(
     org: &golish_db::models::Organization,
     pairs: &[HostIpPair],
-) -> usize {
-    let profile_ips = profile_ip_strings(org);
-    let (domains, ips) = plan_promotable_assets(org, pairs, &profile_ips);
-    let mut landed = 0usize;
-    for (domain, real_ip) in domains {
-        match upsert_target(pool, org, &domain, "domain", real_ip.as_deref()).await {
-            Ok(target_id) => {
-                landed += 1;
-                // Phase A (design 2026-06-23): the provider already paired this
-                // host→IP; land it DIRECTLY as a DNS A/AAAA record (the gate-read
-                // table) so the DNS coverage cell no longer depends on gate-time
-                // live re-resolution. Non-fatal (I9): a failure only warns and
-                // never rolls back the committed enrich. `dns_records.upsert` is
-                // idempotent (unique key DO NOTHING).
-                if let Some(ip) = real_ip.as_deref() {
-                    if let Some((rt, name, value)) = provider_dns_record(&domain, ip) {
-                        if let Err(error) = golish_db::repo::dns_records::upsert(
-                            pool,
-                            target_id,
-                            org.project_path.as_str(),
-                            rt,
-                            &name,
-                            &value,
-                            "provider",
-                        )
-                        .await
-                        {
-                            tracing::warn!(
-                                %domain, %error,
-                                "provider dns_records direct-land failed (non-fatal)"
-                            );
-                        }
-                    }
-                }
+) -> Vec<(&'static str, String, String)> {
+    let mut seen = HashSet::new();
+    pairs
+        .iter()
+        .filter_map(|pair| provider_dns_record(&pair.host, &pair.ip))
+        .filter(|(_, name, value)| {
+            !name.starts_with("*.")
+                && value_belongs_to_organization(org, name)
+                && seen.insert((name.clone(), value.clone()))
+        })
+        .collect()
+}
+
+/// Business-table counts written by one current-run asset-map landing pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TargetLandingSummary {
+    pub targets: usize,
+    pub domains: usize,
+    pub ips: usize,
+    pub dns_records: usize,
+}
+
+/// Promote this invocation's normalized provider observations directly into
+/// org-bound Targets, then persist every exact hostname/IP edge. The transient
+/// candidate DTO is only an adapter input; no approval queue participates.
+pub(crate) async fn land_current_run_targets(
+    pool: &sqlx::PgPool,
+    org: &golish_db::models::Organization,
+    candidates: &OrganizationCandidates,
+    pairs: &[HostIpPair],
+    discovered_hosts: &[String],
+) -> Result<TargetLandingSummary, GolishError> {
+    let planned = plan_current_run_targets(candidates, discovered_hosts, pairs);
+    let mut summary = TargetLandingSummary::default();
+    let mut domain_target_ids = HashMap::new();
+    for target in &planned {
+        let target_id = upsert_target(
+            pool,
+            org,
+            &target.value,
+            target.target_type,
+            target.real_ip.as_deref(),
+        )
+        .await?;
+        summary.targets += 1;
+        match target.target_type {
+            "domain" => {
+                summary.domains += 1;
+                domain_target_ids.insert(target.value.clone(), target_id);
             }
-            Err(error) => {
-                tracing::warn!(%domain, %error, "promote domain→target failed (non-fatal)")
-            }
+            "ip" => summary.ips += 1,
+            _ => {}
         }
     }
-    for ip in ips {
-        match upsert_target(pool, org, &ip, "ip", None).await {
-            Ok(_) => landed += 1,
-            Err(error) => tracing::warn!(%ip, %error, "promote ip→target failed (non-fatal)"),
-        }
+
+    // Reuse the hardened DNS normalizer/filter, but scope it to the current
+    // invocation's concrete domain plan rather than the cumulative org profile.
+    let mut current_run_org = org.clone();
+    current_run_org.domains = serde_json::json!(planned
+        .iter()
+        .filter(|target| target.target_type == "domain")
+        .map(|target| target.value.clone())
+        .collect::<Vec<_>>());
+    if let Some(intel) = current_run_org.intel.as_object_mut() {
+        intel.remove("app_domains");
     }
-    // L0a (design 2026-06-24): owned CIDR/ASN ranges become VISIBLE `cidr` scope
-    // targets so EAS sees them (today they were dropped by the bare-IP parse
-    // filter). Active port-scanning a whole netblock stays behind EAS
-    // human_approval (D1: "看得见，但不乱炸"). Non-fatal (I9).
-    for cidr in plan_promotable_cidrs(&profile_ips) {
-        match upsert_target(pool, org, &cidr, "cidr", None).await {
-            Ok(_) => landed += 1,
-            Err(error) => tracing::warn!(%cidr, %error, "promote cidr→target failed (non-fatal)"),
-        }
-    }
-    // L0b (design 2026-06-24): CT-discovered owned hosts (cert SAN/CN) become
-    // `domain` scope targets so EAS can probe them (today they only set the
-    // coverage has_ct flag, locked in organizations.certificates JSON). Scope-
-    // filtered (drop third-party / non-owned) + idempotent upsert. Non-fatal (I9).
-    for host in hostnames_from_certificates(&org.certificates) {
-        if !value_belongs_to_organization(org, &host) {
+    // Every provider-observed A/AAAA pair is relationship truth. Keep all of
+    // them on the exact hostname target; `real_ip` above is only one stable
+    // cache. Each canonical pair IP is also an explicit Target in `planned`.
+    for (record_type, name, value) in provider_dns_records_for_pairs(&current_run_org, pairs) {
+        let Some(target_id) = domain_target_ids.get(&name).copied() else {
             continue;
-        }
-        match upsert_target(pool, org, &host, "domain", None).await {
-            Ok(_) => landed += 1,
-            Err(error) => {
-                tracing::warn!(%host, %error, "promote cert host→target failed (non-fatal)")
-            }
-        }
+        };
+        golish_db::repo::dns_records::upsert(
+            pool,
+            target_id,
+            org.project_path.as_str(),
+            record_type,
+            &name,
+            &value,
+            "provider",
+        )
+        .await?;
+        summary.dns_records += 1;
     }
-    landed
+    Ok(summary)
 }
 
 /// A per-host service observed by a provider survey (port + optional
@@ -515,8 +634,8 @@ fn record_field(record: &Value, fields: &[&str]) -> Option<String> {
 /// Pure.
 fn service_asset_from_record(record: &Value) -> Option<HostServiceAsset> {
     let host = record_field(record, SERVICE_HOST_FIELDS)
-        .map(|value| value.trim().trim_end_matches('.').to_ascii_lowercase())
-        .filter(|host| !host.is_empty())?;
+        .and_then(|value| normalize_landing_identity(&value))
+        .filter(|host| !host.starts_with("*."))?;
     let port = record_field(record, SERVICE_PORT_FIELDS)
         .and_then(|raw| raw.trim().parse::<i32>().ok())
         .filter(|port| (1..=65535).contains(port))?;
@@ -541,14 +660,25 @@ pub(crate) fn service_assets_from_candidates(
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for candidate in &candidates.targets {
-        let Some(raw) = candidate.evidence.get("raw") else {
-            continue;
+        let sources = candidate
+            .evidence
+            .get("sources")
+            .and_then(Value::as_array)
+            .filter(|sources| !sources.is_empty());
+        let evidence_records: Vec<&Value> = match sources {
+            Some(sources) => sources.iter().collect(),
+            None => vec![&candidate.evidence],
         };
-        let Some(asset) = service_asset_from_record(raw) else {
-            continue;
-        };
-        if seen.insert((asset.host.clone(), asset.port, asset.protocol.clone())) {
-            out.push(asset);
+        for evidence in evidence_records {
+            let Some(raw) = evidence.get("raw") else {
+                continue;
+            };
+            let Some(asset) = service_asset_from_record(raw) else {
+                continue;
+            };
+            if seen.insert((asset.host.clone(), asset.port, asset.protocol.clone())) {
+                out.push(asset);
+            }
         }
     }
     out
@@ -565,9 +695,9 @@ pub(crate) async fn land_service_assets(
     pool: &sqlx::PgPool,
     org: &golish_db::models::Organization,
     assets: &[HostServiceAsset],
-) -> usize {
+) -> Result<usize, GolishError> {
     if assets.is_empty() {
-        return 0;
+        return Ok(0);
     }
     let metadata = serde_json::json!({ "source": "asset_intel" });
     let mut target_cache: HashMap<String, Option<Uuid>> = HashMap::new();
@@ -579,21 +709,17 @@ pub(crate) async fn land_service_assets(
         let target_id = match target_cache.get(&asset.host) {
             Some(cached) => *cached,
             None => {
-                let alias_host = landing_alias_host_key(&asset.host);
-                let resolved: Option<Uuid> = sqlx::query_scalar(
-                    r#"SELECT id FROM targets
-                       WHERE (value = $1 OR value = $3)
-                         AND project_path IS NOT DISTINCT FROM $2
-                       ORDER BY (value = $1) DESC, (scope::text = 'in') DESC, updated_at DESC
-                       LIMIT 1"#,
-                )
-                .bind(&asset.host)
-                .bind(&org.project_path)
-                .bind(&alias_host)
-                .fetch_optional(pool)
-                .await
-                .ok()
-                .flatten();
+                let resolved: Option<Uuid> = sqlx::query_scalar(build_service_target_lookup_sql())
+                    .bind(&asset.host)
+                    .bind(if is_ip_literal(&asset.host) {
+                        "ip"
+                    } else {
+                        "domain"
+                    })
+                    .bind(org.id)
+                    .bind(&org.project_path)
+                    .fetch_optional(pool)
+                    .await?;
                 target_cache.insert(asset.host.clone(), resolved);
                 resolved
             }
@@ -603,7 +729,7 @@ pub(crate) async fn land_service_assets(
         };
         let protocol = asset.protocol.as_deref().unwrap_or("tcp");
         let value = format!("{}/{}", asset.port, protocol);
-        match golish_db::repo::target_assets::upsert(
+        golish_db::repo::target_assets::upsert(
             pool,
             target_id,
             Some(org.project_path.as_str()),
@@ -615,18 +741,10 @@ pub(crate) async fn land_service_assets(
             asset.version.as_deref(),
             &metadata,
         )
-        .await
-        {
-            Ok(_) => landed += 1,
-            Err(error) => tracing::warn!(
-                host = %asset.host,
-                port = asset.port,
-                %error,
-                "service target_assets upsert failed (non-fatal)"
-            ),
-        }
+        .await?;
+        landed += 1;
     }
-    landed
+    Ok(landed)
 }
 
 #[cfg(test)]
@@ -664,6 +782,93 @@ mod tests {
         }
     }
 
+    fn target_candidate_value(value: &str) -> OrganizationCandidate {
+        OrganizationCandidate {
+            id: format!("target:test:{value}"),
+            kind: OrganizationCandidateKind::Target,
+            label: value.to_string(),
+            value: value.to_string(),
+            source: "test".to_string(),
+            confidence: 0.9,
+            status: "needs_review".to_string(),
+            evidence: serde_json::json!({"provider": "test", "raw": {"value": value}}),
+            created_at: 1,
+        }
+    }
+
+    #[test]
+    fn plan_current_run_targets_promotes_domains_and_ips_without_authorized_roots() {
+        let candidates = OrganizationCandidates {
+            targets: vec![
+                target_candidate_value("Api.MoreSec.CN."),
+                target_candidate_value("https://Portal.MoreSec.CN/login"),
+                target_candidate_value("203.0.113.30"),
+                target_candidate_value("api.moresec.cn"),
+            ],
+            ..Default::default()
+        };
+        let observed_domain_hosts = vec![
+            "portal.moresec.cn".to_string(),
+            "Shop.MoreSec.CN.".to_string(),
+        ];
+        let pairs = vec![
+            HostIpPair {
+                host: "api.moresec.cn".to_string(),
+                ip: "2001:db8::2".to_string(),
+            },
+            HostIpPair {
+                host: "API.MoreSec.CN.".to_string(),
+                ip: "203.0.113.20".to_string(),
+            },
+        ];
+
+        let planned = plan_current_run_targets(&candidates, &observed_domain_hosts, &pairs);
+
+        assert_eq!(
+            planned
+                .iter()
+                .filter(|target| target.target_type == "domain")
+                .map(|target| target.value.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["api.moresec.cn", "portal.moresec.cn", "shop.moresec.cn"])
+        );
+        assert_eq!(
+            planned
+                .iter()
+                .filter(|target| target.target_type == "ip")
+                .map(|target| target.value.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["203.0.113.20", "203.0.113.30", "2001:db8::2"])
+        );
+        assert_eq!(
+            planned
+                .iter()
+                .find(|target| target.value == "api.moresec.cn")
+                .and_then(|target| target.real_ip.as_deref()),
+            Some("203.0.113.20"),
+            "domain primary cache must be deterministic while every pair IP remains a target"
+        );
+    }
+
+    #[test]
+    fn plan_current_run_targets_rejects_wildcard_and_malformed_values() {
+        let candidates = OrganizationCandidates {
+            targets: vec![
+                target_candidate_value("*.moresec.cn"),
+                target_candidate_value("not-a-host"),
+                target_candidate_value("203.0.113.0/24"),
+                target_candidate_value("valid.moresec.cn"),
+            ],
+            ..Default::default()
+        };
+
+        let planned = plan_current_run_targets(&candidates, &[], &[]);
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].target_type, "domain");
+        assert_eq!(planned[0].value, "valid.moresec.cn");
+    }
+
     #[test]
     fn provider_dns_record_classifies_a_aaaa_and_rejects_garbage() {
         // Phase A (design 2026-06-23): provider host↔IP → direct DNS record.
@@ -687,6 +892,49 @@ mod tests {
     }
 
     #[test]
+    fn provider_dns_plan_keeps_all_multi_address_edges_without_authorizing_ips() {
+        let org = org_with_domains(serde_json::json!(["moresec.cn"]));
+        let pairs = vec![
+            HostIpPair {
+                host: "WWW.MoreSec.CN.".into(),
+                ip: "203.0.113.10".into(),
+            },
+            HostIpPair {
+                host: "www.moresec.cn".into(),
+                ip: "203.0.113.11".into(),
+            },
+            HostIpPair {
+                host: "www.moresec.cn".into(),
+                ip: "2001:db8::1".into(),
+            },
+        ];
+
+        let records = provider_dns_records_for_pairs(&org, &pairs);
+        assert_eq!(records.len(), 3);
+        assert_eq!(records.iter().filter(|(ty, _, _)| *ty == "A").count(), 2);
+        assert_eq!(records.iter().filter(|(ty, _, _)| *ty == "AAAA").count(), 1);
+        assert!(records.iter().all(|(_, host, _)| host == "www.moresec.cn"));
+        let domains = plan_promotable_assets(&org, &pairs);
+        assert_eq!(domains.len(), 1);
+    }
+
+    #[test]
+    fn provider_and_profile_ips_never_become_active_targets_in_intel_landing() {
+        let mut org = org_with_domains(serde_json::json!(["moresec.cn"]));
+        org.ip_ranges = serde_json::json!(["203.0.113.7", "203.0.113.0/24"]);
+        let pairs = vec![HostIpPair {
+            host: "116.62.45.225".into(),
+            ip: "1.94.38.88".into(),
+        }];
+
+        let domains = plan_promotable_assets(&org, &pairs);
+        assert!(
+            domains.is_empty(),
+            "provider IP observations and profile ip_ranges are metadata, not scan authorization"
+        );
+    }
+
+    #[test]
     fn plan_promotable_assets_keeps_owned_pairs_drops_thirdparty_and_bad_ip() {
         let org = org_with_domains(serde_json::json!(["pingan.com"]));
         let pairs = vec![
@@ -699,7 +947,7 @@ mod tests {
                 host: "194.1.broad.ha.dynamic.163data.com.cn".into(),
                 ip: "61.241.22.62".into(),
             },
-            // IP literals are IP assets, not domains resolving to another IP.
+            // Provider IP-only observations are evidence, not scan authorization.
             HostIpPair {
                 host: "116.62.45.225".into(),
                 ip: "1.94.38.88".into(),
@@ -710,8 +958,7 @@ mod tests {
                 ip: "not-an-ip".into(),
             },
         ];
-        let profile_ips = vec!["1.2.3.4".to_string(), "not-an-ip".to_string()];
-        let (domains, ips) = plan_promotable_assets(&org, &pairs, &profile_ips);
+        let domains = plan_promotable_assets(&org, &pairs);
         assert_eq!(
             domains,
             vec![(
@@ -719,14 +966,10 @@ mod tests {
                 Some("221.11.190.218".to_string())
             )]
         );
-        assert_eq!(
-            ips,
-            vec!["116.62.45.225".to_string(), "1.2.3.4".to_string()]
-        );
     }
 
     #[test]
-    fn plan_promotable_assets_dedupes_www_aliases_for_same_resolved_ip() {
+    fn plan_promotable_assets_preserves_www_and_apex_as_distinct_hosts() {
         let org = org_with_domains(serde_json::json!(["moresec.cn"]));
         let pairs = vec![
             HostIpPair {
@@ -747,12 +990,14 @@ mod tests {
             },
         ];
 
-        let (domains, ips) = plan_promotable_assets(&org, &pairs, &[]);
-
-        assert!(ips.is_empty());
+        let domains = plan_promotable_assets(&org, &pairs);
         assert_eq!(
             domains,
             vec![
+                (
+                    "www.moresec.cn".to_string(),
+                    Some("115.28.135.55".to_string())
+                ),
                 ("moresec.cn".to_string(), Some("115.28.135.55".to_string())),
                 (
                     "m.moresec.cn".to_string(),
@@ -763,25 +1008,57 @@ mod tests {
     }
 
     #[test]
-    fn plan_promotable_cidrs_keeps_networks_drops_bare_and_garbage() {
-        // L0a (design 2026-06-24): only well-formed CIDR networks survive; bare
-        // IPs (handled elsewhere), non-CIDR atoms, and over-wide prefixes drop.
-        let v = plan_promotable_cidrs(&[
-            "203.0.113.0/24".to_string(),
-            "10.0.0.0/8".to_string(),
-            "1.2.3.4".to_string(),        // bare IP — not a CIDR
-            "not-a-net".to_string(),      // garbage
-            "1.2.3.4/99".to_string(),     // invalid prefix (>32)
-            "203.0.113.0/24".to_string(), // dup — collapsed
-            "2001:db8::/32".to_string(),  // IPv6 CIDR
-        ]);
+    fn host_only_wildcard_discovery_promotes_concrete_child_without_authorizing_ip_or_apex() {
+        let org = org_with_domains(serde_json::json!(["*.moresec.cn"]));
+        let wildcard_pair = HostIpPair {
+            host: "*.moresec.cn".to_string(),
+            ip: "203.0.113.8".to_string(),
+        };
+        let discovered = vec![
+            "app.moresec.cn".to_string(),
+            "moresec.cn".to_string(),
+            "*.moresec.cn".to_string(),
+            "*.sub.moresec.cn".to_string(),
+            "cdn.vendor.net".to_string(),
+            "203.0.113.9".to_string(),
+        ];
+
         assert_eq!(
-            v,
+            plan_promotable_assets_with_hosts(
+                &org,
+                std::slice::from_ref(&wildcard_pair),
+                &discovered,
+            ),
+            vec![("app.moresec.cn".to_string(), None)]
+        );
+        assert!(provider_dns_records_for_pairs(&org, &[wildcard_pair]).is_empty());
+    }
+
+    #[test]
+    fn url_wrapped_pair_and_host_only_candidate_promote_concrete_domain_hosts() {
+        let org = org_with_domains(serde_json::json!(["moresec.cn"]));
+        let pairs = vec![HostIpPair {
+            host: "https://App.MoreSec.CN:8443/path?q=1".to_string(),
+            ip: "203.0.113.8".to_string(),
+        }];
+
+        assert_eq!(
+            plan_promotable_assets_with_hosts(
+                &org,
+                &pairs,
+                &["https://Portal.MoreSec.CN/login".to_string()],
+            ),
             vec![
-                "203.0.113.0/24".to_string(),
-                "10.0.0.0/8".to_string(),
-                "2001:db8::/32".to_string(),
+                (
+                    "app.moresec.cn".to_string(),
+                    Some("203.0.113.8".to_string()),
+                ),
+                ("portal.moresec.cn".to_string(), None),
             ]
+        );
+        assert_eq!(
+            provider_dns_records_for_pairs(&org, &pairs),
+            vec![("A", "app.moresec.cn".to_string(), "203.0.113.8".to_string(),)]
         );
     }
 
@@ -807,6 +1084,7 @@ mod tests {
                 "mail.pingan.com",
                 "pingan.com",
                 "vpn.pingan.com",
+                "www.pingan.com",
             ]
             .into_iter()
             .map(String::from)
@@ -834,6 +1112,30 @@ mod tests {
     }
 
     #[test]
+    fn pairs_from_candidates_normalizes_url_field_to_hostname() {
+        let candidates = OrganizationCandidates {
+            targets: vec![target_candidate(
+                "fofa",
+                serde_json::json!({
+                    "url": "https://App.MoreSec.CN:8443/path?q=1",
+                    "ip": "203.0.113.8"
+                }),
+            )],
+            ..Default::default()
+        };
+
+        let pairs = pairs_from_candidates(&candidates, &HashMap::new());
+
+        assert_eq!(
+            pairs,
+            vec![HostIpPair {
+                host: "app.moresec.cn".to_string(),
+                ip: "203.0.113.8".to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn pairs_from_candidates_uses_provider_rules_for_nested_fields() {
         let candidates = OrganizationCandidates {
             targets: vec![target_candidate(
@@ -855,6 +1157,186 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].host, "www.pingan.com");
         assert_eq!(pairs[0].ip, "61.241.22.62");
+    }
+
+    #[test]
+    fn pairs_from_candidates_keeps_multiple_ips_for_same_exact_host() {
+        let candidates = OrganizationCandidates {
+            targets: vec![
+                target_candidate(
+                    "quake",
+                    serde_json::json!({"domain":"www.pingan.com","ip":"203.0.113.11"}),
+                ),
+                target_candidate(
+                    "fofa",
+                    serde_json::json!({"domain":"www.pingan.com","ip":"203.0.113.10"}),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let pairs = pairs_from_candidates(&candidates, &HashMap::new());
+        assert_eq!(pairs.len(), 2, "host-level first-IP-wins loses DNS truth");
+        assert_eq!(pairs[0].host, "www.pingan.com");
+        assert_eq!(pairs[1].host, "www.pingan.com");
+        assert_ne!(pairs[0].ip, pairs[1].ip);
+    }
+
+    #[test]
+    fn pairs_from_candidates_keeps_all_pairs_after_cross_provider_merge() {
+        let mut candidate = target_candidate(
+            "quake",
+            serde_json::json!({
+                "service": {"http": {"host": "www.pingan.com"}},
+                "ip": "203.0.113.11"
+            }),
+        );
+        candidate.evidence["sources"] = serde_json::json!([
+            {
+                "provider": "quake",
+                "raw": {
+                    "service": {"http": {"host": "www.pingan.com"}},
+                    "ip": "203.0.113.11"
+                }
+            },
+            {
+                "provider": "fofa",
+                "raw": {"fqdn": "www.pingan.com", "addr": "203.0.113.10"}
+            }
+        ]);
+        let candidates = OrganizationCandidates {
+            targets: vec![candidate],
+            ..Default::default()
+        };
+        let rules = HashMap::from([
+            (
+                "quake".to_string(),
+                vec![golish_pentest::models::AssetIntelPairRule {
+                    path: "$".into(),
+                    host_field: vec!["service.http.host".into()],
+                    ip_field: vec!["ip".into()],
+                }],
+            ),
+            (
+                "fofa".to_string(),
+                vec![golish_pentest::models::AssetIntelPairRule {
+                    path: "$".into(),
+                    host_field: vec!["fqdn".into()],
+                    ip_field: vec!["addr".into()],
+                }],
+            ),
+        ]);
+
+        let pairs = pairs_from_candidates(&candidates, &rules);
+
+        assert_eq!(pairs.len(), 2, "merged evidence must retain both DNS edges");
+        assert!(pairs.iter().all(|pair| pair.host == "www.pingan.com"));
+        assert_eq!(
+            pairs
+                .iter()
+                .map(|pair| pair.ip.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["203.0.113.10", "203.0.113.11"])
+        );
+    }
+
+    #[test]
+    fn plan_promotable_assets_chooses_deterministic_primary_without_authorizing_dns_ips() {
+        let org = org_with_domains(serde_json::json!(["moresec.cn"]));
+        let pairs = vec![
+            HostIpPair {
+                host: "www.moresec.cn".into(),
+                ip: "2001:db8::2".into(),
+            },
+            HostIpPair {
+                host: "www.moresec.cn".into(),
+                ip: "203.0.113.20".into(),
+            },
+            HostIpPair {
+                host: "www.moresec.cn".into(),
+                ip: "203.0.113.10".into(),
+            },
+        ];
+
+        let domains = plan_promotable_assets(&org, &pairs);
+        assert_eq!(
+            domains,
+            vec![(
+                "www.moresec.cn".to_string(),
+                Some("203.0.113.10".to_string())
+            )],
+            "primary cache must be IPv4-first and stable, independent of provider order"
+        );
+    }
+
+    #[test]
+    fn target_lookup_is_org_type_and_exact_value_scoped() {
+        let sql = build_target_lookup_sql();
+        assert!(
+            sql.contains("organization_id"),
+            "missing org ownership: {sql}"
+        );
+        assert!(
+            sql.contains("target_type::text"),
+            "missing type identity: {sql}"
+        );
+        assert!(
+            sql.contains("organization_id IS NULL"),
+            "legacy claim path missing: {sql}"
+        );
+        assert!(
+            sql.contains("DESC NULLS LAST"),
+            "owned row must beat legacy row: {sql}"
+        );
+        assert!(
+            !sql.contains("value = $1 OR"),
+            "lookup must be exact: {sql}"
+        );
+    }
+
+    #[test]
+    fn current_run_target_write_contract_is_org_bound_in_scope_and_preserves_scope_out() {
+        let insert = build_target_insert_sql();
+        assert!(
+            insert.contains("organization_id"),
+            "missing org bind: {insert}"
+        );
+        assert!(
+            insert.contains("project_path"),
+            "missing project bind: {insert}"
+        );
+        assert!(
+            insert.contains("'in'::scope_type"),
+            "new targets must enter scope: {insert}"
+        );
+        assert!(
+            insert.contains("'asset_intel'"),
+            "missing landing provenance: {insert}"
+        );
+
+        let claim = build_target_claim_sql();
+        assert!(claim.contains("organization_id = $2"));
+        assert!(
+            !claim.contains("scope =") && !claim.contains("scope="),
+            "provider retry must not reactivate an existing scope=out row: {claim}"
+        );
+    }
+
+    #[test]
+    fn service_lookup_is_org_type_and_exact_value_scoped() {
+        let sql = build_service_target_lookup_sql();
+        assert!(
+            sql.contains("organization_id"),
+            "missing org ownership: {sql}"
+        );
+        assert!(
+            sql.contains("target_type::text"),
+            "missing type identity: {sql}"
+        );
+        assert!(
+            !sql.contains("value = $1 OR"),
+            "www must not fall back to apex: {sql}"
+        );
     }
 
     #[test]
@@ -931,5 +1413,33 @@ mod tests {
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].port, 80);
         assert!(assets[0].service.is_none());
+    }
+
+    #[test]
+    fn service_assets_keep_every_port_after_candidate_evidence_merge() {
+        let mut candidate = target_candidate(
+            "quake",
+            serde_json::json!({
+                "domain": "api.pingan.com",
+                "port": 80,
+                "transport": "tcp",
+                "service": {"name": "http"}
+            }),
+        );
+        candidate.evidence["sources"] = serde_json::json!([
+            {"provider":"quake","raw":{"domain":"api.pingan.com","port":80,"transport":"tcp","service":{"name":"http"}}},
+            {"provider":"fofa","raw":{"domain":"api.pingan.com","port":443,"transport":"tcp","service":"https"}},
+            {"provider":"shodan","raw":{"domain":"api.pingan.com","port":8443,"transport":"tcp","service":"https-alt"}}
+        ]);
+        let candidates = OrganizationCandidates {
+            targets: vec![candidate],
+            ..Default::default()
+        };
+
+        let assets = service_assets_from_candidates(&candidates);
+        assert_eq!(
+            assets.iter().map(|asset| asset.port).collect::<Vec<_>>(),
+            vec![80, 443, 8443]
+        );
     }
 }

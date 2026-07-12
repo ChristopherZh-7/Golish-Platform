@@ -487,7 +487,7 @@ export function AssetIntelActivityPanel({
                   </span>
                 </div>
                 <div className="mt-1 flex items-center gap-3 text-[10px] text-muted-foreground">
-                  <span>{activity.candidateCount} candidates</span>
+                  <span>{activity.candidateCount} records</span>
                   <span>{activity.batchCount} batches</span>
                 </div>
                 {activity.recentMessages.length > 0 && (
@@ -563,13 +563,6 @@ export function AssetIntelActivityPanel({
           ))}
         </div>
       )}
-      <div className="mt-3 rounded border border-border/30 bg-background/25 p-2 text-[10px] text-muted-foreground">
-        {translateWithFallback(
-          t,
-          "targetWorkspace.activity.candidateScopeHint",
-          "Candidates from asset intel runs stay out of active scan scope until approved and promoted."
-        )}
-      </div>
     </section>
   );
 }

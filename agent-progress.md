@@ -17,9 +17,10 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前状态（2026-07-11）** | **本轮信息收集闭环已完成并验证**：`enumeration-four-axis-ip-web-2026-07-01` 与 `mcp-trust-builtin-provenance-2026-07-11` 均为 `passing`，当前 `feature_list.json` 无 `in_progress`。Test1 Enumeration 已有 372 origins × 4 axes = 1488/1488 terminal 的 live PASS 与独立 DB/token 审计。 |
-| **当前 blocker（2026-07-11）** | 本轮实现范围无 blocker。项目 MCP 审批/预览 UI、trust 后热 reload、配置内容 hash/revoke 是独立后续能力；当前安全行为是未信任 project config fail closed，不自动执行。 |
-| **未提交状态（2026-07-11）** | 工作树保留本轮及此前用户授权的整套 Enumeration/P0-P2 改动，未 stage、未 commit、未 push；所有路径已在 2026-07-11 会话记录分组说明。7 个 legacy `js_collect` 删除是既有明确授权，保持删除，不恢复。 |
+| **当前状态（2026-07-12）** | `runtime-memory-candidate-pipeline-v2-2026-07-12` 是唯一 `in_progress` feature。用户已明确授权按既有 V2 设计/路线图实施 additive migration、`golish-db`、runtime、IPC 与前端改动；当前从 P1 Runtime Foundation 开始。 |
+| **当前 blocker（2026-07-12）** | V2 暂无已知 blocker；正在完成 P1 计划与当前大型脏树的适配审查。旧 `target-surface-fingerprint-network-failure-closure-2026-07-12` 已转 `blocked`，只等待另行授权的 fresh live EAS/Enumeration 验收，不阻塞 V2 代码实现。 |
+| **未提交状态（2026-07-12）** | 工作树原有 155 个 tracked 脏文件和 33 个 untracked 文件；V2 在 `codex/runtime-memory-candidate-v2` 分支上继续，未 stage、未 commit、未 push，不回滚或覆盖既有用户改动。V2 新增/修改文件与 RED→GREEN 证据将持续记入本会话记录。 |
+| **当前最高优先级（2026-07-12）** | 完成 P1：冻结 operation org scope，建立 StageRunUnit/WorkerRun/Handoff，修正 durable stage execution identity，并让 Target Intel/EAS/Enumeration/Vuln Triage 可 exact resume。 |
 | **历史快照说明** | 紧随其后的 3 条 2026-05/06 长记录只为考古保留，已被上面带 `2026-07-11` 的字段完全取代，不再代表当前状态。 |
 | **当前最高优先级** | **用户已澄清北极星 = crate-per-service（每个功能独立 crate、类微服务）**。新写 `docs/superpowers/plans/2026-05-30-crate-per-service-split.md`（servitization 阶段 3 S3-2 可执行化），feature_list `arch-crate-per-service-split` 已转 **`in_progress`**（M0 阶段）。**2026-05-30 进展**：§6 的 4 决策全按推荐拍板 + Tauri 跨 crate 注册机制 web 核实（Discussion #5378：invoke_handler 只调一次 → 单聚合 generate_handler! 路径引用）。**M0 State 下沉半边 = 完成+验证**：新建 `golish-app-core`(L5) 收 GolishError+DbState（AppState 故意留 golish），`golish/src/{error,state/db}.rs` 改 re-export，`check_dag.py` 加 L5；`cargo check -p golish-app-core` ✅ + `check_dag.py` ✅(46 crates) + golish 编译用户确认 OK。**M1（vuln 叶子）整体完成+验证**（MCP-agent-2 接 dead session yj5fxhjr 半成品）：vuln_intel(M1a)+wiki(M1b) 均 git mv 进 golish-vuln-app；`cargo check` 两 crate + `check_dag`(47 crates) + `check_repo_ownership` 全 exit 0；M0 欠的多 crate 命令注册由此 compile-level 实证。**M2（recon 服务）整体完成+验证（2026-05-31 · MCP-agent-4 · 层次 A 编译期依赖链）**：`golish-recon-app` 抽入 11 模块组（targets/organizations/scan_queue/sensitive_scan/custom_rules/scan_runner/intel_providers/wordlists + asset_intel + integrations），`scoping` 下沉 golish-app-core，asset_intel 解 PentestState（`ToolsConfigState` 共享同一 `Arc<ConfigManager>`），integrations（含 tauri webview 捕获引擎）搬迁 + tauri_app 启动接线。验证：`cargo check` 两 crate + `nextest -p golish-recon-app`(106✓) + `clippy -p golish-recon-app -D warnings` + `check_dag`(48 crates) + `check_repo_ownership` 全 exit 0。**M3（pentest 服务）整体完成+验证（2026-05-31 · MCP-agent-3 · 层次 A 编译期依赖链）**：`golish-pentest-app`(L5.6) 抽入 9 模块组（pentest/pentest_ai/pentest_bridge/findings/methodology/pipeline/execution_plans/evidence/security_analysis + 连带 output_parser）；**两个共享件下沉 golish-app-core**：`pty_interactive`（golish state/runtime/ai + pentest_ai 双用）+ `ports`(VaultReadPort/PgVaultAdapter，S1-2a)。pentest-app 编译期依赖 recon-app(targets)/pipeline(L3)/app-core；ai/ 入向桥 `pub(crate) use golish_pentest_app::{pentest,pentest_ai,pentest_bridge}`。验证：`cargo check` 两 crate + `nextest -p golish-pentest-app`(**47✓**) + `clippy -p golish-pentest-app -D` + `clippy -p golish --lib -D` + `check_dag`(**49 crates**) + `check_repo_ownership` 全 exit 0。**M4 调查 + M4-A（AppState 解耦）完成（2026-05-31 · MCP-agent-3）**：M4（agent）实证发现**真实 blocker**——`ai/commands/*`(19 文件) 几乎全 take 单体 `AppState`，而 `AppState` 聚合 `AiState`(定义在 ai/commands/mod.rs)，三者互锁 → 直接抽 ai/ 会造成 golish↔agent-app 循环（见 `docs/superpowers/plans/2026-05-31-m4-agent-app-feasibility.md`）。用户选「开 A：AppState 解耦」。**M4-A 完成**：新建 `golish-agent-app`(L5.6)，`AiState` 搬入 + 新 `AgentState`(13 字段 ≈ AppState 减 command_index/telemetry/langfuse)；`AppState::extract_agent_state()` + 启动 `.manage()`；**19 个 ai/commands 全部 `State<AppState>`→`State<AgentState>`**；bridge_config/mcp 接线改走 AgentState。验证：cargo check 两 crate + `clippy -p golish --lib -D` + `clippy -p golish-agent-app -D` + `check_dag`(**50 crates**) + `check_repo_ownership` 全 exit 0；ReadLints 无错（顺带 #[allow(dead_code)] 3 处 pre-existing 死字段 pty/sidecar/db_pool_ready，recompile surfaced）。**M4-proper 完成+验证（2026-05-31 · MCP-agent-3 接另一 MCP 半成品收尾）**：另一 MCP 已 `git mv` ai/ 全子树 + conversation_store 入 golish-agent-app、runtime/ 下沉 golish-app-core（TauriRuntime 解耦 AppState 改 take pty_output_tap 参数）、golish 侧 ai.rs/runtime.rs/conversation_store shim + facade + 守卫，但只跑 cargo check（带 4 unused warning）、从未跑 clippy、且在删死 re-export 前被掐断。本会话补完：① agent-app lib.rs 加 crate 级 `#![allow(clippy::too_many_arguments)]`（agents.rs:43 16 参命令）；② 删 4 个死 re-export（state AgentState / tools pentest_ai+pentest_bridge / db PgPentestStore，db/mod.rs 现空占位）。验证全绿：cargo check 两 crate + clippy 两 crate `-D warnings` + nextest -p golish-agent-app(**15✓**) + check_dag(**50 crates**) + check_repo_ownership 全 exit 0。**M5 platform 完成+验证（2026-05-31 · MCP-agent-3 · 用户「开 M5 platform」）**：抽 `golish-platform-app`(L5.5 纯叶子，零兄弟依赖)——`tools/{vault,audit,notes,recordings}.rs`(4 文件全 `State<DbState>`)`git mv` 入 crate，跨服务读经 golish_db::repo(L2) 不经兄弟 crate；导入重映射 `crate::{error,state::DbState,tools::scoping}`→`golish_app_core::*`；crate 级 too_many_arguments allow；facade vault/workspace 转发；golish tools/mod 删 4 pub mod + 删死 scoping re-export；守卫 check_dag(platform-app=5.5)+check_repo_ownership(SOURCE_ROOTS + DOMAIN_RULES 清 4 + ALLOWLIST/RAW_SQL 迁前缀)。验证全绿：cargo check 两 crate + clippy 两 crate -D + nextest -p golish-platform-app(**1✓**) + check_dag(**51 crates**) + check_repo_ownership 全 exit 0。**🎯 crate-per-service 北极星：5 个服务域(vuln/recon/pentest/agent/platform)全部层次 A 抽完。** epic 维持 in_progress 待层次 B（端口切兄弟硬依赖升真微服务）/ precommit / commit 收口。**层次 B 启动 · S1-2b1 完成（2026-05-31 · MCP-agent-3 · 用户「开层次 B 端口化」→「按推荐开干 b1」）**：发现 S1-2b 设计过期（写于层次 A 前，假设端口放 golish/src/ports），修正端口家为 **golish-app-core/src/ports/recon/**（6 消费方已分散到 4 app crate，不能依赖 golish）。建 ReconScansPort(10 method)+ReconAssetsPort(1 method)（镜像 repo 签名去 pool、返回同 Row 类型 remote-ready、纯透传适配器）；GolishDbRepoProvider 加 2 端口字段 new(pool) 内构造（外部签名不变）；agent-app recon.rs 11 调用点迁端口；守卫加 ('ports/recon','recon') + 删 5 条 ALLOWLIST。验证全绿：check app-core/agent-app + nextest ports::recon(2✓) + clippy 三处 -D 零告警 + check_dag(51) + repo_ownership(OK,ALLOWLIST 净减 5)。**b2 完成（2026-05-31，用户「接着开 b2」）**：security_analysis.rs（pentest，10 自由 Tauri 命令）5 recon 表迁端口；因须保留 pool_ready 就绪门，用『就绪门后内联构造适配器』（非 struct 注入）；扩 ReconScansPort +4 + ReconAssetsPort +1 method；删 5 条 ALLOWLIST（累计 28→18）；验证全绿（check pentest-app + nextest ports::recon 2✓ + clippy app-core/pentest-app/golish --lib -D 零告警 + 双守卫）。**b3-b6 完成（2026-05-31，用户「连续干 b3-b6」）→ S1-2b ReconPort 全 6 子片完成,22 条 recon 跨服务耦合全切断（ALLOWLIST 28→6）**：新建 ReconTargetsPort/ReconSitemapPort/ReconDirectoryPort + 扩 ReconScansPort（js_analysis_update_file_path_by_url、passive_scans_list_global_by_project，含端口 DTO ReconPassiveScanGlobal 解泛型 object-safety + app-core 加 chrono）；迁 8 文件（pentest_bridge 5 + pipeline/storage + platform/audit + vuln/matching），`&PgPool` 消费方用 Arc::new(pool.clone()) 注入。验证全绿：check 3 消费方 + nextest ports::recon(5✓) + nextest pentest/platform/vuln(48✓ 无回归) + clippy 五处 -D 零告警 + 双守卫。剩余 ALLOWLIST 6 = pentest_plan/vuln/agent_log/scan_queue（S1-2c/d/e/f，非 recon）。 **commit + S1-2c/d/e/f 完成（2026-05-31，用户「你帮我commit吧...后面全部做完」）**：① M0–S1-2b 已 commit `45f4bb2`（229 文件，未 push，本地 ahead 12）；② S1-2c（VulnIntelPort+WikiKbPort）/ S1-2d（PentestPlanPort）/ S1-2e（AgentLogReadPort，含 DTO 解泛型）/ S1-2f（scan_queue REPO_OWNER vuln→recon 伪阳性修正）全部完成 → **S1-2 横向耦合端口化整体完成，ALLOWLIST 28→0（cross-service ratchet 清空，每条横向 repo 耦合都走 golish-app-core/ports/ 服务端口）**。验证全绿：clippy app-core/agent/platform/golish --lib -D 零告警 + nextest app-core ports(10 object-safe) + nextest agent/platform/vuln(16✓ 无回归) + check_dag(51) + check_repo_ownership OK clean(ALLOWLIST 空)。**下一步 = commit S1-2c-f；（用户回来后）跑 just precommit 决定 push**。**§2.1：2 个 in_progress = arch-crate-per-service-split（父 epic）+ arch-s1-2b-recon-port（子里程碑），同一工作流父/子两粒度。** M0–S1-2b 已 commit(45f4bb2,未 push)；S1-2c-f 待 commit；全套未 push、未跑 just precommit 全量。前置端口：`arch-s1-2b-recon-port`（`not_started`，设计已写，ReconPort 是 M2 recon 抽取的前置）。父条目 `arch-s1-2-port-horizontal-coupling` 已 **passing**（S1-2a 走路骨架确立）。`target-surface-workbench` 继续 `blocked`。**§2.1 当前 in_progress 数 = 1（arch-crate-per-service-split）**。 |
 | **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。**2026-05-30 更新**：本机 `just check` **全绿**（fmt + check-fe + test-fe + lint-rust（clippy `-D warnings` 0 告警 + `cargo fmt --check`）+ test-rust-all（nextest **2592 passed / 7 skipped / 0 failed**）+ check-types（ts-rs 绑定无漂移）均 ✅）。此前记录的 clippy warnings 与 sandbox PermissionDenied baseline failures 在本机最新工作树**未复现**。 |
@@ -32,6 +33,442 @@
 > 倒序排列,最新一轮在最上面。每轮一条。
 
 > 历史会话已归档：`docs/archive/agent-progress-archive-2026-06-28.md`。主文件只保留最近 20 条会话，避免旧日志干扰新判断；需要追溯旧验证证据时去 archive grep。
+
+#### 2026-07-12 · Runtime memory and Candidate pipeline V2 implementation
+
+- **本轮目标**：按用户明确授权实施
+  `docs/design/2026-07-12-runtime-memory-candidate-pipeline-v2.md` 与八包路线图，先完成
+  P1 Runtime Foundation，再按依赖推进 Candidate V2、Memory Fabric、KG/RAG、typed
+  post-exploit、cleanup 和 reporting。
+- **开工状态**：原工作树位于 `main` 且已有 155 个 tracked 脏文件、33 个 untracked
+  文件；已原样切到 `codex/runtime-memory-candidate-v2`，未回滚、暂存或提交既有改动。
+  旧 target-surface feature 已转 `blocked` 等待单独 live acceptance，V2 成为唯一
+  `in_progress`。
+- **运行过的验证 / 已记录证据**：`./init.sh` → exit 0；fmt、check-fe、test-fe、
+  lint-rust、test-rust-all、check-types 全绿。该结果只证明开工基线，不证明 V2 已实现。
+- **安全边界**：本次实现授权覆盖设计中列明的 additive migration、`golish-db` 和 IPC；
+  不授权真实扫描、exploit、外部 embedding、Graphiti 或付费 API 请求。
+- **下一步最佳动作**：完成 P1 当前树审查，按 TDD 从 rollout mode contract 和 additive
+  runtime schema 开始。
+- **提交记录**：未 stage、未 commit、未 push。
+
+#### 2026-07-12 · Enumeration browser stale recovery terminal closure
+
+- **本轮目标**：按用户授权修复最新 run `pentest-chat-1783829178322-1` 中
+  `https://moresec.cn:443` 的 JS/PARAM/JSAPI 长期停在 partial、导致 Enumeration
+  `submit_stage_deliverable` 无法通过的问题；保持真实重复失败 breaker 与 evidence/gate
+  语义不变。
+- **根因**：第一次 `script_body` 读取失败会记录 failure 并把所属 page 放进 checkpoint；
+  后续 page 已被消费且 script 已由同 provenance manifest 成功缓存时，浏览器不再产生该
+  script response，因此既不增加 failure count，也不调用 success clear。最终形成
+  `pending_pages=[] + recovery_failures[count=1] + recovery_pending` 的零网络空 resume；现场
+  `checkpoint_resume_count=13` 仍 `recovery_exhausted=false`。
+- **已完成**：恢复初始化在载入同 provenance cached scripts 后，清除已有成功落盘 entry
+  对应的 stale `script_body` failure；无成功 cache 的真实重复 failure 仍在第二次达到
+  `recovery_exhausted=true`。新增现场形状回归测试，并同步 pentest bridge 模块卡和索引。
+  这是简单局部 bugfix，未切换或新增 `feature_list.json` 条目；唯一 `in_progress` feature
+  保持不变。
+- **运行过的验证 / 已记录证据**：
+  - TDD RED：`node --test --test-name-pattern='cached script clears a stale script-body recovery failure' scripts/browser_collect_js_api.test.mjs`
+    → exit 1，`actual='partial'`、`expected='complete'`。
+  - TDD GREEN：同命令 → 1/1 passed；既有
+    `repeated navigation failure exhausts one retry signature without a third request` → 1/1 passed。
+  - `node --test scripts/browser_collect_js_api.test.mjs` → exit 0，20/20 passed。
+  - `cd backend && cargo nextest run -p golish-pentest-app browser_collect_js_api --status-level fail`
+    → exit 0，run `1a1830be-f4b7-4c7a-9648-22145dbf`，43/43 passed。
+  - `node --check scripts/browser_collect_js_api.mjs`、对应 test 文件与 `git diff --check`
+    → exit 0。Biome 明确忽略 `scripts/*.mjs`，因此其 no-files exit 1 不作为代码失败。
+  - `just precommit` → exit 0，`✓ All checks passed!`；fmt、check-fe、test-fe、lint-rust、
+    test-rust-all、check-types 全绿。
+- **提交记录**：未 stage、未 commit、未 push；用户未要求提交。
+- **已知风险 / 未解决问题**：旧 live run 的 partial outcome 不会因源码修改原地改写；必须
+  重启/重编译 backend 后 fresh resume/rerun 才能生成 terminal outcome。最终 submit payload
+  还应删除 `enumeration_blocked` claim 的空 `technique` 字段，否则即使 coverage 关闭也会被
+  taxonomy 校验拒绝。
+- **下一步最佳动作**：重启 backend/app，在 Test1 对同 operation 或 fresh Enumeration
+  重跑 `https://moresec.cn:443`，随后用
+  `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db`
+  核对三格转 terminal、`ready_to_submit=true`，并以合法 claim payload 重新提交。
+- **以下当前任务文件已修改但未提交**：
+  `scripts/browser_collect_js_api.mjs`、`scripts/browser_collect_js_api.test.mjs`、
+  `docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`docs/modules/INDEX.md`、
+  `agent-progress.md`。仓库其余大量脏改动均为既存用户/其他会话工作，本轮未回滚或改写。
+
+#### 2026-07-12 · Target Surface fingerprint / three-failure exclusion closure
+
+- **本轮目标**：按用户“直接修闭环”的授权，同时修复截图中的
+  `directory_entry_list` ambiguous `id`、Target Surface 单源失败清空全部数据、
+  IP Target 指纹缺少可见入口/exact-origin 归属，以及 exact Web Origin 网络/TLS
+  失败的三次重试、独立复核和 Enumeration 排除闭环。
+- **开工诊断**：live DB 只读核对确认 `115.175.6.207` 已有 25 条指纹，
+  `ti.moresec.cn` / `webshell.moresec.cn` 各有 13 条，数据并非未落库；JOIN 查询
+  使用未限定 `id`，而 frontend 8-source `Promise.all` 会让该单点错误清空成功返回的
+  fingerprints/origins/hierarchy。WhatWeb evidence 还缺 exact origin、旧 object evidence
+  被前端丢弃、多 origin 只挂首项、0..1 confidence 被显示成 0..1%。
+- **合同/计划**：新增
+  `docs/design/2026-07-12-target-surface-fingerprint-network-failure-closure.md` 与
+  `docs/superpowers/plans/2026-07-12-target-surface-fingerprint-network-failure-closure.md`；
+  计数严格绑定 operation epoch/org/target/exact-origin/technique/failure-class。第 3 次只停止
+  WhatWeb；只有固定独立 transport probe 也不可达，才写 trusted handoff 并仅从
+  Enumeration 排除该 exact origin。绝不删除资产或把 open port 改 closed。
+- **已完成**：
+  - `directory_entries` current-owner JOIN 全量改成 `de.<column>` 投影；Target Surface
+    八个 optional source 改成逐源 settle，单源失败保留 fingerprints/origins/backend
+    hierarchy，并返回精确 `sourceErrors`。
+  - WhatWeb fingerprint evidence 记录 canonical exact origin/root/original URL，并在同一
+    fingerprint identity 上去重保留多 origin observations；legacy object evidence 继续读。
+    IP Surface 新增 `Fingerprints` 页，分开显示 `Web Origin fingerprints` 与
+    `Target-level / unassigned fingerprints`，confidence 兼容 `0..1` 与旧百分数。
+    nmap/non-WhatWeb evidence 保持顶层 object/port 合同。
+  - EAS WhatWeb 只统计完整归因的 connect/timeout/refused/reset/EOF/TLS failure；同
+    operation EAS epoch/org/target/exact-origin/technique/failure-class 的 attempt 1/2 写
+    retryable `error`，attempt 3 才封 producer。成功清 slot，未知 stderr、truncation、
+    tool/config/DB error 不计数；同 origin 执行锁覆盖网络与 publication，跨 session
+    continuation 在 launch 前复用 seal 并补当前 run outcome，不会产生 attempt 4。
+  - 第三次失败复用固定 direct/proxy HEAD→GET-Range 独立探针；任一 HTTP response 只封
+    WhatWeb。只有全部可用策略仍失败且 independent guarded evidence 落库，Enumeration
+    才按同 operation/org/target/canonical origin 排除。target/open port/兄弟 Host/SNI
+    均不删除、不降级。operation-aware coverage 已贯通 worklist、submit preview、Task
+    close、org gate 与 runtime stage_run。
+  - Target Evidence tab 用现有 target timeline 安全解析 WhatWeb transport payload，显示
+    failure class、Attempt N/3、producer error/blocked；第三次说明 WhatWeb 已停止，且只在
+    `independently_confirmed=true` 时明确显示 exact origin 已从 Enumeration 排除。
+    `detail.subject` 参与 origin badge 归属，普通/损坏 JSON evidence 保持原样。
+- **运行过的验证 / 已记录证据**：
+  - TDD RED：qualified JOIN、directory rejection 保留 sibling data、legacy/current
+    fingerprint evidence/多 origin/confidence、attempt 1/2/3、independent-only exclusion
+    断言在实现前分别失败；修复后进入以下 GREEN。
+  - `cargo check -p golish-db -p golish-pentest -p golish-pentest-app -p golish-agent-app -p golish-agent-kit -p golish-agent-runtime` → exit 0。
+  - `cargo nextest run -p golish-db -E 'test(directory_entry) | test(operation_state)' --status-level fail` → 9/9；配置本机 migrated PG 后同一 suite 对 counter/clear/seal/producer read/handoff read/checkpoint write/stage transition 共 7 条 SQL `EXPLAIN` 全通过。另以当前 embedded PG 执行 qualified directory query → `QUALIFIED_DIRECTORY_QUERY_OK 0`，无 ambiguous column。
+  - `cargo nextest run -p golish-pentest output_store --status-level fail` → 63/63；完整 crate 回归曾通过 199/199（7 skipped），WhatWeb SQL 另做只读 PG `EXPLAIN_OK 10`。
+  - `cargo nextest run -p golish-pentest-app eas_capabilities --status-level fail` → 46/46；`cargo nextest run -p golish-agent-app stage_coverage --status-level fail` → 90/90；`cargo nextest run -p golish-agent-kit -E 'test(external_attack_surface) | test(enumeration) | test(web_origin)' --status-level fail` → 93/93。
+  - `pnpm exec vitest run frontend/components/TargetPanel frontend/lib/api/security-analysis.test.ts` → 14 files / 108 tests passed；Evidence status TDD 首轮 2 RED/1 pass，随后 `EvidenceTab.test.tsx` → 3/3；`pnpm typecheck` → exit 0；relevant Biome checks → no fixes/errors。
+  - six affected crates `cargo clippy ... --all-targets -- -D warnings`、`cargo fmt --all -- --check`、`jq empty`（stage spec + feature list）与 `git diff --check` 均 exit 0。
+- **提交记录**：本轮未 stage、未 commit、未 push；用户没有要求提交。
+- **已知风险 / 未解决问题**：未跑真实外网 EAS，也未跑 full `just precommit`，所以 feature
+  保持 `in_progress`。Target Evidence 已显示 operation-scoped失败/剔除；独立 GUI
+  coverage matrix command 没有 operation context，因此矩阵本身仍不显示该 exclusion
+  diagnostic，真实 worklist/submit/gate/stage_run 全部已带 operation id。WhatWeb per-origin
+  序列锁是单 desktop backend 进程内合同；未来多进程
+  executor 需要升级 DB generation/CAS。breaker namespace 达 512 slots/256 KiB 时安全返回
+  retryable error，不会误 terminal。
+- **下一步最佳动作**：重启/重新编译 backend 后做一个受控 EAS live acceptance，核对同一
+  exact origin 的 attempt 1/2=`error`、attempt 3 producer seal + independent decision，随后
+  检查 Enumeration worklist 确实只遗漏 independently-confirmed origin，且 `targets` 与
+  `ports[].state=open` 原值不变；若用户解除当前验证限制，再跑 full `just precommit`。
+- **以下当前任务文件已修改但未提交**：
+  `backend/crates/golish-db/src/repo/{directory_entries,operation_state}.rs`；
+  `backend/crates/golish-pentest/src/output_store/targets.rs`；
+  `backend/crates/golish-pentest-app/src/pentest_bridge/{eas_capabilities,enum_preflight_web_origins}.rs`；
+  `backend/crates/golish-agent-app/src/ai/{commands/stage_coverage,db_bridge/{recon,mod,evidence},harness_submit_tool}.rs`；
+  `backend/crates/golish-agent-kit/src/{db_traits/repo,harness/{org_gate,resources,stage_spec},tool_executors/security,task_orchestrator/subtask_phases/execute}.rs`；
+  `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`；
+  TargetPanel hook/hierarchy/fingerprint/Evidence tab/API files及测试；EAS/Enumeration methodology、
+  EAS spec、相关模块卡/INDEX、本 design/plan、`feature_list.json` 与本记录。其余脏树改动为
+  既有用户/前序会话内容，本轮未回滚。
+
+#### 2026-07-12 · EAS WEB target-side transport terminal recovery
+
+- **本轮目标**：修复 live EAS `pentest-chat-1783829178322-1` 最后两个 exact Web
+  Origin 因 WhatWeb EOF / TLS reset 无法产生 guarded WEB 终态、导致 gate 永久停在
+  306/308 的合同死锁。保持 exact-origin gate 严格，不接受模型自报或 LIVENESS
+  evidence 冒充 WEB。
+- **设计 / 计划**：
+  `docs/design/2026-07-12-eas-web-origin-transport-terminal-recovery.md`、
+  `docs/superpowers/plans/2026-07-12-eas-web-origin-transport-terminal-recovery.md`。
+- **已完成**：
+  1. WhatWeb exit 1 现在只对 ANSI-stripped、exact authorization 匹配且 reason
+     命中 target-side EOF/reset allowlist 的 `ERROR Opening:` 做逐 origin 分类；
+     每个 batch member 都必须由 stdout record 或精确错误覆盖。成功 siblings 正常
+     structured landing，失败 origin 单独写 target-bound guarded `blocked` evidence /
+     outcome；unknown/runtime/timeout/truncated/unbound/missing-member 继续 fail closed。
+  2. 全部 landing/evidence/outcome durable write 成功后，外层 wrapper 返回 complete，
+     同时保留 `wrapped_exit_code` / `wrapped_stderr` /
+     `terminal_blocked_origins` 审计；任一持久化失败仍非终态。
+  3. DB bridge、coverage read model、exact-origin barrier、org gate 与 rule engine
+     只接受 WhatWeb producer-owned blocked：tool/kind/source、current owner、exact
+     scheme+host+port、technique/outcome/positive evidence id 必须完整一致。模型自报、
+     LIVENESS、host-level 或其他 EAS blocked 都不能关闭 WEB gate。
+  4. read model 新增 `blocked_origins`；全部 exact origins 终态时，任一 found 保持
+     parent found（blocked 仍可见），无 found 但有 blocked 为 blocked，全 empty 才是
+     checked_empty。方法论、三张模块卡与 INDEX 已同步。
+- **TDD RED 证据**：pentest-app 新 parser tests 因 classifier/blocked verdict 不存在
+  编译失败 exit 101；agent-kit 新 gate tests 11 passed / 3 failed、agent-app 新投影
+  tests 2 failed，均在实现前复现缺口。
+- **GREEN / 验证证据**：
+  - `cargo nextest run -p golish-pentest-app -E 'test(/pentest_bridge::eas_capabilities::tests/)' --status-level fail`
+    → 42/42 passed。
+  - `cargo nextest run -p golish-agent-app -E 'test(/ai::commands::stage_coverage::tests/) | test(/ai::db_bridge::evidence::tests/)' --status-level fail`
+    → 102/102 passed。
+  - `cargo nextest run -p golish-agent-kit -E 'test(/harness::gate::eas_web_origin_check::tests/) | test(/harness::org_gate::tests/) | test(/harness::gate::rule_engine::tests/)' --status-level fail`
+    → 165/165 passed。
+  - `cargo clippy -p golish-pentest-app -p golish-agent-kit -p golish-agent-app --all-targets -- -D warnings`、
+    backend workspace `cargo fmt --all --check`、JSON parse、`git diff --check` 均 exit 0。
+  - 独立只读审查发现并驱动修复两个额外 fail-open：reason 子串误匹配、exit 1
+    全 stdout/零 blocked 误归一；两项均新增 RED→GREEN guard。最终复审其余
+    wrapper→evidence→coverage→gate 链路无新增 blocking finding。
+- **风险 / 下一步**：没有 schema/migration/generated IPC 变化。按既有用户约束未跑
+  `./init.sh` / full `just precommit`，也未发起真实外部扫描。需要重启/加载新 backend
+  后由用户授权 fresh EAS continuation，确认两个 live origins 形成 guarded blocked 且
+  final gate PASS；在此之前 feature 保持 `in_progress`，不宣称产品验收完成。
+- **未提交的半成品**：本轮 6 个 Rust seam、EAS methodology、3 张模块卡、INDEX、
+  design/plan、feature/progress 均已修改但未提交；工作树另有用户既存大批改动，未回退。
+
+#### 2026-07-12 · EAS WEB gate / repair / continuation closure
+
+- **本轮目标**：修复 live continuation `pentest-chat-1783829178322-1` 已新增
+  WhatWeb evidence 却仍卡 gate 的三层闭环：asset-level terminal exception 让
+  preflight 假绿、repair worker 改写 DB exact-origin 参数、以及
+  `retry_budget_exhausted` 后自动 turn 继续重复 check/submit。
+- **现场基线**：显式“继续”确实派发一次 Prober 并新增 18 条 WhatWeb evidence；
+  无 terminal exceptions 的真实 coverage 仍为 308 cells / 288 done / 11 partial /
+  9 pending，20 个 IP 共缺 188 个 exact origins。后续自动 turn 均
+  `reentry_blocked=true`，没有再次派发 specialist；asset-level blocked preview
+  虽显示 `ready_to_submit=true`，但标明 `preview_only=true` / `persisted=false`，
+  final exact-origin gate 继续正确 BLOCK。
+- **设计 / 计划**：
+  `docs/design/2026-07-12-eas-web-origin-gate-recovery-closure.md`、
+  `docs/superpowers/plans/2026-07-12-eas-web-origin-gate-recovery-closure.md`。
+- **已完成**：
+  1. `check_stage_asset_coverage` 对 `details.missing_origins` 非空的 EAS WEB
+     parent exception 逐项 reject：不改 snapshot、不进入 `coverage_to_submit`，并返回
+     `rejected_terminal_exceptions`；其他 EAS technique exception 仍可 accepted。
+  2. repair mode 新增可持久化 `eas_web_repair_targets` exact lock。成功刷新
+     `stage_worklist_next` / `check_stage_asset_coverage` 后，只允许 DB 页中的
+     `target_id + canonical target_url` object，bare string 也必须精确匹配 origin；
+     scheme/host/port 偏移均 fail closed。final barrier 对每个缺失 origin 生成
+     `missing_exact_origin` action，避免 parent cell 全 partial 后 repair 无入口。
+  3. `AgentExecutor` 暴露 request-scoped `StageRunReentryGuard` 状态；orchestrator 的
+     text-only 与 gate-BLOCK reflector 都在 budget exhausted 后停止自动重启，同时
+     保留最终 deterministic BLOCK。新的显式用户 request lease 仍 reset budget。
+  4. worklist/coverage 刷新的 exact lock 在同一 assistant tool-call batch 内立即生效；
+     bounded empty page 不会清掉既有锁，只有显式 `ready_to_submit=true` 才能关闭。
+     runtime observer 用真实 `tool_call_id` 把 refined mode 原位写回 `agent_run`
+     checkpoint，保留 repair directive/runtime corrections/sibling state；无 execution
+     monitor 但有 operation DB sink 时也会持久化。后续 stage retry 仅在新旧 WEB
+     action identity 集合一致时继承；缺口 A 变 B 会丢弃 A 的 stale lock 并强制刷新。
+  5. 15:06 live continuation 证明新 binary 已加载并把 exact-origin 缺口从 188 降至
+     80，但暴露同 worker 状态覆盖：15:15 worklist 已建立 exact lock；随后重复 submit
+     `needs_fix` 把它重置为 host-level，导致 15:16:22 模型终于照抄的 5 个正确
+     `{target_id,target_url}` 仍被要求重新刷新。executor 的 submit update、runtime
+     durable checkpoint 与 stage-run retry 现统一复用 same-gap retain helper；gap identity
+     不变就保留 exact lock，变化才 fail closed 丢锁。
+- **TDD RED 证据**：
+  - preflight 假绿 run `a0b19bc6-7ea5-46bc-9853-c5a02e0da2b8` exit 100；
+    reject 契约 run `ae38f305-0be6-4f33-bc86-b6ec0a82a9a5` exit 100。
+  - host-level repair 错放行 scheme 改写 run
+    `b2cda7e6-9d53-44c7-9556-6e1cd1330cdd` exit 100；exact barrier recovery
+    action 缺失 run `62c7984a-3b66-48c1-9c19-8de966ac4cbd` exit 100。
+  - auto-stop kit / bridge RED 均 exit 101：分别缺 retry policy helper 与
+    `AgentExecutor` request-scoped exhausted signal。
+  - repeated `needs_fix` exact-lock RED run
+    `f30864b5-6ebd-4e03-856d-bc23f5af0eda` exit 100：实际得到 `None`，预期保留
+    worklist 的 `Some([target_id,target_url])`。
+- **GREEN / 已记录证据**：
+  - 主代理四 crate 组合回归 run `9f5ca240-70bc-46ef-93e0-218b1fdfbd84`：
+    9/9 passed、1473 skipped。
+  - sub-agents 全套 182/182（run `2d08bf44-e8d7-4521-b831-15d6a680f7d6`）；
+    agent-kit + agent-bridge 全套 965/965（run
+    `c5853728-6baf-416c-b279-e26c22a89584`）。
+  - preflight security 38/38；repair 14/14；exact-origin gate 4/4；
+    auto-stop focused 3/3。主代理四 crate `cargo clippy --all-targets -- -D warnings`
+    exit 0；`cargo fmt --all -- --check`、feature/spec JSON、exactly-one-in-progress
+    jq 与 `git diff --check` 均 exit 0。
+  - repair-lock liveness + stale-action focused 5/5（run
+    `fd41b4cf-9e90-4bf0-84c3-833c349c1bb1`）；no-monitor observer/checkpoint
+    focused 3/3（run `8ff63e59-321f-4035-bb80-1b72dec6588d`）；sub-agents +
+    runtime 全套 521/521（run `42b0c009-8c3d-4e7f-967e-98c6ccb635e8`）；最终四
+    crate 1488/1488（run `c5fbea93-4014-4dc6-8982-98e92c74d76a`）。最终 scoped
+    all-target Clippy `-D warnings` 与 rustfmt check exit 0。
+  - 独立只读复核在 stale-action 与 no-monitor 回归落地后确认无新增
+    P0/P1/P2 blocker；未修改文件。
+  - repeated-needs-fix / durable / stale-action focused 4/4（run
+    `8e3bbfba-a0bd-48fb-b6b6-4de0e790c447`）；sub-agents + runtime 524/524
+    （run `39ba57bd-5e8d-4672-b2f1-be7358ec0280`）；最终四 crate 1489/1489
+    （run `47310cec-b937-404e-8a27-7a8b57e5209f`）；最终 scoped all-target Clippy
+    `-D warnings` exit 0。独立只读复核确认三条路径规则一致且无新增 P0/P1/P2。
+  - `cd backend && cargo build -p golish` exit 0（1m09s）；最终 app binary mtime
+    `2026-07-12 15:28:13`，晚于本次 source mtime。检查时 Tauri/Vite/golish 均未运行、
+    1420 无监听，因此下一步是正常重新打开应用，不是新建任务。
+- **提交记录**：未 stage、未 commit、未 push。
+- **本轮新增/修改但未提交的路径**：
+  `backend/crates/golish-agent-kit/src/{harness/gate/eas_web_origin_check.rs,tool_executors/security.rs,task_orchestrator/{types.rs,stage_refiner.rs,subtask_phases/execute.rs,subtask_phases/execute_harness_loop_tests.rs}}`、
+  `backend/crates/golish-agent-bridge/src/{bridge_executor/trait_impl.rs,agent_bridge/task_request.rs}`、
+  `backend/crates/golish-sub-agents/src/{lib.rs,executor_types.rs,executor/response_parsing.rs}`、
+  `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/{sub_agent_call.rs,stage_run_call.rs}`、
+  EAS methodology、相关模块卡/索引、本轮 design/plan、`feature_list.json` 与本文件。
+  工作树其余大量修改均为既有用户改动，未清理、未覆盖。
+- **已知风险 / 下一步最佳动作**：running backend 不会热替换已加载 binary/worker
+  chain；需确认 watcher 已重编译本次 repeated-needs-fix 修复，必要时重启 backend，
+  然后在**原 Golish 对话**发送一条新的显式“继续”以获得 fresh request budget；不需要
+  新建任务/会话。同批 worklist refresh 及同-gap needs_fix 后的 wrapper 现在都继续使用
+  exact lock；取消/恢复或下一次 stage retry 也从 durable checkpoint 继续。当前 feature
+  继续 `in_progress`，直到 fresh live EAS 得到 pass token；按用户此前约束未跑
+  `./init.sh` / 全量 `just precommit`，也未由本开发会话发起真实外部扫描。
+
+#### 2026-07-12 · EAS WEB exact-origin invocation closure
+
+- **本轮目标**：修复 live run `pentest-chat-1783829178322-1` 中 Prober 已收到
+  DB 权威 `https://IP:443` origin，却手工拼成 `http://IP:443`，导致
+  `eas_fingerprint_web_stack` 在网络启动前报
+  `target_url is not bound to one authorized in-scope target` 并连带跳过整批的问题。
+  按用户此前约束未跑 `./init.sh` / 全量 `just precommit`，也未发起新的真实扫描。
+- **现场证据 / 根因**：12:33:15 的 coverage snapshot 已明确返回
+  `details.missing_origins=[https://113.240.117.106:443,...]`；12:34:33 Prober
+  却传入 `http://113.240.117.106:443`，11ms 内被 exact-origin guard 拒绝。
+  DB 核查确认截图中的 5 个 IP target 均为当前 org/workspace、`scope=in`、唯一行，
+  且所有 443 origin 都是 HTTPS；三个 HTTP/80 sibling 本身合法，只因批次 fail-fast
+  未启动。`stage_worklist_next` 当时丢失 cell `details`，repair guard 还会拒绝 wrapper
+  已支持的 `{target_id,target_url}` object，Prompt 也没有禁止从端口猜 scheme。
+- **已完成**：
+  1. EAS WEB coverage 现在生成
+     `details.recommended_args.target_urls=[{target_id,target_url}]`，只包含尚未完成的
+     DB canonical origins；`stage_worklist_next` 原样保留 `details/recommended_args`，
+     WEB focus/contract 明确禁止重建 scheme。
+  2. Prober Prompt、repair directive 与 EAS methodology 要求优先原样复制
+     `recommended_args.target_urls`，否则使用同 item 的 `target_id + missing_origins`；
+     coverage-gap repair 允许 object entry，同时仍按 action asset 做围栏并由 wrapper
+     做最终 owner/origin 校验。
+  3. 通用 exact-origin resolver 保持严格。仅 `eas_fingerprint_web_stack` 可在 DB
+     证明当前 org/workspace/scope 中恰好一个 confirmed HTTPS origin 与错误的
+     `http://IP:port` 具有同 IP、同 effective port 时进行 HTTP→HTTPS 纠正；不依据
+     443 推断、不改 host/port、不降级 HTTPS、不采用 alias。纠正后再次经过 strict
+     authorization，WhatWeb input、launch guard、landing、evidence/outcome 使用同一
+     effective origin，并返回 `target_url_corrections` 审计信息。
+- **TDD RED 证据**：
+  - Prober prompt focused test：exit 100，缺少 `details.missing_origins`。
+  - repair object exact test：exit 101，`{target_id,target_url}` 被错误 block。
+  - agent-app WEB coverage test：exit 100，`details.recommended_args.target_urls` 为 Null。
+  - agent-kit worklist test：exit 100，worklist item `details` 为 Null。
+  - pentest-app reconciliation focused build：exit 101，12 个预期缺失实现符号。
+- **GREEN / 已记录证据**：
+  - pentest-app reconciliation focused：5/5；`eas_capabilities`：39/39。
+  - agent-app `stage_coverage`：87/87；agent-kit `stage_worklist`：5/5。
+  - sub-agents prompt/object/string focused regressions：全部通过。
+  - 主代理四 crate 合并回归：run `356772e3-9da5-4ca7-b718-da68ca24f315`，
+    9/9 passed、1705 skipped。
+  - scoped Clippy（四个相关 crate）exit 0；`cargo fmt --all -- --check`、
+    `python3 -m json.tool feature_list.json`、exactly-one-in-progress jq 与
+    `git diff --check` 均 exit 0。
+- **提交记录**：未 stage、未 commit、未 push。
+- **本轮新增/修改但未提交的路径**：
+  `backend/crates/golish-pentest-app/src/pentest_bridge/{target_resolver.rs,eas_capabilities.rs}`、
+  `backend/crates/golish-agent-app/src/ai/commands/stage_coverage.rs`、
+  `backend/crates/golish-agent-kit/src/tool_executors/security.rs`、
+  `backend/crates/golish-sub-agents/src/{executor_types.rs,executor/response_parsing.rs,defaults/prompts/execution_planning.rs,defaults/tests.rs}`、
+  `resources/harness/stages/external_attack_surface/methodology.md`、相关 `docs/modules/`、
+  新 design/plan、`feature_list.json` 与本文件。工作树其余大量修改属于既有用户改动，
+  未清理、未覆盖。
+- **已知风险 / 下一步最佳动作**：旧运行中的失败批次不会自动恢复，当前 feature
+  继续 `in_progress`。重新编译/重启 backend 后，用同一授权 org 做一次 fresh EAS
+  WEB batch acceptance，确认 worklist 直接给出 HTTPS object、WhatWeb 不再因可纠正
+  scheme 失败、`target_url_corrections` 可审计，并从 DB 验证每个 exact origin 的
+  fingerprint/evidence/technique_outcome；歧义/错 host/错 port 负例仍应零启动。
+
+#### 2026-07-12 · EAS SERVICE-FINGERPRINT outer-timeout / trusted Nmap landing closure
+
+- **本轮目标**：修复最新 EAS run `pentest-chat-1783826001542-1` 中
+  `eas_fingerprint_services` 被 Prober 固定 300 秒外层 timeout 截断，以及后续真实
+  Nmap service/version stdout 被误识别为 Naabu、无法 guarded landing 的两个独立故障。
+  按用户此前约束未跑 `./init.sh` / 全量 `just precommit`。
+- **现场证据 / 根因**：32-IP wrapper 在 `11:20:53` 发起、`11:25:53` 精确 300 秒
+  返回 `Sub-agent tool 'eas_fingerprint_services' timed out after 300s`；Prober
+  `idle_timeout_secs=300` 被 executor 复用为普通 tool wall-clock timeout，而四个
+  `eas_*` wrapper 不在 long direct-tool exemption。wrapper 同时按不同 DB open-port
+  集合串行运行 nmap，每个底层调用默认约 120 秒。拆小批后 Nmap 已输出 OpenSSH/nginx/
+  OpenResty 等有效服务，但 generic detector 先把 banner 的 `HH:MM` 命中 Naabu 的宽泛
+  `host:port` regex，结果为 `wrapped output was not recognized as structured EAS data`、
+  `outcome_persisted=false`、SERVICE evidence/outcome 仍为 0。
+- **已完成实现**：
+  - 四个 guarded EAS wrapper 全部绕过 sub-agent 通用 outer tool timeout；shared
+    cancellation/User Stop 与各工具自身 bounded command timeout 继续生效。
+  - `eas_fingerprint_services` 未显式传 timeout 时给每个底层 Nmap batch 注入 600 秒；
+    显式较小 timeout 原样保留，`background=false` / `__foreground_only=true` 不变。
+  - `StoreContext` 新增 `trusted_tool_id`；guarded EAS landing 传入
+    `wrapped_tool_name`，output-store 精确加载同 id toolsconfig，缺失时 fail closed，
+    不再回退 heuristic。普通 legacy/generic 调用仍保持 command→stdout 两阶段检测。
+  - 已新增设计/计划，并同步 EAS methodology、sub-agent executor、pentest/output-store、
+    pentest bridge 模块卡和模块索引；未改 schema/migration/generated IPC。
+- **TDD RED 证据**：
+  - `cd backend && cargo nextest run -p golish-sub-agents long_direct_bridge_tools_bypass_sub_agent_outer_timeout --status-level fail`
+    → exit 100，断言 `eas_discover_ports should keep running...`，0 passed / 1 failed。
+  - `cd backend && cargo nextest run -p golish-pentest-app service_fingerprint_runs --status-level fail`
+    → exit 101，新 service helper 尚不存在（同时并行编译时 trusted field 尚未落下）。
+  - `cd backend && cargo nextest run -p golish-pentest trusted_nmap_identity_wins_over_timestamp_that_matches_naabu --status-level fail`
+    → exit 100，trusted Nmap result 在旧 heuristic 下返回 None。
+- **GREEN / 已记录验证证据**：
+  - 三 crate 合并 focused：4/4 passed，run
+    `ed77f8e9-0921-47a7-9887-71c0b52ef346`。
+  - `golish-sub-agents executor` → 112/112 passed，run
+    `35faae3d-1c1d-403f-8406-4be60ff36eb9`；`golish-pentest output_store` →
+    62/62 passed，run `093fe6ba-fe2e-4966-8693-031e61228035`；
+    `golish-pentest-app eas_capabilities` → 37/37 passed，run
+    `510e8f99-ab2f-4307-92be-7ed46f9827d0`。
+  - `cd backend && cargo clippy -p golish-sub-agents -p golish-pentest -p golish-pentest-app --all-targets -- -D warnings`
+    → exit 0，零 warning。
+  - `cd backend && cargo fmt --all -- --check`、`python3 -m json.tool feature_list.json`、
+    `git diff --check` → exit 0；feature `in_progress` count=1。
+- **当前状态 / 风险**：代码与聚焦门禁已闭合，但当前正在运行/旧的 Golish backend
+  不会热加载新二进制，且旧 EAS request 不会原地重放。尚未 fresh live 验证 Nmap
+  service rows、fingerprints、evidence、technique_outcomes 与 32 个 SERVICE coverage cells
+  真正落库，因此 feature 保持 `in_progress`，不虚报 passing。未执行标准启动检查或全量
+  precommit，原因是用户此前明确要求跳过。
+- **以下本轮文件已修改但未提交**：本轮在既有 dirty 文件中新增的实现位于
+  `backend/crates/golish-sub-agents/src/executor/response_parsing.rs`、
+  `backend/crates/golish-pentest/src/output_store/mod.rs`、
+  `backend/crates/golish-pentest-app/src/pentest_bridge/eas_capabilities.rs`；另有
+  `resources/harness/stages/external_attack_surface/methodology.md`、受影响模块卡/索引、
+  `docs/design/2026-07-12-eas-service-fingerprint-runtime-closure.md`、对应 plan、
+  `feature_list.json` 与本文件。工作树此前已有大量其它未提交改动，本轮未恢复或清理。
+- **下一步最佳动作**：重启/重编 Golish backend 后 fresh 跑一次 EAS；用
+  `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db`
+  核对不再出现 outer `timed out after 300s`，并确认 Nmap 产出的 SERVICE rows、
+  `source=nmap` fingerprints、evidence ids、terminal outcomes 与 coverage pending 数同步下降。
+- **提交记录**：未 commit、未 stage、未 push。
+
+#### 2026-07-12 · Runtime memory / Candidate execution / knowledge / closeout V2 planning package
+
+- **本轮目标**：根据用户已确认的攻击顺序与短期/长期记忆方向，先完成一套可交给后续 agent 直接实施的详细设计和计划；本轮只规划，不实施 schema、IPC、runtime、扫描或 exploit。
+- **当前树审计结论**：确认 2026-07-02 三阶段攻击骨架已经部分落地，不能从零重做；当前主要缺口是 mutable org subtree、共享 `operation_state.state_blob.agent_run`、per-org worker 缺少 durable identity、Candidate 缺 approval/Attempt/evidence/wave 权威状态、Verification Gate 仍可依赖 deliverable、长期 memory/KG scope/provenance/temporal 边界不足、post-exploit/cleanup/reporting 尚无 typed domain。
+- **已完成文档**：
+  - 总体设计：`docs/design/2026-07-12-runtime-memory-candidate-pipeline-v2.md`。
+  - 总路线图：`docs/superpowers/plans/2026-07-12-runtime-memory-candidate-pipeline-roadmap.md`。
+  - 八个独立实施包：Runtime Foundation、Candidate Verification V2、Memory Fabric Core、Structured KG、Scoped RAG、Post-exploit Domain、Cleanup Ledger、Reporting Read Model。
+  - 旧 2026-07-02 攻击设计/计划顶部已加“部分被替代”说明；三阶段骨架保留，Candidate/runtime/wave 以后按 V2 继续。
+- **关键决策**：operation 在 Scoping PASS 后冻结公司集合；每 stage 有 StageRun/StageRunUnit，每可恢复 worker 有独立 WorkerRun；母子公司只聚合状态，不共享 raw chain/evidence/authorization；确定性命中先进入 Candidate，逐 Candidate approval，Verification 内一次领取一个 CandidateAttempt；只有 terminal Verification 创建 Finding；只有 accepted evidence-backed FactDelta 打开下一波；RAG/KG 只做可重建 prior/projection，不参与 Gate；post-exploit、cleanup、reporting 分别建立 typed domain。
+- **独立评审后补齐的硬边界**：P1 统一 stable `project_scope_id`、stage execution/submission identity、worker lease/CAS 与 final-sealed handoff；P2 增加 exact plan approval、DB CandidateReviewBarrier、attack wave unit/global lane、scanner→Candidate→Attempt→Finding 唯一路径；P3-P8 增加 multi-consumer delivery、KG identity/assertion lineage 分离、trusted RAG context/pre-action authorizer、side-effect 前 action+obligation 原子登记、missing-obligation Gate、report claim/citation 与 validation/publication 双轴、历史 retention matrix。
+- **feature 状态**：新增父条目 `runtime-memory-candidate-pipeline-v2-2026-07-12`，保持 `not_started`；没有切换当前唯一 `in_progress` 的 `target-surface-fingerprint-network-failure-closure-2026-07-12`。
+- **验证**：`jq -e empty feature_list.json` exit 0；唯一 `in_progress` count=1，仍是 `target-surface-fingerprint-network-failure-closure-2026-07-12`；九份计划均各有且仅有一组目标/架构/技术栈头，所有 Markdown code fence 数为偶数；静态扫描结果 `empty_tests=0`、`forbidden_placeholders=0`、`filtered_nextest_without_guard=0`、`broad_git_add=0`、`legacy_single_consumer_outbox=0`、`disallowed_live_org_target_fk=0`、`trailing_whitespace=0`，`CREATE TABLE project_scopes` 仅在 P1 出现一次；八个 child plan 文件全部存在；每个计划中的 `git commit` 前均有 `just precommit`；本轮 tracked scoped `git diff --check` exit 0。按用户本轮 planning-only 约束，未运行 `./init.sh`、代码测试、Clippy、`just precommit` 或真实外部请求。
+- **风险/授权**：实施 P1/P2/P3/P4/P6/P7/P8 会新增 migration、修改 `golish-db` 或 IPC，必须先向用户取得明确授权；真实 LLM/scan/exploit/Graphiti/embedding acceptance 也必须单独授权。
+- **提交记录**：未 commit、未 stage、未 push；工作树原有大量用户改动，本轮未清理或覆盖。
+
+### 2026-07-11 · Intel / EAS 资产身份与 CLI 闭环
+
+- **本轮目标**：按用户要求梳理域名与 IP 的正确存储/关联方式，修改 Scoping、Target Intel、External Attack Surface 的逻辑，并用“默安科技 / moresec.cn”跑非交互全流程 CLI，最终验证向 Enumeration 的交接。
+- **已完成**：
+  - 固化资产模型：`targets` 只保存组织明确授权的 domain/url/ip/cidr 身份；`dns_records` 保存 Domain→IP 多对多观测；`real_ip` 仅作确定性显示缓存，不参与授权、关系、存活或 gate。`network_endpoints` 以 IP:port 为身份，`web_origins` 以 exact `scheme://host:port` 为身份；`www`、apex、sibling vhost 永不整资产折叠。
+  - 收口 Scoping：stage 内不再暴露 `manage_targets`；只有 stage 前 trusted UI/CLI seed 可授权，scope review 必须是当前窗口且 lifecycle finished 的结构化 value/type/scope，任何模型编辑只是 proposal。
+  - 收口 Target Intel：保存全部 A/AAAA；DNS 不自动生成 IP target；URL 型 provider 字段先规范成 concrete hostname；wildcard 仅授权 strict child passive discovery；provider/WHOIS error 保持非终态可重试，缺 provider/key 显式 terminal blocked；freshness 只看本次运行候选，不拿历史 target 配对冒充新发现。
+  - 收口 EAS：domain/url 只做 Host/SNI liveness 与 exact-origin Web fingerprint；IP 做 port/liveness 和逐开放端口 service；CIDR 只做 liveness/port，child concrete IP 在下一 wave 自己承担 service/Web；所有 confirmed origin 必须有 WhatWeb。共享 confirmed-origin resolver 被 DB/evidence/worklist 共用，display name、foreign URL port、CIDR child origin 均不能投影成目标真值。
+  - 固化工具边界：EAS specialist 只看到 `eas_probe_http_liveness`、`eas_discover_ports`、`eas_fingerprint_services`、`eas_fingerprint_web_stack`。AI 不直接调用 raw nmap/httpx/WhatWeb；wrapper 内部可执行固定 recipe。generic Pentester 在 specialist 外仍可能暴露 `pentest_run`，两者不混为一谈。
+  - 修复 wave 超过 200 条时的预存资产丢失、WhatWeb runtime/parse 假成功、URL→host promotion、source-error terminal 夹具等回归；同步三阶段 spec/methodology、设计/计划及 17 张模块卡。无 schema/migration、无生成 IPC 类型变更。
+  - 按用户授权清掉 `backend/target/debug/incremental`（约释放 50 GiB），后续全程使用 `CARGO_INCREMENTAL=0`；最终 incremental 为 0B。清理 3 个 live smoke 遗留的临时 pg-embed 进程，无 stage-run/nmap/naabu/httpx/WhatWeb 残留。
+- **运行过的验证**：
+  - URL→host TDD：run `3df6a978-8bf1-4a1c-b8ea-018404ce4fb4` → 11/11；独立复核 run `da70f54b-dfaa-435e-898c-6feeecdf1c33` → 4/4。
+  - EAS/identity 跨 crate 独立复核 run `f7f96765-8d25-4da3-ab11-fa9225bbceb2` → 199/199（1492 skipped）。
+  - 最终 11-package 相关全量 run `314df415-d20f-4db0-9e38-171c2d8c5ca5` → 3101/3101（11 skipped，16 slow）；selected `cargo clippy --all-targets -- -D warnings` → exit 0；ScopeReviewTable Vitest → 16/16。
+  - `CARGO_INCREMENTAL=0 python3 scripts/stage_smoke.py --profile red_team --provider deepseek --model deepseek-v4-flash --from scoping --to external_attack_surface --workspace /tmp/golish-moresec-full-20260711-9 --org '默安科技' --target moresec.cn --json --run-tree ...` → exit 0；session `stage-run-5e665476-5f96-4c90-99b0-e4e94c692faa`。
+  - `CARGO_INCREMENTAL=0 just precommit` → exit 0，最终打印 `✓ All checks passed!`；其中 fmt、check-fe、test-fe、workspace lint-rust、test-rust-all、check-types、第二套 test-rust 全部通过。`git diff --check` → exit 0；`feature_list.json`、全部 stage spec、全部 `resources/toolsconfig/*.json` → JSON valid。
+  - 按用户明确指令没有重复运行 `./init.sh`；其覆盖的最终门禁已由本轮完整 `just precommit` 实跑。
+- **已记录证据**：
+  - MoreSec 三阶段均 PASS：Scoping run `bc7d77f8-350c-4728-80e1-ca705c55722b`、Target Intel specialist run `687a1c39-5db0-4855-9340-bd275688f105`、EAS specialist run `88fb4ad4-2718-4f96-aa52-e09466967d56`；executor 只访问这三阶段，Enumeration 计数为 0。
+  - live DB：唯一 target 为 `domain moresec.cn`（source `stage-run-seed`），`real_ip=115.28.135.55` 但未授权为 executable IP；六条 DNS（1 A、2 MX、3 TXT），IP/CIDR target=0；exact origin=`https://moresec.cn:443`；EAS LIVENESS found=1、WEB-FINGERPRINT found=1。
+  - EAS transcript 只调用 `eas_probe_http_liveness` 与 `eas_fingerprint_web_stack`；wrapper 内部分别落 httpx evidence id 9、WhatWeb evidence id 12。`eas_discover_ports`、`eas_fingerprint_services`、`pentest_run`、raw nmap、raw naabu 均为 0。
+  - ASN/CT provider/credential 不可用被写成显式 terminal blocked outcome；ENScan 本次未发现新 subdomain。因此本证据证明可用 provider 与显式 gap 下的确定性闭环，不夸大为全球资产发现完整性。
+- **commit 记录**：无；未 stage、未 commit、未 push。
+- **风险/边界**：generic Pentester 仍可在 EAS specialist 边界之外使用 `pentest_run`；这不是本阶段 AI 直调 raw nmap。后续若补 ASN/CT credential，可重跑 Intel 获得更广 passive coverage，但当前缺口已可审计且不会伪装 checked-empty。没有用 DNS 关系扩大主动扫描授权。
+- **本轮修改但未提交**：`backend/Cargo.lock`；`backend/crates/{golish-agent-app,golish-agent-kit,golish-agent-runtime,golish-app-core,golish-db,golish-pentest-app,golish-pentest-domain,golish-pentest,golish-recon-app,golish-sub-agents,golish-tools,golish}/**` 中本轮 Intel/EAS/scoping/harness/output-store/stage-run 文件；新增 `golish-agent-kit/src/harness/gate/eas_web_origin_check.rs`；`frontend/components/AIChatPanel/ScopeReviewTable{,.test}.tsx`；`resources/harness/stages/{scoping,target_intel,external_attack_surface}/{spec.json,methodology.md}` 与 `resources/toolsconfig/{httpx,naabu,nmap,whatweb}.json`；17 张 `docs/modules/**` 卡与 INDEX；新设计/计划 `docs/{design,superpowers/plans}/2026-07-11-intel-eas-asset-identity-closure.md`；两份被 supersede 的旧设计/计划标注；`feature_list.json`、`agent-progress.md`。
+- **下一步最佳动作**：Intel/EAS 本身无需继续补逻辑；下一次红队主流程可直接从这份 EAS exact-origin/IP endpoint 真值进入已通过的 Enumeration。若要落版本，先由用户决定是否提交当前大工作树；本轮不擅自 commit/push。
 
 ### 2026-07-11 · 信息收集闭环、durable chain 与 MCP 安全收口
 
@@ -3755,6 +4192,7 @@
   - JS extract / route TDD：focused 初始 RED(exit 101)；新合同 6/6、相关组 56/56、`golish-pentest-app` full 190/190 passed（3 skipped）。
   - 统一回归与仓库门禁见上方实跑命令；没有用“工具被调用”替代 gate/DB 合同测试。
 - **提交记录**：未 commit、未 stage、未 push。
+
 - **已知风险或未解决问题**：
   - 尚未对 `/Users/christopherzheng/golish-platform/Test1` 发起 fresh Enumeration；该动作会对授权目标产生主动 HTTP/浏览器/route 请求，必须先得到用户明确确认。因此功能保持 `in_progress`，不标 `passing`。
   - 新 extractor 故意不读取无 scheme namespace 的 legacy capture；Test1 必须先用新 browser collector 重抓，才能形成可证明 exact-origin 的新鲜结果。
@@ -3764,3 +4202,121 @@
   - 前端/脚本：`frontend/components/Engagement/StageAssetCoveragePanel.{tsx,test.tsx}`；`scripts/browser_collect_js_api.{mjs,test.mjs}`；`scripts/js_api_pipeline_test.mjs`。
   - 合同/状态：`resources/harness/stages/enumeration/{spec.json,methodology.md}`、`docs/design/2026-07-10-enumeration-origin-terminal-closeout.md`、`docs/superpowers/plans/2026-07-10-enumeration-origin-terminal-closeout.md`、相关 `docs/modules/` 卡片/索引、`feature_list.json`、本文件；两处启动基线 Clippy 与两个 runtime 测试期望也有最小修正。
 - **下一步最佳动作**：用户明确授权主动请求后，重启当前 backend/app，在 Test1 跑一次 fresh Enumeration；随后执行 `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db`，逐 origin 核对四轴 outcome、正数 evidence id、partial/error 未闭格、worklist/UI 与 gate/pass-token 一致。只有这轮现场证据通过，才把 feature 切到 `passing`。
+
+#### 2026-07-12 · Scoping session lifecycle / trusted-review contract
+
+- **本轮目标**：修复 `pentest-chat-1783786690236-1` Scoping 在两次 deliverable accepted 后仍重复 `unit_review/scope_review` 的问题，并对齐 company-only 与 customer-provided trusted intake 合同。
+- **已确认根因**：TaskMode durable session UUID 与 DbTracker 随机 UUID 分裂；gate 查询前者时看不到实际落在后者的 26 条 tool lifecycle。另有四个叠加合同缺口：empty trusted snapshot 被无条件拒绝；`customer_provided` 未进入 snapshot/Target Intel 白名单；tool-call repo 只取 latest `scope_review`，可用第二次确认洗掉第一次编辑；org-bound customer batch import 被 project-wide value 去重吞掉。
+- **已完成实现**：
+  - `DbTracker.session_uuid` 改为 clones 共享的同步 identity；TaskMode durable session upsert 后、构造 stage executor 前，通过 immutable `AgentBridge` 绑定正式 UUID。所有异步写先 snapshot getter，`ToolCallGuard` 固定 start UUID，finish 不会因后续 rebind 串到另一 session。
+  - Scoping close gate 先加载 trusted target snapshot，再决定是否要求 target lifecycle：非空 snapshot 必须 exactly one persisted + parseable + canonical exact `scope_review`；repo/App 保留并聚合本轮全部 review attempts，第二次确认不能洗掉第一次编辑/拒绝。空 snapshot 是合法 organization-only 路径，不制造空 target review。红队 `unit_review` 仍独立按当前 operation lifecycle fail-closed 校验。
+  - Scoping snapshot 与 Target Intel trusted roots 均加入 `customer_provided`；`asset_intel` / `discovered` / provider-derived source 继续不能升级为授权根。
+  - `target_batch_add` 的 org-bound customer intake 改为 exact project + type + value + current-org/NULL identity：current org 优先，legacy NULL 用 CAS 认领并按需升级 provider source；sibling org 永不改绑、为当前 org 插独立行；写前校验 organization project ownership。
+  - 已同步 prompt、stage spec/methodology、设计/计划及相关模块卡/索引；未改 schema/migration 或 generated IPC 类型，未执行任何 model-driven target mutation。
+- **TDD RED 证据**：
+  - `cargo nextest run -p golish-agent-kit organization_only_scope_does_not_require_an_empty_target_review --status-level fail` → exit 100，run `15a8ee6b-46c5-408d-8769-e0c05b4d10ee`，旧逻辑对空 snapshot 返回 blocker。
+  - `cargo nextest run -p golish-agent-app task_mode_tracker_rebind_updates_existing_runtime_clones --status-level fail` → exit 100，run `7b8bdad9-b5fb-49db-816f-f0acb3d1e169`，旧 clone 保留随机 UUID。
+  - `customer_provided` SQL/Target Intel 两条测试在加入 allowlist 前均 exit 100，随后转绿。
+  - `cargo nextest run -p golish-agent-kit repeated_scope_review_cannot_replace_an_edited_response --status-level fail` → exit 100，run `a9c22e7c-59ae-46ab-a22f-494570e5c03d`，旧 gate 接受第二次 exact review 洗掉早先决定。
+  - `cargo nextest run -p golish-recon-app customer_intake_dedupe_is_org_and_identity_scoped --status-level fail` → exit 101（缺少 identity-scoped claim seam），随后实现 current-org/NULL CAS CTE 并转绿。
+- **GREEN / 静态验证证据**：
+  - `cd backend && cargo nextest run -p golish-agent-kit -E 'test(organization_only_scope_does_not_require_an_empty_target_review) | test(scope_review_must_exactly_match_trusted_seed_snapshot) | test(scope_review_skip_or_free_text_cannot_be_replaced_by_claim) | test(repeated_scope_review_cannot_replace_an_edited_response)' --status-level fail` → 4 passed，run `db0da6bb-576c-42da-8ad3-97d65c5dfdcf`。
+  - `cd backend && cargo nextest run -p golish-agent-kit -E 'test(stage_charter_scoping_appends_human_gate_when_policy_requires) | test(scoping_subtask_prompt_varies_by_policy)' --status-level fail` → 2 passed，run `171d8a8b-92ab-4509-a6c2-3efff9f57b72`。
+  - `cd backend && cargo nextest run -p golish-db scoping_review_query_preserves_every_attempt_in_order --status-level fail` → 1 passed，run `ffcc0a58-0284-479e-9f54-c7bcad46322e`。
+  - `cd backend && cargo nextest run -p golish-agent-app -E 'test(task_mode_tracker_rebind_updates_existing_runtime_clones) | test(scoping_snapshot_trusts_customer_intake_but_not_discovery_sources) | test(authoritative_type_queries_are_org_scoped)' --status-level fail` → 3 passed，run `948869b9-34c3-407b-ab50-74719b74e893`；`repeated_review_keeps_all_rows_but_is_never_approved` → 1 passed，run `32474470-e5ae-4c53-af4d-95a694d3ee7c`。
+  - `cd backend && cargo nextest run -p golish-recon-app -E 'test(customer_intake_dedupe_is_org_and_identity_scoped) | test(sibling_project_value_does_not_swallow_org_bound_customer_intake) | test(provider_discovered_domains_never_become_authorization_roots_on_retry)' --status-level fail` → 3 passed，run `d89ed672-bd79-45bf-a305-e4647ff668d4`。
+  - `cd backend && cargo check -p golish` → exit 0；`cargo clippy -p golish-db -p golish-agent-kit -p golish-agent-bridge -p golish-agent-app -p golish-recon-app --all-targets -- -D warnings` → exit 0。
+  - 相关 13 个 Rust 文件 `rustfmt --edition 2021 --check`、`feature_list.json` / Scoping spec JSON parse、相关 diff check 均 exit 0。`scripts/check_repo_ownership.py` 仍因当前 dirty tree 既有 170 ownership + 13 raw-SQL baseline violations失败；输出未新增 `targets/cmds.rs` blocker，本轮未顺手清理这些跨 scope 基线项。
+- **当前状态 / 风险**：代码与聚焦验证已完成；进程核查显示 app/backend 当前已停止，仅 embedded Postgres 仍在，旧 waiting run 不会原地继续或自动获得修复。fresh no-GUI/live TaskMode Scoping 会调用当前配置的外部 LLM，未获额外授权未执行；同时按用户要求未跑 `./init.sh` 或全量 `just precommit`，因此 feature 保持 `in_progress`，不虚报 `passing`。
+- **以下本轮文件已修改但未提交**：`backend/crates/golish-agent-kit/src/{db_traits/repo.rs,db_tracking/{mod.rs,recording.rs,memory/store.rs},task_orchestrator/{prompts/mod.rs,subtask_phases/execute.rs}}`、`backend/crates/golish-agent-bridge/src/agent_bridge/config.rs`、`backend/crates/golish-agent-app/src/ai/{commands/core/chat.rs,db_bridge/{mod.rs,recon.rs}}`、`backend/crates/golish-db/src/repo/tool_calls.rs`、`backend/crates/golish-recon-app/src/{targets/cmds.rs,asset_intel/agent_intel.rs}`、Scoping spec/methodology、相关设计/计划/模块卡/索引、`feature_list.json` 与本文件。工作树此前已有大量 dirty 改动，本轮未恢复或清理。
+- **下一步最佳动作**：重启 app/backend 载入新代码后，得到用户对真实外部 LLM 调用的明确授权，再用新 TaskMode session 跑一次 organization-only Scoping；随后用 `scripts/run_tree.py --full --db` 证明 `tool_calls.session_id == sessions.id(chat_session_key)`、一次 `unit_review` 后 gate PASS 且无整段重试，再补全仓库完成门禁后切 `passing`。
+- **提交记录**：未 commit、未 stage、未 push。
+
+#### 2026-07-12 · Scoping parent-only branch / scope-choice auto-confirm follow-up
+
+- **本轮目标**：处理用户重开后的 `pentest-chat-1783791527002-1` 仍在 submit 后回到 Scoping 的问题；按用户要求不跑 `./init.sh`。
+- **现场根因与 DB 真相**：本轮 17 条 `tool_calls` 全部写入 durable session `e103d0f8-989f-434f-a071-75fe8375cf6c`，证明 UUID 修复已加载。第一次 submit accepted、baseline outer gate PASS，随后 red-team post-check 因无条件要求 `ask_human(input_type="unit_review")` 翻成 BLOCK；但用户已经两次选择“不纳入子公司（仅母公司）”。retry 又做了 `propose_candidates(recorded=0)` 并停在冗余空 `unit_review`。日志：`/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1783791527002-1/{run.log,transcript.json}`。
+- **已完成实现**：
+  - red-team subsidiary gate 改为两分支：同一 trusted root 的 persisted parent-only choice 直接完成分支；只有纳入子公司才要求成功 `propose_candidates` 后接同 org、non-skipped、可解析的 `unit_review`。
+  - `scoping_actions_for_session` 新增 trusted root 参数；structured choice 校验 `decision=subsidiary_scope + organization_id`。为已经运行中的旧 prompt 保留“必须精确出现当前 root 全名”的窄 fallback；另一 org、skipped/error、乱序 review 均不能通过。
+  - prompt / synthesized subtask / methodology / spec 全部统一为上述分支；parent-only 不再 discovery、proposal 或制造空 review。
+  - 前端识别 structured 与 legacy subsidiary-scope choice，关闭普通 60 秒倒计时自动首选项；该 scope boundary 必须等用户实际点击。
+- **TDD RED 证据**：
+  - `cd backend && cargo nextest run -p golish-agent-kit explicit_subsidiary_exclusion_needs_no_empty_unit_review --status-level fail` → 0 passed / 1 failed，run `68f06032-ba21-4968-b310-054868c9a840`；旧 helper 仍要求 unit review。
+  - `pnpm exec vitest run frontend/components/AIChatPanel/AskHumanInline.test.tsx -t 'never auto-confirms a subsidiary scope decision'` → exit 1；fake timer 到期后实际调用 `onSubmit("不纳入子公司（仅母公司）")`，稳定复现非人工授权。
+- **GREEN / 静态验证证据**：
+  - `cd backend && cargo nextest run -p golish-agent-kit -E 'test(explicit_subsidiary_exclusion_needs_no_empty_unit_review) | test(red_team_scoping_flow_blocks_when_steps_skipped) | test(scoping_subtask_prompt_varies_by_policy) | test(stage_charter_scoping_appends_human_gate_when_policy_requires)' --status-level fail` → 4 passed，run `db640bf5-7839-4a6a-adbe-ebfa7b882822`。
+  - `cd backend && cargo nextest run -p golish-db -E 'test(persisted_parent_only_choice_is_a_deterministic_subsidiary_exclusion) | test(included_subsidiary_flow_requires_same_org_success_and_order) | test(scoping_review_query_preserves_every_attempt_in_order)' --status-level fail` → 3 passed，run `a061186d-b5ba-419e-bb6a-918d95a39d0e`。
+  - `cd backend && cargo nextest run -p golish-agent-app -E 'test(repeated_review_keeps_all_rows_but_is_never_approved) | test(task_mode_tracker_rebind_updates_existing_runtime_clones)' --status-level fail` → 2 passed，run `bcf9d0e9-12b2-437a-90e9-f228263f3938`。
+  - 最终合并复跑 `cd backend && cargo nextest run -p golish-db -p golish-agent-kit -E '<上述 7 个 DB/gate/prompt tests>' --status-level fail` → 7 passed，run `a38107b5-2fc8-4698-b267-3b8c43552e0d`。
+  - `pnpm exec vitest run frontend/components/AIChatPanel/AskHumanInline.test.tsx` → 35/35 passed（structured + legacy subsidiary choice 均不自动确认）；两文件 Biome check exit 0。
+  - `cd backend && cargo check -p golish`、`cargo clippy -p golish-db -p golish-agent-kit -p golish-agent-app --all-targets -- -D warnings`、`cargo fmt --all -- --check` → exit 0；`pnpm typecheck`、Scoping/feature JSON parse 与 `git diff --check` 也均 exit 0。
+- **当前状态 / 风险**：app/backend 当前未运行，仅 embedded Postgres 在；因此旧 pending `unit_review` 不会原地热加载。代码与聚焦测试已修好，但尚无重启后 fresh live Scoping 到 PASS 的证据；feature 继续 `in_progress`。未跑 `./init.sh`、未跑全量 `just precommit`，未发起新的外部 LLM 请求。
+- **下一步最佳动作**：用户重启 Golish 后重新发起或继续该 operation；预期 persisted parent-only choice 被同 root gate 接受，不再返回空 `unit_review`。随后只读跑 `scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db` 确认 post-check PASS 且没有 Scoping retry。
+- **提交记录**：未 commit、未 stage、未 push。
+
+#### 2026-07-12 · Target Intel organization-only submit / final-gate parity
+
+- **本轮目标**：修复 Scoping 已 PASS 后，Target Intel 在覆盖预检 `ready_to_submit=true`
+  的情况下，`submit_stage_deliverable` 仍反复 `needs_fix` 并回头重交的问题。按用户要求
+  未跑 `./init.sh` / `just precommit`。
+- **现场证据**：最新 run `pentest-chat-1783794304742-1` 的 org
+  `08ee537b-658e-4909-b0b1-042f41b46e8f` 没有真实 `targets` 行；preflight 报 6/6 done、
+  `coverage_to_submit=[]`，但 submit preview 没有合成 `organization:<uuid>` 轴，连续五次
+  拒绝。final per-org gate 虽已合成该轴及 DNS/CT/SUBDOMAIN N/A，仍让空 target 的
+  Quake SUBDOMAIN error 反向否决同一 deterministic N/A cell。
+- **已完成实现**：
+  - 新增共享 `TargetIntelOrganizationContext`，统一 canonical key、organization typed axis
+    与 DNS/CT/SUBDOMAIN deterministic N/A；final org gate 与 submit preview 复用。
+  - submit preview 在 DB truth 查询前注入 organization context，因此零真实 target 时仍
+    会查询 organization WHOIS/ASN/OSINT truth，并保持 slim `coverage: []` 合同。
+  - `coverage_complete` 只让精确可信 N/A 抑制同 cell 的 source-query-derived error；
+    精确 evidence Error、另一资产与真实 applicable cell 的 source error 继续 BLOCK。
+  - 已同步设计/计划、agent-app/agent-kit 模块卡、模块索引与 feature 状态。
+- **TDD RED 证据**：
+  - `cd backend && cargo nextest run -p golish-agent-app target_intel_organization_only_preview_matches_org_gate_context --status-level fail`
+    → exit 100，run `5ee94f2b-87ff-42c2-8951-9d20562cb488`；旧 preview 的
+    `in_scope_assets=None`，预期为 canonical organization row。
+  - `cd backend && cargo test -p golish-agent-kit deterministic_context_not_applicable_is_not_vetoed_by_source_error --lib -- --nocapture`
+    → exit 101，0 passed / 1 failed；旧规则仍把 organization SUBDOMAIN N/A 判成
+    `coverage incomplete: never attempted`。
+- **GREEN / 静态验证证据**：
+  - `cd backend && cargo test -p golish-agent-app target_intel_organization_only_preview_matches_org_gate_context --lib -- --nocapture`
+    → exit 0，1/1 passed；测试实际调用 slim `submit_stage_deliverable` 并断言 `accepted`。
+  - `cd backend && cargo nextest run -p golish-agent-kit -E 'test(deterministic_context_not_applicable_is_not_vetoed_by_source_error) | test(deterministic_not_applicable_for_another_asset_does_not_hide_source_error)' --status-level fail`
+    → exit 0，2/2 passed，run `b210cb97-b82f-4cfc-9c13-a183db2e01c0`。
+  - 既有 fail-closed 回归（DB N/A、partial/error veto、wildcard source join、exact-source
+    error、organization identity/display alias）→ 6/6 passed，run
+    `7f5a48b6-4af8-446d-8b12-7b77d30e85ad`。
+  - `cd backend && cargo clippy -p golish-agent-kit -p golish-agent-app --lib -- -D warnings`
+    → exit 0，零 warning。
+  - 首轮共享-helper/context 合并验证 → 3/3 passed，run
+    `cd585179-acd9-49dd-b946-a7ece390eab4`。
+  - 三个相关 Rust 文件 `rustfmt --edition 2021 --check`（格式化后）与 `git diff --check`
+    通过；`python3 -m json.tool feature_list.json` exit 0。
+- **当前状态 / 风险**：代码级回归与 scoped Clippy 已转绿；用户启动的新 backend 已编译并
+  载入修复。旧 run 不会原地重放已经失败的模型 turn；需要 fresh Target Intel run 才能给出
+  live PASS 证据。因此 feature 保持 `in_progress`，不虚报 passing。
+- **提交记录**：未 commit、未 stage、未 push。
+
+#### 2026-07-12 · Asset Map current-run direct Target landing / candidate workspace removal
+
+- **本轮目标**：按用户确认的产品合同，把 `recon_map_assets` 本轮从所有已配置 provider（0.zone / Quake / FOFA 等）获得的域名/IP 统一规范化、去重并直接落成组织绑定的 Targets；移除 TargetPanel 的候选人工审核入口。按要求未跑 `./init.sh`，也未发起真实 provider 请求。
+- **现场根因与 DB 真相**：最新 run `pentest-chat-1783796952452-1`、org `a5551335-3cc5-4297-ac39-bb3df8e593d5` 已拿到业务观察：`subdomain_hosts=302`、`pairs=56`、`services=100`，但对应落地计数分别为 `subdomains=0`、`promoted=0`、`service_assets=0`；DB 同时是 `targets=0`、`target_assets=0`、`dns_records=0`。组织画像已有 domains/asns/certificates/intel，说明 Quake/provider 调用不是主因。真正断点是 company-only Scoping 没有 trusted target root，旧 landing 又只允许“已授权根的后代”晋升，于是 provider 结果被过滤；摘要里的 `targets=45` 实际还是候选观察数，不是 durable Target 数。
+- **已完成实现**：
+  - `recon_map_assets` 只消费本次调用的规范化结果：domain/IP/URL host canonicalize，拒绝 wildcard/malformed/CIDR，按 exact identity 稳定去重；每个 host-IP pair 都产生独立 IP Target 与 DNS row，domain 的 `real_ip` 按确定性 IPv4-first 选择。
+  - 复用现有 exact org/project/type/value upsert；同 org/legacy NULL identity 可认领，sibling org 不改绑，既有 `scope=out` 不会被重新激活。新行写 `scope=in, source=asset_intel`，随后再落 DNS、service、subdomain 关系。
+  - provider domain expansion 仍只读 trusted pre-stage roots，`source=asset_intel` 不会递归扩大查询面；WHOIS 可对本轮新域名做一次有界组织级补全。active scan 仍需 `human_approval.required_before=active_scan`。
+  - Target Intel 的 asset denominator 冻结在 `stage_started_at`；本轮新 Target 是交给 EAS 的 handoff，不会把当前 stage 的 coverage 分母越跑越大并重新触发 submit 循环。coverage read model、subtask gate、submit preview 与 final org gate 使用同一 cutoff。
+  - Enrich 的 durable target-candidate queue 改为 opt-in 且运行时关闭；删除 TargetPanel candidate tab、candidate review/promote handlers、新建 engagement 的 candidate checkbox 和相关文案/API wrapper。为兼容旧数据与 subsidiaries `unit_review`，保留 DTO、JSON 字段、backend candidate commands/schema；历史候选 JSON 未删除、未迁移。
+- **TDD RED → GREEN 证据**：
+  - current-run target planner、summary landed/observed 分离、phase candidate queue、candidate persistence 默认值、exact SQL write contract、WHOIS input split、Target Intel axis cutoff、coverage read model 都先以缺 helper/错误计数稳定 RED，再逐项转绿；对应 runs：`73699e38-c4d1-4cee-a936-4247a24f117a`、`26573e88-eee9-41a9-8e0c-63f681ccb74e`、`d7f5a5c5-eb9e-4f3d-9012-d483a0231d40`、`481b67c9-5751-4337-bf23-5a4d6b8405e4`、`ac376a3b-53da-467a-a6f1-2cf26095e390`、`db5b9710-0d82-4c31-819f-4d2b3ac8602a`、`f21cb176-cf6f-43ec-a954-942a2b77651c`、`0aaa4b5f-b4ed-4b7a-bee0-15ea72676632`。
+  - 前端 RED 证明旧 action 仍路由到 `candidates`；删除路径后 focused suite 转为 85/85 passed。
+- **最终局部验证**：
+  - `cd backend && cargo nextest run -p golish-recon-app asset_intel` → 116/116 passed，run `218c11ed-b6be-47fa-9946-0288289522ba`；`organization_recon` → 71/71 passed，run `57f3c3fd-d34b-46f5-a913-63b0b9cf8358`。
+  - `golish-agent-kit` cutoff/N/A focused → 3/3 passed，run `274f9652-6abb-4713-ae73-30980e362c18`；`golish-agent-app target_intel` → 9/9 passed，run `e1e96da4-24fb-4cc3-a833-95e2b2900287`。
+  - TargetPanel/AskHuman focused Vitest → 85/85；`pnpm typecheck`、相关 64 files Biome → exit 0。
+  - `cargo check -p golish-recon-app`、`cargo clippy -p golish-recon-app -p golish-agent-kit -p golish-agent-runtime -p golish-agent-app --all-targets -- -D warnings`、`cargo fmt --all -- --check`、两个 JSON parse、`git diff --check` → exit 0。
+- **当前状态 / 风险**：没有 schema/migration/generated IPC 改动，也没有清理历史候选 JSON。尚未在重启后的 app/backend 用真实配置跑 fresh Target Intel，因此还不能声称新 run 已实际写入 Targets/DNS；feature 继续 `in_progress`。未跑 `./init.sh` / 全量 `just precommit`，未 commit、stage 或 push。
+- **下一步最佳动作**：重启 app/backend 后 fresh 跑一次 Target Intel，再用 `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --full --db` 核对 `observedTargets`、`targets/landedDomains/landedIps/dnsRecords` 与 DB `targets/target_assets/dns_records` 一致，并确认 submit 不因本轮新 Targets 回头。
+- **提交记录**：未 commit、未 stage、未 push。

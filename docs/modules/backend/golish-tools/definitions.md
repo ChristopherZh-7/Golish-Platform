@@ -45,7 +45,11 @@
 
 - **新增工具要两处同步**：① 在 [`registry.rs`](../golish-tools.md) 注册实例（让它能执行）；② 在本模块对应分组加 schema（让 LLM 能看到）。漏任一处 = 工具存在但 LLM 调不到，或 LLM 调了但执行报 UnknownTool。
 - 单测 `test_build_function_declarations_returns_all_tools` 硬断言数量，当前为 `== 47`，加/减工具要同步改这个断言，否则测试红。
-- Enumeration 三个只读 worklist/precheck 工具保留 nullable `terminal_exceptions` 兼容字段，但只能 omitted/null/`[]`；非空数组一律拒绝。`enum_preflight_web_origins` schema 暴露 trusted batch preflight；执行层仍强制 1..=50、current org/session/operation/target/exact-origin。`stage_worklist_next.limit` 最多 200 cell / 50 distinct root。
+- 三个只读 worklist/precheck 工具共享 typed nullable `terminal_exceptions` schema（exact asset/technique + checked_empty/blocked/not_applicable + evidence/note 元数据）。Target Intel/EAS 可做只读终态预演；Enumeration 仍只接受 omitted/null/`[]`，非空一律拒绝。`enum_preflight_web_origins` 暴露 trusted batch preflight；执行层强制 1..=50、current org/session/operation/target/exact-origin。`stage_worklist_next.limit` 最多 200 cell / 50 distinct root。
+- `ask_human(input_type="scope_review")` 的 `context` 只是渲染/兼容提示，不是权威
+  target 来源。Scoping gate 会从 DB 另读 trusted UI/CLI snapshot，解析外层 ToolResult
+  与内层 response JSON，再按 canonical value + target_type + scope 精确对齐；任何
+  模型手写/编辑 context 都不能扩 scope。
 
 ## 测试入口
 

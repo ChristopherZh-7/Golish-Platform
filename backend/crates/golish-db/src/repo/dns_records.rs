@@ -3,7 +3,7 @@
 //! `coverage_truth`'s GOLISH-INTEL-DNS projection. Owner: recon (DNS = recon
 //! asset data).
 //!
-//! 红线：写只幂等 upsert；读只回答「哪些 in-scope target 真有 DNS 记录」(Found
+//! 红线：写只幂等 upsert；冲突时刷新当前观察时间；读只回答「哪些 in-scope target 真有 DNS 记录」(Found
 //! 语义)，无记录 ≠ checked_empty (I8) —— 由 coverage gate 的缺口 BLOCK 体现。
 
 use chrono::{DateTime, Utc};
@@ -16,7 +16,10 @@ fn build_dns_upsert_sql() -> String {
     "INSERT INTO dns_records \
        (target_id, project_path, record_type, name, value, source) \
        VALUES ($1, $2, $3, $4, $5, $6) \
-       ON CONFLICT (target_id, record_type, name, value) DO NOTHING"
+       ON CONFLICT (target_id, record_type, name, value) DO UPDATE SET \
+         project_path = EXCLUDED.project_path, \
+         source = EXCLUDED.source, \
+         created_at = NOW()"
         .to_string()
 }
 
@@ -42,7 +45,8 @@ fn build_dns_present_target_values_sql(apply_window: bool) -> String {
     )
 }
 
-/// 写入一条 DNS 记录（幂等，唯一键冲突即跳过）。
+/// 写入一条 DNS 记录。唯一键冲突表示本轮重新观察到了同一关系：不新增行，
+/// 刷新 `created_at`（本轮无 schema migration，暂作 latest-observed 时间）。
 pub async fn upsert(
     pool: &PgPool,
     target_id: Uuid,
@@ -86,11 +90,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn upsert_sql_targets_dns_records_with_conflict_noop() {
+    fn upsert_sql_refreshes_latest_observation_on_conflict() {
         let sql = build_dns_upsert_sql();
         assert!(sql.contains("INSERT INTO dns_records"));
         assert!(sql.contains("target_id, project_path, record_type, name, value, source"));
-        assert!(sql.contains("ON CONFLICT") && sql.contains("DO NOTHING"));
+        assert!(sql.contains("ON CONFLICT") && sql.contains("DO UPDATE"));
+        assert!(sql.contains("created_at = NOW()"));
     }
 
     #[test]

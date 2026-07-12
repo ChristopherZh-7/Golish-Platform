@@ -1,8 +1,8 @@
-//! Background database tracking for AI agent activity.
+//! Database tracking for AI agent activity.
 //!
-//! Records tool calls, token usage, terminal output, web searches, and audit
-//! entries to PostgreSQL without blocking the agent loop. All writes are spawned
-//! as background tasks that log warnings on failure but never panic.
+//! Tool-call start/finish writes are awaited because harness gates immediately
+//! consume them as deterministic evidence. Other telemetry remains background
+//! best-effort and never blocks the agent loop.
 
 mod helpers;
 mod memory;
@@ -14,17 +14,19 @@ pub use types::{BriefingPlan, MemoryHit, ScoredMemoryHit, ToolCallGuard};
 use std::sync::Arc;
 
 use crate::db_traits::{DbReadinessGate, DbTrackingBackend, TextEmbedder};
+use parking_lot::RwLock;
 use uuid::Uuid;
 
-/// Lightweight handle passed through the agent loop for background DB recording.
-/// All methods spawn fire-and-forget tasks so the agentic loop is never blocked.
+/// Lightweight handle passed through the agent loop for DB recording.
+/// Harness-critical tool lifecycle methods are ordered/awaited; bulk telemetry
+/// methods remain fire-and-forget.
 /// Queries are gated on `DbReadinessGate` — if PG isn't ready yet, fire-and-forget
 /// writes silently wait (up to a short timeout) rather than timing out against
 /// the pool's acquire_timeout.
 #[derive(Clone)]
 pub struct DbTracker {
     pub(crate) backend: Arc<dyn DbTrackingBackend>,
-    pub(crate) session_uuid: Uuid,
+    pub(crate) session_uuid: Arc<RwLock<Uuid>>,
     pub(crate) ready_gate: Box<dyn DbReadinessGate>,
     pub(crate) project_path: Option<String>,
     pub(crate) task_id: Option<Uuid>,
@@ -41,7 +43,7 @@ impl DbTracker {
     ) -> Self {
         Self {
             backend,
-            session_uuid,
+            session_uuid: Arc::new(RwLock::new(session_uuid)),
             ready_gate: Box::new(ready_gate),
             project_path: None,
             task_id: None,
@@ -72,8 +74,8 @@ impl DbTracker {
     /// tracker's session with the orchestrator's `session_id` (resolved from the
     /// chat-session key) so session-scoped gate cross-checks can read this run's
     /// tool calls — otherwise the tracker keeps the random uuid it was built with.
-    pub fn set_session_uuid(&mut self, session_uuid: Uuid) {
-        self.session_uuid = session_uuid;
+    pub fn set_session_uuid(&self, session_uuid: Uuid) {
+        *self.session_uuid.write() = session_uuid;
     }
 
     pub fn with_project_path(mut self, path: Option<String>) -> Self {
@@ -95,7 +97,7 @@ impl DbTracker {
     }
 
     pub fn session_uuid(&self) -> Uuid {
-        self.session_uuid
+        *self.session_uuid.read()
     }
 
     /// Current operation/task id (= `audit_log.run_id` grouping key for the

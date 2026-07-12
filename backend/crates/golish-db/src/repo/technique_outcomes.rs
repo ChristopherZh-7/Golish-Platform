@@ -51,7 +51,8 @@ pub struct TechniqueOutcomeWrite {
     pub run_id: String,
     pub asset: String,
     pub technique: String,
-    /// `found` | `empty` | `partial` | `error` | `blocked`（与 producer/gate 合同对齐）。
+    /// `found` | `empty` | `partial` | `error` | `blocked` | `not_applicable`
+    /// （与 producer/gate 合同对齐）。
     pub outcome: String,
     pub source: Option<String>,
     pub query: Option<String>,
@@ -95,6 +96,30 @@ ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE SET \
   collected_at = EXCLUDED.collected_at, \
   updated_at = NOW()";
 
+/// Gate-PASS terminal materialization. A model-authored `blocked` /
+/// `not_applicable` cell may fill a missing or unfinished slot, but must never
+/// downgrade producer-owned `found` / `empty` or an already-terminal exception.
+/// The conflict predicate makes the snapshot-check → write race safe.
+const UPSERT_TERMINAL_IF_UNFINISHED_SQL: &str = "\
+INSERT INTO technique_outcomes \
+  (organization_id, run_id, asset, technique, outcome, source, query, \
+   result_count, confidence, evidence_ids, seq, collected_at) \
+VALUES \
+  ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+   (SELECT COALESCE(MAX(seq), 0) + 1 FROM technique_outcomes \
+     WHERE organization_id = $1 AND run_id = $2), \
+   $11) \
+ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE SET \
+  outcome = EXCLUDED.outcome, \
+  source = EXCLUDED.source, \
+  query = EXCLUDED.query, \
+  result_count = EXCLUDED.result_count, \
+  confidence = EXCLUDED.confidence, \
+  evidence_ids = EXCLUDED.evidence_ids, \
+  collected_at = EXCLUDED.collected_at, \
+  updated_at = NOW() \
+WHERE technique_outcomes.outcome IN ('partial', 'error')";
+
 /// 读某 run 的全部维（org 隔离，IDOR）。`seq` 只是并发写入下的排序提示；
 /// asset/technique 是确定性 tie-breaker，避免两个并发首插拿到同一 seq 时读序漂移。
 const LIST_FOR_RUN_SQL: &str = "\
@@ -118,6 +143,36 @@ ORDER BY seq, asset, technique";
 /// upsert 一条 technique_outcome（PR-C step2 写路径）。
 pub async fn upsert(pool: &PgPool, w: &TechniqueOutcomeWrite) -> Result<()> {
     execute_upsert(pool, w).await
+}
+
+/// Insert a gate-approved `blocked` / `not_applicable` terminal cell only when
+/// no row exists, or replace an unfinished `partial` / `error` row. Returns
+/// `true` when the row was inserted/updated and `false` when an existing terminal
+/// producer/gate row won the race.
+pub async fn upsert_terminal_if_unfinished(
+    pool: &PgPool,
+    w: &TechniqueOutcomeWrite,
+) -> Result<bool> {
+    if !matches!(w.outcome.as_str(), "blocked" | "not_applicable") {
+        return Err(anyhow::anyhow!(
+            "conditional gate terminal write accepts only blocked/not_applicable"
+        ));
+    }
+    let result = sqlx::query(UPSERT_TERMINAL_IF_UNFINISHED_SQL)
+        .bind(w.organization_id)
+        .bind(&w.run_id)
+        .bind(&w.asset)
+        .bind(&w.technique)
+        .bind(&w.outcome)
+        .bind(w.source.as_deref())
+        .bind(w.query.as_deref())
+        .bind(w.result_count)
+        .bind(w.confidence)
+        .bind(w.evidence_ids.as_slice())
+        .bind(w.collected_at)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 async fn execute_upsert<'e, E>(executor: E, w: &TechniqueOutcomeWrite) -> Result<()>
@@ -578,6 +633,16 @@ mod tests {
                 "conflict update must refresh {col}"
             );
         }
+    }
+
+    #[test]
+    fn terminal_materialization_sql_cannot_downgrade_terminal_truth() {
+        assert!(UPSERT_TERMINAL_IF_UNFINISHED_SQL
+            .contains("ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE"));
+        assert!(UPSERT_TERMINAL_IF_UNFINISHED_SQL
+            .contains("WHERE technique_outcomes.outcome IN ('partial', 'error')"));
+        assert!(!UPSERT_TERMINAL_IF_UNFINISHED_SQL.contains("'found'"));
+        assert!(!UPSERT_TERMINAL_IF_UNFINISHED_SQL.contains("'empty'"));
     }
 
     #[test]

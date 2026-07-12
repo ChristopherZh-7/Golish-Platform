@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -869,6 +870,94 @@ test("repeated navigation failure exhausts one retry signature without a third r
     assert.equal(third.recovery_exhausted, true);
     assert.equal(third.automatic_retry_allowed, false);
     assert.equal(brokenHits, hitsAfterExhaustion);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+    await close(target);
+  }
+});
+
+test("cached script clears a stale script-body recovery failure after its retry page drained", async () => {
+  const target = http.createServer((request, response) => {
+    if (request.url === "/app.js") {
+      response.writeHead(200, { "content-type": "text/javascript" });
+      response.end("window.cachedRecoveryClosed = true;");
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end('<!doctype html><script src="/app.js"></script>');
+  });
+  const targetAddress = await listen(target);
+  const workspace = await fs.mkdtemp(
+    path.join(os.tmpdir(), "golish-browser-stale-script-recovery-"),
+  );
+  const targetUrl = `http://127.0.0.1:${targetAddress.port}/`;
+  const scriptUrl = `http://127.0.0.1:${targetAddress.port}/app.js`;
+  const args = [
+    "--url",
+    targetUrl,
+    "--workspace",
+    workspace,
+    "--max-pages",
+    "1",
+    "--max-actions",
+    "0",
+    "--max-recursive-scripts",
+    "10",
+    "--hard-timeout-ms",
+    "20000",
+    "--ai-assist",
+    "false",
+    "--run-id",
+    "run-stale-script-recovery",
+    "--session-id",
+    "session-stale-script-recovery",
+    "--operation-id",
+    "00000000-0000-0000-0000-000000000016",
+    "--stage-started-at",
+    "2020-01-01T00:00:00Z",
+  ];
+
+  try {
+    const first = await runCollector(args);
+    assert.equal(first.completion_state, "complete");
+    assert.equal(first.scripts_saved, 1);
+
+    const manifestPath = path.join(workspace, first.script_manifest);
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+    const signature = crypto
+      .createHash("sha256")
+      .update(`script_body\0${scriptUrl}`)
+      .digest("hex");
+    Object.assign(manifest, {
+      closure_complete: false,
+      completion_state: "partial",
+      closure_incomplete_reasons: ["recovery_pending"],
+      pending_pages: [],
+      pending_recursive_scripts: [],
+      checkpoint_resume_count: 13,
+      recovery_failures: [
+        {
+          signature,
+          kind: "script_body",
+          url: scriptUrl,
+          count: 1,
+          reason:
+            "response.body: Protocol error (Network.getResponseBody): No resource with given identifier found",
+        },
+      ],
+      recovery_exhausted: false,
+      automatic_retry_allowed: true,
+    });
+    await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+    const resumed = await runCollector(args);
+    assert.equal(resumed.checkpoint_resume_applied, true);
+    assert.equal(resumed.scripts_cached_preloaded, 1);
+    assert.equal(resumed.completion_state, "complete");
+    assert.equal(resumed.closure_complete, true);
+    assert.deepEqual(resumed.recovery_failures, []);
+    assert.equal(resumed.recovery_exhausted, false);
+    assert.equal(resumed.automatic_retry_allowed, true);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
     await close(target);

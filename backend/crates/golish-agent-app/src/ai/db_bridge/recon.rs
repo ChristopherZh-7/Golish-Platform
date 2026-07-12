@@ -482,35 +482,18 @@ impl GolishDbRepoProvider {
         in_scope_assets: &[String],
         run_start: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<Vec<(String, String)>> {
-        // Coverage-landing refresh (fix 2026-06-17 enrich-timing): the recon
-        // sub-agent calls `recon_map_assets` (which lands subdomains) BEFORE
-        // `manage_targets add` registers the in-scope targets, so at enrich time the
-        // gate-read tables (`target_assets`/`dns_records`) stayed empty → this
-        // authoritative db-truth read saw no per-asset DNS/SUBDOMAIN facts → the
-        // target_intel coverage gate dead-looped. Re-run the per-asset landing now
-        // that targets exist; idempotent (NOT EXISTS/upsert skip) and non-fatal.
-        if let Some(org_id) = org_id {
-            let (subs, dns) =
-                golish_recon_app::organization_recon::refresh_per_asset_landing(&self.pool, org_id)
-                    .await;
-            if subs > 0 || dns > 0 {
-                tracing::info!(
-                    target: "harness::submit_tool",
-                    org_id = %org_id,
-                    subdomains = subs,
-                    dns_records = dns,
-                    "per-asset coverage landing refreshed before db-truth read"
-                );
-            }
-        }
+        // This is deliberately read-only. DNS/subdomain landing belongs to the
+        // successful `recon_map_assets` write path; refreshing here made innocent
+        // Scoping/coverage reads contact DNS and silently execute Target Intel work.
+        // A missing landing row must stay visible as a coverage gap, not be repaired
+        // as a side effect of reading gate truth.
         // 2c-2 (设计 host-aware-coverage-2c §4.3): align each in-scope asset to
         // its targets.type so coverage_truth drops domain-only org facts (CT) on
         // IP assets. Missing type → "" (non-IP, keep all — fail-safe). Reuses the
         // 2c-1 typed in-scope read.
         let type_map: std::collections::HashMap<String, String> = self
             .in_scope_typed_assets_impl(org_id)
-            .await
-            .unwrap_or_default()
+            .await?
             .into_iter()
             .collect();
         let types: Vec<String> = in_scope_assets
@@ -630,6 +613,7 @@ impl GolishDbRepoProvider {
         stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
         current_wave_target_ids: Option<Vec<Uuid>>,
         current_wave_asset_values: Option<Vec<String>>,
+        operation_id: Option<Uuid>,
     ) -> anyhow::Result<serde_json::Value> {
         let stage_kind = golish_agent_kit::harness::StageKind::try_parse(stage)
             .ok_or_else(|| anyhow::anyhow!("unknown stage: {stage}"))?;
@@ -642,6 +626,7 @@ impl GolishDbRepoProvider {
             current_wave_target_ids,
             current_wave_asset_values,
             false,
+            operation_id,
         )
         .await?;
         Ok(serde_json::to_value(snapshot)?)
@@ -649,18 +634,19 @@ impl GolishDbRepoProvider {
 
     /// P3 Phase B (2026-06-11): distinct `targets.type` of the in-scope assets,
     /// so the harness coverage gate derives dynamic expected techniques per asset
-    /// class (`technique_resolver`). Reuses the recon targets port (no new SQL /
-    /// schema); dedupes in first-seen order for deterministic output. `org_id`
-    /// narrowing is deferred — chat sessions carry no org binding, so the legacy
-    /// whole-visible set matches `in_scope_targets_impl`.
+    /// class (`technique_resolver`). Organization narrowing is mandatory: a
+    /// sibling row with the same value but another type must never rewrite the
+    /// current operation's coverage denominator.
     pub(super) async fn in_scope_target_types_impl(
         &self,
-        _org_id: Option<Uuid>,
+        org_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<String>> {
-        let targets = self.recon_targets.in_scope_targets(None).await?;
+        let targets: Vec<(String,)> = sqlx::query_as(in_scope_target_types_sql())
+            .bind(org_id)
+            .fetch_all(self.pool.as_ref())
+            .await?;
         let mut types: Vec<String> = Vec::new();
-        for t in targets {
-            let ty = t.target_type.as_str().to_string();
+        for (ty,) in targets {
             if !types.contains(&ty) {
                 types.push(ty);
             }
@@ -670,19 +656,36 @@ impl GolishDbRepoProvider {
 
     /// 2c-1 (设计 host-aware-coverage-2c §4.1): in-scope `(value, targets.type)`
     /// pairs for the harness gate's **authoritative** asset classification.
-    /// Reuses the recon targets port (mirrors [`Self::in_scope_target_types_impl`];
-    /// no new SQL). `org_id` narrowing deferred (chat sessions carry no org
-    /// binding) — a superset map is harmless: `coverage_complete` only looks up
-    /// its org-narrowed asset axis, and any missing entry falls back to value
-    /// inference (2a/2b).
+    /// Uses the same exact org predicate as the value axis. A workspace-wide
+    /// superset is unsafe because duplicate values across sibling orgs can carry
+    /// different authoritative target types.
     pub(super) async fn in_scope_typed_assets_impl(
         &self,
-        _org_id: Option<Uuid>,
+        org_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<(String, String)>> {
-        let targets = self.recon_targets.in_scope_targets(None).await?;
-        Ok(targets
+        Ok(sqlx::query_as(in_scope_typed_assets_sql())
+            .bind(org_id)
+            .fetch_all(self.pool.as_ref())
+            .await?)
+    }
+
+    pub(super) async fn scoping_target_snapshot_impl(
+        &self,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<golish_agent_kit::db_traits::ScopingReviewedTarget>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(scoping_target_snapshot_sql())
+            .bind(organization_id)
+            .fetch_all(self.pool.as_ref())
+            .await?;
+        Ok(rows
             .into_iter()
-            .map(|t| (t.value, t.target_type.as_str().to_string()))
+            .map(
+                |(value, target_type, scope)| golish_agent_kit::db_traits::ScopingReviewedTarget {
+                    value,
+                    target_type,
+                    scope,
+                },
+            )
             .collect())
     }
 
@@ -814,6 +817,48 @@ impl GolishDbRepoProvider {
         }
         Ok(out)
     }
+
+    pub(super) async fn org_stage_completions_get_with_run_id_impl(
+        &self,
+        stage_kind: &str,
+        org_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<(Uuid, chrono::DateTime<chrono::Utc>, Option<String>)>> {
+        let mut out = Vec::with_capacity(org_ids.len());
+        for &org in org_ids {
+            if let Some(row) =
+                golish_db::repo::org_stage_completions::get(&self.pool, org, stage_kind).await?
+            {
+                out.push((row.organization_id, row.passed_at, row.stage_run_id));
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn in_scope_target_types_sql() -> &'static str {
+    r#"SELECT DISTINCT target_type::text
+       FROM targets
+       WHERE scope::text = 'in'
+         AND ($1 IS NULL OR organization_id = $1)
+       ORDER BY target_type::text"#
+}
+
+fn in_scope_typed_assets_sql() -> &'static str {
+    r#"SELECT value, target_type::text
+       FROM targets
+       WHERE scope::text = 'in'
+         AND ($1 IS NULL OR organization_id = $1)
+       ORDER BY created_at ASC, id ASC"#
+}
+
+fn scoping_target_snapshot_sql() -> &'static str {
+    r#"SELECT value, target_type::text, scope::text
+       FROM targets
+       WHERE organization_id = $1
+         AND target_type::text IN ('domain', 'ip', 'cidr', 'url', 'wildcard')
+         AND lower(COALESCE(source, '')) IN
+             ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli')
+       ORDER BY created_at ASC, id ASC"#
 }
 
 #[cfg(test)]
@@ -851,6 +896,22 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn authoritative_type_queries_are_org_scoped() {
+        for sql in [in_scope_target_types_sql(), in_scope_typed_assets_sql()] {
+            assert!(sql.contains("scope::text = 'in'"));
+            assert!(sql.contains("($1 IS NULL OR organization_id = $1)"));
+        }
+    }
+
+    #[test]
+    fn scoping_snapshot_trusts_customer_intake_but_not_discovery_sources() {
+        let sql = scoping_target_snapshot_sql();
+        assert!(sql.contains("'customer_provided'"));
+        assert!(!sql.contains("'active_discovered'"));
+        assert!(!sql.contains("'asset_intel'"));
     }
 
     #[test]

@@ -246,7 +246,7 @@ pub async fn asset_intel_enrich_organization(
         selected,
         &row,
         &company_name,
-        &args.config,
+        &enrichment_hydrate_config(args.config),
     )
     .await
 }

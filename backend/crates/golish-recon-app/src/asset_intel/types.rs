@@ -217,6 +217,11 @@ pub struct AssetIntelRun {
     pub provider_status: Vec<AssetIntelProviderRunStatus>,
     pub candidates: OrganizationCandidates,
     pub evidence: Vec<Value>,
+    /// Current-run domain profile values for deterministic landing. Kept out of
+    /// the serialized command payload; the persisted organization profile is
+    /// cumulative and must never be reread as fresh observation input.
+    #[serde(skip)]
+    pub(crate) observed_domain_hosts: Vec<String>,
 }
 
 /// One disambiguation hit returned by `asset_intel_lookup_company`.

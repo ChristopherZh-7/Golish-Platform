@@ -642,25 +642,41 @@ function attachFingerprintEvidence(
   fingerprints: Fingerprint[]
 ): void {
   for (const fingerprint of fingerprints) {
-    const origin =
-      fingerprint.evidence
-        .map((item) => findOriginForUnknownEvidence(item, originsById))
-        .find(Boolean) ?? null;
-    if (!origin) continue;
-    addUnique(origin.fingerprints, fingerprint, (item) => item.id);
-    addUnique(
-      origin.evidence,
-      evidenceRef({
-        id: fingerprint.id,
-        source: fingerprint.source || "fingerprint",
-        label: [fingerprint.category, fingerprint.name, fingerprint.version]
-          .filter(Boolean)
-          .join(" · "),
-        confidence: "inferred",
-        raw: fingerprint,
-      }),
-      (item) => item.id
-    );
+    const matchedOrigins = new Map<string, WebOriginVM>();
+    for (const item of fingerprint.evidence) {
+      const candidates: unknown[] = [];
+      if (typeof item === "string") {
+        candidates.push(item);
+      } else if (item && typeof item === "object" && !Array.isArray(item)) {
+        const record = item as Record<string, unknown>;
+        for (const key of ["origin", "url", "endpoint", "request_url", "requestUrl"]) {
+          if (typeof record[key] === "string") candidates.push(record[key]);
+        }
+      }
+      for (const candidate of candidates) {
+        if (typeof candidate !== "string") continue;
+        const parsed = parseWebOrigin(candidate);
+        const origin = parsed ? originsById.get(parsed.id) : null;
+        if (origin) matchedOrigins.set(origin.id, origin);
+      }
+    }
+    for (const origin of matchedOrigins.values()) {
+      addUnique(origin.fingerprints, fingerprint, (item) => item.id);
+      addUnique(
+        origin.evidence,
+        evidenceRef({
+          id: fingerprint.id,
+          source: fingerprint.source || "fingerprint",
+          label: [fingerprint.category, fingerprint.name, fingerprint.version]
+            .filter(Boolean)
+            .join(" · "),
+          url: origin.origin,
+          confidence: "confirmed",
+          raw: fingerprint,
+        }),
+        (item) => item.id
+      );
+    }
   }
 }
 

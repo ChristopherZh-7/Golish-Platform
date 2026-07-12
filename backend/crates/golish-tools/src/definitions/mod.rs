@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn enumeration_preflight_tools_share_terminal_exception_preview_schema() {
+    fn stage_preflight_tools_share_typed_terminal_exception_preview_schema() {
         let declarations = build_function_declarations();
 
         for name in [
@@ -159,11 +159,19 @@ mod tests {
             assert_eq!(schema["type"], "array");
             assert!(schema.get("maxItems").is_none());
             assert_eq!(schema["items"]["additionalProperties"], false);
-            assert_eq!(schema["items"]["properties"], json!({}));
+            assert_eq!(schema["items"]["properties"]["asset"]["type"], "string");
+            assert_eq!(
+                schema["items"]["properties"]["status"]["enum"],
+                json!(["checked_empty", "blocked", "not_applicable"])
+            );
+            assert_eq!(
+                schema["items"]["required"],
+                json!(["asset", "technique", "status"])
+            );
             assert!(schema["description"]
                 .as_str()
                 .unwrap()
-                .contains("non-empty array is rejected"));
+                .contains("Enumeration remains DB/evidence authoritative"));
         }
 
         let next = declarations

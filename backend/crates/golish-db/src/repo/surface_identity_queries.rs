@@ -39,6 +39,15 @@ pub struct SurfaceIdentitySnapshotQuery {
     pub include_history: bool,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow, PartialEq, Eq)]
+pub struct EasRequiredWebOriginRow {
+    pub target_id: Uuid,
+    pub origin: String,
+    pub target_name: String,
+    pub target_value: String,
+    pub target_ports: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SurfaceIdentitySnapshot {
@@ -188,6 +197,33 @@ ORDER BY
     woo.id ASC
 "#;
 
+/// Exact HTTP(S) origins that the current EAS run has actively confirmed for
+/// an in-scope target. Observations are relation facts, so the target/org joins
+/// are mandatory; a project-only or unbound historical row never expands the
+/// gate denominator. `$3 = NULL` means the live org axis, while an explicit
+/// (including empty) UUID array freezes the query to the current asset wave.
+pub const LIST_EAS_REQUIRED_WEB_ORIGINS_SQL: &str = r#"
+SELECT DISTINCT woo.target_id, wo.origin,
+       t.name AS target_name, t.value AS target_value,
+       COALESCE(t.ports, '[]'::jsonb) AS target_ports
+FROM web_origin_observations woo
+JOIN web_origins wo ON wo.id = woo.web_origin_id
+JOIN targets t ON woo.target_id = t.id
+WHERE woo.organization_id = $1
+  AND wo.organization_id = $1
+  AND t.organization_id = $1
+  AND t.scope::text = 'in'
+  AND t.project_path IS NOT NULL
+  AND t.project_path <> ''
+  AND woo.project_path = t.project_path
+  AND wo.project_path = t.project_path
+  AND t.created_at <= $2
+  AND woo.observed_at >= $2
+  AND ($3::uuid[] IS NULL OR woo.target_id = ANY($3))
+  AND LOWER(woo.source) IN ('httpx', 'nmap', 'eas_probe_http_liveness')
+ORDER BY woo.target_id, wo.origin
+"#;
+
 pub async fn list_network_endpoints_for_scope(
     pool: &PgPool,
     scope: SurfaceIdentityQueryScope,
@@ -256,6 +292,60 @@ pub async fn list_observations_for_scope(
         .await?;
 
     Ok(rows)
+}
+
+pub async fn list_eas_required_web_origins(
+    pool: &PgPool,
+    organization_id: Uuid,
+    since: chrono::DateTime<chrono::Utc>,
+    current_wave_target_ids: Option<&[Uuid]>,
+) -> Result<Vec<String>> {
+    let rows =
+        list_eas_required_web_origin_rows(pool, organization_id, since, current_wave_target_ids)
+            .await?;
+    let mut origins = rows.into_iter().map(|row| row.origin).collect::<Vec<_>>();
+    origins.sort();
+    origins.dedup();
+    Ok(origins)
+}
+
+pub async fn list_eas_required_web_origin_rows(
+    pool: &PgPool,
+    organization_id: Uuid,
+    since: chrono::DateTime<chrono::Utc>,
+    current_wave_target_ids: Option<&[Uuid]>,
+) -> Result<Vec<EasRequiredWebOriginRow>> {
+    let target_ids = current_wave_target_ids.map(<[Uuid]>::to_vec);
+    let rows = sqlx::query_as::<_, EasRequiredWebOriginRow>(LIST_EAS_REQUIRED_WEB_ORIGINS_SQL)
+        .bind(organization_id)
+        .bind(since)
+        .bind(target_ids)
+        .fetch_all(pool)
+        .await?;
+    let mut current = Vec::new();
+    for row in rows {
+        if eas_required_origin_still_authorized(&row)? {
+            current.push(row);
+        }
+    }
+    Ok(current)
+}
+
+fn eas_required_origin_still_authorized(row: &EasRequiredWebOriginRow) -> Result<bool> {
+    let origin = golish_pentest_domain::canonical_web_origin(&row.origin).ok_or_else(|| {
+        anyhow::anyhow!(
+            "malformed EAS required Web Origin '{}' for target {}",
+            row.origin,
+            row.target_id
+        )
+    })?;
+    Ok(golish_pentest_domain::confirmed_target_web_origins(
+        &row.target_name,
+        &row.target_value,
+        &row.target_ports,
+    )
+    .into_iter()
+    .any(|candidate| candidate.key == origin.key))
 }
 
 pub async fn get_surface_identity_snapshot_for_ip(
@@ -505,6 +595,65 @@ mod tests {
     fn origins_have_stable_sorting() {
         assert!(LIST_WEB_ORIGINS_FOR_SCOPE_SQL
             .contains("ORDER BY wo.host ASC, wo.scheme ASC, wo.port ASC"));
+    }
+
+    #[test]
+    fn eas_required_origins_are_current_org_target_bound_fresh_and_probe_confirmed() {
+        let sql = LIST_EAS_REQUIRED_WEB_ORIGINS_SQL;
+        assert!(sql.contains("woo.organization_id = $1"));
+        assert!(sql.contains("wo.organization_id = $1"));
+        assert!(sql.contains("t.organization_id = $1"));
+        assert!(sql.contains("t.scope::text = 'in'"));
+        assert!(sql.contains("woo.project_path = t.project_path"));
+        assert!(sql.contains("wo.project_path = t.project_path"));
+        assert!(sql.contains("t.created_at <= $2"));
+        assert!(sql.contains("woo.target_id = t.id"));
+        assert!(sql.contains("woo.observed_at >= $2"));
+        assert!(sql.contains("$3::uuid[] IS NULL OR woo.target_id = ANY($3)"));
+        assert!(sql.contains("LOWER(woo.source) IN"));
+        assert!(sql.contains("'httpx'"));
+        assert!(sql.contains("'nmap'"));
+        assert!(sql.contains("SELECT DISTINCT woo.target_id, wo.origin"));
+        assert!(sql.contains("ORDER BY woo.target_id, wo.origin"));
+    }
+
+    #[test]
+    fn eas_required_origin_is_dropped_after_target_no_longer_owns_exact_origin() {
+        let mut row = EasRequiredWebOriginRow {
+            target_id: Uuid::new_v4(),
+            origin: "https://app.example.test:443".to_string(),
+            target_name: "app.example.test".to_string(),
+            target_value: "app.example.test".to_string(),
+            target_ports: serde_json::json!([{
+                "state": "open",
+                "url": "https://app.example.test:443/"
+            }]),
+        };
+        assert!(eas_required_origin_still_authorized(&row).unwrap());
+
+        row.target_ports = serde_json::json!([{
+            "state": "open",
+            "url": "https://other.example.test:443/"
+        }]);
+        row.target_name = "other.example.test".to_string();
+        row.target_value = "other.example.test".to_string();
+        assert!(!eas_required_origin_still_authorized(&row).unwrap());
+    }
+
+    #[test]
+    fn eas_required_origin_never_trusts_display_name_or_foreign_port_url() {
+        let row = EasRequiredWebOriginRow {
+            target_id: Uuid::new_v4(),
+            origin: "https://vendor.example:443".to_string(),
+            target_name: "https://vendor.example".to_string(),
+            target_value: "moresec.cn".to_string(),
+            target_ports: serde_json::json!([{
+                "state": "open",
+                "url": "https://vendor.example:443/"
+            }]),
+        };
+
+        assert!(!eas_required_origin_still_authorized(&row).unwrap());
     }
 
     #[test]

@@ -51,7 +51,6 @@ export function getOrgActionModel(
   if (mode === "customer_targets") {
     return {
       primary: { kind: "import_targets", label: "Import targets" },
-      secondary: { kind: "review_scope", label: "Review scope" },
     };
   }
   if (mode === "discover_assets") {
@@ -87,8 +86,7 @@ export function getWorkspaceModel(mode: EngagementMode | null): {
     return {
       title: "Scope & Intel",
       eyebrow: "Asset discovery workspace",
-      description:
-        "Hydrate company intel, review discovered candidates, then promote approved assets.",
+      description: "Hydrate company intel and review organization profile evidence.",
     };
   }
   return {
@@ -112,9 +110,6 @@ export function getEngagementDetails(
     if (depth) details.push(["Depth", depth]);
     if (typeof engagement.include_branches === "boolean") {
       details.push(["Branches", engagement.include_branches ? "included" : "excluded"]);
-    }
-    if (typeof engagement.create_candidates === "boolean") {
-      details.push(["Candidates", engagement.create_candidates ? "review first" : "disabled"]);
     }
     return details;
   }

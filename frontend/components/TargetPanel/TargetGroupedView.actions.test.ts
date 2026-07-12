@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import type {
-  AssetIntelProviderDescriptor,
   AssetIntelRun,
   AssetIntelStreamEvent,
 } from "@/lib/api/asset-intel";
@@ -10,16 +9,11 @@ import {
   buildDiscoveryHydrateConfigFromEngagement,
   buildHydrateConfigFromEngagement,
   formatFieldValue,
-  getCandidateCounts,
-  getCandidateItems,
-  getCandidateSourceFilter,
   getEngagementDetails,
-  getEvidenceRawRows,
   getNextWorkspaceTabAfterAssetIntelRun,
   getOrgActionModel,
   getOrgFieldGroups,
   getProviderStatusClass,
-  getVisibleCandidateBuckets,
   getWorkspaceModel,
   type HydrateActivity,
   toggleCollapsedSet,
@@ -45,6 +39,10 @@ describe("getOrgActionModel", () => {
       kind: "choose_next_step",
       label: "Choose next step",
     });
+  });
+
+  it("does not expose the legacy candidate workspace as customer scope review", () => {
+    expect(getOrgActionModel("customer_targets").secondary).toBeUndefined();
   });
 
   it("shows discovery and single-org enrichment actions for a master discovery org", () => {
@@ -120,7 +118,6 @@ describe("getEngagementDetails", () => {
       ["Min ownership", "35%"],
       ["Depth", "3"],
       ["Branches", "included"],
-      ["Candidates", "review first"],
     ]);
   });
 
@@ -135,154 +132,6 @@ describe("getEngagementDetails", () => {
       ["Source", "customer_provided"],
       ["Imported targets", "12"],
     ]);
-  });
-});
-
-describe("getCandidateCounts", () => {
-  it("counts organization and target candidates from engagement metadata", () => {
-    expect(
-      getCandidateCounts({
-        candidates: {
-          organizations: [{ id: "org-a" }, { id: "org-b" }],
-          targets: [{ id: "target-a" }],
-        },
-      })
-    ).toEqual({ organizations: 2, targets: 1 });
-  });
-
-  it("counts only candidates from allowed provider sources when a filter is provided", () => {
-    expect(
-      getCandidateCounts(
-        {
-          candidates: {
-            organizations: [
-              { id: "org-enscan", source: "enscan-go" },
-              { id: "org-zone", source: "0.zone" },
-            ],
-            targets: [
-              { id: "target-zone", source: "0.zone" },
-              { id: "target-manual", source: "" },
-            ],
-          },
-        },
-        new Set(["enscan-go"])
-      )
-    ).toEqual({ organizations: 1, targets: 1 });
-  });
-});
-
-describe("getCandidateItems", () => {
-  it("returns typed candidate buckets for review UI", () => {
-    const engagement = {
-      candidates: {
-        organizations: [{ id: "org-a", kind: "organization", label: "Org A", value: "Org A" }],
-        targets: [{ id: "target-a", kind: "target", label: "api.example.com", value: "api.example.com" }],
-      },
-    };
-
-    expect(getCandidateItems(engagement, "organizations")).toHaveLength(1);
-    expect(getCandidateItems(engagement, "targets")[0]).toMatchObject({
-      id: "target-a",
-      kind: "target",
-    });
-  });
-
-  it("filters stale candidates by the selected asset-intel phase", () => {
-    const engagement = {
-      candidates: {
-        organizations: [
-          {
-            id: "org:enscan-go:Ping An Bank",
-            kind: "organization",
-            label: "Ping An Bank",
-            value: "Ping An Bank",
-            source: "enscan-go",
-          },
-          {
-            id: "org:0.zone:noise",
-            kind: "organization",
-            label: "0.zone stale org",
-            value: "0.zone stale org",
-            source: "0.zone",
-          },
-        ],
-        targets: [
-          {
-            id: "target:0.zone:pa18.com",
-            kind: "target",
-            label: "pa18.com",
-            value: "pa18.com",
-            source: "0.zone",
-          },
-        ],
-      },
-    };
-    const discoverySources = new Set(["enscan-go"]);
-
-    expect(getCandidateItems(engagement, "organizations", discoverySources)).toEqual([
-      expect.objectContaining({ source: "enscan-go" }),
-    ]);
-    expect(getCandidateItems(engagement, "targets", discoverySources)).toEqual([]);
-  });
-});
-
-describe("getCandidateSourceFilter", () => {
-  const providers: AssetIntelProviderDescriptor[] = [
-    {
-      id: "enscan-go",
-      displayName: "ENScan_GO",
-      requiresIntegration: null,
-      capabilities: ["subsidiaries", "domains"],
-      status: "available",
-    },
-    {
-      id: "0.zone",
-      displayName: "0.zone（零零信安）",
-      requiresIntegration: null,
-      capabilities: ["domains", "apps"],
-      status: "available",
-    },
-  ];
-
-  it("separates discovery provider sources from enrichment provider sources", () => {
-    expect(getCandidateSourceFilter(providers, "discovery")).toEqual(
-      new Set(["enscan-go", "enscan_go"])
-    );
-    expect(getCandidateSourceFilter(providers, "enrichment")).toEqual(
-      new Set(["0.zone", "0.zone（零零信安）"])
-    );
-  });
-});
-
-describe("getVisibleCandidateBuckets", () => {
-  it("hides target candidates during the discovery phase", () => {
-    const engagement = {
-      candidates: {
-        organizations: [
-          {
-            id: "org:enscan-go:Ping An Bank",
-            kind: "organization",
-            label: "Ping An Bank",
-            value: "Ping An Bank",
-            source: "enscan-go",
-          },
-        ],
-        targets: [
-          {
-            id: "target:enscan-go:pingan.com",
-            kind: "target",
-            label: "pingan.com",
-            value: "pingan.com",
-            source: "enscan-go",
-          },
-        ],
-      },
-    };
-
-    expect(getVisibleCandidateBuckets(engagement, "discovery", new Set(["enscan-go"]))).toEqual({
-      organizations: [expect.objectContaining({ source: "enscan-go" })],
-      targets: [],
-    });
   });
 });
 
@@ -524,7 +373,7 @@ describe("getNextWorkspaceTabAfterAssetIntelRun", () => {
     expect(getNextWorkspaceTabAfterAssetIntelRun("hydrate_subsidiaries", run())).toBe("activity");
   });
 
-  it("opens candidates only when discovery leaves candidates to review", () => {
+  it("keeps completed discovery on activity even when candidates were collected", () => {
     expect(
       getNextWorkspaceTabAfterAssetIntelRun(
         "hydrate_subsidiaries",
@@ -542,7 +391,7 @@ describe("getNextWorkspaceTabAfterAssetIntelRun", () => {
           },
         })
       )
-    ).toBe("candidates");
+    ).toBe("activity");
   });
 
   it("keeps partial or failed discovery runs on activity even if a provider emitted candidates", () => {
@@ -580,74 +429,6 @@ describe("getNextWorkspaceTabAfterAssetIntelRun", () => {
         run({ status: "failed" })
       )
     ).toBeNull();
-  });
-});
-
-describe("getEvidenceRawRows", () => {
-  it("extracts known ENScan fields from candidate.evidence.raw", () => {
-    const rows = getEvidenceRawRows({
-      provider: "enscan-go",
-      runId: "run-1",
-      raw: {
-        name: "小米科技投资有限公司",
-        reg_code: "91110108551385082Q",
-        scale: "100",
-        legal: "雷军",
-        addr: "北京市海淀区",
-        industry: "互联网",
-        phone: "010-12345678",
-        unrelated_garbage: "should-not-show",
-      },
-    });
-    const labels = rows.map((row) => row.label);
-    expect(labels).toEqual([
-      "Name",
-      "Credit code",
-      "Ownership %",
-      "Legal representative",
-      "Industry",
-      "Address",
-      "Phone",
-    ]);
-    expect(rows.find((row) => row.label === "Address")?.value).toBe("北京市海淀区");
-    expect(rows.some((row) => row.value === "should-not-show")).toBe(false);
-  });
-
-  it("ignores nulls / empty strings / object values", () => {
-    const rows = getEvidenceRawRows({
-      raw: {
-        name: "  ",
-        legal: null,
-        reg_code: undefined,
-        addr: { nested: "ignored" },
-        scale: 51,
-      },
-    });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toEqual({ field: "scale", label: "Ownership %", value: "51" });
-  });
-
-  it("returns empty array when evidence is missing or wrong shape", () => {
-    expect(getEvidenceRawRows(undefined)).toEqual([]);
-    expect(getEvidenceRawRows(null)).toEqual([]);
-    expect(getEvidenceRawRows({})).toEqual([]);
-    expect(getEvidenceRawRows({ raw: [] })).toEqual([]);
-    expect(getEvidenceRawRows({ raw: "string-not-object" })).toEqual([]);
-  });
-
-  it("dedupes labels when multiple source fields map to the same display label", () => {
-    const rows = getEvidenceRawRows({
-      raw: {
-        reg_code: "AAA",
-        credit_code: "BBB",
-        addr: "addr-1",
-        address: "addr-2",
-      },
-    });
-    const labels = rows.map((row) => row.label);
-    expect(labels.filter((label) => label === "Credit code")).toHaveLength(1);
-    expect(labels.filter((label) => label === "Address")).toHaveLength(1);
-    expect(rows.find((row) => row.label === "Credit code")?.value).toBe("AAA");
   });
 });
 

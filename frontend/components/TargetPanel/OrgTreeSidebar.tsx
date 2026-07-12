@@ -17,7 +17,6 @@ import {
   Loader2,
   Network,
   Pencil,
-  Shield,
   Trash2,
   Wifi,
 } from "lucide-react";
@@ -179,10 +178,6 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
           setSelectedOrgId(node.id);
           setWorkspaceTab("overview");
           break;
-        case "review_scope":
-          setSelectedOrgId(node.id);
-          setWorkspaceTab("candidates");
-          break;
         case "add_child":
           handleStartAddChild(node.id);
           break;
@@ -200,8 +195,6 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
       <Wifi className="w-3 h-3" />
     ) : action.kind === "add_child" ? (
       <Building2 className="w-3 h-3" />
-    ) : action.kind === "review_scope" ? (
-      <Shield className="w-3 h-3" />
     ) : action.kind === "choose_next_step" ? (
       <Info className="w-3 h-3" />
     ) : (
@@ -217,7 +210,6 @@ function OrgTreeNodeRow(props: { node: OrgTreeNode; depth: number } & OrgTreePro
           action.kind === "hydrate_subsidiaries" && "hover:text-blue-400",
           action.kind === "enrich_organization" && "hover:text-cyan-400",
           action.kind === "import_targets" && "hover:text-green-400",
-          action.kind === "review_scope" && "hover:text-amber-400",
           action.kind === "choose_next_step" && "hover:text-accent",
           action.kind === "add_child" && "hover:text-accent"
         )}

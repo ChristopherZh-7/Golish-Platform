@@ -324,30 +324,18 @@ fn attack_surface_sort_priority(t: &Target, direct_ip_aliases: &BTreeSet<String>
     score
 }
 
-fn collapse_attack_surface_seed_aliases(targets: Vec<Target>) -> (Vec<Target>, BTreeSet<String>) {
-    let direct_ips: BTreeSet<String> = targets.iter().filter_map(direct_ip_seed_key).collect();
-    let direct_ip_aliases = direct_ip_alias_keys(&targets);
-    if direct_ips.is_empty() {
-        return (targets, direct_ip_aliases);
-    }
-    let collapsed = targets
-        .into_iter()
-        .filter(|target| {
-            if direct_ip_seed_key(target).is_some() {
-                return true;
-            }
-            resolved_seed_ip_key(target).is_none_or(|ip| !direct_ips.contains(&ip))
-        })
-        .collect();
-    (collapsed, direct_ip_aliases)
-}
-
 /// Rank in-scope targets into attack-surface seeds by descending priority
 /// (stable tiebreak on value), optionally capping to `cap` (D3: per-org cap,
-/// `None` = no cap / default off). Pure — the caller projects each ranked target
-/// into the rich seed JSON the EAS handoff returns.
-pub fn rank_attack_surface_seeds(targets: Vec<Target>, cap: Option<usize>) -> Vec<Target> {
-    let (mut targets, direct_ip_aliases) = collapse_attack_surface_seed_aliases(targets);
+/// `None` = no cap / default off). Wildcards are passive authorization patterns,
+/// not executable hosts; concrete children remain ordinary domain seeds. Pure —
+/// the caller projects each ranked target into the rich seed JSON the EAS
+/// handoff returns.
+pub fn rank_attack_surface_seeds(mut targets: Vec<Target>, cap: Option<usize>) -> Vec<Target> {
+    targets.retain(|target| target.target_type != TargetType::Wildcard);
+    // A concrete IP may own PORT/SERVICE work for every vhost resolving to it,
+    // but it cannot replace those vhosts' Host/SNI-specific LIVENESS/WEB work.
+    // Keep every asset in the seed list and only boost the direct IP's ordering.
+    let direct_ip_aliases = direct_ip_alias_keys(&targets);
     targets.sort_by(|a, b| {
         attack_surface_sort_priority(b, &direct_ip_aliases)
             .cmp(&attack_surface_sort_priority(a, &direct_ip_aliases))
@@ -519,6 +507,18 @@ mod tests {
     }
 
     #[test]
+    fn rank_attack_surface_seeds_excludes_wildcard_pattern_but_keeps_concrete_child() {
+        let wildcard = seed("*.example.com", "wildcard", "", None);
+        let child = seed("app.example.com", "domain", "", None);
+
+        let ranked = rank_attack_surface_seeds(vec![wildcard, child.clone()], None);
+
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].value, child.value);
+        assert_eq!(ranked[0].target_type, TargetType::Domain);
+    }
+
+    #[test]
     fn web_root_url_derives_scheme_and_default_port_suffix() {
         assert_eq!(
             web_root_url("app.example.com", Some(443), "https"),
@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn rank_attack_surface_seeds_collapses_domain_aliases_to_existing_ip_targets() {
+    fn rank_attack_surface_seeds_preserves_ip_and_same_ip_vhosts() {
         let ip = seed("115.28.135.55", "ip", "", None);
         let alias = seed("moresec.cn", "domain", "115.28.135.55", Some(200));
         let www_alias = seed("www.moresec.cn", "domain", "115.28.135.55", None);
@@ -555,25 +555,35 @@ mod tests {
 
         let ranked = rank_attack_surface_seeds(vec![alias, www_alias, sibling, ip], None);
 
+        let values = ranked
+            .iter()
+            .map(|target| target.value.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ranked.len(), 4);
         assert_eq!(
-            ranked
-                .iter()
-                .map(|target| target.value.as_str())
-                .collect::<Vec<_>>(),
-            vec!["115.28.135.55", "m.moresec.cn"]
+            values,
+            BTreeSet::from([
+                "115.28.135.55",
+                "moresec.cn",
+                "www.moresec.cn",
+                "m.moresec.cn",
+            ])
         );
     }
 
     #[test]
-    fn rank_attack_surface_seeds_collapses_ip_url_endpoint_aliases_before_cap() {
+    fn rank_attack_surface_seeds_preserves_ip_url_endpoint_alias() {
         let ip = seed("115.28.135.55", "ip", "", None);
         let endpoint = seed("http://115.28.135.55:8080/login", "url", "", Some(200));
         let bare_domain = seed("bare.example.com", "domain", "", None);
 
-        let ranked = rank_attack_surface_seeds(vec![endpoint, bare_domain, ip], Some(1));
+        let ranked = rank_attack_surface_seeds(vec![endpoint, bare_domain, ip], None);
 
-        assert_eq!(ranked.len(), 1);
-        assert_eq!(ranked[0].value, "115.28.135.55");
+        assert_eq!(ranked.len(), 3);
+        assert!(ranked.iter().any(|target| target.value == "115.28.135.55"));
+        assert!(ranked
+            .iter()
+            .any(|target| target.value == "http://115.28.135.55:8080/login"));
     }
 
     #[test]

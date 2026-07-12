@@ -778,6 +778,7 @@ describe("IP surface tabs", () => {
       "endpoints",
       "origins",
       "domains",
+      "fingerprints",
       "sensitive",
       "evidence",
     ]);

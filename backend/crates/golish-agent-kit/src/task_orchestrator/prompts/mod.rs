@@ -206,7 +206,7 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
         // 与 apply_harness_gate_hook 注入的 scoping_human_gate_rule 呼应.
         if scoping_policy.require_human_scope_approval {
             s.push_str(
-                "- HARD GATE — human scope approval REQUIRED: before you `submit_stage_deliverable`, the scope MUST be confirmed by a human. Call `ask_human(input_type=\"scope_review\")`, let the user add/remove/edit the target list, and ONLY after they approve, emit a SECOND claim with kind \"scope_human_approved\" (subject = the engagement subject's organization_id, the UUID created via manage_organizations, so the engagement binds to that org) that cites the ask_human request_id. Without that claim the deterministic gate BLOCKS and you cannot leave scoping.\n",
+                "- HARD GATE — human scope approval REQUIRED: first inspect the trusted pre-stage target snapshot. When it is NON-EMPTY, call `ask_human(input_type=\"scope_review\")` EXACTLY ONCE with those exact rows and have the human confirm the unchanged snapshot. The editable table may only PROPOSE changes; an edited response does not mutate or authorize targets, so stop and ask the user to update the trusted UI/CLI target intake before a fresh Scoping attempt. Never open a second scope_review to replace the first decision. When the trusted snapshot is EMPTY (company/organization-only input), do NOT manufacture an empty target-table review: the applicable organization review/confirmation is the approval. After that applicable human decision, emit a SECOND claim with kind \"scope_human_approved\" (subject = the engagement subject's organization_id) citing its ask_human request_id when one exists. The deterministic gate compares every persisted non-empty target review to DB truth and BLOCKS a missing, repeated, stale, or edited list.\n",
             );
         }
         // red_team (require_unit_candidates): the gate cross-verifies the REAL
@@ -214,7 +214,7 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
         // NOT pass. State it plainly so the model performs the steps.
         if scoping_policy.require_unit_candidates {
             s.push_str(
-                "- HARD GATE — RED-TEAM unit flow is VERIFIED against your actual tool calls (not just claims): you MUST really call `manage_organizations(action=\"propose_candidates\")`, then `ask_human(input_type=\"unit_review\")` for the user to judge candidate units. If the root org/tree already exists (REUSE mode), DO NOT call `create`/`create_batch` just to satisfy the gate; the human-confirmed existing org tree is the record. Only call `manage_organizations(action=\"create\"/\"create_batch\")` for a missing root or units the user explicitly added/confirmed. Skipping the real `unit_review` and only emitting a scope_human_approved claim will BLOCK the gate.\n",
+                "- HARD GATE — RED-TEAM subsidiary scope is VERIFIED against actual tool calls and the persisted human choice, not claims. First call `ask_human(input_type=\"choice\", context=\"{\\\"decision\\\":\\\"subsidiary_scope\\\",\\\"organization_id\\\":\\\"<root-id>\\\"}\")`. If the human explicitly chooses parent/root-only scope, that decision completes this branch: do NOT run discovery, `propose_candidates`, or an empty `unit_review`. If subsidiaries may be included, you MUST call `manage_organizations(action=\"propose_candidates\")`, then `ask_human(input_type=\"unit_review\")` so the user judges candidate units. If the root org/tree already exists (REUSE mode), DO NOT call `create`/`create_batch` just to satisfy the gate; only create a missing root or units the user explicitly added/confirmed. A claim alone cannot satisfy either branch.\n",
             );
         }
         s
@@ -1079,6 +1079,20 @@ mod tests {
         let c = stage_charter(&scoping, &gated);
         assert!(c.contains("scope_human_approved"));
         assert!(c.contains("ask_human(input_type=\"scope_review\")"));
+        assert!(c.contains("EXACTLY ONCE"));
+        assert!(c.contains("Never open a second scope_review"));
+        assert!(c.contains("NON-EMPTY"));
+        assert!(c.contains("do NOT manufacture an empty target-table review"));
+
+        let red_team = ScopingPolicy {
+            require_unit_candidates: true,
+            ..ScopingPolicy::default()
+        };
+        let red_team_charter = stage_charter(&scoping, &red_team);
+        assert!(red_team_charter.contains("subsidiary_scope"));
+        assert!(red_team_charter.contains("parent/root-only"));
+        assert!(red_team_charter.contains("propose_candidates"));
+        assert!(red_team_charter.contains("unit_review"));
 
         // Gate off (smoke) → no human-approval line.
         let off = ScopingPolicy {

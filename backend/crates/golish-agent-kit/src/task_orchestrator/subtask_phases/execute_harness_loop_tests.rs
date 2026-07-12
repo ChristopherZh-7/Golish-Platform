@@ -8,6 +8,7 @@
 //!   `fail_task_if_active`. Deterministic regardless of `GOLISH_HARNESS_PROFILE`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -16,7 +17,9 @@ use uuid::Uuid;
 
 use crate::db_traits::*;
 use crate::harness::StageKind;
-use crate::task_orchestrator::TaskOrchestrator;
+use crate::task_orchestrator::{
+    AgentExecutor, AgentResult, ExecutionContext, PlannedSubtask, TaskOrchestrator,
+};
 use golish_core::events::AiEvent;
 
 use super::HarnessGateOutcome;
@@ -31,6 +34,42 @@ struct MemRepo {
     wiki_result: Mutex<serde_json::Value>,
     /// In-memory `tasks` table for the P1 `fail_task_if_active` tests.
     tasks: Mutex<HashMap<Uuid, TaskView>>,
+}
+
+struct ExhaustedStageRunExecutor {
+    execute_calls: AtomicUsize,
+}
+
+#[async_trait]
+impl AgentExecutor for ExhaustedStageRunExecutor {
+    async fn execute_subtask(
+        &self,
+        _subtask_title: &str,
+        _subtask_description: &str,
+        _execution_context: &ExecutionContext,
+        _agent_type: Option<&str>,
+    ) -> anyhow::Result<AgentResult> {
+        self.execute_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(AgentResult::new(
+            "I would retry the specialist stage now, but the request-scoped stage_run budget is already exhausted and needs a later user continuation."
+                .to_string(),
+        ))
+    }
+
+    fn stage_run_retry_budget_exhausted(&self, _stage: StageKind) -> bool {
+        true
+    }
+
+    async fn generate_report(
+        &self,
+        _execution_context: &ExecutionContext,
+    ) -> anyhow::Result<AgentResult> {
+        unreachable!("report generation is outside this focused subtask test")
+    }
+
+    async fn reflect(&self, _subtask_title: &str, _agent_response: &str) -> anyhow::Result<String> {
+        unreachable!("the deterministic refiner replaced this callback")
+    }
 }
 
 impl MemRepo {
@@ -563,6 +602,42 @@ impl golish_core::runtime::GolishRuntime for GateMockRuntime {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+}
+
+#[tokio::test]
+async fn exhausted_stage_run_signal_stops_text_only_automatic_repair_turn() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "assessment", "external_attack_surface");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo, Uuid::new_v4(), tx);
+    let executor = ExhaustedStageRunExecutor {
+        execute_calls: AtomicUsize::new(0),
+    };
+    let planned = PlannedSubtask {
+        title: "EAS continuation".to_string(),
+        description: "Resume the parked specialist stage.".to_string(),
+        agent: Some("pentester".to_string()),
+        // This focused test exercises the outer-loop policy without invoking a
+        // DB-backed harness gate; the runtime stage still carries the guard.
+        harness_stage: None,
+        nl_slice: None,
+        acceptance_criteria: Vec::new(),
+    };
+    let exec_ctx = ExecutionContext {
+        operation_id: Some(operation_id),
+        harness_stage: Some(StageKind::ExternalAttackSurface),
+        ..ExecutionContext::default()
+    };
+
+    let _ = orchestrator
+        .execute_single_subtask(&planned, &exec_ctx, &executor, &None, operation_id)
+        .await;
+
+    assert_eq!(
+        executor.execute_calls.load(Ordering::SeqCst),
+        1,
+        "the orchestrator must return the BLOCK to the user instead of opening a text-only repair turn in the same request"
+    );
 }
 
 /// A gate PASS routed through `consume_gate_outcome` (the single chokepoint both

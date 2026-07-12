@@ -468,6 +468,12 @@ function arrayField(row: ApiRecord, ...keys: string[]): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function observationArrayField(row: ApiRecord, ...keys: string[]): unknown[] {
+  const value = get(row, ...keys);
+  if (Array.isArray(value)) return value;
+  return value == null ? [] : [value];
+}
+
 function recordField(row: ApiRecord, ...keys: string[]): Record<string, unknown> {
   return asRecord(get(row, ...keys));
 }
@@ -553,7 +559,7 @@ function normalizeFingerprint(value: unknown): Fingerprint {
     name: stringField(row, "name"),
     version: nullableStringField(row, "version"),
     confidence: nullableNumberField(row, "confidence") ?? 0,
-    evidence: arrayField(row, "evidence"),
+    evidence: observationArrayField(row, "evidence"),
     cpe: nullableStringField(row, "cpe"),
     source: stringField(row, "source"),
     detectedAt: stringField(row, "detectedAt", "detected_at"),

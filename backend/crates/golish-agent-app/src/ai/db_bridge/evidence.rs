@@ -24,6 +24,9 @@ const ENUM_ROUTE_RECOVERY_BLOCKED_TOOL: &str = "route_probe_paths";
 const ENUM_ROUTE_RECOVERY_BLOCKED_KIND: &str = "dir_probe_recovery_exhausted";
 const ENUM_COLLECTION_RECOVERY_BLOCKED_TOOL: &str = "browser_collect_js_api";
 const ENUM_COLLECTION_RECOVERY_BLOCKED_KIND: &str = "enumeration_collection_recovery_exhausted";
+const EAS_WEB_BLOCKED_TOOL: &str = "whatweb";
+const EAS_WEB_BLOCKED_KIND: &str = "eas.fingerprint_web_stack";
+const EAS_WEB_BLOCKED_SOURCE: &str = "eas_fingerprint_web_stack";
 
 fn is_enumeration_technique(technique: &str) -> bool {
     matches!(
@@ -86,7 +89,18 @@ fn is_eas_technique(technique: &str) -> bool {
 }
 
 fn is_eas_terminal_outcome(technique: &str, outcome: &str) -> bool {
-    is_eas_technique(technique) && matches!(outcome, "found" | "empty")
+    (is_eas_technique(technique) && matches!(outcome, "found" | "empty"))
+        || (technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP && outcome == "blocked")
+}
+
+fn eas_terminal_source_is_authoritative(
+    technique: &str,
+    outcome: &str,
+    source: Option<&str>,
+) -> bool {
+    technique != golish_db::repo::coverage_truth::TECH_EAS_WEB_FP
+        || outcome != "blocked"
+        || source == Some(EAS_WEB_BLOCKED_SOURCE)
 }
 
 fn strict_evidence_asset_key(asset: &str, technique: &str) -> Option<String> {
@@ -102,10 +116,37 @@ fn strict_evidence_asset_key(asset: &str, technique: &str) -> Option<String> {
     if technique == golish_db::repo::coverage_truth::TECH_EAS_LIVENESS {
         return golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(asset);
     }
+    if technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP {
+        return golish_pentest_domain::canonical_web_origin(asset).map(|origin| origin.key);
+    }
     if is_eas_technique(technique) {
         return golish_pentest_domain::canonical_asset_key(asset).map(|key| key.key);
     }
     None
+}
+
+fn dns_empty_outcome_hosts(
+    summary: &golish_recon_app::organization_recon::PerAssetLandingSummary,
+) -> &[String] {
+    &summary.dns_empty_hosts
+}
+
+fn dns_found_outcome_hosts(
+    summary: &golish_recon_app::organization_recon::PerAssetLandingSummary,
+) -> &[String] {
+    &summary.dns_found_hosts
+}
+
+fn dns_partial_outcome_hosts(
+    summary: &golish_recon_app::organization_recon::PerAssetLandingSummary,
+) -> &[String] {
+    &summary.dns_partial_hosts
+}
+
+fn dns_error_outcome_hosts(
+    summary: &golish_recon_app::organization_recon::PerAssetLandingSummary,
+) -> &[String] {
+    &summary.dns_error_hosts
 }
 
 /// Build the exact-origin evidence identity set used to validate Enumeration
@@ -187,6 +228,17 @@ fn row_has_trusted_enumeration_blocked_producer(
         ))
 }
 
+fn row_has_trusted_eas_blocked_producer(
+    row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
+) -> bool {
+    row.evidence_outcome != "blocked"
+        || (row.evidence_technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP
+            && matches!(
+                (row.tool_name.as_deref(), row.evidence_kind.as_deref()),
+                (Some(EAS_WEB_BLOCKED_TOOL), Some(EAS_WEB_BLOCKED_KIND))
+            ))
+}
+
 fn open_port_urls(
     row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
 ) -> impl Iterator<Item = &str> {
@@ -222,7 +274,8 @@ fn target_row_still_authorizes_eas_fact(
             .any(|candidate| candidate == evidence_key),
         golish_db::repo::coverage_truth::TECH_EAS_PORT
         | golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP => {
-            let class = golish_pentest_domain::AssetClass::classify(
+            let class = golish_agent_kit::harness::technique_resolver::classify_stage_asset(
+                golish_agent_kit::harness::StageKind::ExternalAttackSurface,
                 Some(&row.target_type),
                 &row.target_value,
             );
@@ -239,7 +292,6 @@ fn target_row_still_authorizes_eas_fact(
             .map(String::as_str)
             .chain(open_port_urls(row))
             .filter_map(golish_pentest_domain::canonical_web_origin)
-            .filter_map(|origin| golish_pentest_domain::canonical_asset_key(&origin.key))
             .any(|candidate| candidate.key == evidence_key),
         _ => false,
     }
@@ -288,6 +340,7 @@ pub(crate) fn eas_target_bound_evidence_fact_set(
         })
         .filter(row_has_matching_producer_and_current_org)
         .filter(target_row_still_authorizes_eas_fact)
+        .filter(row_has_trusted_eas_blocked_producer)
         .filter_map(|row| {
             if row.evidence_id <= 0
                 || !is_eas_terminal_outcome(&row.evidence_technique, &row.evidence_outcome)
@@ -325,6 +378,9 @@ pub(crate) fn projected_technique_outcome_evidence_id(
     source: Option<&str>,
 ) -> Option<i64> {
     if !enumeration_terminal_source_is_authoritative(technique, outcome, source) {
+        return None;
+    }
+    if !eas_terminal_source_is_authoritative(technique, outcome, source) {
         return None;
     }
     if is_enumeration_terminal_outcome(technique, outcome)
@@ -459,10 +515,47 @@ impl GolishDbRepoProvider {
         golish_db::repo::technique_outcomes::upsert(&self.pool, &write).await
     }
 
-    /// Target-intel DNS empty marker: refresh per-asset DNS landing, then persist
-    /// domains that were really resolved and returned no DNS answers as
-    /// `GOLISH-INTEL-DNS = empty`. This turns "checked and empty" into DB truth
-    /// instead of leaving it indistinguishable from "never checked".
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn upsert_terminal_technique_outcome_if_unfinished_impl(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+        asset: &str,
+        technique: &str,
+        outcome: &str,
+        source: Option<&str>,
+        query: Option<&str>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<bool> {
+        let canonical = if technique == golish_agent_kit::harness::evidence_facts::TECH_EAS_LIVENESS
+        {
+            golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(asset)
+                .unwrap_or_else(|| asset.to_string())
+        } else {
+            golish_pentest_domain::canonical_asset_key(asset)
+                .map(|key| key.key)
+                .unwrap_or_else(|| asset.to_string())
+        };
+        let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
+            organization_id,
+            run_id: run_id.to_string(),
+            asset: canonical,
+            technique: technique.to_string(),
+            outcome: outcome.to_string(),
+            source: source.map(str::to_string),
+            query: query.map(str::to_string),
+            result_count: None,
+            confidence: None,
+            evidence_ids: evidence_ids.to_vec(),
+            collected_at: Some(chrono::Utc::now()),
+        };
+        golish_db::repo::technique_outcomes::upsert_terminal_if_unfinished(&self.pool, &write).await
+    }
+
+    /// Target-intel DNS attempt marker: refresh per-asset DNS landing, persist
+    /// domains that were really resolved and returned no DNS answers as `empty`,
+    /// and persist resolver/transport failures as non-terminal `error`. This
+    /// keeps checked-empty, failed, and never-attempted distinct (I8).
     pub(crate) async fn mark_target_intel_dns_empty_outcomes_impl(
         &self,
         organization_id: uuid::Uuid,
@@ -479,29 +572,51 @@ impl GolishDbRepoProvider {
         )
         .await;
         let mut stored = 0usize;
-        for host in summary.dns_empty_hosts {
-            match self
-                .upsert_technique_outcome_impl(
-                    organization_id,
-                    run_id,
-                    &host,
-                    golish_db::repo::coverage_truth::TECH_DNS,
-                    "empty",
-                    Some("resolver"),
-                    Some(&host),
-                    evidence_ids,
-                )
-                .await
-            {
-                Ok(()) => stored += 1,
-                Err(e) => tracing::warn!(
-                    target: "harness::evidence",
-                    organization_id = %organization_id,
-                    asset = %host,
-                    error = %e,
-                    "target_intel DNS empty outcome upsert failed (continuing)"
-                ),
+        for (hosts, outcome) in [
+            (dns_found_outcome_hosts(&summary), "found"),
+            (dns_empty_outcome_hosts(&summary), "empty"),
+            (dns_partial_outcome_hosts(&summary), "partial"),
+            (dns_error_outcome_hosts(&summary), "error"),
+        ] {
+            for host in hosts {
+                match self
+                    .upsert_technique_outcome_impl(
+                        organization_id,
+                        run_id,
+                        host,
+                        golish_db::repo::coverage_truth::TECH_DNS,
+                        outcome,
+                        Some("resolver"),
+                        Some(host),
+                        evidence_ids,
+                    )
+                    .await
+                {
+                    Ok(()) => stored += 1,
+                    Err(e) => tracing::warn!(
+                        target: "harness::evidence",
+                        organization_id = %organization_id,
+                        asset = %host,
+                        %outcome,
+                        error = %e,
+                        "target_intel DNS outcome upsert failed (continuing)"
+                    ),
+                }
             }
+        }
+        if summary.dns_refresh_failed {
+            self.upsert_source_query_impl(
+                organization_id,
+                run_id,
+                "resolver",
+                "map_assets:GOLISH-INTEL-DNS",
+                "",
+                Some(golish_db::repo::coverage_truth::TECH_DNS),
+                "error",
+                evidence_ids,
+            )
+            .await?;
+            stored += 1;
         }
         Ok(stored)
     }
@@ -680,17 +795,16 @@ impl GolishDbRepoProvider {
     }
 
     /// #5 Phase 3（provider-source closure）：读 `source_query_log` 的 terminal source
-    /// rows → gate/source-coverage 只读 facts。fail-safe：读失败返回空，让 coverage
-    /// gate 退回其它证据路径；日志保留定位信息。
+    /// rows → gate/source-coverage 只读 facts。查询错误保持为错误，避免最终 gate
+    /// 把不可用读取误当作权威空结果。
     pub(crate) async fn source_query_facts_impl(
         &self,
         organization_id: uuid::Uuid,
         run_id: &str,
-    ) -> Vec<SourceQueryFact> {
-        match golish_db::repo::source_query_log::list_for_run(&self.pool, organization_id, run_id)
-            .await
-        {
-            Ok(rows) => rows
+    ) -> anyhow::Result<Vec<SourceQueryFact>> {
+        Ok(
+            golish_db::repo::source_query_log::list_for_run(&self.pool, organization_id, run_id)
+                .await?
                 .into_iter()
                 .map(|r| SourceQueryFact {
                     source: r.source,
@@ -701,15 +815,7 @@ impl GolishDbRepoProvider {
                     evidence_ids: r.evidence_ids,
                 })
                 .collect(),
-            Err(e) => {
-                tracing::warn!(
-                    target: "harness::submit_tool",
-                    error = %e,
-                    "source_query_facts read failed; source_coverage gate runs without source-query projection"
-                );
-                Vec::new()
-            }
-        }
+        )
     }
 
     pub(crate) async fn evidence_existing_ids_impl(
@@ -973,6 +1079,30 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             stage_started_at,
             current_wave_target_ids,
             current_wave_asset_values,
+            None,
+        )
+        .await
+        .map(Some)
+    }
+
+    async fn stage_asset_coverage_for_operation(
+        &self,
+        operation_id: Option<uuid::Uuid>,
+        organization_id: uuid::Uuid,
+        stage: golish_agent_kit::harness::StageKind,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        self.stage_asset_coverage_impl(
+            organization_id,
+            stage.as_str(),
+            session_id,
+            stage_started_at,
+            current_wave_target_ids,
+            current_wave_asset_values,
+            operation_id,
         )
         .await
         .map(Some)
@@ -1012,6 +1142,22 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             .unwrap_or_default()
     }
 
+    async fn eas_required_web_origins(
+        &self,
+        organization_id: uuid::Uuid,
+        since: chrono::DateTime<chrono::Utc>,
+        current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+    ) -> anyhow::Result<Vec<String>> {
+        golish_db::repo::surface_identity_queries::list_eas_required_web_origins(
+            &self.pool,
+            organization_id,
+            since,
+            current_wave_target_ids.as_deref(),
+        )
+        .await
+        .map_err(Into::into)
+    }
+
     async fn eas_service_not_applicable_assets(
         &self,
         org_id: Option<uuid::Uuid>,
@@ -1049,7 +1195,17 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
     }
 
     async fn source_query_facts(&self, org_id: uuid::Uuid, run_id: &str) -> Vec<SourceQueryFact> {
-        self.source_query_facts_impl(org_id, run_id).await
+        match self.source_query_facts_impl(org_id, run_id).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(
+                    target: "harness::submit_tool",
+                    %error,
+                    "source_query_facts preview read failed"
+                );
+                Vec::new()
+            }
+        }
     }
 
     async fn operation_stage_started_at(
@@ -1134,10 +1290,44 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
 #[cfg(test)]
 mod tests {
     use super::{
-        eas_target_bound_evidence_facts, enumeration_evidence_fact_set,
+        dns_empty_outcome_hosts, dns_error_outcome_hosts, dns_found_outcome_hosts,
+        dns_partial_outcome_hosts, eas_target_bound_evidence_facts, enumeration_evidence_fact_set,
         enumeration_target_bound_evidence_fact_set, projected_technique_outcome_evidence_id,
     };
     use uuid::Uuid;
+
+    #[test]
+    fn dns_error_hosts_are_not_selected_for_checked_empty_outcomes() {
+        let summary = golish_recon_app::organization_recon::PerAssetLandingSummary {
+            subdomains: 0,
+            dns_records: 0,
+            dns_found_hosts: vec!["found.example.com".to_string()],
+            dns_empty_hosts: vec!["empty.example.com".to_string()],
+            dns_partial_hosts: vec!["partial.example.com".to_string()],
+            dns_error_hosts: vec!["timeout.example.com".to_string()],
+            dns_refresh_failed: false,
+        };
+
+        assert_eq!(
+            dns_empty_outcome_hosts(&summary),
+            &["empty.example.com".to_string()]
+        );
+        assert!(!dns_empty_outcome_hosts(&summary)
+            .iter()
+            .any(|host| host == "timeout.example.com"));
+        assert_eq!(
+            dns_error_outcome_hosts(&summary),
+            &["timeout.example.com".to_string()]
+        );
+        assert_eq!(
+            dns_found_outcome_hosts(&summary),
+            &["found.example.com".to_string()]
+        );
+        assert_eq!(
+            dns_partial_outcome_hosts(&summary),
+            &["partial.example.com".to_string()]
+        );
+    }
 
     fn target_bound_row(
         organization_id: Uuid,
@@ -1551,7 +1741,7 @@ mod tests {
     }
 
     #[test]
-    fn moved_origin_evidence_is_rejected_until_original_target_still_owns_it() {
+    fn moved_origin_evidence_rejects_stale_port_url_until_target_value_owns_it() {
         let row = target_bound_row(
             Uuid::new_v4(),
             "https://app.example.com:443",
@@ -1566,10 +1756,24 @@ mod tests {
             "state": "open",
             "url": "https://app.example.com/"
         }]);
-        assert_eq!(
-            enumeration_target_bound_evidence_fact_set(vec![still_owned]).len(),
-            1
+        assert!(
+            enumeration_target_bound_evidence_fact_set(vec![still_owned.clone()]).is_empty(),
+            "a foreign historical ports[].url cannot restore moved origin ownership"
         );
+
+        // `target_name` deliberately remains the foreign display label: only
+        // the current executable target value may authorize this exact origin.
+        still_owned.target_value = "app.example.com".to_string();
+        let facts = enumeration_target_bound_evidence_fact_set(vec![still_owned.clone()]);
+        assert!(facts.contains(&(
+            "https://app.example.com:443".to_string(),
+            golish_db::repo::coverage_truth::TECH_ENUM_DIR.to_string(),
+            "found".to_string(),
+            91,
+        )));
+
+        still_owned.target_ports[0]["state"] = serde_json::json!("closed");
+        assert!(enumeration_target_bound_evidence_fact_set(vec![still_owned]).is_empty());
     }
 
     #[test]
@@ -1609,6 +1813,24 @@ mod tests {
         moved.target_value = "192.0.2.20".to_string();
 
         assert!(eas_target_bound_evidence_facts(org, vec![moved]).is_empty());
+    }
+
+    #[test]
+    fn eas_ip_origin_url_target_cannot_authorize_bare_ip_port_fact() {
+        let org = Uuid::new_v4();
+        let mut row = target_bound_row(
+            org,
+            "127.0.0.1",
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            "http://127.0.0.1:54537",
+            "url",
+        );
+        row.tool_name = Some("eas_discover_ports".to_string());
+
+        assert!(
+            eas_target_bound_evidence_facts(org, vec![row]).is_empty(),
+            "a URL target must not be promoted into authorization for its bare IP host"
+        );
     }
 
     #[test]
@@ -1667,5 +1889,157 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn eas_web_evidence_and_outcome_match_exact_scheme_host_and_port() {
+        let org = Uuid::new_v4();
+        let mut row = target_bound_row(
+            org,
+            "https://app.example.com:443",
+            golish_db::repo::coverage_truth::TECH_EAS_WEB_FP,
+            "app.example.com",
+            "domain",
+        );
+        row.tool_name = Some("whatweb".to_string());
+        row.target_ports = serde_json::json!([{
+            "state": "open",
+            "url": "https://app.example.com:443/"
+        }, {
+            "state": "open",
+            "url": "https://app.example.com:8443/"
+        }]);
+        let facts = super::eas_target_bound_evidence_fact_set(org, vec![row]);
+
+        assert!(facts.contains(&(
+            "https://app.example.com:443".to_string(),
+            golish_db::repo::coverage_truth::TECH_EAS_WEB_FP.to_string(),
+            "found".to_string(),
+            91,
+        )));
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                "https://app.example.com:443/path",
+                golish_db::repo::coverage_truth::TECH_EAS_WEB_FP,
+                "found",
+                &[91],
+                &facts,
+                Some("whatweb"),
+            ),
+            Some(91)
+        );
+        for sibling in [
+            "http://app.example.com:80",
+            "https://app.example.com:8443",
+            "https://other.example.com:443",
+        ] {
+            assert_eq!(
+                projected_technique_outcome_evidence_id(
+                    sibling,
+                    golish_db::repo::coverage_truth::TECH_EAS_WEB_FP,
+                    "found",
+                    &[91],
+                    &facts,
+                    Some("whatweb"),
+                ),
+                None,
+                "a sibling origin must not reuse exact-origin evidence"
+            );
+        }
+    }
+
+    #[test]
+    fn eas_web_blocked_projection_requires_exact_wrapper_owned_evidence() {
+        let org = Uuid::new_v4();
+        let mut row = target_bound_row(
+            org,
+            "https://app.example.com:443",
+            golish_db::repo::coverage_truth::TECH_EAS_WEB_FP,
+            "app.example.com",
+            "domain",
+        );
+        row.evidence_outcome = "blocked".to_string();
+        row.tool_name = Some("whatweb".to_string());
+        row.evidence_kind = Some("eas.fingerprint_web_stack".to_string());
+        row.target_ports = serde_json::json!([{
+            "state": "open",
+            "url": "https://app.example.com:443/"
+        }, {
+            "state": "open",
+            "url": "https://app.example.com:8443/"
+        }]);
+
+        let facts = super::eas_target_bound_evidence_fact_set(org, vec![row.clone()]);
+        assert!(facts.contains(&(
+            "https://app.example.com:443".to_string(),
+            golish_db::repo::coverage_truth::TECH_EAS_WEB_FP.to_string(),
+            "blocked".to_string(),
+            91,
+        )));
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                "https://app.example.com:443/path",
+                golish_db::repo::coverage_truth::TECH_EAS_WEB_FP,
+                "blocked",
+                &[91],
+                &facts,
+                Some("eas_fingerprint_web_stack"),
+            ),
+            Some(91)
+        );
+
+        for (asset, outcome, ids, source) in [
+            (
+                "http://app.example.com:80",
+                "blocked",
+                vec![91],
+                Some("eas_fingerprint_web_stack"),
+            ),
+            (
+                "https://app.example.com:8443",
+                "blocked",
+                vec![91],
+                Some("eas_fingerprint_web_stack"),
+            ),
+            (
+                "https://app.example.com:443",
+                "empty",
+                vec![91],
+                Some("eas_fingerprint_web_stack"),
+            ),
+            (
+                "https://app.example.com:443",
+                "blocked",
+                vec![92],
+                Some("eas_fingerprint_web_stack"),
+            ),
+            (
+                "https://app.example.com:443",
+                "blocked",
+                vec![91],
+                Some("whatweb"),
+            ),
+        ] {
+            assert_eq!(
+                projected_technique_outcome_evidence_id(
+                    asset,
+                    golish_db::repo::coverage_truth::TECH_EAS_WEB_FP,
+                    outcome,
+                    &ids,
+                    &facts,
+                    source,
+                ),
+                None,
+                "blocked projection must match source, outcome, evidence id, and exact origin"
+            );
+        }
+
+        let mut wrong_tool = row.clone();
+        wrong_tool.tool_name = Some("httpx".to_string());
+        assert!(super::eas_target_bound_evidence_fact_set(org, vec![wrong_tool]).is_empty());
+
+        let mut wrong_kind = row;
+        wrong_kind.evidence_kind = Some("eas.http_liveness".to_string());
+        assert!(super::eas_target_bound_evidence_fact_set(org, vec![wrong_kind]).is_empty());
     }
 }

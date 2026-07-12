@@ -189,7 +189,10 @@
         "webserver": "webserver",
         "technologies": "tech",
         "host": "host",
-        "ip": "a[0]"
+        "ip": "a[0]",
+        "port": "port",
+        "scheme": "scheme",
+        "content_type": "content_type"
       },
       "detect": "httpx|\\{\"url\"|^https?://",
       "db_action": "target_update_recon",

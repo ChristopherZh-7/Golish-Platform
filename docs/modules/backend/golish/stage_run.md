@@ -55,6 +55,12 @@
 - 普通 `--stage-run` 启动前会探测配置端口：若 PostgreSQL 已在监听，说明本次复用了用户现有 DB，收尾只关闭本进程的 pool 并保留现有 PG；只有本次真正启动的 embedded PG 才调用 `stop()`。不能把“端口已占用、复用现有 PG”误当成本次拥有其生命周期。
 - 被 Ctrl-C 或 panic 打断的 smoke 可能来不及停临时 embedded PG；收尾时只清理 `golish-stage-run-db-*` 临时 PG，勿杀默认 app DB（`~/Library/Application Support/golish-platform/pgdata`）。
 - gate 走确定性 evidence 门（I7/I8）；自动确认仅对 scoping HITL，不放松 gate。
+- fresh CLI 的 `--target` 是 trusted pre-stage intake：必须在 Scoping 前以
+  `source='stage-run-seed'` 落精确 domain/IP/CIDR/URL/wildcard target。Headless
+  `scope_review` auto-response 只从这些 `--target` 构造 exact table payload，不从 objective/
+  LLM context 推断新 target；type/scope/value 必须与 DB trusted snapshot 一致。
+- Scoping 未落 trusted seed 时必须阻塞，不得依靠 Target Intel `manage_targets`
+  补种。`organizations.domains/app_domains/ip_ranges` 及 provider 数据都不能替代 CLI seed。
 - 每次 parent/child `orchestrate` 先获取该 bridge 的 universal top-level request token，再用 `BridgeAgentExecutor::from_request` 升级 Task；`run_stage` 返回后仍持 lease 清 harness sidechannels。fleet 继续串行，因此同 bridge child runs 逐个取得 fresh request-scoped retry budget。
 - **子公司扇出收敛（2026-06-14 · 方案 C）**：旧 step 6.5 手写 Rust per-child 循环 → `run_fleet_scheduler`；`orchestrate` 改 `pub(crate)` 供 `engagement::fleet_run::OrgFleetExecutor` 复用（CLI `emit_progress=false`，无单卡）。`engagement` 域暂无独立模块卡，fleet 驱动文档见上述 plan（follow-up：补 engagement 卡）。
 - **逐子进度 eprintln（2026-06-14 收敛后补回中途可见性）**：调度器（IO-free 内核）新增第 4 个注入 trait `FleetProgress`，CLI 传 `engagement::fleet_run::CliFleetProgress{label:"subsidiary"}` → 每个子公司进 executor 前后打 `[stage-run] ── subsidiary i/N: 名 → running/PASS/BLOCK/FAIL ──`（恢复 T1 把手写循环换成 `run_fleet_scheduler` 后丢的那条逐子可见性）。GUI 单卡路径传 `NoopProgress`（进度走 `StageRunOrgProgress` 事件）。续跑跳过的 org 只 `on_org_done`（SKIP(done)）、不 `on_org_start`。i/N 由调度器静态 org 序提供（checklist 串行下即真实顺序）。

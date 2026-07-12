@@ -169,10 +169,15 @@ where
     }
 
     // Start DB tracking for tool call timing
-    let db_guard = ctx
-        .events
-        .db_tracker
-        .map(|t| t.start_tool_call(&tool_id, tool_name, &tool_args));
+    let db_guard = if let Some(tracker) = ctx.events.db_tracker {
+        Some(
+            tracker
+                .start_tool_call(&tool_id, tool_name, &tool_args)
+                .await,
+        )
+    } else {
+        None
+    };
 
     // Execute tool with HITL approval check
     let tool_context = AgentToolContext {
@@ -264,7 +269,9 @@ where
     // Finish DB tracking with result
     if let (Some(tracker), Some(guard)) = (ctx.events.db_tracker, db_guard) {
         let result_text = serde_json::to_string(&result.value).unwrap_or_default();
-        tracker.finish_tool_call(guard, result.success, &result_text);
+        tracker
+            .finish_tool_call(guard, result.success, &result_text)
+            .await;
 
         // Record search logs for web search tools
         if tool_name.starts_with("tavily_") || tool_name.starts_with("web_search") {

@@ -32,6 +32,19 @@ export interface TargetSurfaceData {
   logs: AuditRow[];
 }
 
+export type TargetSurfaceDataSource = keyof TargetSurfaceData;
+
+export interface TargetSurfaceDataSourceError {
+  targetId: string;
+  source: TargetSurfaceDataSource;
+  message: string;
+}
+
+interface TargetSurfaceDataLoadResult {
+  data: TargetSurfaceData;
+  errors: TargetSurfaceDataSourceError[];
+}
+
 export type BackendHierarchyStatus = "idle" | "loading" | "success" | "fallback" | "error";
 
 export interface BackendHierarchyLoadResult {
@@ -115,7 +128,20 @@ function mergeSurfaceData(results: TargetSurfaceData[]): TargetSurfaceData {
   };
 }
 
-async function loadSingleTargetSurfaceData(targetId: string): Promise<TargetSurfaceData> {
+function settledArray<T>(
+  targetId: string,
+  source: TargetSurfaceDataSource,
+  result: PromiseSettledResult<T[]>,
+  errors: TargetSurfaceDataSourceError[]
+): T[] {
+  if (result.status === "fulfilled") {
+    return Array.isArray(result.value) ? result.value : [];
+  }
+  errors.push({ targetId, source, message: String(result.reason) });
+  return [];
+}
+
+async function loadSingleTargetSurfaceData(targetId: string): Promise<TargetSurfaceDataLoadResult> {
   const [
     assets,
     endpoints,
@@ -125,7 +151,7 @@ async function loadSingleTargetSurfaceData(targetId: string): Promise<TargetSurf
     timeline,
     directoryEntries,
     logs,
-  ] = await Promise.all([
+  ] = await Promise.allSettled([
     targetAssetsList(targetId),
     apiEndpointsList(targetId),
     fingerprintsList(targetId),
@@ -136,21 +162,37 @@ async function loadSingleTargetSurfaceData(targetId: string): Promise<TargetSurf
     oplogListByTarget(targetId, 50),
   ]);
 
+  const errors: TargetSurfaceDataSourceError[] = [];
+
   return {
-    assets: Array.isArray(assets) ? assets : [],
-    endpoints: Array.isArray(endpoints) ? endpoints : [],
-    fingerprints: Array.isArray(fingerprints) ? fingerprints : [],
-    jsResults: Array.isArray(jsResults) ? jsResults : [],
-    passiveScans: Array.isArray(passiveScans) ? passiveScans : [],
-    timeline: Array.isArray(timeline) ? timeline : [],
-    directoryEntries: Array.isArray(directoryEntries) ? directoryEntries : [],
-    logs: Array.isArray(logs) ? logs : [],
+    data: {
+      assets: settledArray(targetId, "assets", assets, errors),
+      endpoints: settledArray(targetId, "endpoints", endpoints, errors),
+      fingerprints: settledArray(targetId, "fingerprints", fingerprints, errors),
+      jsResults: settledArray(targetId, "jsResults", jsResults, errors),
+      passiveScans: settledArray(targetId, "passiveScans", passiveScans, errors),
+      timeline: settledArray(targetId, "timeline", timeline, errors),
+      directoryEntries: settledArray(targetId, "directoryEntries", directoryEntries, errors),
+      logs: settledArray(targetId, "logs", logs, errors),
+    },
+    errors,
   };
 }
 
-async function loadTargetSurfaceData(targetIds: string[]): Promise<TargetSurfaceData> {
-  if (targetIds.length === 0) return EMPTY_SURFACE_DATA;
-  return mergeSurfaceData(await Promise.all(targetIds.map(loadSingleTargetSurfaceData)));
+async function loadTargetSurfaceData(targetIds: string[]): Promise<TargetSurfaceDataLoadResult> {
+  if (targetIds.length === 0) return { data: EMPTY_SURFACE_DATA, errors: [] };
+  const results = await Promise.all(targetIds.map(loadSingleTargetSurfaceData));
+  return {
+    data: mergeSurfaceData(results.map((result) => result.data)),
+    errors: results.flatMap((result) => result.errors),
+  };
+}
+
+function formatSourceErrors(errors: TargetSurfaceDataSourceError[]): string | null {
+  if (errors.length === 0) return null;
+  return errors
+    .map(({ targetId, source, message }) => `${source} (${targetId}): ${message}`)
+    .join("; ");
 }
 
 function backendHierarchyStatusFor(
@@ -199,6 +241,7 @@ export function useTargetSurfaceData(
   const [data, setData] = useState<TargetSurfaceData>(EMPTY_SURFACE_DATA);
   const [loading, setLoading] = useState(targetIds.length > 0);
   const [error, setError] = useState<string | null>(null);
+  const [sourceErrors, setSourceErrors] = useState<TargetSurfaceDataSourceError[]>([]);
   const [backendHierarchy, setBackendHierarchy] = useState<BackendSurfaceHierarchyDto | null>(null);
   const [backendHierarchyStatus, setBackendHierarchyStatus] =
     useState<BackendHierarchyStatus>("idle");
@@ -215,23 +258,28 @@ export function useTargetSurfaceData(
       setData(EMPTY_SURFACE_DATA);
       setLoading(false);
       setError(null);
+      setSourceErrors([]);
       applyBackendResult(EMPTY_BACKEND_RESULT);
       return;
     }
 
     setLoading(true);
     setError(null);
+    setSourceErrors([]);
     setBackendHierarchyStatus(backendLoadEnabled ? "loading" : "idle");
     setBackendHierarchyError(null);
     try {
-      const [surfaceData, backendResult] = await Promise.all([
+      const [surfaceResult, backendResult] = await Promise.all([
         loadTargetSurfaceData(targetIds),
         loadBackendHierarchy(targetId, backendLoadEnabled, includeRelatedBackend),
       ]);
-      setData(surfaceData);
+      setData(surfaceResult.data);
+      setSourceErrors(surfaceResult.errors);
+      setError(formatSourceErrors(surfaceResult.errors));
       applyBackendResult(backendResult);
     } catch (err) {
       setError(String(err));
+      setSourceErrors([]);
       setData(EMPTY_SURFACE_DATA);
       applyBackendResult(EMPTY_BACKEND_RESULT);
     } finally {
@@ -266,26 +314,31 @@ export function useTargetSurfaceData(
       setData(EMPTY_SURFACE_DATA);
       setLoading(false);
       setError(null);
+      setSourceErrors([]);
       applyBackendResult(EMPTY_BACKEND_RESULT);
       return;
     }
 
     setLoading(true);
     setError(null);
+    setSourceErrors([]);
     setBackendHierarchyStatus(backendLoadEnabled ? "loading" : "idle");
     setBackendHierarchyError(null);
     Promise.all([
       loadTargetSurfaceData(targetIds),
       loadBackendHierarchy(targetId, backendLoadEnabled, includeRelatedBackend),
     ])
-      .then(([surfaceData, backendResult]) => {
+      .then(([surfaceResult, backendResult]) => {
         if (cancelled) return;
-        setData(surfaceData);
+        setData(surfaceResult.data);
+        setSourceErrors(surfaceResult.errors);
+        setError(formatSourceErrors(surfaceResult.errors));
         applyBackendResult(backendResult);
       })
       .catch((err) => {
         if (cancelled) return;
         setError(String(err));
+        setSourceErrors([]);
         setData(EMPTY_SURFACE_DATA);
         applyBackendResult(EMPTY_BACKEND_RESULT);
       })
@@ -302,6 +355,7 @@ export function useTargetSurfaceData(
     data,
     loading,
     error,
+    sourceErrors,
     reload,
     backendHierarchy,
     backendHierarchyStatus,

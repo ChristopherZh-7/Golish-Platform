@@ -1,5 +1,7 @@
 # 2026-06-17 · 测绘被动情报：域名↔IP 配对 + 探活 + 自动落库（资产收集闭环）
 
+> Current authorization/identity semantics are superseded by [`2026-07-11-intel-eas-asset-identity-closure.md`](2026-07-11-intel-eas-asset-identity-closure.md): organization profile fields and DNS/provider-only IPs no longer create executable roots; `real_ip` is cache only. This file remains implementation history for provider pairing.
+
 > **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **已落地**（Phase A–F）。配对→自动落库闭环 commit `8312365d`（close the passive-intel pairing → landing loop）+ `976836cd`（drop target_intel hard tool floors; enrich is primary）+ `f055decb`（Phase F notes）。
 
 > 起因：排查 run `pentest-chat-1781675306265-1`（目标 中国平安集团，stage `target_intel`）。

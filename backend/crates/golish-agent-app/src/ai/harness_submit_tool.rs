@@ -28,11 +28,13 @@ use golish_agent_kit::db_traits::{StageAssetWaveView, TechniqueOutcomeFact};
 use golish_agent_kit::harness::org_gate::{
     apply_technique_outcome_rows, eas_service_not_applicable_from_port_outcomes,
     extract_pass_token, stage_accepts_outcome_projection, stage_accepts_source_query_completion,
-    stage_gate_expected_techniques, validated_enumeration_axis_from_coverage_snapshot,
+    stage_asset_axis_cutoff, stage_gate_expected_techniques,
+    validated_enumeration_axis_from_coverage_snapshot, TargetIntelOrganizationContext,
 };
 use golish_agent_kit::harness::{
-    load_embedded_stage_spec, validate_stage_gate_with_context, AttackCandidate, EvidenceFact,
-    GateContext, GateContextBuilder, SourceQueryFact, StageDeliverable, StageKind,
+    completed_from_guarded_outcomes, load_embedded_stage_spec, validate_stage_gate_with_context,
+    AttackCandidate, EvidenceFact, GateContext, GateContextBuilder, SourceQueryFact,
+    StageDeliverable, StageKind,
 };
 use golish_core::Tool;
 
@@ -170,6 +172,28 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         Ok(None)
     }
 
+    async fn stage_asset_coverage_for_operation(
+        &self,
+        operation_id: Option<Uuid>,
+        organization_id: Uuid,
+        stage: StageKind,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
+    ) -> Result<Option<Value>> {
+        let _ = operation_id;
+        self.stage_asset_coverage(
+            organization_id,
+            stage,
+            session_id,
+            stage_started_at,
+            current_wave_target_ids,
+            current_wave_asset_values,
+        )
+        .await
+    }
+
     /// In-scope typed assets `(value, targets.type)` for `org_id`. Feeds the
     /// submit preview's host-aware `asset_types` so coverage_complete classifies
     /// assets by AUTHORITATIVE type (matching the stage-close gate) instead of
@@ -219,6 +243,19 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     ) -> Vec<String> {
         let _ = (org_id, run_start);
         Vec::new()
+    }
+
+    /// Current EAS exact-origin denominator. A real provider returns an error
+    /// on query failure so submit preview can fail closed instead of accepting
+    /// an empty denominator.
+    async fn eas_required_web_origins(
+        &self,
+        organization_id: Uuid,
+        since: chrono::DateTime<chrono::Utc>,
+        current_wave_target_ids: Option<Vec<Uuid>>,
+    ) -> Result<Vec<String>> {
+        let _ = (organization_id, since, current_wave_target_ids);
+        Ok(Vec::new())
     }
 
     /// Legacy DNS/53-only projection seam retained for repository compatibility.
@@ -832,6 +869,7 @@ impl SubmitStageDeliverableTool {
             .is_some_and(|spec| spec.asset_wave_barrier)
             .then_some(stage_started_at)
             .flatten();
+        let asset_axis_cutoff = stage_asset_axis_cutoff(stage, stage_started_at, wave_cutoff);
         let freshness_cutoff = stage_spec
             .as_ref()
             .is_some_and(|spec| spec.freshness_window)
@@ -864,7 +902,7 @@ impl SubmitStageDeliverableTool {
             }
             let assets = match current_wave_asset_values.as_ref() {
                 Some(assets) => assets.clone(),
-                None => match wave_cutoff {
+                None => match asset_axis_cutoff {
                     Some(cutoff) => {
                         repo.in_scope_assets_created_before(Some(org_id), cutoff)
                             .await
@@ -872,22 +910,18 @@ impl SubmitStageDeliverableTool {
                     None => repo.in_scope_assets(Some(org_id)).await,
                 },
             };
-            if !assets.is_empty() {
-                facts.extend(
-                    repo.db_truth_facts_with_run_start(Some(org_id), &assets, freshness_cutoff)
-                        .await,
-                );
+            in_scope_assets = assets;
+            if !in_scope_assets.is_empty() {
                 if let Some(cutoff) = wave_cutoff {
                     tracing::info!(
                         target: "harness::submit_tool",
                         stage = %stage.as_str(),
                         org_id = %org_id,
-                        asset_count = assets.len(),
+                        asset_count = in_scope_assets.len(),
                         cutoff = %cutoff,
                         "using current-wave in-scope assets for submit preview"
                     );
                 }
-                in_scope_assets = assets;
             }
             // (3) T3 · authoritative口径补全: host-aware asset_types + dynamic
             //     expected_techniques (same source as the stage-close gate), so the
@@ -897,19 +931,40 @@ impl SubmitStageDeliverableTool {
             //     持有；authoritative stage-close 仍强制该维）。
             if authoritative {
                 typed_assets = repo.in_scope_typed_assets(Some(org_id)).await;
-                if let Some(current_wave_assets) = current_wave_asset_values.as_ref() {
-                    let current_wave_assets = current_wave_assets
-                        .iter()
-                        .map(String::as_str)
-                        .collect::<HashSet<_>>();
-                    typed_assets.retain(|(asset, _)| current_wave_assets.contains(asset.as_str()));
-                }
+                let current_axis = in_scope_assets
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<HashSet<_>>();
+                typed_assets.retain(|(asset, _)| current_axis.contains(asset.as_str()));
                 let target_types = repo.in_scope_target_types(Some(org_id)).await;
                 expected_techniques = stage_gate_expected_techniques(stage, &target_types);
             }
+            if stage == StageKind::TargetIntel {
+                let organization_context = TargetIntelOrganizationContext::new(org_id);
+                organization_context.inject_asset(&mut in_scope_assets);
+                if authoritative {
+                    organization_context.inject_type(&mut typed_assets);
+                }
+                not_applicable_coverage.extend(organization_context.not_applicable_coverage());
+            }
+            // DB business truth must be projected after the synthetic Target
+            // Intel organization row is added. Otherwise an organization-only
+            // engagement never queries WHOIS/ASN/OSINT truth at submit time.
+            if !in_scope_assets.is_empty() {
+                facts.extend(
+                    repo.db_truth_facts_with_run_start(
+                        Some(org_id),
+                        &in_scope_assets,
+                        freshness_cutoff,
+                    )
+                    .await,
+                );
+            }
             if stage == StageKind::Enumeration {
                 let snapshot = repo
-                    .stage_asset_coverage(
+                    .stage_asset_coverage_for_operation(
+                        golish_core::current_agent_tool_context()
+                            .and_then(|context| context.operation_id),
                         org_id,
                         stage,
                         active_session_id,
@@ -973,34 +1028,43 @@ impl SubmitStageDeliverableTool {
                     .eas_web_capable_assets(Some(org_id), freshness_cutoff)
                     .await;
             }
-            // 方案 A (设计 2026-06-30-eas-domain-port-delegation): EAS host-aware
-            // alias exclusion — drop assets whose resolved IP is already an
-            // in-scope IP target so the submit preview matches the stage-close
-            // gate (org_gate) and the read-only precheck. Orphan domains stay in
-            // the axis but only LIVENESS applies.
-            if stage == StageKind::ExternalAttackSurface && !in_scope_assets.is_empty() {
-                let delegated: std::collections::HashSet<String> = repo
-                    .eas_port_delegated_assets(Some(org_id))
-                    .await
-                    .into_iter()
-                    .collect();
-                if !delegated.is_empty() {
-                    in_scope_assets.retain(|asset| !delegated.contains(asset));
-                    typed_assets.retain(|(asset, _)| !delegated.contains(asset));
-                }
-            }
         }
+        let eas_origin_barrier = if stage == StageKind::ExternalAttackSurface {
+            let organization_id = org_id.ok_or_else(|| {
+                "external_attack_surface submit preview requires the active bound organization"
+                    .to_string()
+            })?;
+            let since = freshness_cutoff.ok_or_else(|| {
+                "external_attack_surface submit preview requires current stage_started_at for exact Web Origins"
+                    .to_string()
+            })?;
+            let required = repo
+                .eas_required_web_origins(organization_id, since, current_wave_target_ids.clone())
+                .await
+                .map_err(|error| {
+                    format!(
+                        "external_attack_surface exact-origin denominator query failed: {error}"
+                    )
+                })?;
+            let completed = completed_from_guarded_outcomes(&outcome_rows, &facts);
+            Some((required, completed))
+        } else {
+            None
+        };
         // Always apply the stage projection, even without org/session/cutoff. For
         // Enumeration an empty row set deliberately clears legacy/business facts.
         apply_technique_outcome_rows(stage, &mut facts, &outcome_rows);
         // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）。
-        let builder = GateContextBuilder::new()
+        let mut builder = GateContextBuilder::new()
             .typed_assets(typed_assets)
             .web_capable_assets(web_capable_assets)
             .not_applicable_coverage(not_applicable_coverage)
             .extend_evidence_facts(facts)
             .extend_source_queries(source_queries)
             .expected_techniques(expected_techniques);
+        if let Some((required, completed)) = eas_origin_barrier {
+            builder = builder.eas_web_origin_barrier(required, completed);
+        }
         let context = if authoritative_coverage_axis {
             builder.authoritative_in_scope_assets(Some(in_scope_assets))
         } else {
@@ -1924,6 +1988,23 @@ mod tests {
         async fn evidence_facts(&self, _session_id: &str) -> Vec<EvidenceFact> {
             self.facts.clone()
         }
+        async fn in_scope_assets(&self, _org: Option<uuid::Uuid>) -> Vec<String> {
+            let mut assets = self
+                .facts
+                .iter()
+                .map(|fact| fact.asset.clone())
+                .collect::<Vec<_>>();
+            assets.sort();
+            assets.dedup();
+            assets
+        }
+        async fn in_scope_typed_assets(&self, org: Option<uuid::Uuid>) -> Vec<(String, String)> {
+            self.in_scope_assets(org)
+                .await
+                .into_iter()
+                .map(|asset| (asset, "domain".to_string()))
+                .collect()
+        }
         async fn source_query_facts(
             &self,
             _org_id: uuid::Uuid,
@@ -2216,16 +2297,36 @@ mod tests {
                 outcome: EvidenceOutcome::Found,
                 evidence_id: 100,
             }],
-            source_queries: vec![SourceQueryFact {
-                source: "dig".into(),
-                query: "dns_resolve".into(),
-                target: "pingan.com".into(),
-                technique: Some("GOLISH-INTEL-DNS".into()),
-                status: "found".into(),
-                evidence_ids: vec![100],
-            }],
+            source_queries: vec![
+                SourceQueryFact {
+                    source: "dig".into(),
+                    query: "dns_resolve".into(),
+                    target: "pingan.com".into(),
+                    technique: Some("GOLISH-INTEL-DNS".into()),
+                    status: "found".into(),
+                    evidence_ids: vec![100],
+                },
+                SourceQueryFact {
+                    source: "test".into(),
+                    query: "certificate_transparency".into(),
+                    target: "pingan.com".into(),
+                    technique: Some("GOLISH-INTEL-CT".into()),
+                    status: "blocked".into(),
+                    evidence_ids: vec![],
+                },
+                SourceQueryFact {
+                    source: "test".into(),
+                    query: "subdomain_enumeration".into(),
+                    target: "pingan.com".into(),
+                    technique: Some("GOLISH-INTEL-SUBDOMAIN".into()),
+                    status: "blocked".into(),
+                    evidence_ids: vec![],
+                },
+            ],
         };
-        let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
+        let org_id = uuid::Uuid::new_v4();
+        let org_key = format!("organization:{org_id}");
+        let org_src = Arc::new(RwLock::new(Some(org_id)));
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_evidence_repo(Arc::new(ledger))
             .with_session_id("pentest-chat-1")
@@ -2252,7 +2353,13 @@ mod tests {
                   "status": "found", "evidence_refs": [100] },
                 blocked("GOLISH-INTEL-WHOIS"), blocked("GOLISH-INTEL-ASN"),
                 blocked("GOLISH-INTEL-CT"), blocked("GOLISH-INTEL-SUBDOMAIN"),
-                blocked("GOLISH-INTEL-OSINT")
+                blocked("GOLISH-INTEL-OSINT"),
+                { "asset": org_key, "technique": "GOLISH-INTEL-WHOIS", "status": "blocked",
+                  "note": "no registration source configured" },
+                { "asset": org_key, "technique": "GOLISH-INTEL-ASN", "status": "blocked",
+                  "note": "no ASN source configured" },
+                { "asset": org_key, "technique": "GOLISH-INTEL-OSINT", "status": "blocked",
+                  "note": "no OSINT source configured" }
             ],
             "skipped_checks": [],
             "required_checks_done": ["dns_resolve", "subdomain_enum_passive"]
@@ -2324,6 +2431,14 @@ mod tests {
             outcome: EvidenceOutcome::Found,
             evidence_id: 0, // sentinel: business-table truth, not a ledger row
         };
+        let org_id = uuid::Uuid::new_v4();
+        let org_key = format!("organization:{org_id}");
+        let org_found = |t: &str| EvidenceFact {
+            asset: org_key.clone(),
+            technique: t.into(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 0,
+        };
         let repo = DbTruthMock {
             existing: [100, 101].into_iter().collect(),
             db_facts: vec![
@@ -2333,6 +2448,9 @@ mod tests {
                 found("GOLISH-INTEL-CT"),
                 found("GOLISH-INTEL-SUBDOMAIN"),
                 found("GOLISH-INTEL-OSINT"),
+                org_found("GOLISH-INTEL-WHOIS"),
+                org_found("GOLISH-INTEL-ASN"),
+                org_found("GOLISH-INTEL-OSINT"),
             ],
             assets: vec!["moresec.cn".into()],
             source_queries: vec![
@@ -2354,7 +2472,7 @@ mod tests {
                 },
             ],
         };
-        let org_src = Arc::new(RwLock::new(Some(uuid::Uuid::new_v4())));
+        let org_src = Arc::new(RwLock::new(Some(org_id)));
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_evidence_repo(Arc::new(repo))
             .with_session_id("pentest-chat-1")
@@ -2383,6 +2501,119 @@ mod tests {
             out["status"].as_str(),
             Some("accepted"),
             "ASN/CT/OSINT must be credited from DB business-table truth, not rejected as never-attempted: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn target_intel_organization_only_preview_matches_org_gate_context() {
+        use golish_agent_kit::harness::EvidenceOutcome;
+
+        let org_id = uuid::Uuid::from_u128(7);
+        let org_key = format!("organization:{org_id}");
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::TargetIntel);
+
+        let found = |technique: &str| EvidenceFact {
+            asset: org_key.clone(),
+            technique: technique.to_string(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 0,
+        };
+        let repo = DbTruthMock {
+            existing: [100, 101].into_iter().collect(),
+            db_facts: vec![
+                found("GOLISH-INTEL-WHOIS"),
+                found("GOLISH-INTEL-ASN"),
+                found("GOLISH-INTEL-OSINT"),
+            ],
+            assets: Vec::new(),
+            source_queries: vec![
+                SourceQueryFact {
+                    source: "provider_status".into(),
+                    query: "recon_map_assets".into(),
+                    target: String::new(),
+                    technique: None,
+                    status: "found".into(),
+                    evidence_ids: vec![100],
+                },
+                SourceQueryFact {
+                    source: "rdap".into(),
+                    query: "lookup_whois".into(),
+                    target: String::new(),
+                    technique: Some("GOLISH-INTEL-WHOIS".into()),
+                    status: "found".into(),
+                    evidence_ids: vec![101],
+                },
+            ],
+        };
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(repo))
+            .with_session_id("pentest-chat-org-only")
+            .with_org_id_source(Arc::new(RwLock::new(Some(org_id))));
+
+        let context = tool
+            .gate_context(StageKind::TargetIntel, true)
+            .await
+            .expect("organization-only Target Intel preview context");
+
+        assert_eq!(context.in_scope_assets, Some(vec![org_key.clone()]));
+        assert_eq!(
+            context
+                .asset_types
+                .as_ref()
+                .and_then(|types| types.get(&org_key))
+                .map(String::as_str),
+            Some("organization")
+        );
+        let not_applicable = context
+            .not_applicable_coverage
+            .as_ref()
+            .expect("organization-only context must carry deterministic N/A cells");
+        for technique in [
+            "GOLISH-INTEL-DNS",
+            "GOLISH-INTEL-CT",
+            "GOLISH-INTEL-SUBDOMAIN",
+        ] {
+            assert!(
+                not_applicable.contains(&(org_key.clone(), technique.to_string())),
+                "organization context must mark {technique} not_applicable"
+            );
+        }
+        for technique in [
+            "GOLISH-INTEL-WHOIS",
+            "GOLISH-INTEL-ASN",
+            "GOLISH-INTEL-OSINT",
+        ] {
+            assert!(
+                context.evidence_facts.as_ref().is_some_and(|facts| facts
+                    .iter()
+                    .any(|fact| fact.asset == org_key && fact.technique == technique)),
+                "organization context must query DB truth for {technique}"
+            );
+        }
+
+        let out = tool
+            .execute(
+                json!({
+                    "stage_id": "target_intel",
+                    "claims": [{
+                        "kind": "organization_intel",
+                        "subject": org_key,
+                        "summary": "organization context collected",
+                        "evidence_ids": [100],
+                        "technique": "GOLISH-INTEL-OSINT"
+                    }],
+                    "evidence_refs": [100, 101],
+                    "coverage": []
+                }),
+                Path::new("/tmp"),
+            )
+            .await
+            .expect("organization-only slim submit preview");
+        assert_eq!(
+            out["status"].as_str(),
+            Some("accepted"),
+            "organization-only coverage=[] must preview the same way as the final org gate: {out:?}"
         );
     }
 

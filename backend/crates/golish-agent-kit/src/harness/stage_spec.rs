@@ -324,10 +324,11 @@ mod tests {
                 r,
                 crate::harness::gate::rule_engine::GateRule::CoverageComplete {
                     require_note_for_other: true,
+                    error_is_terminal: false,
                     ..
                 }
             )),
-            "EAS gate_rules must include coverage_complete with notes required for blocked/not_applicable"
+            "EAS gate_rules must require notes for blocked/not_applicable and keep retryable errors unfinished"
         );
         assert!(
             s.gate_rules.iter().any(|r| matches!(

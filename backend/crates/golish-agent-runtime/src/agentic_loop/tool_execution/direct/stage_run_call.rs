@@ -36,7 +36,8 @@ use golish_agent_kit::harness::org_gate::{
 };
 use golish_agent_kit::harness::{
     allowed_tool_names, capabilities_for_stage, evaluate_org_stage_gate, load_embedded_stage_spec,
-    stage_methodology_md, HarnessRecoveryActions, OrgVerdict, StageDeliverable, StageKind,
+    stage_methodology_md, CoverageStatus, HarnessRecoveryActions, OrgVerdict, StageDeliverable,
+    StageKind,
 };
 use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
     agent_run_from_state_blob, state_blob_with_agent_run, state_blob_without_agent_run,
@@ -412,6 +413,7 @@ fn compact_snapshot_unfinished_cell_keys(
 
 async fn load_enumeration_worklist_progress(
     repo: &dyn golish_agent_kit::db_traits::DbRepoProvider,
+    operation_id: Option<uuid::Uuid>,
     organization_id: uuid::Uuid,
     stage: StageKind,
     session_id: &str,
@@ -422,7 +424,8 @@ async fn load_enumeration_worklist_progress(
         return Ok(None);
     }
     let snapshot = repo
-        .stage_asset_coverage(
+        .stage_asset_coverage_for_operation(
+            operation_id,
             organization_id,
             stage.as_str(),
             Some(session_id),
@@ -432,6 +435,249 @@ async fn load_enumeration_worklist_progress(
         )
         .await?;
     Ok(parse_enumeration_worklist_progress(stage, &snapshot))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GateTerminalOutcome {
+    asset: String,
+    technique: String,
+    outcome: &'static str,
+    note: String,
+    evidence_ids: Vec<i64>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct GateTerminalMaterializationSummary {
+    submitted: usize,
+    applied: usize,
+    producer_terminal_won: usize,
+}
+
+/// Narrow seam for final-gate terminal writes. Keeping this smaller than the
+/// full DB repository makes the fail-closed snapshot/write behavior directly
+/// testable without a broad runtime repository double.
+#[async_trait::async_trait]
+trait GateTerminalMaterializationStore: Sync {
+    #[allow(clippy::too_many_arguments)]
+    async fn terminal_materialization_snapshot(
+        &self,
+        organization_id: uuid::Uuid,
+        stage: &str,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
+    ) -> anyhow::Result<Value>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn terminal_materialization_upsert(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+        asset: &str,
+        technique: &str,
+        outcome: &str,
+        source: Option<&str>,
+        query: Option<&str>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<bool>;
+}
+
+#[async_trait::async_trait]
+impl<T> GateTerminalMaterializationStore for T
+where
+    T: golish_agent_kit::db_traits::DbRepoProvider + Sync + ?Sized,
+{
+    async fn terminal_materialization_snapshot(
+        &self,
+        organization_id: uuid::Uuid,
+        stage: &str,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
+    ) -> anyhow::Result<Value> {
+        self.stage_asset_coverage(
+            organization_id,
+            stage,
+            session_id,
+            stage_started_at,
+            current_wave_target_ids,
+            current_wave_asset_values,
+        )
+        .await
+    }
+
+    async fn terminal_materialization_upsert(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+        asset: &str,
+        technique: &str,
+        outcome: &str,
+        source: Option<&str>,
+        query: Option<&str>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<bool> {
+        self.upsert_terminal_technique_outcome_if_unfinished(
+            organization_id,
+            run_id,
+            asset,
+            technique,
+            outcome,
+            source,
+            query,
+            evidence_ids,
+        )
+        .await
+    }
+}
+
+fn gate_terminal_outcomes_to_materialize(
+    stage: StageKind,
+    deliverable: &StageDeliverable,
+    snapshot: &Value,
+) -> Vec<GateTerminalOutcome> {
+    if !matches!(
+        stage,
+        StageKind::TargetIntel | StageKind::ExternalAttackSurface
+    ) {
+        return Vec::new();
+    }
+    let Some(assets) = snapshot.get("assets").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut seen = BTreeSet::new();
+    let mut outcomes = Vec::new();
+    for submitted in &deliverable.coverage {
+        let outcome = match submitted.status {
+            CoverageStatus::Blocked => "blocked",
+            CoverageStatus::NotApplicable => "not_applicable",
+            CoverageStatus::Found | CoverageStatus::CheckedEmpty => continue,
+        };
+        let note = submitted.note.as_deref().map(str::trim).unwrap_or("");
+        if note.is_empty() {
+            continue;
+        }
+        // Target Intel intentionally has one authoritative organization-context
+        // row (WHOIS/ASN/OSINT) in addition to executable target rows. Exact
+        // snapshot membership makes that row safe to materialize; it remains
+        // metadata coverage and never becomes a scan target.
+        let Some(asset) = assets.iter().find(|asset| {
+            asset.get("value").and_then(Value::as_str) == Some(submitted.asset.as_str())
+        }) else {
+            continue;
+        };
+        let unfinished = asset
+            .get("coverage")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|cell| {
+                cell.get("technique").and_then(Value::as_str) == Some(submitted.technique.as_str())
+                    && matches!(
+                        cell.get("state").and_then(Value::as_str),
+                        None | Some("pending" | "error" | "partial")
+                    )
+            });
+        if !unfinished || !seen.insert((submitted.asset.clone(), submitted.technique.clone())) {
+            continue;
+        }
+        outcomes.push(GateTerminalOutcome {
+            asset: submitted.asset.clone(),
+            technique: submitted.technique.clone(),
+            outcome,
+            note: note.to_string(),
+            evidence_ids: submitted
+                .evidence_refs
+                .iter()
+                .map(|evidence_id| evidence_id.as_i64())
+                .collect(),
+        });
+    }
+    outcomes
+}
+
+async fn materialize_passed_gate_terminal_outcomes<S>(
+    repo: &S,
+    organization_id: uuid::Uuid,
+    session_id: &str,
+    stage: StageKind,
+    stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    current_wave: Option<&StageAssetWaveView>,
+    deliverable: &StageDeliverable,
+) -> Result<GateTerminalMaterializationSummary>
+where
+    S: GateTerminalMaterializationStore + ?Sized,
+{
+    if !matches!(
+        stage,
+        StageKind::TargetIntel | StageKind::ExternalAttackSurface
+    ) {
+        return Ok(GateTerminalMaterializationSummary::default());
+    }
+    let snapshot = repo
+        .terminal_materialization_snapshot(
+            organization_id,
+            stage.as_str(),
+            Some(session_id),
+            stage_started_at,
+            current_wave.map(|wave| wave.target_ids.clone()),
+            current_wave.map(|wave| wave.asset_values.clone()),
+        )
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("final gate terminal coverage snapshot could not be re-read: {error}")
+        })?;
+    let outcomes = gate_terminal_outcomes_to_materialize(stage, deliverable, &snapshot);
+    let submitted = outcomes.len();
+    let mut applied = 0usize;
+    let mut producer_terminal_won = 0usize;
+    for outcome in outcomes {
+        let changed = repo
+            .terminal_materialization_upsert(
+                organization_id,
+                session_id,
+                &outcome.asset,
+                &outcome.technique,
+                outcome.outcome,
+                Some("submit_stage_deliverable"),
+                Some(&outcome.note),
+                &outcome.evidence_ids,
+            )
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "final gate terminal coverage materialization failed for {} x {}: {error}",
+                    outcome.asset,
+                    outcome.technique
+                )
+            })?;
+        if changed {
+            applied += 1;
+        } else {
+            // The conditional DB upsert returns false only when an already-
+            // terminal producer/gate row won the snapshot-to-write race. That is
+            // successful closure and must never be overwritten.
+            producer_terminal_won += 1;
+        }
+    }
+    if submitted > 0 {
+        tracing::info!(
+            target: "harness::stage_run",
+            stage = %stage.as_str(),
+            org_id = %organization_id,
+            submitted,
+            applied,
+            producer_terminal_won,
+            "materialized final-gate terminal coverage without downgrading producer truth"
+        );
+    }
+    Ok(GateTerminalMaterializationSummary {
+        submitted,
+        applied,
+        producer_terminal_won,
+    })
 }
 /// The stage worker needs the operator's narrowing constraints (for example,
 /// known-unreachable exact origins that must not receive producer calls), but a
@@ -851,10 +1097,35 @@ async fn resume_skip_passed_at(
 ) -> Option<chrono::DateTime<chrono::Utc>> {
     let tracker = ctx.events.db_tracker?;
     let org_id = uuid::Uuid::parse_str(&unit.id).ok()?;
-    let passed_at = tracker
-        .recent_org_stage_completion(org_id, stage.as_str())
-        .await?;
+    let passed_at = if let Some(operation_id) = stage_run_operation_id(ctx) {
+        let expected_run_id = operation_id.to_string();
+        tracker
+            .repo()?
+            .org_stage_completions_get_with_run_id(stage.as_str(), &[org_id])
+            .await
+            .ok()?
+            .into_iter()
+            .find_map(|(row_org_id, passed_at, stage_run_id)| {
+                (row_org_id == org_id
+                    && completion_belongs_to_operation(
+                        stage_run_id.as_deref(),
+                        Some(expected_run_id.as_str()),
+                    ))
+                .then_some(passed_at)
+            })?
+    } else {
+        tracker
+            .recent_org_stage_completion(org_id, stage.as_str())
+            .await?
+    };
     resume_skip_is_allowed(passed_at, chrono::Utc::now(), not_before).then_some(passed_at)
+}
+
+fn completion_belongs_to_operation(
+    row_stage_run_id: Option<&str>,
+    expected_stage_run_id: Option<&str>,
+) -> bool {
+    expected_stage_run_id.is_none_or(|expected| row_stage_run_id == Some(expected))
 }
 
 fn resume_skip_is_allowed(
@@ -1174,34 +1445,38 @@ async fn queue_global_delta_asset_batches(
     units: &[OrgUnit],
     completed_wave_by_org: &HashMap<String, uuid::Uuid>,
 ) -> std::result::Result<Vec<QueuedStageAssetBatch>, String> {
-    let Some(tracker) = ctx.events.db_tracker else {
-        return Ok(Vec::new());
-    };
-    let Some(repo) = tracker.repo() else {
-        return Ok(Vec::new());
-    };
-    let Some(operation_id) = stage_run_operation_id(ctx) else {
-        return Ok(Vec::new());
-    };
+    let tracker = ctx
+        .events
+        .db_tracker
+        .ok_or_else(|| "asset-wave close barrier requires DB tracking".to_string())?;
+    let repo = tracker
+        .repo()
+        .ok_or_else(|| "asset-wave close barrier requires a DB repository".to_string())?;
+    let operation_id = stage_run_operation_id(ctx)
+        .ok_or_else(|| "asset-wave close barrier requires an operation id".to_string())?;
+    let completion_run_id = operation_id.to_string();
 
     let mut queued = Vec::new();
     for unit in units {
-        let organization_id = match uuid::Uuid::parse_str(&unit.id) {
-            Ok(id) => id,
-            Err(_) => continue,
-        };
+        let organization_id = uuid::Uuid::parse_str(&unit.id).map_err(|error| {
+            format!(
+                "asset-wave close barrier received invalid organization id {}: {error}",
+                unit.id
+            )
+        })?;
         let next = repo
-            .stage_asset_wave_create_next(
+            .stage_asset_wave_create_next_or_seal_completion(
                 operation_id,
                 organization_id,
                 stage.as_str(),
                 completed_wave_by_org.get(&unit.id).copied(),
                 MAX_STAGE_ASSET_WAVE_ASSETS,
+                Some(&completion_run_id),
             )
             .await
             .map_err(|error| {
                 format!(
-                    "supplemental asset wave queue failed for {} ({}): {error}",
+                    "supplemental asset wave queue/final completion seal failed for {} ({}): {error}",
                     unit.name, unit.id
                 )
             })?;
@@ -1213,6 +1488,14 @@ async fn queue_global_delta_asset_batches(
                 asset_count: next.asset_values.len(),
                 asset_values: next.asset_values,
             });
+        } else {
+            tracing::info!(
+                target: "harness::stage_run",
+                stage = %stage.as_str(),
+                org_id = %unit.id,
+                operation_id = %operation_id,
+                "atomically sealed wave-aware org completion after finding no unassigned targets"
+            );
         }
     }
     Ok(queued)
@@ -1641,7 +1924,10 @@ fn submit_repair_mode_for_retry(
         {
             Some(carried)
         }
-        (Some(mode), _) => Some(mode),
+        (Some(mode), Some(carried)) => {
+            Some(golish_sub_agents::retain_eas_web_repair_targets_for_same_gap(mode, &carried))
+        }
+        (Some(mode), None) => Some(mode),
         (None, Some(carried)) => Some(carried),
         (None, None) => submit_coverage_gap_repair_mode_from_reasons(reasons),
     }
@@ -2000,6 +2286,7 @@ where
                 (Some(repo), Some(organization_id)) => {
                     match load_enumeration_worklist_progress(
                         repo,
+                        stage_run_operation_id(ctx),
                         organization_id,
                         stage,
                         ctx.events.session_id.unwrap_or(""),
@@ -2185,6 +2472,7 @@ where
                         let session = ctx.events.session_id.unwrap_or("");
                         let gate = evaluate_org_stage_gate(
                             repo,
+                            stage_run_operation_id(ctx),
                             organization_id,
                             session,
                             stage,
@@ -2227,6 +2515,7 @@ where
                     (Some(repo), Some(organization_id)) => {
                         load_enumeration_worklist_progress(
                             repo,
+                            stage_run_operation_id(ctx),
                             organization_id,
                             stage,
                             ctx.events.session_id.unwrap_or(""),
@@ -2317,6 +2606,53 @@ where
             let max_attempts = if from_gate { MAX_ORG_GATE_ATTEMPTS } else { 1 };
             match next_org_action(&verdict, attempt, max_attempts) {
                 OrgAttemptOutcome::Passed => {
+                    if from_gate {
+                        if let (Some(repo), Some(organization_id), Some(deliverable)) =
+                            (repo, organization_id, org_deliverable.as_ref())
+                        {
+                            if let Err(error) = materialize_passed_gate_terminal_outcomes(
+                                repo,
+                                organization_id,
+                                ctx.events.session_id.unwrap_or(""),
+                                stage,
+                                worklist_started_at,
+                                current_wave.as_ref(),
+                                deliverable,
+                            )
+                            .await
+                            {
+                                let reason = format!(
+                                    "{} gate passed, but durable terminal coverage could not be finalized: {error}",
+                                    stage.as_str()
+                                );
+                                tracing::warn!(
+                                    target: "harness::stage_run",
+                                    stage = %stage.as_str(),
+                                    org_id = %organization_id,
+                                    error = %error,
+                                    "refusing org PASS after terminal coverage materialization failure"
+                                );
+                                emit_org_progress(
+                                    ctx,
+                                    stage,
+                                    unit,
+                                    &org_request_id,
+                                    "blocked",
+                                    Some(reason.clone()),
+                                    0,
+                                    &stage_label,
+                                    &role_label,
+                                    &coverage_axis,
+                                );
+                                gaps.push(json!({
+                                    "org_id": unit.id,
+                                    "org_name": unit.name,
+                                    "detail": reason
+                                }));
+                                break;
+                            }
+                        }
+                    }
                     clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
                     let mut passed_note = None;
                     if let Some(wave) = current_wave.take() {
@@ -2348,19 +2684,25 @@ where
                         ));
                     }
                     passed_count += 1;
-                    // Record this org's pass into the resume ledger so a later run
-                    // can skip it (upsert latest). Fail-open: no db_tracker /
-                    // unparseable id → just don't record (re-runs won't skip).
-                    if let (Some(tracker), Ok(org_id)) =
-                        (ctx.events.db_tracker, uuid::Uuid::parse_str(&unit.id))
-                    {
-                        tracker
-                            .record_org_stage_completion(
-                                org_id,
-                                stage.as_str(),
-                                Some(&org_request_id),
-                            )
-                            .await;
+                    // Wave-aware stages publish their completion only inside the
+                    // atomic final-candidate barrier below. Writing it here would
+                    // reopen the SELECT-empty -> pass-token race. Non-wave stages
+                    // keep the legacy resume-ledger behavior.
+                    if !spec.asset_wave_barrier {
+                        if let (Some(tracker), Ok(org_id)) =
+                            (ctx.events.db_tracker, uuid::Uuid::parse_str(&unit.id))
+                        {
+                            let completion_run_id = stage_run_operation_id(ctx)
+                                .map(|id| id.to_string())
+                                .unwrap_or_else(|| org_request_id.clone());
+                            tracker
+                                .record_org_stage_completion(
+                                    org_id,
+                                    stage.as_str(),
+                                    Some(&completion_run_id),
+                                )
+                                .await;
+                        }
                     }
                     emit_org_progress(
                         ctx,
@@ -2532,18 +2874,25 @@ where
                     None
                 } else {
                     let now = chrono::Utc::now();
+                    let expected_run_id = stage_run_operation_id(ctx).map(|id| id.to_string());
                     let fresh: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>)> = repo
-                        .org_stage_completions_get(stage.as_str(), &org_ids)
+                        .org_stage_completions_get_with_run_id(stage.as_str(), &org_ids)
                         .await
                         .unwrap_or_default()
                         .into_iter()
-                        .filter(|(_, at)| {
-                            completion_is_fresh_for_stage(
-                                *at,
-                                now,
-                                STAGE_COMPLETION_TTL_SECS,
-                                resume_skip_not_before,
-                            )
+                        .filter_map(|(organization_id, passed_at, row_run_id)| {
+                            let same_operation = completion_belongs_to_operation(
+                                row_run_id.as_deref(),
+                                expected_run_id.as_deref(),
+                            );
+                            (same_operation
+                                && completion_is_fresh_for_stage(
+                                    passed_at,
+                                    now,
+                                    STAGE_COMPLETION_TTL_SECS,
+                                    resume_skip_not_before,
+                                ))
+                            .then_some((organization_id, passed_at))
                         })
                         .collect();
                     let have: std::collections::HashSet<uuid::Uuid> =
@@ -2689,6 +3038,254 @@ mod tests {
     use super::*;
     use golish_agent_kit::harness::org_gate::completion_is_fresh;
     use golish_agent_kit::harness::CoverageGapAction;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    #[derive(Debug)]
+    enum FakeTerminalWrite {
+        ProducerTerminalWon,
+        Failed(&'static str),
+    }
+
+    struct FakeTerminalMaterializationStore {
+        snapshot: Value,
+        snapshot_error: Option<&'static str>,
+        writes: Mutex<VecDeque<FakeTerminalWrite>>,
+    }
+
+    #[async_trait::async_trait]
+    impl GateTerminalMaterializationStore for FakeTerminalMaterializationStore {
+        async fn terminal_materialization_snapshot(
+            &self,
+            _organization_id: uuid::Uuid,
+            _stage: &str,
+            _session_id: Option<&str>,
+            _stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+            _current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+            _current_wave_asset_values: Option<Vec<String>>,
+        ) -> anyhow::Result<Value> {
+            match self.snapshot_error {
+                Some(message) => Err(anyhow::anyhow!(message)),
+                None => Ok(self.snapshot.clone()),
+            }
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        async fn terminal_materialization_upsert(
+            &self,
+            _organization_id: uuid::Uuid,
+            _run_id: &str,
+            _asset: &str,
+            _technique: &str,
+            _outcome: &str,
+            _source: Option<&str>,
+            _query: Option<&str>,
+            _evidence_ids: &[i64],
+        ) -> anyhow::Result<bool> {
+            match self.writes.lock().unwrap().pop_front() {
+                Some(FakeTerminalWrite::ProducerTerminalWon) => Ok(false),
+                Some(FakeTerminalWrite::Failed(message)) => Err(anyhow::anyhow!(message)),
+                None => panic!("unexpected terminal materialization write"),
+            }
+        }
+    }
+
+    fn terminal_materialization_deliverable() -> StageDeliverable {
+        serde_json::from_value(json!({
+            "stage_id": "target_intel",
+            "stage_run_id": "11111111-1111-1111-1111-111111111111",
+            "claims": [],
+            "evidence_refs": [],
+            "findings": [],
+            "coverage": [{
+                "asset": "moresec.cn",
+                "technique": "GOLISH-INTEL-ASN",
+                "status": "blocked",
+                "note": "No configured ASN-capable provider"
+            }],
+            "skipped_checks": [],
+            "required_checks_done": []
+        }))
+        .unwrap()
+    }
+
+    fn terminal_materialization_snapshot() -> Value {
+        json!({
+            "stage": "target_intel",
+            "assets": [{
+                "value": "moresec.cn",
+                "target_type": "domain",
+                "coverage": [{
+                    "technique": "GOLISH-INTEL-ASN",
+                    "state": "pending"
+                }]
+            }]
+        })
+    }
+
+    #[tokio::test]
+    async fn passed_gate_terminal_materialization_fails_closed_on_snapshot_error() {
+        let store = FakeTerminalMaterializationStore {
+            snapshot: Value::Null,
+            snapshot_error: Some("snapshot unavailable"),
+            writes: Mutex::new(VecDeque::new()),
+        };
+
+        let error = materialize_passed_gate_terminal_outcomes(
+            &store,
+            uuid::Uuid::from_u128(1),
+            "run-current",
+            StageKind::TargetIntel,
+            None,
+            None,
+            &terminal_materialization_deliverable(),
+        )
+        .await
+        .expect_err("snapshot failure must block the org pass");
+
+        assert!(error.to_string().contains("snapshot unavailable"));
+    }
+
+    #[tokio::test]
+    async fn passed_gate_terminal_materialization_fails_closed_on_upsert_error() {
+        let store = FakeTerminalMaterializationStore {
+            snapshot: terminal_materialization_snapshot(),
+            snapshot_error: None,
+            writes: Mutex::new(VecDeque::from([FakeTerminalWrite::Failed(
+                "write unavailable",
+            )])),
+        };
+
+        let error = materialize_passed_gate_terminal_outcomes(
+            &store,
+            uuid::Uuid::from_u128(1),
+            "run-current",
+            StageKind::TargetIntel,
+            None,
+            None,
+            &terminal_materialization_deliverable(),
+        )
+        .await
+        .expect_err("upsert failure must block the org pass");
+
+        assert!(error.to_string().contains("write unavailable"));
+    }
+
+    #[tokio::test]
+    async fn producer_terminal_race_counts_as_successful_materialization() {
+        let store = FakeTerminalMaterializationStore {
+            snapshot: terminal_materialization_snapshot(),
+            snapshot_error: None,
+            writes: Mutex::new(VecDeque::from([FakeTerminalWrite::ProducerTerminalWon])),
+        };
+
+        let summary = materialize_passed_gate_terminal_outcomes(
+            &store,
+            uuid::Uuid::from_u128(1),
+            "run-current",
+            StageKind::TargetIntel,
+            None,
+            None,
+            &terminal_materialization_deliverable(),
+        )
+        .await
+        .expect("producer-owned terminal truth must win without blocking");
+
+        assert_eq!(summary.submitted, 1);
+        assert_eq!(summary.applied, 0);
+        assert_eq!(summary.producer_terminal_won, 1);
+    }
+
+    #[test]
+    fn passed_gate_materializes_only_authoritative_blocked_and_not_applicable_cells() {
+        let deliverable: StageDeliverable = serde_json::from_value(json!({
+            "stage_id": "target_intel",
+            "stage_run_id": "11111111-1111-1111-1111-111111111111",
+            "claims": [],
+            "evidence_refs": [],
+            "findings": [],
+            "coverage": [
+                {
+                    "asset": "moresec.cn",
+                    "technique": "GOLISH-INTEL-ASN",
+                    "status": "blocked",
+                    "note": "No configured ASN-capable provider"
+                },
+                {
+                    "asset": "moresec.cn",
+                    "technique": "GOLISH-INTEL-CT",
+                    "status": "not_applicable",
+                    "note": "No CT capability in the selected provider"
+                },
+                {
+                    "asset": "moresec.cn",
+                    "technique": "GOLISH-INTEL-OSINT",
+                    "status": "checked_empty",
+                    "evidence_refs": [4]
+                },
+                {
+                    "asset": "moresec.cn",
+                    "technique": "GOLISH-INTEL-DNS",
+                    "status": "blocked",
+                    "note": "must not replace producer truth"
+                },
+                {
+                    "asset": "默安科技",
+                    "technique": "GOLISH-INTEL-ASN",
+                    "status": "blocked",
+                    "note": "organization pseudo-axis is not a target"
+                },
+                {
+                    "asset": "www.moresec.cn",
+                    "technique": "GOLISH-INTEL-ASN",
+                    "status": "blocked",
+                    "note": "foreign asset"
+                }
+            ],
+            "skipped_checks": [],
+            "required_checks_done": []
+        }))
+        .unwrap();
+        let snapshot = json!({
+            "stage": "target_intel",
+            "assets": [
+                {
+                    "value": "moresec.cn",
+                    "target_type": "domain",
+                    "coverage": [
+                        {"technique": "GOLISH-INTEL-ASN", "state": "pending"},
+                        {"technique": "GOLISH-INTEL-CT", "state": "error"},
+                        {"technique": "GOLISH-INTEL-OSINT", "state": "pending"},
+                        {"technique": "GOLISH-INTEL-DNS", "state": "found"}
+                    ]
+                },
+                {
+                    "value": "默安科技",
+                    "target_type": "organization",
+                    "coverage": [{"technique": "GOLISH-INTEL-ASN", "state": "pending"}]
+                }
+            ]
+        });
+
+        let outcomes =
+            gate_terminal_outcomes_to_materialize(StageKind::TargetIntel, &deliverable, &snapshot);
+
+        assert_eq!(outcomes.len(), 3);
+        assert_eq!(outcomes[0].asset, "moresec.cn");
+        assert_eq!(outcomes[0].technique, "GOLISH-INTEL-ASN");
+        assert_eq!(outcomes[0].outcome, "blocked");
+        assert_eq!(outcomes[1].technique, "GOLISH-INTEL-CT");
+        assert_eq!(outcomes[1].outcome, "not_applicable");
+        assert_eq!(outcomes[2].asset, "默安科技");
+        assert_eq!(outcomes[2].technique, "GOLISH-INTEL-ASN");
+        assert_eq!(outcomes[2].outcome, "blocked");
+        assert!(gate_terminal_outcomes_to_materialize(
+            StageKind::Enumeration,
+            &deliverable,
+            &snapshot
+        )
+        .is_empty());
+    }
 
     #[test]
     fn parse_org_units_reads_id_name_ownership() {
@@ -2870,7 +3467,7 @@ mod tests {
         assert!(obj.contains("Do not run broad `nmap -sV -iL`"));
         assert!(obj.contains("confirmed open host:port groups"));
         assert!(obj.contains("visible wait/check loop"));
-        assert!(obj.contains("stdout/stderr is"));
+        assert!(obj.contains("inspect its output and newly landed evidence"));
         assert!(obj.contains("kill_job"));
     }
 
@@ -3121,6 +3718,23 @@ mod tests {
             now,
             None
         ));
+    }
+
+    #[test]
+    fn completion_rows_are_bound_to_the_current_operation() {
+        assert!(completion_belongs_to_operation(
+            Some("operation-b"),
+            Some("operation-b")
+        ));
+        assert!(
+            !completion_belongs_to_operation(Some("operation-a"), Some("operation-b")),
+            "a concurrent operation must not supply this operation's resume/pass token"
+        );
+        assert!(
+            !completion_belongs_to_operation(None, Some("operation-b")),
+            "legacy unbound completion rows fail closed for an operation-bound run"
+        );
+        assert!(completion_belongs_to_operation(Some("legacy-row"), None));
     }
 
     #[test]
@@ -3433,6 +4047,7 @@ mod tests {
                 suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["js_extract_apis".to_string()],
             }],
+            eas_web_repair_targets: None,
             allowed_tools_override: Vec::new(),
             forbidden_tools: Vec::new(),
             directive_message: None,
@@ -3474,6 +4089,7 @@ mod tests {
                 suggested_capabilities: Vec::new(),
                 suggested_tools: vec!["route_probe_paths".to_string()],
             }],
+            eas_web_repair_targets: None,
             allowed_tools_override: Vec::new(),
             forbidden_tools: Vec::new(),
             directive_message: None,
@@ -3498,6 +4114,124 @@ mod tests {
             selected.coverage_gap_actions[0].suggested_tools,
             vec!["route_probe_paths".to_string()]
         );
+    }
+
+    #[test]
+    fn worklist_refresh_checkpoint_survives_stage_retry_mode_merge() {
+        let carried = SubmitRepairMode {
+            kind: golish_sub_agents::SubmitRepairKind::CoverageGap,
+            reason: "exact WEB origins remain".to_string(),
+            missing_required_checks: Vec::new(),
+            coverage_gap_actions: vec![golish_sub_agents::CoverageGapAction {
+                asset: "app.example.com".to_string(),
+                technique: "GOLISH-EAS-WEB-FINGERPRINT".to_string(),
+                reason: "missing_exact_origin".to_string(),
+                suggested_capabilities: Vec::new(),
+                suggested_tools: vec!["eas_fingerprint_web_stack".to_string()],
+            }],
+            eas_web_repair_targets: Some(vec![golish_sub_agents::EasWebRepairTarget {
+                target_id: "target-app".to_string(),
+                target_url: "https://app.example.com:443".to_string(),
+            }]),
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
+        };
+        let recovery_actions = HarnessRecoveryActions {
+            coverage_gap_actions: vec![CoverageGapAction {
+                asset: "app.example.com".to_string(),
+                technique: "GOLISH-EAS-WEB-FINGERPRINT".to_string(),
+                reason: "missing_exact_origin".to_string(),
+                suggested_capabilities: Vec::new(),
+                suggested_tools: vec!["eas_fingerprint_web_stack".to_string()],
+            }],
+            ..HarnessRecoveryActions::default()
+        };
+        let directive = stage_run_gate_repair_directive(
+            StageKind::ExternalAttackSurface,
+            None,
+            "main>stage_run:external_attack_surface>org:abc>prober".to_string(),
+            vec!["exact WEB origins remain".to_string()],
+            &recovery_actions,
+        );
+
+        let selected = submit_repair_mode_for_retry(
+            Some(&directive),
+            Some(&carried),
+            &["exact WEB origins remain".to_string()],
+        )
+        .expect("retry should keep a submit repair mode");
+
+        assert_eq!(
+            selected.eas_web_repair_targets,
+            carried.eas_web_repair_targets
+        );
+    }
+
+    #[test]
+    fn stage_retry_drops_stale_eas_web_lock_when_gate_web_actions_change() {
+        let carried = SubmitRepairMode {
+            kind: golish_sub_agents::SubmitRepairKind::CoverageGap,
+            reason: "origin A remained".to_string(),
+            missing_required_checks: Vec::new(),
+            coverage_gap_actions: vec![golish_sub_agents::CoverageGapAction {
+                asset: "https://a.example.com:443".to_string(),
+                technique: "GOLISH-EAS-WEB-FINGERPRINT".to_string(),
+                reason: "missing_exact_origin".to_string(),
+                suggested_capabilities: Vec::new(),
+                suggested_tools: vec!["eas_fingerprint_web_stack".to_string()],
+            }],
+            eas_web_repair_targets: Some(vec![golish_sub_agents::EasWebRepairTarget {
+                target_id: "target-a".to_string(),
+                target_url: "https://a.example.com:443".to_string(),
+            }]),
+            allowed_tools_override: Vec::new(),
+            forbidden_tools: Vec::new(),
+            directive_message: None,
+        };
+        let recovery_actions = HarnessRecoveryActions {
+            coverage_gap_actions: vec![CoverageGapAction {
+                asset: "https://b.example.com:443".to_string(),
+                technique: "GOLISH-EAS-WEB-FINGERPRINT".to_string(),
+                reason: "missing_exact_origin".to_string(),
+                suggested_capabilities: Vec::new(),
+                suggested_tools: vec!["eas_fingerprint_web_stack".to_string()],
+            }],
+            ..HarnessRecoveryActions::default()
+        };
+        let directive = stage_run_gate_repair_directive(
+            StageKind::ExternalAttackSurface,
+            None,
+            "main>stage_run:external_attack_surface>org:abc>prober".to_string(),
+            vec!["origin B remains".to_string()],
+            &recovery_actions,
+        );
+
+        let selected = submit_repair_mode_for_retry(
+            Some(&directive),
+            Some(&carried),
+            &["origin B remains".to_string()],
+        )
+        .expect("retry should keep a fail-closed repair mode");
+
+        assert_eq!(
+            selected.coverage_gap_actions[0].asset,
+            "https://b.example.com:443"
+        );
+        assert_eq!(selected.eas_web_repair_targets, None);
+        let blocked = selected
+            .block_result_with_args(
+                "eas_fingerprint_web_stack",
+                &serde_json::json!({"target_urls": [{
+                    "target_id": "target-a",
+                    "target_url": "https://a.example.com:443"
+                }]}),
+            )
+            .expect("a changed WEB gap must require a fresh DB worklist lock");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("stage_worklist_next"));
     }
 
     #[test]

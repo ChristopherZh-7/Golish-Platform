@@ -1,8 +1,9 @@
 //! Asset Intel service for Discover Assets engagements.
 //!
-//! Phase 1 keeps this layer provider-agnostic: the workspace asks for
-//! candidates, providers return normalized records, and only approved
-//! candidates become scope in later phases.
+//! Providers return normalized current-run observations. Enrichment callers
+//! deterministically canonicalize/dedupe those domain/IP records and hand them
+//! directly to Target landing; the transient candidate DTO remains only an
+//! adapter shape and is not a manual target-approval queue.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -52,6 +53,7 @@ mod runtime;
 mod service;
 mod template;
 mod types;
+pub(crate) use agent_intel::{authorized_domain_scope_hosts, whois_domain_scope_hosts};
 pub use agent_intel::{run_passive_intel, PassiveIntelPhase, PassiveIntelSummary};
 pub(crate) use asn::{
     collect_public_ips_for_asn_lookup, normalize_asn, parse_team_cymru_asn_response,
@@ -60,9 +62,11 @@ pub(crate) use asn::{
 };
 pub use availability::{list_provider_availability, ProviderAvailability};
 #[cfg(test)]
-pub(crate) use capability::{expand_provider_tools, provider_has_subsidiaries};
 pub(crate) use capability::{
-    provider_descriptors_from_tools, provider_id_for_tool, provider_output_is_trusted,
+    expand_provider_tools, provider_has_subsidiaries, provider_output_is_trusted,
+};
+pub(crate) use capability::{
+    provider_descriptors_from_tools, provider_id_for_tool, provider_output_has_landable_records,
     select_asset_intel_providers, select_enrichment_providers, select_subsidiary_providers,
 };
 pub(crate) use merge::{flatten_candidates, merge_candidates};

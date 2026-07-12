@@ -177,6 +177,24 @@ describe("ScopeReviewTable", () => {
     expect(screen.getByLabelText("Bulk targets")).toHaveValue("example.com\n*.example.com");
   });
 
+  it("preserves explicit type and out-of-scope state when approving unchanged rows", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    render(
+      <ScopeReviewTable
+        kind="scope_review"
+        initial={[{ value: "legacy.example.com", type: "domain", scope: "out" }]}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(onConfirm).toHaveBeenCalledWith([
+      { value: "legacy.example.com", type: "domain", scope: "out" },
+    ]);
+  });
+
   it("invokes onSkip when skipped", async () => {
     const user = userEvent.setup();
     const onSkip = vi.fn();

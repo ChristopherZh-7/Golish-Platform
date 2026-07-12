@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@/lib/api/client";
 import {
   apiEndpointsList,
+  fingerprintsList,
   jsAnalysisList,
   normalizeBackendSurfaceHierarchy,
   normalizeCapturePayload,
@@ -103,6 +104,33 @@ describe("security-analysis api normalization", () => {
         sourceMaps: true,
         riskSummary: "review",
         analyzedAt: "2026-06-30T00:00:02Z",
+      }),
+    ]);
+  });
+
+  it("normalizes legacy fingerprint evidence objects into observation arrays", async () => {
+    const evidence = {
+      source: "whatweb",
+      origin: "https://app.example.test:443",
+      technology: "React",
+    };
+    mockInvoke.mockResolvedValueOnce([
+      {
+        id: "fingerprint-1",
+        target_id: "target-1",
+        category: "technology",
+        name: "React",
+        confidence: 0.7,
+        evidence,
+        source: "whatweb",
+      },
+    ]);
+
+    await expect(fingerprintsList("target-1")).resolves.toEqual([
+      expect.objectContaining({
+        id: "fingerprint-1",
+        targetId: "target-1",
+        evidence: [evidence],
       }),
     ]);
   });

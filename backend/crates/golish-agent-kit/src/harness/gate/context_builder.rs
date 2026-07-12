@@ -25,6 +25,8 @@ pub struct GateContextBuilder {
     asset_types: HashMap<String, String>,
     web_capable_assets: HashSet<String>,
     not_applicable_coverage: HashSet<(String, String)>,
+    eas_required_web_origins: Option<HashSet<String>>,
+    eas_completed_web_origins: Option<HashSet<String>>,
     evidence_facts: Vec<EvidenceFact>,
     source_queries: Vec<SourceQueryFact>,
     expected_techniques: Option<Vec<String>>,
@@ -83,6 +85,19 @@ impl GateContextBuilder {
         self
     }
 
+    /// Activate the strict EAS exact-origin barrier. Empty sets are preserved:
+    /// they mean the authoritative DB reads succeeded with an empty denominator,
+    /// unlike `None` which means the caller did not provide this contract.
+    pub fn eas_web_origin_barrier<I, J>(mut self, required: I, completed: J) -> Self
+    where
+        I: IntoIterator<Item = String>,
+        J: IntoIterator<Item = String>,
+    {
+        self.eas_required_web_origins = Some(required.into_iter().collect());
+        self.eas_completed_web_origins = Some(completed.into_iter().collect());
+        self
+    }
+
     /// 追加 evidence facts（ledger 投影 / DB 真值 / subsidiary 投影 …）。可多次
     /// 调用合并多个来源；顺序对 gate 无影响。
     pub fn extend_evidence_facts<I>(mut self, facts: I) -> Self
@@ -120,6 +135,8 @@ impl GateContextBuilder {
                 .then_some(self.web_capable_assets),
             not_applicable_coverage: (!self.not_applicable_coverage.is_empty())
                 .then_some(self.not_applicable_coverage),
+            eas_required_web_origins: self.eas_required_web_origins,
+            eas_completed_web_origins: self.eas_completed_web_origins,
             expected_techniques: self.expected_techniques,
             evidence_facts: (!self.evidence_facts.is_empty()).then_some(self.evidence_facts),
             source_queries: (!self.source_queries.is_empty()).then_some(self.source_queries),
@@ -149,6 +166,8 @@ mod tests {
         assert_eq!(ctx.asset_types, def.asset_types);
         assert_eq!(ctx.web_capable_assets, def.web_capable_assets);
         assert_eq!(ctx.not_applicable_coverage, def.not_applicable_coverage);
+        assert_eq!(ctx.eas_required_web_origins, def.eas_required_web_origins);
+        assert_eq!(ctx.eas_completed_web_origins, def.eas_completed_web_origins);
         assert_eq!(ctx.expected_techniques, def.expected_techniques);
         assert!(ctx.evidence_facts.is_none() && def.evidence_facts.is_none());
         assert!(ctx.source_queries.is_none() && def.source_queries.is_none());
@@ -177,6 +196,8 @@ mod tests {
         assert!(ctx.asset_types.is_none());
         assert!(ctx.web_capable_assets.is_none());
         assert!(ctx.not_applicable_coverage.is_none());
+        assert!(ctx.eas_required_web_origins.is_none());
+        assert!(ctx.eas_completed_web_origins.is_none());
         assert!(ctx.evidence_facts.is_none());
         assert!(ctx.source_queries.is_none());
     }
@@ -309,6 +330,8 @@ mod tests {
             asset_types: Some(types),
             web_capable_assets: None,
             not_applicable_coverage: None,
+            eas_required_web_origins: None,
+            eas_completed_web_origins: None,
             expected_techniques: Some(vec!["GOLISH-INTEL-DNS".to_string()]),
             evidence_facts: Some(facts),
             source_queries: None,

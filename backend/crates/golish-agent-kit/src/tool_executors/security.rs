@@ -599,7 +599,8 @@ pub async fn execute_security_analysis_tool(
                 return Some(error_result(error));
             }
             let snapshot = match repo
-                .stage_asset_coverage(
+                .stage_asset_coverage_for_operation(
+                    harness_operation_id,
                     org_id,
                     stage,
                     session_id,
@@ -655,7 +656,8 @@ pub async fn execute_security_analysis_tool(
                 return Some(error_result(error));
             }
             let snapshot = match repo
-                .stage_asset_coverage(
+                .stage_asset_coverage_for_operation(
+                    harness_operation_id,
                     org_id,
                     &stage,
                     session_id,
@@ -765,7 +767,8 @@ pub async fn execute_security_analysis_tool(
                 return Some(error_result(error));
             }
             let snapshot = match repo
-                .stage_asset_coverage(
+                .stage_asset_coverage_for_operation(
+                    harness_operation_id,
                     org_id,
                     &stage,
                     session_id,
@@ -1473,17 +1476,25 @@ fn extend_unique_capabilities(out: &mut Vec<Value>, cell: &Value) {
 }
 
 const MAX_ENUMERATION_WORKLIST_ROOTS: usize = 50;
+const EAS_WEB_FINGERPRINT: &str = "GOLISH-EAS-WEB-FINGERPRINT";
 
-fn terminal_exception_preview_value() -> Value {
+fn terminal_exception_preview_value(stage: &str) -> Value {
+    let contract = if stage == "enumeration" {
+        "Model-authored Enumeration terminal exceptions are disabled. Omit terminal_exceptions or pass []; current-run producer/preflight/recovery evidence owns every terminal cell and submit coverage must be []."
+    } else {
+        "Preview only: Target Intel / EAS may close an exact authoritative pending cell as checked_empty (with exact-technique evidence), blocked, or not_applicable (with a concrete note). An EAS WEB-FINGERPRINT parent-cell exception cannot close details.missing_origins; every exact origin still needs guarded producer completion. This does not persist or authorize anything. Copy coverage_to_submit unchanged into submit_stage_deliverable.coverage."
+    };
     json!({
         "preview_only": true,
         "persisted": false,
         "provided_cells": 0,
         "accepted_cells": 0,
+        "rejected_cells": 0,
         "blocked_cells": 0,
         "not_applicable_cells": 0,
         "coverage_to_submit": [],
-        "contract": "Model-authored Enumeration terminal exceptions are disabled. Omit terminal_exceptions or pass []; any non-empty array is rejected. Current-run producer evidence owns found/empty. Current-target blocked evidence is accepted only from enum_preflight_web_origins on all four axes, route_probe_paths recovery on DIR, or browser_collect_js_api recovery on JS/JSAPI/PARAM. Non-web/rootless hosts are excluded before the exact-origin denominator is built. Submit coverage must be []."
+        "rejected_terminal_exceptions": [],
+        "contract": contract
     })
 }
 
@@ -1492,24 +1503,239 @@ fn attach_terminal_exception_preview(mut output: Value, preview: Value) -> Value
     output
 }
 
-/// Preserve the legacy wire property without letting it alter DB truth. Strict
-/// providers may serialize an omitted optional property as null; null and [] are
-/// accepted, while any non-empty array is rejected fail-closed.
+/// The ordinary EAS matrix is parent-asset keyed, but its Web fingerprint gate
+/// has a stricter exact `scheme://host:port` denominator. A parent-cell terminal
+/// exception cannot replace completion of any origin still listed here.
+fn eas_web_cell_has_missing_exact_origins(stage: &str, cell: &Value) -> bool {
+    stage == "external_attack_surface"
+        && cell.get("technique").and_then(Value::as_str) == Some(EAS_WEB_FINGERPRINT)
+        && cell
+            .get("details")
+            .and_then(|details| details.get("missing_origins"))
+            .and_then(Value::as_array)
+            .is_some_and(|origins| !origins.is_empty())
+}
+
+fn refresh_preview_asset_summary(snapshot: &mut Value) {
+    let Some(assets) = snapshot.get("assets").and_then(Value::as_array) else {
+        return;
+    };
+    let mut done_assets = 0usize;
+    let mut pending_assets = 0usize;
+    let mut blocked_assets = 0usize;
+    for asset in assets {
+        let coverage = asset
+            .get("coverage")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if coverage
+            .iter()
+            .any(|cell| cell.get("state").and_then(Value::as_str) == Some("next_wave_pending"))
+        {
+            continue;
+        }
+        if coverage.iter().any(|cell| {
+            matches!(
+                cell.get("state").and_then(Value::as_str),
+                Some("blocked" | "error")
+            )
+        }) {
+            blocked_assets += 1;
+        } else if coverage.iter().any(|cell| {
+            matches!(
+                cell.get("state").and_then(Value::as_str),
+                Some("pending" | "partial")
+            )
+        }) {
+            pending_assets += 1;
+        } else {
+            done_assets += 1;
+        }
+    }
+    if let Some(summary) = snapshot.get_mut("summary").and_then(Value::as_object_mut) {
+        summary.insert("done_assets".to_string(), json!(done_assets));
+        summary.insert("pending_assets".to_string(), json!(pending_assets));
+        summary.insert("blocked_assets".to_string(), json!(blocked_assets));
+    }
+}
+
+/// Preview honest terminal coverage against the current authoritative asset ×
+/// technique matrix. This never writes DB truth: it only lets Target Intel / EAS
+/// use the same exact terminal cells for preflight and final submission. Found is
+/// intentionally impossible here; only producers/DB truth may create it.
+/// Enumeration stays stricter and rejects all model-authored terminal cells.
 fn preview_terminal_exceptions(
     snapshot: Value,
     raw_exceptions: Option<&Value>,
 ) -> Result<(Value, Value), String> {
-    let snapshot = normalize_enumeration_snapshot(snapshot);
+    let mut snapshot = normalize_enumeration_snapshot(snapshot);
+    let stage = snapshot
+        .get("stage")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let Some(raw_exceptions) = raw_exceptions.filter(|value| !value.is_null()) else {
-        return Ok((snapshot, terminal_exception_preview_value()));
+        return Ok((snapshot, terminal_exception_preview_value(&stage)));
     };
     let entries = raw_exceptions
         .as_array()
         .ok_or_else(|| "terminal_exceptions must be an array".to_string())?;
     if entries.is_empty() {
-        return Ok((snapshot, terminal_exception_preview_value()));
+        return Ok((snapshot, terminal_exception_preview_value(&stage)));
     }
-    Err("terminal_exceptions is disabled; blocked is backend-authored by enum_preflight_web_origins or bounded route/browser recovery, and submit coverage=[]".to_string())
+    if stage == "enumeration" {
+        return Err("terminal_exceptions is disabled for Enumeration; blocked is backend-authored by enum_preflight_web_origins or bounded route/browser recovery, and submit coverage=[]".to_string());
+    }
+    if !matches!(stage.as_str(), "target_intel" | "external_attack_surface") {
+        return Err(format!(
+            "terminal_exceptions preview is supported only for target_intel and external_attack_surface, not '{stage}'"
+        ));
+    }
+
+    let assets = snapshot
+        .get_mut("assets")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "coverage snapshot has no authoritative assets array".to_string())?;
+    let mut seen = BTreeSet::new();
+    let mut coverage_to_submit = Vec::with_capacity(entries.len());
+    let mut rejected_terminal_exceptions = Vec::new();
+    let mut blocked_cells = 0usize;
+    let mut not_applicable_cells = 0usize;
+
+    for (index, entry) in entries.iter().enumerate() {
+        let object = entry
+            .as_object()
+            .ok_or_else(|| format!("terminal_exceptions[{index}] must be an object"))?;
+        let asset = object
+            .get("asset")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("terminal_exceptions[{index}].asset must be non-empty"))?;
+        let technique = object
+            .get("technique")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("terminal_exceptions[{index}].technique must be non-empty"))?;
+        let status = object
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("terminal_exceptions[{index}].status is required"))?;
+        if !matches!(status, "checked_empty" | "blocked" | "not_applicable") {
+            return Err(format!(
+                "terminal_exceptions[{index}].status '{status}' is invalid; preview accepts only checked_empty, blocked, or not_applicable (found is DB-owned)"
+            ));
+        }
+        if !seen.insert((asset.to_string(), technique.to_string())) {
+            return Err(format!(
+                "terminal_exceptions contains duplicate cell ({asset}, {technique})"
+            ));
+        }
+
+        let evidence_refs = match object.get("evidence_refs").filter(|value| !value.is_null()) {
+            None => Vec::new(),
+            Some(value) => value
+                .as_array()
+                .ok_or_else(|| {
+                    format!("terminal_exceptions[{index}].evidence_refs must be an array")
+                })?
+                .iter()
+                .map(|value| {
+                    value.as_i64().filter(|id| *id > 0).ok_or_else(|| {
+                        format!(
+                            "terminal_exceptions[{index}].evidence_refs must contain positive integer ledger ids"
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        if status == "checked_empty" && evidence_refs.is_empty() {
+            return Err(format!(
+                "terminal_exceptions[{index}] checked_empty requires exact-technique evidence_refs; checked empty is not the same as unattempted"
+            ));
+        }
+        let note = object
+            .get("note")
+            .filter(|value| !value.is_null())
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if matches!(status, "blocked" | "not_applicable") && note.is_none() {
+            return Err(format!(
+                "terminal_exceptions[{index}] status '{status}' requires a concrete non-empty note"
+            ));
+        }
+
+        let asset_row = assets
+            .iter_mut()
+            .find(|row| row.get("value").and_then(Value::as_str) == Some(asset))
+            .ok_or_else(|| {
+                format!(
+                    "terminal_exceptions[{index}] asset '{asset}' is not in the authoritative current worklist"
+                )
+            })?;
+        let cell = asset_row
+            .get_mut("coverage")
+            .and_then(Value::as_array_mut)
+            .and_then(|cells| {
+                cells.iter_mut().find(|cell| {
+                    cell.get("technique").and_then(Value::as_str) == Some(technique)
+                })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "terminal_exceptions[{index}] technique '{technique}' is not a coverage cell for '{asset}'"
+                )
+            })?;
+        let current = cell
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("pending");
+        if !matches!(current, "pending" | "error" | "partial") {
+            return Err(format!(
+                "terminal_exceptions[{index}] cell ({asset}, {technique}) is already terminal as '{current}'; omit it and keep DB truth"
+            ));
+        }
+        if eas_web_cell_has_missing_exact_origins(&stage, cell) {
+            rejected_terminal_exceptions.push(json!({
+                "index": index,
+                "asset": asset,
+                "technique": technique,
+                "status": status,
+                "missing_origins": cell["details"]["missing_origins"].clone(),
+                "reason": "EAS WEB-FINGERPRINT parent-cell terminal exception rejected: parent asset coverage cannot close missing exact Web origins; run eas_fingerprint_web_stack for every details.missing_origins entry"
+            }));
+            continue;
+        }
+
+        cell["state"] = json!(status);
+        cell["source"] = json!("submit_stage_deliverable_preview");
+        cell["evidence_refs"] = json!(evidence_refs);
+        cell["planned_terminal_exception"] = json!(true);
+        if let Some(note) = note {
+            cell["note"] = json!(note);
+        }
+        blocked_cells += usize::from(status == "blocked");
+        not_applicable_cells += usize::from(status == "not_applicable");
+        coverage_to_submit.push(entry.clone());
+    }
+
+    refresh_preview_asset_summary(&mut snapshot);
+    let preview = json!({
+        "preview_only": true,
+        "persisted": false,
+        "provided_cells": entries.len(),
+        "accepted_cells": coverage_to_submit.len(),
+        "rejected_cells": rejected_terminal_exceptions.len(),
+        "blocked_cells": blocked_cells,
+        "not_applicable_cells": not_applicable_cells,
+        "coverage_to_submit": coverage_to_submit,
+        "rejected_terminal_exceptions": rejected_terminal_exceptions,
+        "contract": "Accepted terminal cells were validated only against the current authoritative worklist. Copy coverage_to_submit unchanged into submit_stage_deliverable.coverage. EAS WEB-FINGERPRINT parent-cell exceptions are rejected while details.missing_origins is non-empty; every exact origin still needs guarded producer completion. This preview did not persist outcomes or authorize new assets."
+    });
+    Ok((snapshot, preview))
 }
 
 fn stage_worklist_status(snapshot: Value) -> Value {
@@ -1607,6 +1833,13 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
                 selected_roots.insert(asset_value.to_string());
             }
             let technique = cell.get("technique").and_then(Value::as_str).unwrap_or("");
+            let details = cell.get("details").cloned();
+            let recommended_args = cell.get("recommended_args").cloned().or_else(|| {
+                details
+                    .as_ref()
+                    .and_then(|details| details.get("recommended_args"))
+                    .cloned()
+            });
             let mut item = json!({
                 "work_item_id": format!("{target_id}:{asset_value}:{technique}"),
                 "target_id": target_id,
@@ -1621,6 +1854,12 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
                 "suggested_capabilities": cell.get("suggested_capabilities").cloned().unwrap_or_else(|| json!([])),
                 "suggested_tools": cell.get("suggested_tools").cloned().unwrap_or_else(|| json!([])),
             });
+            if let Some(details) = details {
+                item["details"] = details;
+            }
+            if let Some(recommended_args) = recommended_args {
+                item["recommended_args"] = recommended_args;
+            }
             if is_enumeration {
                 item["worklist_source"] = json!("EAS-confirmed live web root");
                 item["enumeration_focus"] = json!(enumeration_gap_focus(technique));
@@ -1672,7 +1911,7 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
         "matching_root_count": matching_roots.len(),
         "omitted_root_count": omitted_root_count,
         "worklist_contract": if is_eas {
-            "Items are derived from DB/gate truth. Close each suggested_capabilities item for the named asset x technique cell; suggested_tools are implementation hints. EAS tool split: httpx only for domain/URL/web-origin liveness, naabu/masscan for concrete IP/CIDR port discovery and alive-by-port, nmap -sV for every confirmed open port including newly discovered ports, and whatweb once per confirmed HTTP(S) web origin. Refresh this worklist after tools land DB evidence; do not mark work complete by natural-language assertion."
+            "Items are derived from DB/gate truth. Close each suggested_capabilities item for the named asset x technique cell; suggested_tools are implementation hints. For WEB fingerprint cells, copy recommended_args.target_urls unchanged into eas_fingerprint_web_stack.target_urls and never rebuild a scheme from a port number. EAS tool split: httpx only for domain/URL/web-origin liveness, naabu/masscan for concrete IP/CIDR port discovery and alive-by-port, nmap -sV for every confirmed open port including newly discovered ports, and whatweb once per confirmed HTTP(S) web origin. Refresh this worklist after tools land DB evidence; do not mark work complete by natural-language assertion."
         } else if is_enumeration {
             "Items are derived from current-run fresh exact-origin technique_outcomes. One response contains at most 200 cells and at most 50 distinct exact-origin roots; deduplicate items by asset, call enum_preflight_web_origins once for those roots, then send only reachable/pending roots to content producers. Resume ordinary partial/error results, but do not retry a producer cell after a persisted recovery_exhausted blocked outcome. Non-empty terminal_exceptions are rejected. Business rows and deliverable prose cannot create terminal outcomes."
         } else {
@@ -1830,6 +2069,14 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
         "next_action": next_action
     });
     if is_enumeration {
+        let excluded = snapshot
+            .get("eas_transport_excluded_origins")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        out["eas_transport_excluded_count"] = json!(excluded.len());
+        out["eas_transport_excluded_origins"] =
+            Value::Array(excluded.into_iter().take(50).collect());
         out["worklist_semantics"] = json!("Enumeration assets are narrowed to EAS-confirmed live web roots and keyed by exact Web Origin. Only current-run fresh exact-origin technique_outcomes close JS/JSAPI/DIR/PARAM as found or checked_empty; directory_entries/api_endpoints/js_analysis_results are discovery context and cannot close a cell.");
         out["deliverable_contract"] = json!("Submit findings: [] and coverage: []. Fresh exact-origin producer outcomes own found/empty. enum_preflight_web_origins evidence owns all-axis transport blocked; route_probe_paths recovery evidence owns DIR blocked; browser_collect_js_api recovery evidence owns JS/JSAPI/PARAM blocked. Non-web/rootless hosts never enter the denominator, and business rows or prose cannot close cells.");
     } else if is_eas {
@@ -1879,6 +2126,9 @@ fn eas_gap_focus(technique: &str) -> &'static str {
         }
         "GOLISH-EAS-SERVICE-FINGERPRINT" => {
             "Inspect confirmed open ports first, then run nmap -sV grouped by shared port set until every open port has a fingerprint attempt. Use WhatWeb once per confirmed HTTP(S) web origin, never for DNS/MySQL/SSH/non-HTTP service gaps."
+        }
+        "GOLISH-EAS-WEB-FINGERPRINT" => {
+            "For each WEB gap, copy recommended_args.target_urls unchanged into eas_fingerprint_web_stack.target_urls. Preserve every target_id and exact target_url; never rebuild or infer a scheme from a port number."
         }
         _ => "Close this EAS cell with the matching probe and real evidence, or an honest terminal note.",
     }
@@ -1982,6 +2232,212 @@ mod tests {
 
         let non_enumeration = json!({"stage": "target_intel", "assets": []});
         assert!(preview_terminal_exceptions(non_enumeration, Some(&Value::Null)).is_ok());
+    }
+
+    #[test]
+    fn target_intel_terminal_preview_closes_only_exact_authoritative_cells() {
+        let snapshot = json!({
+            "stage": "target_intel",
+            "organization_id": "org-current",
+            "session_id": "run-current",
+            "summary": {
+                "total_assets": 1,
+                "seed_assets": 1,
+                "new_assets": 0,
+                "done_assets": 0,
+                "pending_assets": 1,
+                "blocked_assets": 0
+            },
+            "assets": [{
+                "target_id": "target-moresec",
+                "value": "moresec.cn",
+                "target_type": "domain",
+                "coverage": [
+                    {"technique": "GOLISH-INTEL-ASN", "state": "pending"},
+                    {"technique": "GOLISH-INTEL-CT", "state": "pending"},
+                    {"technique": "GOLISH-INTEL-OSINT", "state": "pending"}
+                ]
+            }]
+        });
+        let exceptions = json!([
+            {
+                "asset": "moresec.cn",
+                "technique": "GOLISH-INTEL-ASN",
+                "status": "blocked",
+                "note": "No configured provider declares ASN capability",
+                "reason_kind": "provider_missing"
+            },
+            {
+                "asset": "moresec.cn",
+                "technique": "GOLISH-INTEL-CT",
+                "status": "not_applicable",
+                "note": "The selected provider does not expose certificate transparency data",
+                "reason_kind": "not_applicable"
+            },
+            {
+                "asset": "moresec.cn",
+                "technique": "GOLISH-INTEL-OSINT",
+                "status": "checked_empty",
+                "evidence_refs": [4]
+            }
+        ]);
+
+        let (projected, preview) =
+            preview_terminal_exceptions(snapshot, Some(&exceptions)).unwrap();
+        let compact = compact_stage_asset_coverage(projected.clone(), 25, false);
+
+        assert_eq!(preview["provided_cells"], 3);
+        assert_eq!(preview["accepted_cells"], 3);
+        assert_eq!(preview["blocked_cells"], 1);
+        assert_eq!(preview["not_applicable_cells"], 1);
+        assert_eq!(preview["coverage_to_submit"], exceptions);
+        assert_eq!(projected["summary"]["blocked_assets"], 1);
+        assert_eq!(compact["ready_to_submit"], true);
+        assert_eq!(compact["cell_summary"]["pending_cells"], 0);
+    }
+
+    #[test]
+    fn target_intel_checked_empty_preview_requires_evidence_and_known_cell() {
+        let snapshot = json!({
+            "stage": "target_intel",
+            "assets": [{
+                "value": "moresec.cn",
+                "coverage": [{"technique": "GOLISH-INTEL-OSINT", "state": "pending"}]
+            }]
+        });
+        let no_evidence = json!([{
+            "asset": "moresec.cn",
+            "technique": "GOLISH-INTEL-OSINT",
+            "status": "checked_empty"
+        }]);
+        assert!(
+            preview_terminal_exceptions(snapshot.clone(), Some(&no_evidence))
+                .unwrap_err()
+                .contains("requires exact-technique evidence_refs")
+        );
+
+        let foreign_asset = json!([{
+            "asset": "www.moresec.cn",
+            "technique": "GOLISH-INTEL-OSINT",
+            "status": "blocked",
+            "note": "No provider"
+        }]);
+        assert!(preview_terminal_exceptions(snapshot, Some(&foreign_asset))
+            .unwrap_err()
+            .contains("not in the authoritative current worklist"));
+    }
+
+    #[test]
+    fn eas_web_terminal_preview_cannot_close_remaining_exact_origins() {
+        for status in ["blocked", "not_applicable", "checked_empty"] {
+            let snapshot = json!({
+                "stage": "external_attack_surface",
+                "organization_id": "org-current",
+                "session_id": "run-current",
+                "summary": {"total_assets": 1, "pending_assets": 1},
+                "assets": [{
+                    "target_id": "target-ip",
+                    "value": "113.240.117.106",
+                    "target_type": "ip",
+                    "coverage": [{
+                        "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                        "state": "partial",
+                        "details": {
+                            "required_origins": ["https://113.240.117.106:443"],
+                            "completed_origins": [],
+                            "missing_origins": ["https://113.240.117.106:443"]
+                        }
+                    }]
+                }]
+            });
+            let exception = if status == "checked_empty" {
+                json!([{
+                    "asset": "113.240.117.106",
+                    "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                    "status": status,
+                    "evidence_refs": [41]
+                }])
+            } else {
+                json!([{
+                    "asset": "113.240.117.106",
+                    "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                    "status": status,
+                    "note": "The parent asset cell cannot replace exact-origin completion"
+                }])
+            };
+
+            let (projected, preview) =
+                preview_terminal_exceptions(snapshot, Some(&exception)).unwrap();
+            let compact = compact_stage_asset_coverage(projected.clone(), 25, false);
+            let worklist = stage_worklist_next(
+                projected,
+                25,
+                &[
+                    "pending".to_string(),
+                    "error".to_string(),
+                    "partial".to_string(),
+                ],
+            );
+
+            assert_eq!(preview["accepted_cells"], 0, "status={status}");
+            assert_eq!(preview["rejected_cells"], 1, "status={status}");
+            assert_eq!(preview["coverage_to_submit"], json!([]), "status={status}");
+            assert!(preview["rejected_terminal_exceptions"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("missing exact Web origins"));
+            assert_eq!(compact["ready_to_submit"], false, "status={status}");
+            assert_eq!(
+                compact["cell_summary"]["partial_cells"], 1,
+                "status={status}"
+            );
+            assert_eq!(
+                compact["gap_examples"][0]["details"]["missing_origins"],
+                json!(["https://113.240.117.106:443"]),
+                "status={status}"
+            );
+            assert_eq!(worklist["ready_to_submit"], false, "status={status}");
+            assert_eq!(
+                worklist["items"][0]["technique"], "GOLISH-EAS-WEB-FINGERPRINT",
+                "status={status}"
+            );
+        }
+    }
+
+    #[test]
+    fn eas_non_web_terminal_preview_still_closes_an_honest_exception() {
+        let snapshot = json!({
+            "stage": "external_attack_surface",
+            "organization_id": "org-current",
+            "session_id": "run-current",
+            "summary": {"total_assets": 1, "pending_assets": 1},
+            "assets": [{
+                "target_id": "target-ip",
+                "value": "113.240.117.106",
+                "target_type": "ip",
+                "coverage": [{
+                    "technique": "GOLISH-EAS-SERVICE-FINGERPRINT",
+                    "state": "pending",
+                    "details": {"missing_open_ports": [9443]}
+                }]
+            }]
+        });
+        let exception = json!([{
+            "asset": "113.240.117.106",
+            "technique": "GOLISH-EAS-SERVICE-FINGERPRINT",
+            "status": "blocked",
+            "note": "The authorized scanner runtime cannot load the required service probe"
+        }]);
+
+        let (projected, preview) = preview_terminal_exceptions(snapshot, Some(&exception)).unwrap();
+        let compact = compact_stage_asset_coverage(projected, 25, false);
+
+        assert_eq!(preview["accepted_cells"], 1);
+        assert_eq!(preview["rejected_cells"], 0);
+        assert_eq!(preview["rejected_terminal_exceptions"], json!([]));
+        assert_eq!(preview["coverage_to_submit"], exception);
+        assert_eq!(compact["ready_to_submit"], true);
+        assert_eq!(compact["cell_summary"]["blocked_cells"], 1);
     }
 
     #[test]
@@ -2932,6 +3388,60 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("SERVICE with nmap -sV"));
+    }
+
+    #[test]
+    fn stage_worklist_next_preserves_eas_web_exact_origin_arguments() {
+        let recommended_args = json!({
+            "target_urls": [{
+                "target_id": "target-1",
+                "target_url": "https://113.240.117.106:443"
+            }]
+        });
+        let details = json!({
+            "required_origins": ["https://113.240.117.106:443"],
+            "completed_origins": [],
+            "missing_origins": ["https://113.240.117.106:443"],
+            "recommended_tool": "eas_fingerprint_web_stack",
+            "recommended_args": recommended_args.clone()
+        });
+        let worklist = stage_worklist_next(
+            json!({
+                "stage": "external_attack_surface",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 1},
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "113.240.117.106",
+                    "target_type": "ip",
+                    "coverage": [{
+                        "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                        "label": "Web Fingerprint",
+                        "state": "pending",
+                        "details": details.clone(),
+                        "suggested_tools": ["eas_fingerprint_web_stack"]
+                    }]
+                }]
+            }),
+            10,
+            &["pending".to_string()],
+        );
+
+        assert_eq!(worklist["items"][0]["details"], details);
+        assert_eq!(worklist["items"][0]["recommended_args"], recommended_args);
+        assert!(worklist["items"][0]["eas_focus"]
+            .as_str()
+            .unwrap()
+            .contains("copy recommended_args.target_urls unchanged"));
+        assert!(worklist["worklist_contract"]
+            .as_str()
+            .unwrap()
+            .contains("copy recommended_args.target_urls unchanged"));
+        assert!(worklist["worklist_contract"]
+            .as_str()
+            .unwrap()
+            .contains("never rebuild a scheme from a port number"));
     }
 
     #[test]

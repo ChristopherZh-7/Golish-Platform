@@ -1,13 +1,24 @@
 use super::FunctionDeclaration;
 use serde_json::{json, Value};
 
-fn enumeration_terminal_exceptions_schema() -> Value {
+fn terminal_exceptions_schema() -> Value {
     json!({
         "type": "array",
-        "description": "Deprecated compatibility input. Enumeration completion is DB/evidence authoritative; omit this field or pass []. Any non-empty array is rejected and cannot project pending cells to terminal states.",
+        "description": "Preview-only terminal coverage for Target Intel / External Attack Surface cells that DB truth cannot derive. Use checked_empty only with exact-technique evidence; blocked/not_applicable require a concrete note. The preview never persists or authorizes assets, and the same returned coverage_to_submit must be passed to submit_stage_deliverable. Enumeration remains DB/evidence authoritative and rejects any non-empty array.",
         "items": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "asset": {"type": "string", "description": "Exact asset value from the current authoritative worklist."},
+                "technique": {"type": "string", "description": "Exact technique id from the pending worklist cell."},
+                "status": {"type": "string", "enum": ["checked_empty", "blocked", "not_applicable"]},
+                "evidence_refs": {"type": "array", "items": {"type": "integer"}},
+                "note": {"type": "string"},
+                "reason_kind": {"type": "string", "enum": ["provider_missing", "credential_missing", "rate_limited", "tool_missing", "out_of_scope", "not_applicable"]},
+                "tested_units": {"type": "integer"},
+                "total_units": {"type": "integer"},
+                "sampling_rationale": {"type": "string"}
+            },
+            "required": ["asset", "technique", "status"],
             "additionalProperties": false
         }
     })
@@ -313,7 +324,7 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
         },
         FunctionDeclaration {
             name: "check_stage_asset_coverage".to_string(),
-            description: "Read the current stage asset-coverage matrix from database truth before submitting. It returns ready_to_submit=false when any asset×technique cell is still pending/error/partial. Enumeration blocked cells must come from enum_preflight_web_origins evidence; model-authored terminal_exceptions are disabled. Defaults to the active harness organization, current session, and current stage when available.".to_string(),
+            description: "Read the current stage asset-coverage matrix from database truth before submitting. It returns ready_to_submit=false when any asset×technique cell is still pending/error/partial after valid preview-only terminal exceptions are applied. Target Intel / EAS may preview exact checked_empty/blocked/not_applicable cells; Enumeration terminal truth remains backend-owned. Defaults to the active harness organization, current session, and current stage when available.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -334,14 +345,14 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                         "type": "boolean",
                         "description": "Set true only when you need the full asset matrix. Default false returns a compact preflight summary."
                     },
-                    "terminal_exceptions": enumeration_terminal_exceptions_schema()
+                    "terminal_exceptions": terminal_exceptions_schema()
                 },
                 "additionalProperties": false
             }),
         },
         FunctionDeclaration {
             name: "stage_worklist_status".to_string(),
-            description: "Read a compact DB-truth status view for the current stage-local worklist. Enumeration terminal state comes only from current-run producer or trusted preflight evidence; non-empty terminal_exceptions are rejected.".to_string(),
+            description: "Read a compact DB-truth status view for the current stage-local worklist, optionally previewing exact Target Intel / EAS terminal exceptions. Enumeration terminal state comes only from current-run producer or trusted preflight evidence.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -354,14 +365,14 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                         "type": "string",
                         "description": "Organization UUID to inspect. Omit to use the active per-org/root organization."
                     },
-                    "terminal_exceptions": enumeration_terminal_exceptions_schema()
+                    "terminal_exceptions": terminal_exceptions_schema()
                 },
                 "additionalProperties": false
             }),
         },
         FunctionDeclaration {
             name: "stage_worklist_next".to_string(),
-            description: "Return the next batch of unfinished DB-truth work items for the active stage. Each item is one asset×technique cell with state, suggested tools, evidence refs, and stage-specific focus. Enumeration returns at most 200 cells across at most 50 distinct exact-origin roots; deduplicate by asset, call enum_preflight_web_origins for the roots, then run producers only for roots still pending/reachable. Non-empty terminal_exceptions are rejected.".to_string(),
+            description: "Return the next batch of unfinished DB-truth work items for the active stage after applying preview-only Target Intel / EAS terminal exceptions. Each item is one asset×technique cell with state, suggested tools, evidence refs, and stage-specific focus. Enumeration returns at most 200 cells across at most 50 distinct exact-origin roots and rejects non-empty terminal exceptions.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -386,7 +397,7 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                         },
                         "description": "Cell states to include. Defaults to pending+error+partial."
                     },
-                    "terminal_exceptions": enumeration_terminal_exceptions_schema()
+                    "terminal_exceptions": terminal_exceptions_schema()
                 },
                 "additionalProperties": false
             }),

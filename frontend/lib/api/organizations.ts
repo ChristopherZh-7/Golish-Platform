@@ -170,13 +170,6 @@ export async function listOrganizationCandidates(id: string): Promise<Organizati
   return invoke<OrganizationCandidates>("organization_candidates_list", { id });
 }
 
-export async function upsertOrganizationCandidates(
-  id: string,
-  candidates: OrganizationCandidate[]
-): Promise<OrganizationCandidates> {
-  return invoke<OrganizationCandidates>("organization_candidates_upsert", { id, candidates });
-}
-
 export async function moveOrganization(params: {
   id: string;
   newParentId: string | null;

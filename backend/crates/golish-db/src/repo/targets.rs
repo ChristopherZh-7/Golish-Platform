@@ -527,21 +527,20 @@ pub async fn update_ports_by_id(pool: &PgPool, id: Uuid, ports: &serde_json::Val
 }
 
 /// EAS-hit alive predicate (design 2026-07-02-dead-asset-liveness-state §1.2):
-/// a resolved `real_ip` on a non-IP target, an HTTP answer (`http_status`), or a
-/// merged-in open port. Mirrors `coverage_truth::build_liveness_values_sql`'s
+/// an HTTP answer (`http_status`) or a merged-in open port. Passive `real_ip` is
+/// only a primary-address cache and cannot prove reachability. Mirrors
+/// `coverage_truth::build_liveness_values_sql`'s
 /// alive form so the stamped `liveness_state` and the coverage-gate truth never
 /// drift. `$1`=real_ip, `$4`=http_status, `$8`=incoming ports (pre-merge). Only
 /// stamps `alive`; a signal-less call keeps the prior `liveness_state` (never
 /// downgrades to dead — confirmed-dead marking is a separate probed-but-empty
 /// sweep, not this per-hit landing write). See the caller for `$` bindings.
 fn eas_hit_alive_predicate_sql() -> String {
-    format!(
-        "(($1 != '' AND {real_ip_guard}) OR $4 IS NOT NULL \
-          OR ($8::jsonb <> '[]'::jsonb AND EXISTS ( \
-               SELECT 1 FROM jsonb_array_elements($8::jsonb) p \
-               WHERE COALESCE(p->>'state','open') = 'open')))",
-        real_ip_guard = REAL_IP_TARGET_TYPE_GUARD_SQL,
-    )
+    "($4 IS NOT NULL \
+      OR ($8::jsonb <> '[]'::jsonb AND EXISTS ( \
+           SELECT 1 FROM jsonb_array_elements($8::jsonb) p \
+           WHERE COALESCE(p->>'state','open') = 'open')))"
+        .to_string()
 }
 
 fn build_update_recon_extended_sql() -> String {
@@ -582,11 +581,11 @@ fn build_update_recon_extended_sql() -> String {
                             ) END,
             -- Phase D (design 2026-06-22 §3.3): stamp per-dim freshness at this
             -- collection site. PORT only when ports were actually provided
-            -- ($8 != '[]'); LIVENESS only when a liveness signal (real_ip /
-            -- http_status) was provided — so a call carrying neither does not
+            -- ($8 != '[]'); LIVENESS only when an active signal (http_status /
+            -- confirmed-open port) was provided — so passive real_ip alone does not
             -- falsely mark the dim collected this run.
             ports_scanned_at    = CASE WHEN $8::jsonb = '[]'::jsonb THEN ports_scanned_at ELSE NOW() END,
-            liveness_checked_at = CASE WHEN (($1 != '' AND {real_ip_guard}) OR $4 IS NOT NULL) THEN NOW() ELSE liveness_checked_at END,
+            liveness_checked_at = CASE WHEN {alive} THEN NOW() ELSE liveness_checked_at END,
             -- Dead-asset marking P2 (design 2026-07-02-dead-asset-liveness-state
             -- §4.1): stamp liveness_state='alive' when this hit proves the asset
             -- is up. Only ever sets 'alive' + clears reason — a signal-less call
@@ -636,14 +635,13 @@ pub async fn update_recon_extended_by_id(
 // ── IP-centric host tree: primary resolved IP (design 2026-06-15 Phase 0) ────
 
 fn build_backfill_real_ip_sql() -> String {
-    // Phase D (design 2026-06-22 §3.3): this is a PASSIVE derive from already-stored
-    // A records (no fresh resolution), so liveness_checked_at carries the SOURCE
-    // record's `created_at` (NOT NOW()) — backfilled liveness inherits the DNS
-    // record's true freshness and won't be mis-counted as collected this run.
-    "UPDATE targets t SET real_ip = sub.ip, liveness_checked_at = sub.created_at, updated_at = NOW() \
-       FROM (SELECT DISTINCT ON (target_id) target_id, value AS ip, created_at \
-               FROM dns_records WHERE record_type = 'A' \
-               ORDER BY target_id, created_at) sub \
+    // Passive DNS derives a deterministic primary cache only. IPv4 is preferred;
+    // within a family canonical string ordering is stable. It never stamps active
+    // liveness or reachability.
+    "UPDATE targets t SET real_ip = sub.ip, updated_at = NOW() \
+       FROM (SELECT DISTINCT ON (target_id) target_id, value AS ip \
+               FROM dns_records WHERE record_type IN ('A', 'AAAA') \
+               ORDER BY target_id, CASE WHEN record_type = 'A' THEN 0 ELSE 1 END, value) sub \
       WHERE t.id = sub.target_id AND t.real_ip = '' \
         AND t.target_type::text NOT IN ('ip', 'ipv4', 'ip_address', 'cidr') \
         AND ($1 IS NULL OR t.project_path = $1)"
@@ -651,12 +649,10 @@ fn build_backfill_real_ip_sql() -> String {
 }
 
 fn build_set_real_ip_by_id_sql() -> &'static str {
-    // Dead-asset marking P2 (design 2026-07-02-dead-asset-liveness-state §4.2):
-    // resolving a real_ip on a non-IP target is a strong liveness signal, so
-    // stamp liveness_state='alive' (and clear any stale reason) alongside real_ip.
+    // Passive DNS observation: update the primary-address cache only. Reachability
+    // is owned by active EAS evidence (`http_status` or confirmed-open ports).
     "UPDATE targets \
-        SET real_ip = $1, liveness_checked_at = NOW(), \
-            liveness_state = 'alive', liveness_reason = NULL, updated_at = NOW() \
+        SET real_ip = $1, updated_at = NOW() \
       WHERE id = $2 AND target_type::text NOT IN ('ip', 'ipv4', 'ip_address', 'cidr')"
 }
 
@@ -665,8 +661,6 @@ fn build_set_real_ip_by_id_sql() -> &'static str {
 /// Unlike [`update_recon_extended_by_id`] this is an unconditional single-column
 /// write used by the host-tree resolution path.
 pub async fn set_real_ip_by_id(pool: &PgPool, id: Uuid, real_ip: &str) -> Result<()> {
-    // Phase D (design 2026-06-22 §3.3): active recon DNS-landing collection site —
-    // setting real_ip is a liveness signal, so stamp `liveness_checked_at = NOW()`.
     sqlx::query(build_set_real_ip_by_id_sql())
         .bind(real_ip)
         .bind(id)
@@ -690,13 +684,13 @@ pub async fn backfill_real_ip_from_dns(pool: &PgPool, project_path: Option<&str>
 // Shared "still has no alive signal" guard for the ongoing dead/unreachable
 // marking (design 2026-07-02-dead-asset-liveness-state §4). Keeps the two setters
 // byte-identical on the guard: only stamp a non-alive verdict while the row is
-// not already 'alive' and carries no http_status / real_ip / open port. Makes the
+// not already 'alive' and carries no http_status / open port. Passive `real_ip`
+// cache is deliberately absent: DNS resolution is not reachability. Makes the
 // write idempotent + order-independent w.r.t. the P2 alive stamps (a host naabu
 // proves has open ports stays/gets 'alive'; a later hit re-stamps 'alive',
 // self-correcting). Trusted compile-time literal — no caller input interpolated.
 const NO_ALIVE_SIGNAL_GUARD_SQL: &str = "liveness_state IS DISTINCT FROM 'alive' \
         AND http_status IS NULL \
-        AND (real_ip = '' OR real_ip IS NULL) \
         AND NOT EXISTS ( \
             SELECT 1 FROM jsonb_array_elements(ports) p \
             WHERE COALESCE(p->>'state','open') = 'open')";
@@ -895,15 +889,15 @@ mod tests {
         // honour the project_path filter (NULL = all).
         let sql = build_backfill_real_ip_sql();
         assert!(sql.contains("DISTINCT ON (target_id)"));
-        assert!(sql.contains("record_type = 'A'"));
-        assert!(sql.contains("ORDER BY target_id, created_at"));
+        assert!(sql.contains("record_type IN ('A', 'AAAA')"));
+        assert!(sql.contains("CASE WHEN record_type = 'A' THEN 0 ELSE 1 END, value"));
         assert!(sql.contains("t.real_ip = ''"));
         assert!(sql.contains("t.target_type::text NOT IN ('ip', 'ipv4', 'ip_address', 'cidr')"));
         assert!(sql.contains("($1 IS NULL OR t.project_path = $1)"));
-        // Phase D: passive derive carries the source A record's created_at as
-        // liveness_checked_at (NOT NOW()), so stale-derived liveness isn't fresh.
-        assert!(sql.contains("liveness_checked_at = sub.created_at"));
-        assert!(sql.contains("value AS ip, created_at"));
+        assert!(
+            !sql.contains("liveness_checked_at"),
+            "passive DNS backfill must not become active liveness: {sql}"
+        );
     }
 
     #[test]
@@ -915,17 +909,19 @@ mod tests {
     }
 
     #[test]
-    fn set_real_ip_by_id_sql_stamps_alive_liveness() {
-        // Dead-asset P2: resolving a real_ip proves the host is up.
+    fn set_real_ip_by_id_sql_does_not_stamp_active_liveness() {
+        // Passive DNS only records an address relation/cache. It does not prove
+        // that the target is reachable in the active EAS sense.
         let sql = build_set_real_ip_by_id_sql();
-        assert!(sql.contains("liveness_state = 'alive'"));
-        assert!(sql.contains("liveness_reason = NULL"));
+        assert!(!sql.contains("liveness_state"));
+        assert!(!sql.contains("liveness_reason"));
+        assert!(!sql.contains("liveness_checked_at"));
     }
 
     #[test]
     fn update_recon_extended_sql_stamps_alive_only_on_signal() {
         // Dead-asset P2: an EAS hit landing stamps liveness_state='alive' when it
-        // carries real_ip / http_status / an open port, and never downgrades to
+        // carries http_status / an open port, and never downgrades to
         // dead here (ELSE keeps the prior state).
         let sql = build_update_recon_extended_sql();
         assert!(sql.contains("liveness_state  = CASE WHEN"));
@@ -935,6 +931,13 @@ mod tests {
         // Must not stamp dead/unreachable from this per-hit landing write.
         assert!(!sql.contains("'dead'"));
         assert!(!sql.contains("'unreachable'"));
+        let alive = eas_hit_alive_predicate_sql();
+        assert!(
+            !alive.contains("$1"),
+            "real_ip must not prove alive: {alive}"
+        );
+        assert!(alive.contains("$4 IS NOT NULL"));
+        assert!(alive.contains("$8::jsonb"));
     }
 
     #[test]
@@ -952,7 +955,7 @@ mod tests {
         for sql in [&dead, &unreachable] {
             assert!(sql.contains("liveness_state IS DISTINCT FROM 'alive'"));
             assert!(sql.contains("http_status IS NULL"));
-            assert!(sql.contains("real_ip = '' OR real_ip IS NULL"));
+            assert!(!sql.contains("real_ip"));
             assert!(sql.contains("COALESCE(p->>'state','open') = 'open'"));
             assert!(sql.contains("WHERE id = $1"));
         }

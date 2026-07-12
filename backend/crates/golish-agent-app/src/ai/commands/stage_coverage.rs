@@ -34,6 +34,16 @@ pub struct StageAssetCoverageSnapshot {
     pub session_id: Option<String>,
     pub summary: StageAssetCoverageSummary,
     pub assets: Vec<StageAssetCoverageRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(skip)]
+    pub eas_transport_excluded_origins: Vec<EasTransportExcludedOrigin>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EasTransportExcludedOrigin {
+    pub target_id: String,
+    pub origin: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -135,6 +145,12 @@ struct OutcomeProjection {
     evidence_refs: Vec<i64>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct EasWebOriginCoverage {
+    required_by_target: BTreeMap<Uuid, Vec<String>>,
+    completed: BTreeMap<String, OutcomeProjection>,
+}
+
 #[derive(Debug, FromRow)]
 struct TechniqueOutcomeProjectionRow {
     asset: String,
@@ -229,6 +245,7 @@ pub async fn ai_get_stage_asset_coverage(
         None,
         None,
         ui_allows_latest_outcome_fallback(stage_kind, session_id.as_deref()),
+        None,
     )
     .await
     .map_err(GolishError::from)
@@ -243,8 +260,16 @@ pub(crate) async fn stage_asset_coverage_snapshot(
     current_wave_target_ids: Option<Vec<Uuid>>,
     current_wave_asset_values: Option<Vec<String>>,
     allow_latest_outcome_fallback: bool,
+    operation_id: Option<Uuid>,
 ) -> anyhow::Result<StageAssetCoverageSnapshot> {
+    anyhow::ensure!(
+        stage_kind != StageKind::ExternalAttackSurface || run_start.is_some(),
+        "external_attack_surface coverage requires current stage_started_at for exact Web Origins"
+    );
     let mut assets = list_stage_targets(pool, org_id, stage_kind).await?;
+    if stage_kind == StageKind::TargetIntel {
+        assets = target_intel_stage_input_assets(assets, run_start);
+    }
     let current_wave =
         explicit_current_wave_membership(current_wave_target_ids, current_wave_asset_values)?;
     ensure_current_wave_targets_present(&assets, current_wave.as_ref())?;
@@ -265,13 +290,54 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         }
         _ => BTreeSet::new(),
     };
+    let mut eas_transport_excluded_origins = Vec::new();
     if stage_kind == StageKind::Enumeration {
-        assets = expand_enumeration_web_origin_rows_for_wave(
+        let transport_exclusions = match operation_id {
+            Some(operation_id) => {
+                golish_db::repo::operation_state::list_eas_web_transport_blocked_origins(
+                    pool,
+                    operation_id,
+                    org_id,
+                )
+                .await?
+                .into_iter()
+                .map(|(target_id, origin)| {
+                    let origin = golish_pentest_domain::canonical_web_origin(&origin)
+                        .map(|origin| origin.key)
+                        .unwrap_or(origin);
+                    (target_id, origin)
+                })
+                .collect()
+            }
+            None => BTreeSet::new(),
+        };
+        eas_transport_excluded_origins = transport_exclusions
+            .iter()
+            .filter(|(target_id, origin)| {
+                assets.iter().any(|asset| {
+                    asset.id == *target_id
+                        && golish_pentest_domain::confirmed_target_web_origins(
+                            &asset.name,
+                            &asset.value,
+                            &asset.ports,
+                        )
+                        .iter()
+                        .any(|candidate| &candidate.key == origin)
+                })
+            })
+            .map(|(target_id, origin)| EasTransportExcludedOrigin {
+                target_id: target_id.to_string(),
+                origin: origin.clone(),
+                reason: "three_same_class_whatweb_failures_and_independent_transport_block"
+                    .to_string(),
+            })
+            .collect();
+        assets = expand_enumeration_web_origin_rows_for_wave_excluding(
             assets,
             current_wave.as_ref().map(|wave| &wave.target_ids),
+            &transport_exclusions,
         );
     }
-    let eas_ip_targets = eas_direct_ip_target_keys(&assets);
     let current_assets: Vec<&TargetCoverageRow> = assets
         .iter()
         .filter(|asset| {
@@ -282,14 +348,12 @@ pub(crate) async fn stage_asset_coverage_snapshot(
             )
         })
         .collect();
-    let truth_assets: Vec<&TargetCoverageRow> = current_assets
+    let asset_values: Vec<String> = current_assets.iter().map(|a| a.value.clone()).collect();
+    let asset_types: Vec<String> = current_assets
         .iter()
-        .copied()
-        .filter(|asset| eas_alias_parent_ip_key(stage_kind, asset, &eas_ip_targets).is_none())
+        .map(|a| a.target_type.clone())
         .collect();
-    let asset_values: Vec<String> = truth_assets.iter().map(|a| a.value.clone()).collect();
-    let asset_types: Vec<String> = truth_assets.iter().map(|a| a.target_type.clone()).collect();
-    let organization_asset_values: Vec<String> = truth_assets
+    let organization_asset_values: Vec<String> = current_assets
         .iter()
         .filter(|asset| is_organization_coverage_row(asset))
         .map(|asset| asset.value.clone())
@@ -342,6 +406,18 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         allow_latest_outcome_fallback,
     )
     .await?;
+    let eas_web_origins = if stage_kind == StageKind::ExternalAttackSurface {
+        load_eas_web_origin_coverage(
+            pool,
+            org_id,
+            session_id,
+            run_start,
+            current_wave.as_ref().map(|wave| &wave.target_ids),
+        )
+        .await?
+    } else {
+        EasWebOriginCoverage::default()
+    };
 
     let mut rows = Vec::with_capacity(assets.len());
     let mut done_assets = 0usize;
@@ -362,25 +438,22 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         } else {
             discovered_phase(&asset, run_start)
         };
-        let counts_as_asset = counts_as_coverage_asset(stage_kind, &asset, &eas_ip_targets);
-        let coverage = if next_wave {
-            next_wave_coverage_cells_with_eas_parent_ips(
-                stage_kind,
-                &asset,
-                &eas_ip_targets,
-                &web_capable_assets,
-            )
+        let counts_as_asset = counts_as_coverage_asset(&asset);
+        let mut coverage = if next_wave {
+            next_wave_coverage_cells_with_eas_parent_ips(stage_kind, &asset, &web_capable_assets)
         } else {
             coverage_cells_with_eas_parent_ips(
                 stage_kind,
                 &asset,
                 &found,
                 &outcomes,
-                &eas_ip_targets,
                 &web_capable_assets,
                 &service_not_applicable_assets,
             )
         };
+        if !next_wave {
+            apply_eas_web_origin_details(stage_kind, &asset, &mut coverage, &eas_web_origins);
+        }
         if next_wave && counts_as_asset {
             if current_wave.is_none() {
                 new_assets += 1;
@@ -436,6 +509,101 @@ pub(crate) async fn stage_asset_coverage_snapshot(
             blocked_assets,
         },
         assets: rows,
+        eas_transport_excluded_origins,
+    })
+}
+
+async fn load_eas_web_origin_coverage(
+    pool: &sqlx::PgPool,
+    organization_id: Uuid,
+    run_id: Option<&str>,
+    run_start: Option<DateTime<Utc>>,
+    current_wave_target_ids: Option<&BTreeSet<Uuid>>,
+) -> anyhow::Result<EasWebOriginCoverage> {
+    let Some(run_start) = run_start else {
+        return Ok(EasWebOriginCoverage::default());
+    };
+    let wave_ids = current_wave_target_ids.map(|ids| ids.iter().copied().collect::<Vec<_>>());
+    let required_rows =
+        golish_db::repo::surface_identity_queries::list_eas_required_web_origin_rows(
+            pool,
+            organization_id,
+            run_start,
+            wave_ids.as_deref(),
+        )
+        .await?;
+    let mut required_by_target = BTreeMap::<Uuid, Vec<String>>::new();
+    for row in required_rows {
+        let Some(origin) = golish_pentest_domain::canonical_web_origin(&row.origin) else {
+            anyhow::bail!(
+                "malformed authoritative EAS Web Origin '{}' for target {}",
+                row.origin,
+                row.target_id
+            );
+        };
+        required_by_target
+            .entry(row.target_id)
+            .or_default()
+            .push(origin.key);
+    }
+    for origins in required_by_target.values_mut() {
+        origins.sort();
+        origins.dedup();
+    }
+
+    let Some(run_id) = run_id.map(str::trim).filter(|run_id| !run_id.is_empty()) else {
+        return Ok(EasWebOriginCoverage {
+            required_by_target,
+            completed: BTreeMap::new(),
+        });
+    };
+    let outcome_rows = golish_db::repo::technique_outcomes::list_for_run_fresh(
+        pool,
+        organization_id,
+        run_id,
+        Some(run_start),
+    )
+    .await?;
+    let evidence_rows = golish_db::repo::audit::evidence_facts_for_session_org_fresh(
+        pool,
+        run_id,
+        organization_id,
+        run_start,
+    )
+    .await?;
+    let guarded = eas_target_bound_evidence_fact_set(organization_id, evidence_rows);
+    let mut completed = BTreeMap::new();
+    for row in outcome_rows {
+        if row.technique != golish_db::repo::coverage_truth::TECH_EAS_WEB_FP
+            || !matches!(row.outcome.as_str(), "found" | "empty" | "blocked")
+        {
+            continue;
+        }
+        let Some(evidence_id) = projected_technique_outcome_evidence_id(
+            &row.asset,
+            &row.technique,
+            &row.outcome,
+            &row.evidence_ids,
+            &guarded,
+            row.source.as_deref(),
+        ) else {
+            continue;
+        };
+        let Some(origin) = golish_pentest_domain::canonical_web_origin(&row.asset) else {
+            continue;
+        };
+        completed.insert(
+            origin.key,
+            OutcomeProjection {
+                state: outcome_state(&row.outcome),
+                source: row.source,
+                evidence_refs: vec![evidence_id],
+            },
+        );
+    }
+    Ok(EasWebOriginCoverage {
+        required_by_target,
+        completed,
     })
 }
 
@@ -532,6 +700,37 @@ async fn list_stage_targets(
     Ok(rows)
 }
 
+fn target_intel_anchor_only_assets(assets: Vec<TargetCoverageRow>) -> Vec<TargetCoverageRow> {
+    let anchors: Vec<(Uuid, String)> = assets
+        .iter()
+        .filter(|asset| matches!(asset.target_type.as_str(), "domain" | "wildcard"))
+        .map(|asset| (asset.id, asset.value.clone()))
+        .collect();
+    assets
+        .into_iter()
+        .filter(|asset| {
+            asset.target_type != "domain"
+                || !anchors.iter().any(|(parent_id, parent)| {
+                    *parent_id != asset.id
+                        && golish_agent_kit::harness::technique_resolver::target_intel_anchor_covers_child(
+                            parent,
+                            &asset.value,
+                        )
+                })
+        })
+        .collect()
+}
+
+fn target_intel_stage_input_assets(
+    mut assets: Vec<TargetCoverageRow>,
+    stage_started_at: Option<DateTime<Utc>>,
+) -> Vec<TargetCoverageRow> {
+    if let Some(stage_started_at) = stage_started_at {
+        assets.retain(|asset| asset.created_at <= stage_started_at);
+    }
+    target_intel_anchor_only_assets(assets)
+}
+
 async fn filter_enumeration_assets_by_eas_worklist(
     pool: &sqlx::PgPool,
     org_id: Uuid,
@@ -576,7 +775,7 @@ fn filter_enumeration_assets_by_eas_found(
     let worklist_ids: BTreeSet<Uuid> = assets
         .iter()
         .filter(|asset| {
-            let class = coverage_asset_class(asset);
+            let class = coverage_asset_class(StageKind::Enumeration, asset);
             (matches!(
                 class,
                 golish_agent_kit::harness::technique_resolver::AssetClass::Domain
@@ -633,9 +832,22 @@ fn expand_enumeration_web_origin_rows(assets: Vec<TargetCoverageRow>) -> Vec<Tar
     expand_enumeration_web_origin_rows_for_wave(assets, None)
 }
 
+#[cfg(test)]
 fn expand_enumeration_web_origin_rows_for_wave(
     assets: Vec<TargetCoverageRow>,
     current_wave_target_ids: Option<&BTreeSet<Uuid>>,
+) -> Vec<TargetCoverageRow> {
+    expand_enumeration_web_origin_rows_for_wave_excluding(
+        assets,
+        current_wave_target_ids,
+        &BTreeSet::new(),
+    )
+}
+
+fn expand_enumeration_web_origin_rows_for_wave_excluding(
+    assets: Vec<TargetCoverageRow>,
+    current_wave_target_ids: Option<&BTreeSet<Uuid>>,
+    transport_exclusions: &BTreeSet<(Uuid, String)>,
 ) -> Vec<TargetCoverageRow> {
     let mut rows = Vec::new();
     let mut origin_indexes = BTreeMap::new();
@@ -645,6 +857,9 @@ fn expand_enumeration_web_origin_rows_for_wave(
             &asset.value,
             &asset.ports,
         ) {
+            if transport_exclusions.contains(&(asset.id, origin.key.clone())) {
+                continue;
+            }
             if let Some(index) = origin_indexes.get(&origin.key).copied() {
                 let existing: &TargetCoverageRow = &rows[index];
                 let candidate_is_current =
@@ -799,6 +1014,15 @@ async fn stage_outcomes(
             stage,
             StageKind::ExternalAttackSurface | StageKind::Enumeration
         ) {
+            for row in evidence_fact_rows_for_session(pool, run_id, &stage_techniques).await? {
+                merge_evidence_fact_row(&mut out, asset_values, &stage_techniques, row);
+            }
+
+            // Merge exact source status last. Target Intel deliberately keeps a
+            // current-run source error retryable even when the same attempt
+            // persisted partial business data/evidence; the final gate follows
+            // the same rule. `merge_source_query_row` only force-overrides on
+            // `error`, while empty/blocked still defer to stronger found truth.
             for row in
                 golish_db::repo::source_query_log::list_for_run(pool, organization_id, run_id)
                     .await?
@@ -816,10 +1040,6 @@ async fn stage_outcomes(
                     },
                     organization_asset_values,
                 );
-            }
-
-            for row in evidence_fact_rows_for_session(pool, run_id, &stage_techniques).await? {
-                merge_evidence_fact_row(&mut out, asset_values, &stage_techniques, row);
             }
         }
     }
@@ -955,7 +1175,10 @@ fn merge_stage_technique_outcome_row(
         return;
     }
     let requires_target_bound_evidence = matches!(row.outcome.as_str(), "found" | "empty")
-        || (stage == StageKind::Enumeration && row.outcome == "blocked");
+        || (stage == StageKind::Enumeration && row.outcome == "blocked")
+        || (stage == StageKind::ExternalAttackSurface
+            && row.technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP
+            && row.outcome == "blocked");
     let terminal_evidence_id = if requires_target_bound_evidence {
         let Some(evidence_id) = projected_technique_outcome_evidence_id(
             &row.asset,
@@ -977,6 +1200,11 @@ fn merge_stage_technique_outcome_row(
     if stage == StageKind::ExternalAttackSurface
         && row.outcome == "found"
         && !business_found.contains(&(asset_key.clone(), row.technique.clone()))
+        && !golish_agent_kit::harness::org_gate::eas_cidr_range_outcome_is_self_corroborating(
+            &row.asset,
+            &row.technique,
+            row.source.as_deref(),
+        )
     {
         return;
     }
@@ -1045,7 +1273,7 @@ fn merge_source_query_row(
     };
     if row.target.is_empty() {
         for asset in asset_values {
-            merge_outcome(
+            merge_source_outcome(
                 out,
                 (coverage_lookup_asset(asset, &technique), technique.clone()),
                 projection.clone(),
@@ -1053,13 +1281,16 @@ fn merge_source_query_row(
         }
         return;
     }
-    if let Some(target_key) = matching_stage_asset_key(asset_values, &row.target, &technique) {
-        merge_outcome(out, (target_key, technique), projection);
+    let target_keys = source_query_matching_stage_asset_keys(asset_values, &row.target, &technique);
+    if !target_keys.is_empty() {
+        for target_key in target_keys {
+            merge_source_outcome(out, (target_key, technique.clone()), projection.clone());
+        }
         return;
     }
     if target_intel_source_technique(&technique) {
         for asset in organization_asset_values {
-            merge_outcome(
+            merge_source_outcome(
                 out,
                 (coverage_lookup_asset(asset, &technique), technique.clone()),
                 projection.clone(),
@@ -1087,6 +1318,25 @@ fn matching_stage_asset_key(
         .iter()
         .map(|asset| coverage_lookup_asset(asset, technique))
         .find(|asset_key| asset_key == &candidate_key)
+}
+
+fn source_query_matching_stage_asset_keys(
+    asset_values: &[String],
+    candidate: &str,
+    technique: &str,
+) -> Vec<String> {
+    let candidate_key = coverage_lookup_asset(candidate, technique);
+    let mut matched = BTreeSet::new();
+    for asset in asset_values {
+        let asset_key = coverage_lookup_asset(asset, technique);
+        if asset_key == candidate_key
+            || (technique == golish_db::repo::coverage_truth::TECH_SUBDOMAIN
+                && asset_key.strip_prefix("*.") == Some(candidate_key.as_str()))
+        {
+            matched.insert(asset_key);
+        }
+    }
+    matched.into_iter().collect()
 }
 
 fn coverage_lookup_asset(asset: &str, technique: &str) -> String {
@@ -1127,70 +1377,8 @@ fn organization_context_technique_applies(technique: &str) -> bool {
     )
 }
 
-fn counts_as_coverage_asset(
-    stage: StageKind,
-    asset: &TargetCoverageRow,
-    eas_ip_targets: &BTreeSet<String>,
-) -> bool {
+fn counts_as_coverage_asset(asset: &TargetCoverageRow) -> bool {
     !is_organization_coverage_row(asset)
-        && eas_alias_parent_ip_key(stage, asset, eas_ip_targets).is_none()
-}
-
-fn eas_direct_ip_target_keys(assets: &[TargetCoverageRow]) -> BTreeSet<String> {
-    assets
-        .iter()
-        .filter(|asset| is_direct_eas_ip_target(asset))
-        .filter_map(|asset| eas_ip_key_from_value(&asset.value))
-        .collect()
-}
-
-fn is_direct_eas_ip_target(asset: &TargetCoverageRow) -> bool {
-    matches!(
-        asset.target_type.to_ascii_lowercase().as_str(),
-        "ip" | "ipv4" | "ipv6" | "ip_address"
-    )
-}
-
-fn eas_ip_key_from_value(value: &str) -> Option<String> {
-    let key = golish_pentest_domain::canonical_asset_key(value)?;
-    matches!(
-        key.class,
-        golish_agent_kit::harness::technique_resolver::AssetClass::Ip
-    )
-    .then_some(key.key)
-}
-
-fn eas_alias_parent_ip_key(
-    stage: StageKind,
-    asset: &TargetCoverageRow,
-    eas_ip_targets: &BTreeSet<String>,
-) -> Option<String> {
-    if stage != StageKind::ExternalAttackSurface
-        || is_direct_eas_ip_target(asset)
-        || is_organization_coverage_row(asset)
-    {
-        return None;
-    }
-    let resolved_ip =
-        eas_ip_key_from_value(&asset.real_ip).or_else(|| eas_ip_key_from_value(&asset.value))?;
-    eas_ip_targets.contains(&resolved_ip).then_some(resolved_ip)
-}
-
-fn eas_alias_coverage_cells(parent_ip: &str) -> Vec<StageAssetCoverageCell> {
-    techniques_for_stage(StageKind::ExternalAttackSurface)
-        .into_iter()
-        .map(|technique| {
-            cell(
-                technique,
-                "not_applicable",
-                None,
-                Vec::new(),
-                Some(format!(
-                    "covered by resolved IP {parent_ip}; scan the host/IP once instead of each domain or endpoint alias"
-                )),
-            )
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -1207,7 +1395,6 @@ fn coverage_cells(
         outcomes,
         &BTreeSet::new(),
         &BTreeSet::new(),
-        &BTreeSet::new(),
     )
 }
 
@@ -1216,14 +1403,10 @@ fn coverage_cells_with_eas_parent_ips(
     asset: &TargetCoverageRow,
     found: &BTreeSet<(String, String)>,
     outcomes: &BTreeMap<(String, String), OutcomeProjection>,
-    eas_ip_targets: &BTreeSet<String>,
     web_capable_assets: &BTreeSet<String>,
     service_not_applicable_assets: &BTreeSet<String>,
 ) -> Vec<StageAssetCoverageCell> {
-    if let Some(parent_ip) = eas_alias_parent_ip_key(stage, asset, eas_ip_targets) {
-        return eas_alias_coverage_cells(&parent_ip);
-    }
-    let class = coverage_asset_class(asset);
+    let class = coverage_asset_class(stage, asset);
     let mut cells: Vec<StageAssetCoverageCell> = techniques_for_stage(stage)
         .into_iter()
         .map(|technique| {
@@ -1266,10 +1449,28 @@ fn coverage_cells_with_eas_parent_ips(
                 );
             }
             let asset_key = coverage_lookup_asset(&asset.value, technique);
+            let outcome = outcomes.get(&(asset_key.clone(), technique.to_string()));
+            // Target Intel may persist real partial records (for example A
+            // succeeded while CNAME/MX/TXT transport failed). The current-run
+            // retry marker must remain visible even though the business table
+            // now contains a positive row; otherwise preflight says ready while
+            // the final deterministic gate correctly blocks.
+            if stage == StageKind::TargetIntel
+                && outcome.is_some_and(|outcome| matches!(outcome.state.as_str(), "partial" | "error"))
+            {
+                let outcome = outcome.expect("checked above");
+                return cell(
+                    technique,
+                    &outcome.state,
+                    outcome.source.clone(),
+                    outcome.evidence_refs.clone(),
+                    None,
+                );
+            }
             if found.contains(&(asset_key.clone(), technique.to_string())) {
                 return cell(technique, "found", None, Vec::new(), None);
             }
-            if let Some(outcome) = outcomes.get(&(asset_key, technique.to_string())) {
+            if let Some(outcome) = outcome {
                 return cell(
                     technique,
                     &outcome.state,
@@ -1285,6 +1486,107 @@ fn coverage_cells_with_eas_parent_ips(
     apply_eas_service_dependency(stage, asset, &mut cells, service_not_applicable_assets);
     apply_eas_service_missing_port_details(stage, asset, &mut cells);
     cells
+}
+
+fn apply_eas_web_origin_details(
+    stage: StageKind,
+    asset: &TargetCoverageRow,
+    cells: &mut [StageAssetCoverageCell],
+    origins: &EasWebOriginCoverage,
+) {
+    if stage != StageKind::ExternalAttackSurface {
+        return;
+    }
+    let Some(required) = origins.required_by_target.get(&asset.id) else {
+        return;
+    };
+    if required.is_empty() {
+        return;
+    }
+    let Some(web_cell) = cells
+        .iter_mut()
+        .find(|cell| cell.technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP)
+    else {
+        return;
+    };
+
+    let mut completed = Vec::new();
+    let mut missing = Vec::new();
+    let mut evidence_refs = BTreeSet::new();
+    let mut sources = BTreeSet::new();
+    let mut any_found = false;
+    let mut blocked = Vec::new();
+    for origin in required {
+        match origins.completed.get(origin) {
+            Some(outcome) => {
+                completed.push(origin.clone());
+                any_found |= outcome.state == "found";
+                if outcome.state == "blocked" {
+                    blocked.push(origin.clone());
+                }
+                evidence_refs.extend(outcome.evidence_refs.iter().copied());
+                if let Some(source) = outcome.source.as_ref() {
+                    sources.insert(source.clone());
+                }
+            }
+            None => missing.push(origin.clone()),
+        }
+    }
+
+    let state = if missing.is_empty() {
+        if any_found {
+            "found".to_string()
+        } else if !blocked.is_empty() {
+            "blocked".to_string()
+        } else {
+            "checked_empty".to_string()
+        }
+    } else if completed.is_empty() {
+        "pending".to_string()
+    } else {
+        "partial".to_string()
+    };
+    let source = if sources.len() == 1 {
+        sources.iter().next().cloned()
+    } else {
+        None
+    };
+    let evidence_refs = evidence_refs.into_iter().collect();
+    let note = (!missing.is_empty()).then(|| {
+        format!(
+            "{} of {} confirmed exact Web Origins still need fingerprinting",
+            missing.len(),
+            required.len()
+        )
+    });
+    let recommended_target_urls = missing
+        .iter()
+        .map(|target_url| {
+            serde_json::json!({
+                "target_id": asset.id.to_string(),
+                "target_url": target_url,
+            })
+        })
+        .collect::<Vec<_>>();
+    let details = serde_json::json!({
+        "required_origins": required,
+        "completed_origins": completed,
+        "blocked_origins": blocked,
+        "missing_origins": missing,
+        "recommended_tool": "eas_fingerprint_web_stack",
+        "recommended_args": {
+            "target_urls": recommended_target_urls,
+        },
+    });
+    let mut replacement = cell(
+        golish_db::repo::coverage_truth::TECH_EAS_WEB_FP,
+        &state,
+        source,
+        evidence_refs,
+        note,
+    );
+    replacement.details = details;
+    *web_cell = replacement;
 }
 
 fn apply_eas_service_dependency(
@@ -1376,7 +1678,7 @@ fn apply_eas_ip_liveness_port_dependency(
     if stage != StageKind::ExternalAttackSurface {
         return;
     }
-    let class = coverage_asset_class(asset);
+    let class = coverage_asset_class(stage, asset);
     if !matches!(
         class,
         golish_agent_kit::harness::technique_resolver::AssetClass::Ip
@@ -1452,19 +1754,15 @@ fn next_wave_coverage_cells(
     stage: StageKind,
     asset: &TargetCoverageRow,
 ) -> Vec<StageAssetCoverageCell> {
-    next_wave_coverage_cells_with_eas_parent_ips(stage, asset, &BTreeSet::new(), &BTreeSet::new())
+    next_wave_coverage_cells_with_eas_parent_ips(stage, asset, &BTreeSet::new())
 }
 
 fn next_wave_coverage_cells_with_eas_parent_ips(
     stage: StageKind,
     asset: &TargetCoverageRow,
-    eas_ip_targets: &BTreeSet<String>,
     web_capable_assets: &BTreeSet<String>,
 ) -> Vec<StageAssetCoverageCell> {
-    if let Some(parent_ip) = eas_alias_parent_ip_key(stage, asset, eas_ip_targets) {
-        return eas_alias_coverage_cells(&parent_ip);
-    }
-    let class = coverage_asset_class(asset);
+    let class = coverage_asset_class(stage, asset);
     techniques_for_stage(stage)
         .into_iter()
         .map(|technique| {
@@ -1506,9 +1804,11 @@ fn next_wave_coverage_cells_with_eas_parent_ips(
 }
 
 fn coverage_asset_class(
+    stage: StageKind,
     asset: &TargetCoverageRow,
 ) -> golish_agent_kit::harness::technique_resolver::AssetClass {
-    golish_agent_kit::harness::technique_resolver::AssetClass::classify(
+    golish_agent_kit::harness::technique_resolver::classify_stage_asset(
+        stage,
         Some(&asset.target_type),
         &asset.value,
     )
@@ -1559,7 +1859,7 @@ fn cell(
     evidence_refs: Vec<i64>,
     note: Option<String>,
 ) -> StageAssetCoverageCell {
-    let suggested_capabilities = if matches!(state, "pending" | "error") {
+    let suggested_capabilities = if matches!(state, "pending" | "error" | "partial") {
         suggested_capabilities_for_any_technique(technique)
     } else {
         Vec::new()
@@ -1643,6 +1943,28 @@ fn merge_outcome(
     } else if existing.source.is_none() {
         existing.source = next.source;
     }
+    for evidence_ref in next.evidence_refs {
+        if !existing.evidence_refs.contains(&evidence_ref) {
+            existing.evidence_refs.push(evidence_ref);
+        }
+    }
+}
+
+fn merge_source_outcome(
+    out: &mut BTreeMap<(String, String), OutcomeProjection>,
+    key: (String, String),
+    next: OutcomeProjection,
+) {
+    if next.state != "error" {
+        merge_outcome(out, key, next);
+        return;
+    }
+    let Some(existing) = out.get_mut(&key) else {
+        out.insert(key, next);
+        return;
+    };
+    existing.state = next.state;
+    existing.source = next.source;
     for evidence_ref in next.evidence_refs {
         if !existing.evidence_refs.contains(&evidence_ref) {
             existing.evidence_refs.push(evidence_ref);
@@ -1741,6 +2063,30 @@ mod tests {
             liveness_state: "unknown".to_string(),
             exact_web_origin: false,
         }
+    }
+
+    #[test]
+    fn target_intel_coverage_excludes_targets_created_by_the_current_stage() {
+        let stage_started_at = Utc::now();
+        let mut seed = target("seed.moresec.cn", "domain");
+        seed.created_at = stage_started_at - chrono::Duration::seconds(1);
+        let mut discovered = target("api.moresec.cn", "domain");
+        discovered.created_at = stage_started_at + chrono::Duration::seconds(1);
+        let mut organization = target("organization:test", "organization");
+        organization.created_at = stage_started_at - chrono::Duration::seconds(1);
+
+        let filtered = target_intel_stage_input_assets(
+            vec![organization, seed, discovered],
+            Some(stage_started_at),
+        );
+
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|asset| asset.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["organization:test", "seed.moresec.cn"]
+        );
     }
 
     #[test]
@@ -1881,11 +2227,14 @@ mod tests {
 
     #[test]
     fn enumeration_origin_dedupe_prefers_current_wave_owner_over_old_owner() {
-        let mut old_owner = target("old-owner.example.com", "domain");
+        // Legacy duplicate rows may own the same exact host/origin. Foreign-host
+        // ports[].url is deliberately ignored by the authorization helper, so
+        // this dedupe fixture keeps both owners on the real shared identity.
+        let mut old_owner = target("shared.example.com", "domain");
         old_owner.ports = serde_json::json!([
             {"port": 443, "state": "open", "url": "https://shared.example.com/app"}
         ]);
-        let mut current_owner = target("current-owner.example.com", "domain");
+        let mut current_owner = target("shared.example.com", "domain");
         current_owner.ports = serde_json::json!([
             {"port": 443, "state": "open", "url": "https://shared.example.com/admin"}
         ]);
@@ -1936,12 +2285,12 @@ mod tests {
 
     #[test]
     fn enumeration_globally_dedupes_same_origin_with_stable_owner() {
-        let mut first = target("first-owner.example", "domain");
+        let mut first = target("shared.example", "domain");
         first.ports = serde_json::json!([
             {"port": 443, "state": "open", "url": "https://shared.example/app"}
         ]);
         let first_id = first.id;
-        let mut second = target("second-owner.example", "domain");
+        let mut second = target("shared.example", "domain");
         second.ports = serde_json::json!([
             {"port": 443, "state": "open", "url": "https://shared.example/other"}
         ]);
@@ -1960,6 +2309,30 @@ mod tests {
         let rows = expand_enumeration_web_origin_rows(vec![asset]);
 
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn enumeration_transport_handoff_excludes_only_exact_owner_origin() {
+        let blocked_target = Uuid::from_u128(41);
+        let sibling_target = Uuid::from_u128(42);
+        let mut blocked = target("blocked.example", "domain");
+        blocked.id = blocked_target;
+        blocked.ports = serde_json::json!([{"port": 443, "state": "open", "service": "https"}]);
+        let mut sibling = target("sibling.example", "domain");
+        sibling.id = sibling_target;
+        sibling.ports = serde_json::json!([{"port": 443, "state": "open", "service": "https"}]);
+        let assets = vec![blocked, sibling];
+        let exclusions =
+            BTreeSet::from([(blocked_target, "https://blocked.example:443".to_string())]);
+
+        let rows = expand_enumeration_web_origin_rows_for_wave_excluding(assets, None, &exclusions);
+
+        assert!(!rows
+            .iter()
+            .any(|row| { row.id == blocked_target && row.value == "https://blocked.example:443" }));
+        assert!(rows
+            .iter()
+            .any(|row| { row.id == sibling_target && row.value == "https://sibling.example:443" }));
     }
 
     #[test]
@@ -1982,7 +2355,6 @@ mod tests {
             &asset,
             &BTreeSet::new(),
             &outcomes,
-            &BTreeSet::new(),
             &BTreeSet::from([asset.value.clone()]),
             &BTreeSet::new(),
         );
@@ -2340,6 +2712,37 @@ mod tests {
     }
 
     #[test]
+    fn eas_cidr_discovery_found_is_visible_without_child_ip_projection() {
+        let asset = "192.0.2.0/24".to_string();
+        let technique = golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string();
+        let strict = TargetBoundEvidenceFactSet::from([(
+            asset.clone(),
+            technique.clone(),
+            "found".to_string(),
+            63,
+        )]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_stage_technique_outcome_row(
+            StageKind::ExternalAttackSurface,
+            &mut outcomes,
+            std::slice::from_ref(&asset),
+            &BTreeSet::from([technique.clone()]),
+            TechniqueOutcomeProjectionRow {
+                asset: asset.clone(),
+                technique: technique.clone(),
+                outcome: "found".to_string(),
+                source: Some("eas_discover_ports".to_string()),
+                evidence_refs: vec![63],
+            },
+            &strict,
+            &BTreeSet::new(),
+        );
+
+        assert_eq!(outcomes[&(asset, technique)].state, "found");
+    }
+
+    #[test]
     fn eas_empty_requires_matching_guarded_outcome_but_not_business_found() {
         let asset = "192.0.2.10".to_string();
         let technique = golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string();
@@ -2366,6 +2769,58 @@ mod tests {
             &BTreeSet::new(),
         );
         assert_eq!(outcomes[&(asset, technique)].state, "checked_empty");
+    }
+
+    #[test]
+    fn eas_web_blocked_outcome_requires_wrapper_source_and_exact_guarded_fact() {
+        let parent_asset = "app.example.com".to_string();
+        let origin = "https://app.example.com:443".to_string();
+        let technique = golish_db::repo::coverage_truth::TECH_EAS_WEB_FP.to_string();
+        let strict = TargetBoundEvidenceFactSet::from([(
+            origin.clone(),
+            technique.clone(),
+            "blocked".to_string(),
+            81,
+        )]);
+        let row = |source: &str, evidence_refs: Vec<i64>| TechniqueOutcomeProjectionRow {
+            asset: origin.clone(),
+            technique: technique.clone(),
+            outcome: "blocked".to_string(),
+            source: Some(source.to_string()),
+            evidence_refs,
+        };
+
+        for (source, evidence_refs) in [
+            ("whatweb", vec![81]),
+            ("eas_fingerprint_web_stack", vec![82]),
+        ] {
+            let mut outcomes = BTreeMap::new();
+            merge_stage_technique_outcome_row(
+                StageKind::ExternalAttackSurface,
+                &mut outcomes,
+                std::slice::from_ref(&parent_asset),
+                &BTreeSet::from([technique.clone()]),
+                row(source, evidence_refs),
+                &strict,
+                &BTreeSet::new(),
+            );
+            assert!(
+                outcomes.is_empty(),
+                "wrong source or evidence id must not project a blocked parent cell"
+            );
+        }
+
+        let mut outcomes = BTreeMap::new();
+        merge_stage_technique_outcome_row(
+            StageKind::ExternalAttackSurface,
+            &mut outcomes,
+            std::slice::from_ref(&parent_asset),
+            &BTreeSet::from([technique.clone()]),
+            row("eas_fingerprint_web_stack", vec![81]),
+            &strict,
+            &BTreeSet::new(),
+        );
+        assert_eq!(outcomes[&(parent_asset, technique)].state, "blocked");
     }
 
     #[test]
@@ -2653,7 +3108,6 @@ mod tests {
             &asset,
             &BTreeSet::new(),
             &BTreeMap::new(),
-            &BTreeSet::new(),
             &BTreeSet::from([asset.value.clone()]),
             &BTreeSet::new(),
         );
@@ -2695,7 +3149,6 @@ mod tests {
                 &origin,
                 &BTreeSet::new(),
                 &BTreeMap::new(),
-                &BTreeSet::new(),
                 &raw_web_capable_assets,
                 &BTreeSet::new(),
             );
@@ -2804,6 +3257,113 @@ mod tests {
     }
 
     #[test]
+    fn eas_ip_origin_url_asset_never_gets_port_or_service_work() {
+        let asset = target("http://127.0.0.1:54537", "url");
+        let cells = coverage_cells_with_eas_parent_ips(
+            StageKind::ExternalAttackSurface,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeSet::from([asset.value.clone()]),
+            &BTreeSet::new(),
+        );
+
+        assert_eq!(
+            cells
+                .iter()
+                .map(|cell| (cell.technique.as_str(), cell.state.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+                    "pending"
+                ),
+                (
+                    golish_db::repo::coverage_truth::TECH_EAS_PORT,
+                    "not_applicable"
+                ),
+                (
+                    golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
+                    "not_applicable"
+                ),
+                (golish_db::repo::coverage_truth::TECH_EAS_WEB_FP, "pending"),
+            ]
+        );
+        assert_eq!(
+            cells[0].suggested_tools,
+            vec!["eas_probe_http_liveness".to_string()]
+        );
+        assert_eq!(
+            cells[3].suggested_tools,
+            vec!["eas_fingerprint_web_stack".to_string()]
+        );
+        assert!(cells[1].suggested_tools.is_empty());
+        assert!(cells[2].suggested_tools.is_empty());
+    }
+
+    #[test]
+    fn wildcard_scope_pattern_has_only_passive_intel_child_expansion_work() {
+        let asset = target("*.moresec.cn", "wildcard");
+        let intel = coverage_cells(
+            StageKind::TargetIntel,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            intel
+                .iter()
+                .filter(|cell| cell.state != "not_applicable")
+                .map(|cell| (cell.technique.as_str(), cell.state.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(golish_db::repo::coverage_truth::TECH_SUBDOMAIN, "pending")],
+            "wildcard Target Intel must expose exactly one passive expansion responsibility"
+        );
+
+        let eas = coverage_cells(
+            StageKind::ExternalAttackSurface,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+        );
+        assert!(
+            eas.iter().all(|cell| cell.state == "not_applicable"),
+            "wildcard is never an executable EAS work item: {eas:?}"
+        );
+    }
+
+    #[test]
+    fn target_intel_preflight_anchor_filters_promoted_wildcard_child_only() {
+        let wildcard = target("*.moresec.cn", "wildcard");
+        let child = target("app.moresec.cn", "domain");
+        let values = |rows: Vec<TargetCoverageRow>| {
+            target_intel_anchor_only_assets(rows)
+                .into_iter()
+                .map(|row| row.value)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            values(vec![wildcard.clone(), child.clone()]),
+            vec!["*.moresec.cn".to_string()]
+        );
+        assert_eq!(
+            values(vec![wildcard.clone(), target("moresec.cn", "domain")]),
+            vec!["*.moresec.cn".to_string(), "moresec.cn".to_string()],
+            "wildcard must not absorb its apex"
+        );
+        assert_eq!(
+            values(vec![wildcard.clone(), target("app.vendor.net", "domain")]),
+            vec!["*.moresec.cn".to_string(), "app.vendor.net".to_string()]
+        );
+        assert_eq!(
+            values(vec![target("moresec.cn", "organization"), child.clone()]),
+            vec!["moresec.cn".to_string(), "app.moresec.cn".to_string()],
+            "dotted organization display names are never coverage anchors"
+        );
+    }
+
+    #[test]
     fn eas_url_shaped_hostname_domain_asset_uses_value_aware_applicability() {
         let asset = target("https://app.example.com/login", "domain");
         let endpoint_found = BTreeSet::from([(
@@ -2824,57 +3384,61 @@ mod tests {
     }
 
     #[test]
-    fn eas_domain_alias_to_existing_ip_does_not_count_as_direct_coverage_asset() {
+    fn eas_domain_alias_to_existing_ip_keeps_liveness_and_web_coverage() {
         let ip = target("115.28.135.55", "ip");
         let mut domain = target("moresec.cn", "domain");
         domain.real_ip = "115.28.135.55".to_string();
-        let assets = vec![ip, domain.clone()];
-        let parent_ips = eas_direct_ip_target_keys(&assets);
 
-        assert!(!counts_as_coverage_asset(
-            StageKind::ExternalAttackSurface,
-            &domain,
-            &parent_ips
-        ));
+        assert!(counts_as_coverage_asset(&ip));
+        assert!(counts_as_coverage_asset(&domain));
 
         let cells = coverage_cells_with_eas_parent_ips(
             StageKind::ExternalAttackSurface,
             &domain,
             &BTreeSet::new(),
             &BTreeMap::new(),
-            &parent_ips,
-            &BTreeSet::new(),
+            &BTreeSet::from([domain.value.clone()]),
             &BTreeSet::new(),
         );
 
-        assert!(cells.iter().all(|cell| cell.state == "not_applicable"));
-        assert!(cells.iter().all(|cell| cell.suggested_tools.is_empty()));
-        assert!(cells[0]
-            .note
-            .as_deref()
-            .is_some_and(|note| note.contains("115.28.135.55")));
+        assert_eq!(
+            cells
+                .iter()
+                .map(|cell| (cell.technique.as_str(), cell.state.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+                    "pending"
+                ),
+                (
+                    golish_db::repo::coverage_truth::TECH_EAS_PORT,
+                    "not_applicable"
+                ),
+                (
+                    golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
+                    "not_applicable"
+                ),
+                (golish_db::repo::coverage_truth::TECH_EAS_WEB_FP, "pending"),
+            ]
+        );
     }
 
     #[test]
-    fn eas_ip_endpoint_alias_to_existing_ip_does_not_count_as_direct_coverage_asset() {
+    fn eas_url_alias_to_existing_ip_keeps_liveness_and_web_coverage() {
         let ip = target("115.28.135.55", "ip");
-        let endpoint = target("http://115.28.135.55:8080/login", "url");
-        let assets = vec![ip, endpoint.clone()];
-        let parent_ips = eas_direct_ip_target_keys(&assets);
+        let mut endpoint = target("https://app.moresec.cn:8443/login", "url");
+        endpoint.real_ip = "115.28.135.55".to_string();
 
-        assert!(!counts_as_coverage_asset(
-            StageKind::ExternalAttackSurface,
-            &endpoint,
-            &parent_ips
-        ));
+        assert!(counts_as_coverage_asset(&ip));
+        assert!(counts_as_coverage_asset(&endpoint));
 
         let cells = coverage_cells_with_eas_parent_ips(
             StageKind::ExternalAttackSurface,
             &endpoint,
             &BTreeSet::new(),
             &BTreeMap::new(),
-            &parent_ips,
-            &BTreeSet::new(),
+            &BTreeSet::from([endpoint.value.clone()]),
             &BTreeSet::new(),
         );
 
@@ -2883,13 +3447,174 @@ mod tests {
                 .iter()
                 .map(|cell| cell.state.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "not_applicable",
-                "not_applicable",
-                "not_applicable",
-                "not_applicable"
-            ]
+            vec!["pending", "not_applicable", "not_applicable", "pending"]
         );
+    }
+
+    #[test]
+    fn eas_web_cell_stays_partial_until_every_exact_origin_is_terminal() {
+        let asset = target("app.moresec.cn", "domain");
+        let mut cells = coverage_cells_with_eas_parent_ips(
+            StageKind::ExternalAttackSurface,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeSet::from([asset.value.clone()]),
+            &BTreeSet::new(),
+        );
+        let required = vec![
+            "http://app.moresec.cn:80".to_string(),
+            "https://app.moresec.cn:443".to_string(),
+        ];
+        let mut origin_coverage = EasWebOriginCoverage {
+            required_by_target: BTreeMap::from([(asset.id, required.clone())]),
+            completed: BTreeMap::from([(
+                required[0].clone(),
+                OutcomeProjection {
+                    state: "found".to_string(),
+                    source: Some("whatweb".to_string()),
+                    evidence_refs: vec![41],
+                },
+            )]),
+        };
+
+        apply_eas_web_origin_details(
+            StageKind::ExternalAttackSurface,
+            &asset,
+            &mut cells,
+            &origin_coverage,
+        );
+        let web = cells
+            .iter()
+            .find(|cell| cell.technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP)
+            .unwrap();
+        assert_eq!(web.state, "partial");
+        assert_eq!(
+            web.suggested_tools,
+            vec!["eas_fingerprint_web_stack".to_string()]
+        );
+        assert_eq!(
+            web.details["missing_origins"],
+            serde_json::json!(["https://app.moresec.cn:443"])
+        );
+        assert_eq!(
+            web.details["recommended_args"]["target_urls"],
+            serde_json::json!([{
+                "target_id": asset.id.to_string(),
+                "target_url": "https://app.moresec.cn:443"
+            }])
+        );
+
+        origin_coverage.completed.insert(
+            required[1].clone(),
+            OutcomeProjection {
+                state: "checked_empty".to_string(),
+                source: Some("whatweb".to_string()),
+                evidence_refs: vec![42],
+            },
+        );
+        apply_eas_web_origin_details(
+            StageKind::ExternalAttackSurface,
+            &asset,
+            &mut cells,
+            &origin_coverage,
+        );
+        let web = cells
+            .iter()
+            .find(|cell| cell.technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP)
+            .unwrap();
+        assert_eq!(web.state, "found");
+        assert_eq!(web.evidence_refs, vec![41, 42]);
+        assert!(web.suggested_tools.is_empty());
+        assert_eq!(web.details["missing_origins"], serde_json::json!([]));
+        assert_eq!(
+            web.details["recommended_args"]["target_urls"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn eas_web_blocked_origin_is_terminal_and_visible_in_parent_rollup() {
+        let asset = target("app.moresec.cn", "domain");
+        let mut cells = coverage_cells_with_eas_parent_ips(
+            StageKind::ExternalAttackSurface,
+            &asset,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeSet::from([asset.value.clone()]),
+            &BTreeSet::new(),
+        );
+        let blocked_origin = "https://app.moresec.cn:443".to_string();
+        let empty_origin = "http://app.moresec.cn:80".to_string();
+        let mut origin_coverage = EasWebOriginCoverage {
+            required_by_target: BTreeMap::from([(
+                asset.id,
+                vec![empty_origin.clone(), blocked_origin.clone()],
+            )]),
+            completed: BTreeMap::from([
+                (
+                    blocked_origin.clone(),
+                    OutcomeProjection {
+                        state: "blocked".to_string(),
+                        source: Some("eas_fingerprint_web_stack".to_string()),
+                        evidence_refs: vec![51],
+                    },
+                ),
+                (
+                    empty_origin.clone(),
+                    OutcomeProjection {
+                        state: "checked_empty".to_string(),
+                        source: Some("eas_fingerprint_web_stack".to_string()),
+                        evidence_refs: vec![52],
+                    },
+                ),
+            ]),
+        };
+
+        apply_eas_web_origin_details(
+            StageKind::ExternalAttackSurface,
+            &asset,
+            &mut cells,
+            &origin_coverage,
+        );
+        let web = cells
+            .iter()
+            .find(|cell| cell.technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP)
+            .unwrap();
+        assert_eq!(web.state, "blocked");
+        assert_eq!(web.evidence_refs, vec![51, 52]);
+        assert!(web.suggested_tools.is_empty());
+        assert_eq!(web.details["missing_origins"], serde_json::json!([]));
+        assert_eq!(
+            web.details["blocked_origins"],
+            serde_json::json!([blocked_origin])
+        );
+
+        origin_coverage.completed.insert(
+            empty_origin,
+            OutcomeProjection {
+                state: "found".to_string(),
+                source: Some("eas_fingerprint_web_stack".to_string()),
+                evidence_refs: vec![53],
+            },
+        );
+        apply_eas_web_origin_details(
+            StageKind::ExternalAttackSurface,
+            &asset,
+            &mut cells,
+            &origin_coverage,
+        );
+        let web = cells
+            .iter()
+            .find(|cell| cell.technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP)
+            .unwrap();
+        assert_eq!(web.state, "found");
+        assert_eq!(
+            web.details["blocked_origins"],
+            serde_json::json!(["https://app.moresec.cn:443"])
+        );
+        assert_eq!(web.details["missing_origins"], serde_json::json!([]));
+        assert!(web.suggested_tools.is_empty());
     }
 
     #[test]
@@ -2897,11 +3622,7 @@ mod tests {
         let mut domain = target("moresec.cn", "domain");
         domain.real_ip = "115.28.135.55".to_string();
 
-        assert!(counts_as_coverage_asset(
-            StageKind::ExternalAttackSurface,
-            &domain,
-            &BTreeSet::new()
-        ));
+        assert!(counts_as_coverage_asset(&domain));
 
         let cells = coverage_cells(
             StageKind::ExternalAttackSurface,
@@ -2969,7 +3690,6 @@ mod tests {
             &asset,
             &BTreeSet::new(),
             &BTreeMap::new(),
-            &BTreeSet::new(),
             &BTreeSet::from([asset.value.clone()]),
             &BTreeSet::new(),
         );
@@ -2997,7 +3717,6 @@ mod tests {
             &asset,
             &found,
             &BTreeMap::new(),
-            &BTreeSet::new(),
             &BTreeSet::from([asset.value.clone()]),
             &BTreeSet::new(),
         );
@@ -3191,7 +3910,6 @@ mod tests {
             &found,
             &BTreeMap::new(),
             &BTreeSet::new(),
-            &BTreeSet::new(),
             &service_not_applicable,
         );
 
@@ -3295,6 +4013,29 @@ mod tests {
         assert_eq!(cells[1].state, "error");
         assert_eq!(cells[1].source.as_deref(), Some("naabu"));
         assert_eq!(cells[1].evidence_refs, vec![43]);
+    }
+
+    #[test]
+    fn target_intel_partial_outcome_overrides_business_found_in_preflight() {
+        let asset = target("partial.example.com", "domain");
+        let technique = golish_db::repo::coverage_truth::TECH_DNS;
+        let found = BTreeSet::from([(asset.value.clone(), technique.to_string())]);
+        let outcomes = BTreeMap::from([(
+            (asset.value.clone(), technique.to_string()),
+            OutcomeProjection {
+                state: outcome_state("partial"),
+                source: Some("resolver".to_string()),
+                evidence_refs: Vec::new(),
+            },
+        )]);
+
+        let cells = coverage_cells(StageKind::TargetIntel, &asset, &found, &outcomes);
+        let dns = cells
+            .iter()
+            .find(|cell| cell.technique == technique)
+            .expect("DNS cell");
+        assert_eq!(dns.state, "partial");
+        assert_eq!(dns.source.as_deref(), Some("resolver"));
     }
 
     #[test]
@@ -3676,6 +4417,73 @@ mod tests {
             assert_eq!(outcome.state, "checked_empty");
             assert_eq!(outcome.source.as_deref(), Some("rdap"));
             assert_eq!(outcome.evidence_refs, vec![11]);
+        }
+    }
+
+    #[test]
+    fn target_intel_source_error_overrides_same_run_found_projection() {
+        let asset_values = vec!["moresec.cn".to_string()];
+        let technique = golish_db::repo::coverage_truth::TECH_DNS.to_string();
+        let stage_techniques = BTreeSet::from([technique.clone()]);
+        let key = ("moresec.cn".to_string(), technique.clone());
+        let mut outcomes = BTreeMap::from([(
+            key.clone(),
+            OutcomeProjection {
+                state: "found".to_string(),
+                source: Some("resolver".to_string()),
+                evidence_refs: vec![10],
+            },
+        )]);
+
+        merge_source_query_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            SourceQueryProjectionRow {
+                source: "resolver".to_string(),
+                target: "moresec.cn".to_string(),
+                technique: Some(technique),
+                status: "error".to_string(),
+                evidence_refs: vec![11],
+            },
+            &[],
+        );
+
+        let outcome = outcomes
+            .get(&key)
+            .expect("source retry marker remains visible");
+        assert_eq!(outcome.state, "error");
+        assert_eq!(outcome.evidence_refs, vec![10, 11]);
+    }
+
+    #[test]
+    fn wildcard_subdomain_preflight_consumes_base_domain_source_status() {
+        let asset_values = vec!["*.moresec.cn".to_string(), "moresec.cn".to_string()];
+        let technique = golish_db::repo::coverage_truth::TECH_SUBDOMAIN.to_string();
+        let stage_techniques = BTreeSet::from([technique.clone()]);
+        let mut outcomes = BTreeMap::new();
+
+        merge_source_query_row(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            SourceQueryProjectionRow {
+                source: "domain-expansion".to_string(),
+                target: "moresec.cn".to_string(),
+                technique: Some(technique.clone()),
+                status: "empty".to_string(),
+                evidence_refs: vec![12],
+            },
+            &[],
+        );
+
+        for asset in asset_values {
+            let key = (asset, technique.clone());
+            let outcome = outcomes
+                .get(&key)
+                .expect("base-domain expansion result covers exact and wildcard responsibilities");
+            assert_eq!(outcome.state, "checked_empty");
+            assert_eq!(outcome.evidence_refs, vec![12]);
         }
     }
 

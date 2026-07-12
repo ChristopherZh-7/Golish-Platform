@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: scoping / ROE. DAG entry node. L0-L1 only, no probing. Phase A (2026-06-01 harness-full-impl).",
+  "$comment": "Stage spec: scoping / ROE. DAG entry node. L0-L1 only, no probing. Concrete domain/IP/URL/wildcard seeds must already exist as trusted UI/CLI target rows before this stage; the model reviews but never creates or edits scan scope.",
 
   "id": "scoping",
   "kind": "scoping",
@@ -9,8 +9,11 @@
   "requires_stages": [],
   "allowed_next_stages": ["target_intel"],
 
-  "$comment_allowed_tool_types": "Phase 2 (2026-06-12-redteam-phase2): subsidiary discovery (ENScan: 爱企查/天眼查/...) is an OSINT query against business-registry data — it DEFINES scope, does not probe the target — so it is allowed at L0 scoping. recon/osint is the tool_type ENScan maps to (tool_taxonomy.rs). The subsidiary coverage gate (see gate_rules + harness hook) only activates when the engagement opts in via --include-subsidiaries; otherwise scoping stays a no-op L0 authz confirmation (zero behaviour change).",
+  "$comment_allowed_tool_types": "Business-registry OSINT may identify and review organization units because it does not touch target hosts. It cannot authorize domain/IP/URL targets. manage_targets, DNS, WHOIS, HTTP and port tools are intentionally absent; trusted UI/CLI ingestion owns exact seed creation before Scoping.",
   "allowed_tool_types": ["recon/osint"],
+
+  "$comment_scope_snapshot": "When the profile requires target confirmation, the backend loads the current org's trusted pre-stage target snapshot (manual/imported/customer_provided/stage-run-seed/seed/cli sources only); provider/discovered sources are observations and never authorization roots. An empty snapshot is a valid organization-only engagement and does not require an empty scope_review. A non-empty snapshot requires exactly one successful scope_review that exact-matches canonical value + target_type + scope; every persisted review lifecycle in the current operation window is counted, so a later confirmation cannot wash away an earlier edit/rejection. An edited proposal or malformed outer/inner ask_human response cannot mutate scope or pass until trusted intake writes the revised row. Wildcard is a passive strict-child authorization pattern, not an executable asset.",
+  "$comment_unit_scope": "Red-team subsidiary scope is a two-branch persisted decision. An explicit parent/root-only ask_human choice with context decision=subsidiary_scope completes the branch without discovery, propose_candidates, or an empty unit_review. If subsidiaries may be included, propose_candidates plus one unit_review are both required.",
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",

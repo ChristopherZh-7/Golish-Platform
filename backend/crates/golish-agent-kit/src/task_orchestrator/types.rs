@@ -246,6 +246,17 @@ pub trait AgentExecutor: Send + Sync {
         agent_type: Option<&str>,
     ) -> Result<AgentResult>;
 
+    /// Whether `stage_run` consumed this top-level request's bounded retry
+    /// budget for `stage`.
+    ///
+    /// Executors without a request-scoped stage runner keep the default false.
+    /// The task orchestrator uses this runtime signal to stop its own automatic
+    /// gate-repair loop without conflating that loop with a later, explicit user
+    /// continuation (which starts a new request and resets the guard).
+    fn stage_run_retry_budget_exhausted(&self, _stage: crate::harness::StageKind) -> bool {
+        false
+    }
+
     /// Run the reporter to generate the final summary.
     async fn generate_report(&self, execution_context: &ExecutionContext) -> Result<AgentResult>;
 

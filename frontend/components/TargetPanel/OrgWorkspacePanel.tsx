@@ -4,21 +4,17 @@
  *
  * Extracted from `TargetGroupedView.tsx`'s `renderWorkspacePanel`. Owns the org
  * header, the tab nav, and the Fields / Overview / Scope tabs inline; delegates
- * the two heaviest tabs to `AssetIntelActivityPanel` and `CandidateReviewList`.
+ * asset-intel activity to `AssetIntelActivityPanel`.
  */
 
 import { Building2, Crosshair, Globe, Network } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useState } from "react";
 import type { AssetIntelProviderDescriptor, AssetIntelRun } from "@/lib/api/asset-intel";
 import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
-import type { Organization, OrganizationCandidate } from "@/lib/api/organizations";
+import type { Organization } from "@/lib/api/organizations";
 import type { Target } from "@/lib/pentest/types";
 import { groupTargetsByHost, type TargetAssetGroup } from "@/lib/target-panel/asset-groups";
-import {
-  getCandidateSourceFilter,
-  getVisibleCandidateBuckets,
-  type HydrateActivity,
-} from "@/lib/target-panel/asset-intel";
+import type { HydrateActivity } from "@/lib/target-panel/asset-intel";
 import {
   ENGAGEMENT_BADGES,
   getEngagementDetails,
@@ -36,7 +32,6 @@ import { hasExportableCurrentReconAssets } from "@/lib/target-panel/organization
 import type { AssetIntelOrgActionKind, WorkspaceTab } from "@/lib/target-panel/types";
 import { cn } from "@/lib/utils";
 import { AssetIntelActivityPanel } from "./AssetIntelActivityPanel";
-import { CandidateReviewList } from "./CandidateReviewList";
 import type { EngagementMode } from "./NewEngagementDialog";
 import { OrgFieldRow } from "./OrgFieldRow";
 import { TYPE_ICONS } from "./targetTypeIcons";
@@ -58,10 +53,6 @@ interface OrgWorkspacePanelProps {
   organizationReconErrors: Record<string, string>;
   hydratingOrgId: string | null;
   hydratingAction: AssetIntelOrgActionKind | null;
-  candidateUpdatingId: string | null;
-  candidatePromotingId: string | null;
-  expandedCandidateIds: Set<string>;
-  setExpandedCandidateIds: Dispatch<SetStateAction<Set<string>>>;
   setEditingTargetId: Dispatch<SetStateAction<string | null>>;
   setSelectedTargetId: Dispatch<SetStateAction<string | null>>;
   openHostGroup: (group: TargetAssetGroup) => void;
@@ -70,11 +61,6 @@ interface OrgWorkspacePanelProps {
   handleExportOrganizationReconAssets: (
     org: Organization,
     run?: OrganizationReconRunSnapshot
-  ) => void;
-  handlePromoteCandidate: (candidate: OrganizationCandidate) => void;
-  handleCandidateStatus: (
-    candidate: OrganizationCandidate,
-    status: "approved" | "rejected"
   ) => void;
 }
 
@@ -95,18 +81,12 @@ export function OrgWorkspacePanel({
   organizationReconErrors,
   hydratingOrgId,
   hydratingAction,
-  candidateUpdatingId,
-  candidatePromotingId,
-  expandedCandidateIds,
-  setExpandedCandidateIds,
   setEditingTargetId,
   setSelectedTargetId,
   openHostGroup,
   handleRunAssetIntel,
   handleRunOrganizationRecon,
   handleExportOrganizationReconAssets,
-  handlePromoteCandidate,
-  handleCandidateStatus,
 }: OrgWorkspacePanelProps) {
   const [assetScope, setAssetScope] = useState<"own" | "subtree">("own");
   const hasSubtreeTargets = selectedSubtreeTargets.length !== selectedTargets.length;
@@ -155,20 +135,6 @@ export function OrgWorkspacePanel({
   const organizationReconError = organizationReconErrors[selectedOrg.id];
   const isHydratingSelected = hydratingOrgId === selectedOrg.id;
   const selectedOrgIsChild = Boolean(selectedOrg.parent_id);
-  const candidatePhase =
-    selectedMode === "discover_assets" ? (selectedOrgIsChild ? "enrichment" : "discovery") : null;
-  const candidateSourceFilter = getCandidateSourceFilter(assetProviders, candidatePhase);
-  const visibleCandidates = getVisibleCandidateBuckets(
-    engagementRecord,
-    candidatePhase,
-    candidateSourceFilter
-  );
-  const organizationCandidates = visibleCandidates.organizations;
-  const targetCandidates = visibleCandidates.targets;
-  const candidateCounts = {
-    organizations: organizationCandidates.length,
-    targets: targetCandidates.length,
-  };
   const ownOutScopeCount = Math.max(0, targetSummary.ownTotal - targetSummary.ownInScope);
   const badge = selectedMode ? ENGAGEMENT_BADGES[selectedMode] : null;
   const fieldGroups = translateOrgFieldGroups(getOrgFieldGroups(selectedOrg), t);
@@ -252,7 +218,6 @@ export function OrgWorkspacePanel({
         {[
           ["overview", translateWithFallback(t, "targetWorkspace.tabs.overview", "Assets")],
           ["fields", translateWithFallback(t, "targetWorkspace.tabs.fields", "Profile")],
-          ["candidates", translateWithFallback(t, "targetWorkspace.tabs.candidates", "Candidates")],
           ["activity", translateWithFallback(t, "targetWorkspace.tabs.activity", "Activity")],
         ].map(([id, label]) => (
           <button
@@ -499,21 +464,6 @@ export function OrgWorkspacePanel({
             </div>
           )}
         </section>
-      )}
-
-      {workspaceTab === "candidates" && (
-        <CandidateReviewList
-          t={t}
-          candidateCounts={candidateCounts}
-          organizationCandidates={organizationCandidates}
-          targetCandidates={targetCandidates}
-          candidateUpdatingId={candidateUpdatingId}
-          candidatePromotingId={candidatePromotingId}
-          expandedCandidateIds={expandedCandidateIds}
-          setExpandedCandidateIds={setExpandedCandidateIds}
-          handlePromoteCandidate={handlePromoteCandidate}
-          handleCandidateStatus={handleCandidateStatus}
-        />
       )}
 
       {workspaceTab === "scope" && (

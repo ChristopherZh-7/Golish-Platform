@@ -16,14 +16,103 @@ use super::types::*;
 /// `scope_human_approved` claim (which a weak model can fabricate). Creation is
 /// no longer mandatory in REUSE mode: an existing org tree confirmed by
 /// `unit_review` is already a persisted scope record.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ScopingActionsSeen {
-    /// The model invoked `ask_human(input_type="unit_review")` this run.
+    /// A completed `manage_organizations(action="propose_candidates")` lifecycle
+    /// exists in this operation's Scoping window.
+    pub unit_candidates_proposed: bool,
+    /// A successful, non-skipped `ask_human(input_type="unit_review")`
+    /// completed after a successful candidate proposal for this root org.
     pub unit_review_invoked: bool,
+    /// A persisted human subsidiary-scope choice explicitly limited the
+    /// engagement to the root/parent organization. This valid branch needs no
+    /// candidate proposal or empty unit-review table.
+    pub subsidiaries_excluded: bool,
     /// The model invoked `manage_organizations(action="create"/"create_batch")`
     /// and the resulting org row still exists. Informational for audit; REUSE
     /// mode may legitimately leave this false.
     pub organization_created: bool,
+    /// A `scope_review` request completed with an affirmative response carrying
+    /// a parseable target-row array (not skip/timeout/free text).
+    pub scope_review_approved: bool,
+    /// Number of completed `scope_review` tool lifecycles in the current
+    /// operation's Scoping window. Non-empty trusted scope permits exactly one;
+    /// a later confirmation must never erase an earlier edit/rejection.
+    pub scope_review_attempts: usize,
+    /// Exact rows returned by the human review UI. The scoping gate compares
+    /// these against the trusted pre-stage target snapshot before advancing.
+    pub scope_review_targets: Vec<ScopingReviewedTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopingReviewedTarget {
+    pub value: String,
+    pub target_type: String,
+    pub scope: String,
+}
+
+/// Parse the persisted `ask_human` tool result for a scope-review response.
+/// The outer result contains `response` as a JSON string; that string is the
+/// editable table's array. Free text, skip, timeout and malformed rows are not
+/// approvals.
+pub fn parse_scope_review_tool_result(result: &str) -> Option<Vec<ScopingReviewedTarget>> {
+    let outer: serde_json::Value = serde_json::from_str(result).ok()?;
+    if outer.get("error").is_some()
+        || outer
+            .get("skipped")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    let response = outer.get("response")?.as_str()?;
+    let rows: serde_json::Value = serde_json::from_str(response).ok()?;
+    let rows = rows.as_array()?;
+    let mut parsed = Vec::new();
+    for row in rows {
+        let value = row.get("value")?.as_str()?.trim();
+        let target_type = row.get("type")?.as_str()?.trim();
+        let scope = row.get("scope")?.as_str()?.trim();
+        if value.is_empty()
+            || !matches!(target_type, "domain" | "ip" | "cidr" | "url" | "wildcard")
+            || !matches!(scope, "in" | "out")
+        {
+            return None;
+        }
+        parsed.push(ScopingReviewedTarget {
+            value: value.to_string(),
+            target_type: target_type.to_string(),
+            scope: scope.to_string(),
+        });
+    }
+    Some(parsed)
+}
+
+#[cfg(test)]
+mod scoping_review_result_tests {
+    use super::parse_scope_review_tool_result;
+
+    #[test]
+    fn parses_approved_table_and_rejects_skip_or_free_text() {
+        let approved = serde_json::json!({
+            "response": serde_json::json!([{
+                "value": "moresec.cn",
+                "type": "domain",
+                "scope": "in"
+            }]).to_string(),
+            "skipped": false
+        })
+        .to_string();
+        let rows = parse_scope_review_tool_result(&approved).expect("approved rows parse");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value, "moresec.cn");
+
+        assert!(parse_scope_review_tool_result(r#"{"skipped":true}"#).is_none());
+        assert!(
+            parse_scope_review_tool_result(r#"{"response":"auto-approved","skipped":false}"#)
+                .is_none()
+        );
+    }
 }
 
 /// One organization in the scoping-confirmed engagement tree.
@@ -247,6 +336,21 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Exact HTTP(S) origins actively confirmed for current in-scope targets in
+    /// this EAS freshness window. `current_wave_target_ids=None` reads the live
+    /// org axis; `Some` freezes the denominator to the active wave. Relation
+    /// rows must remain target/org bound and never infer authorization from a
+    /// DNS-only IP observation.
+    async fn eas_required_web_origins(
+        &self,
+        organization_id: Uuid,
+        since: chrono::DateTime<chrono::Utc>,
+        current_wave_target_ids: Option<Vec<Uuid>>,
+    ) -> anyhow::Result<Vec<String>> {
+        let _ = (organization_id, since, current_wave_target_ids);
+        Ok(Vec::new())
+    }
+
     /// DNS/53-only assets with no web surface. EAS SERVICE no longer consumes
     /// this as automatic not_applicable; Enumeration uses it to terminalise
     /// content axes for IPs that are not web roots. Default empty ⇒ no derived
@@ -329,6 +433,32 @@ pub trait DbRepoProvider: Send + Sync {
             },
             "assets": []
         }))
+    }
+
+    /// Operation-aware variant used by Enumeration routing. The default keeps
+    /// existing test doubles/UI projections unchanged; the DB-backed app
+    /// implementation uses the trusted operation id to apply exact transport
+    /// handoffs from the immediately preceding EAS epoch.
+    async fn stage_asset_coverage_for_operation(
+        &self,
+        operation_id: Option<Uuid>,
+        organization_id: Uuid,
+        stage: &str,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let _ = operation_id;
+        self.stage_asset_coverage(
+            organization_id,
+            stage,
+            session_id,
+            stage_started_at,
+            current_wave_target_ids,
+            current_wave_asset_values,
+        )
+        .await
     }
 
     // ── Tasks & Subtasks ────────────────────────────────────────────────
@@ -519,6 +649,35 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(())
     }
 
+    /// Materialize a final-gate-approved `blocked` / `not_applicable` coverage
+    /// cell without overwriting producer-owned terminal truth. Returns true only
+    /// when the row was inserted or replaced an unfinished partial/error row.
+    /// Default no-op keeps pure/test repositories backward compatible.
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_terminal_technique_outcome_if_unfinished(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        asset: &str,
+        technique: &str,
+        outcome: &str,
+        source: Option<&str>,
+        query: Option<&str>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<bool> {
+        let _ = (
+            organization_id,
+            run_id,
+            asset,
+            technique,
+            outcome,
+            source,
+            query,
+            evidence_ids,
+        );
+        Ok(false)
+    }
+
     /// Target-intel DNS empty-marker hook: after a passive provider run has real
     /// evidence, the app layer may refresh unresolved in-scope domain targets and
     /// persist `(asset, GOLISH-INTEL-DNS, empty)` rows for domains that were actually
@@ -655,14 +814,14 @@ pub trait DbRepoProvider: Send + Sync {
 
     /// #5（source_query_log gate-read）：从 `source_query_log` 读某 `(org, run)` 的
     /// source/provider terminal rows。gate 只用它证明 source 已尝试，绝不投影 found。
-    /// 默认空（test double 零改动；读失败由 app 层 fail-safe 成空）。
+    /// 查询错误与权威空结果保持区分，供 org-bound Intel/EAS gate fail closed。
     async fn source_query_facts(
         &self,
         organization_id: Uuid,
         run_id: &str,
-    ) -> Vec<SourceQueryFact> {
+    ) -> anyhow::Result<Vec<SourceQueryFact>> {
         let _ = (organization_id, run_id);
-        Vec::new()
+        Ok(Vec::new())
     }
 
     /// 设计 2026-06-12 §5.3 · DB 业务表真值事实 `(asset, technique)`：业务表里
@@ -747,6 +906,24 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<Vec<(Uuid, chrono::DateTime<chrono::Utc>)>> {
         let _ = (stage_kind, org_ids);
         Ok(Vec::new())
+    }
+
+    /// Operation-bound completion projection. The table is historically unique
+    /// by `(organization_id, stage_kind)`, so concurrent operations must inspect
+    /// `stage_run_id` and only consume rows produced by themselves. The default
+    /// preserves compatibility for repositories without this projection while
+    /// failing closed for operation-bound callers (`stage_run_id = None`).
+    async fn org_stage_completions_get_with_run_id(
+        &self,
+        stage_kind: &str,
+        org_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<(Uuid, chrono::DateTime<chrono::Utc>, Option<String>)>> {
+        Ok(self
+            .org_stage_completions_get(stage_kind, org_ids)
+            .await?
+            .into_iter()
+            .map(|(organization_id, passed_at)| (organization_id, passed_at, None))
+            .collect())
     }
 
     /// Recent **real** evidence ids (`audit_role='evidence'`) for a chat session,
@@ -847,6 +1024,30 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(None)
     }
 
+    /// Atomically either queue the next unassigned asset wave or seal the
+    /// per-org stage completion behind a target-writer barrier. App-backed
+    /// implementations must not expose a completion watermark from a separate
+    /// transaction than the final candidate read.
+    async fn stage_asset_wave_create_next_or_seal_completion(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+        parent_wave_id: Option<Uuid>,
+        limit: i64,
+        stage_run_id: Option<&str>,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        let _ = (
+            operation_id,
+            organization_id,
+            stage_kind,
+            parent_wave_id,
+            limit,
+            stage_run_id,
+        );
+        Ok(None)
+    }
+
     /// Mark a durable wave as completed after its per-org gate passes. Default
     /// no-op so legacy/non-DB contexts remain unchanged.
     async fn stage_asset_wave_complete(&self, wave_id: Uuid) -> anyhow::Result<()> {
@@ -900,20 +1101,33 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(std::collections::HashMap::new())
     }
 
-    /// Cross-verify the red_team scoping flow against this session's REAL
-    /// `tool_calls` (so the gate can reject a deliverable that asserts human
-    /// scope approval without the model having actually run
-    /// `ask_human(input_type="unit_review")`).
+    /// Cross-verify the red_team scoping flow against REAL `tool_calls` from the
+    /// current operation's Scoping window (so a later operation in the same chat
+    /// session cannot reuse an older human approval).
     ///
     /// Returns `None` when verification is impossible (no `tool_calls` recorded
-    /// for this session — test doubles or tracking disabled) so the gate FAILS
-    /// OPEN and never blocks on infra absence, mirroring [`Self::evidence_existing_ids`].
-    /// `Some(seen)` carries the actually-observed actions.
+    /// for this session — test doubles or tracking disabled). The orchestrator
+    /// fails closed when policy requires a unit review or a non-empty target
+    /// review, while an organization-only empty target snapshot needs no target
+    /// lifecycle. `Some(seen)` carries every actually-observed review attempt.
     async fn scoping_actions_for_session(
         &self,
         session_id: Uuid,
+        organization_id: Uuid,
+        not_before: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Option<ScopingActionsSeen>> {
-        let _ = session_id;
+        let _ = (session_id, organization_id, not_before);
         Ok(None)
+    }
+
+    /// Trusted target rows currently bound to the scoping-confirmed org. The
+    /// application implementation excludes provider/active-discovered rows so
+    /// a previous Intel/EAS observation cannot masquerade as a user seed.
+    async fn scoping_target_snapshot(
+        &self,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
+        let _ = organization_id;
+        Ok(Vec::new())
     }
 }

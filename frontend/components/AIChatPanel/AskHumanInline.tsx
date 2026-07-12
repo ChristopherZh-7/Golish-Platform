@@ -112,10 +112,49 @@ function isUuid(value: string | null | undefined): value is string {
   return !!value && UUID_RE.test(value.trim());
 }
 
+/** Subsidiary inclusion changes the authorized organization boundary. It must
+ * stay pending until a person clicks a choice; the generic convenience timer
+ * must never turn the first option into security authorization. */
+export function isSubsidiaryScopeDecision(request: AskHumanState): boolean {
+  if (request.inputType !== "choice") return false;
+
+  try {
+    let parsed: unknown = JSON.parse(request.context);
+    if (typeof parsed === "string") parsed = JSON.parse(parsed);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      (parsed as Record<string, unknown>).decision === "subsidiary_scope"
+    ) {
+      return true;
+    }
+  } catch {
+    // Legacy prompts used human-readable context; the guarded fallback below
+    // keeps already-running sessions from silently auto-approving them.
+  }
+
+  const prompt = [request.context, request.question, ...request.options].join(" ").toLowerCase();
+  const namesSubsidiaries =
+    prompt.includes("subsidiar") || prompt.includes("子公司") || prompt.includes("分支机构");
+  const hasScopeOption = request.options.some((option) => {
+    const normalized = option.toLowerCase();
+    return (
+      normalized.includes("不纳入子公司") ||
+      normalized.includes("纳入子公司") ||
+      normalized.includes("no subsidiaries") ||
+      normalized.includes("include subsidiaries") ||
+      normalized.includes("parent company only") ||
+      normalized.includes("root only")
+    );
+  });
+  return namesSubsidiaries && hasScopeOption;
+}
+
 /**
- * How long non-review ask_human boxes wait before auto-running their default
- * action. Scope/unit reviews are deliberate security boundaries and never
- * auto-confirm.
+ * How long lightweight ask_human boxes wait before auto-running their default
+ * action. Scope/unit reviews and subsidiary-scope choices are deliberate
+ * security boundaries and never auto-confirm.
  */
 export const ASK_HUMAN_COUNTDOWN_MS = 60_000;
 const COUNTDOWN_TICK_MS = 100;
@@ -198,6 +237,7 @@ export function AskHumanInline({
 
   const Icon = INPUT_TYPE_ICONS[request.inputType] || MessageSquare;
   const isReviewTable = request.inputType === "scope_review" || request.inputType === "unit_review";
+  const isScopeBoundaryDecision = isSubsidiaryScopeDecision(request);
 
   // Resolve where the review table's rows come from (org id → DB, an array, or
   // bulk text). Memoized so the fetch effect below doesn't re-run every render.
@@ -257,13 +297,13 @@ export function AskHumanInline({
     }
   };
 
-  // Auto-confirm countdown for lightweight prompts. Review tables are explicit
-  // human gates, so they stay visible until the user confirms or skips.
+  // Auto-confirm countdown for lightweight prompts. Review tables and scope
+  // boundary decisions stay visible until the user confirms or skips.
   const reviewTableRef = useRef<ScopeReviewHandle>(null);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const paused = hovered || focused;
-  const autoConfirmEnabled = !isReviewTable;
+  const autoConfirmEnabled = !isReviewTable && !isScopeBoundaryDecision;
 
   // Some inputs (the options-less "Other" field) autofocus on mount. That mount
   // focus must NOT pause the clock, otherwise an unattended box would dangle
@@ -495,7 +535,7 @@ export function AskHumanInline({
         </div>
       ) : (
         <div className="mt-2.5 rounded-md border border-[#e0af68]/20 bg-background/30 px-2 py-1 text-[10px] text-muted-foreground/70">
-          Waiting for your review
+          {isScopeBoundaryDecision ? "Waiting for your scope decision" : "Waiting for your review"}
         </div>
       )}
     </div>

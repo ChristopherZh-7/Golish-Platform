@@ -102,6 +102,24 @@ fn provider_output_is_trusted_only_for_successful_terminal_states() {
 }
 
 #[test]
+fn native_partial_success_records_land_without_making_the_provider_terminal() {
+    let failed = AssetIntelProviderRunStatus {
+        provider_id: "fofa".into(),
+        status: AssetIntelProviderRunState::Failed,
+        message: "1/2 queries succeeded".into(),
+    };
+    assert!(provider_output_has_landable_records(
+        &failed,
+        &serde_json::json!({"succeededQueries": 1, "failedQueries": 1})
+    ));
+    assert!(!provider_output_is_trusted(&failed));
+    assert!(!provider_output_has_landable_records(
+        &failed,
+        &serde_json::json!({"succeededQueries": 0, "failedQueries": 2})
+    ));
+}
+
+#[test]
 fn asset_intel_provider_descriptors_load_from_tool_configs() {
     let tool = golish_pentest::models::ToolConfig {
         id: "fake-intel".into(),
@@ -320,13 +338,19 @@ fn native_bridge_record_maps_surface_and_profile() {
     fields.insert("title".to_string(), "Hello".to_string());
     let rec = ProviderRecord::new("fofa", QueryType::Site, fields, serde_json::json!({}));
     let (cand, profile) = bridge_record("fofa", &rec);
-    assert_eq!(cand.expect("candidate").value, "api.example.com");
+    let candidate = cand.expect("candidate");
+    assert_eq!(candidate.value, "api.example.com");
+    assert_eq!(candidate.evidence["raw"]["domain"], "api.example.com");
+    assert_eq!(candidate.evidence["raw"]["ip"], "1.2.3.4");
     assert!(profile
         .iter()
         .any(|p| p.target_field == "domains" && p.value == "api.example.com"));
-    assert!(profile
-        .iter()
-        .any(|p| p.target_field == "ip_ranges" && p.value == "1.2.3.4"));
+    assert!(
+        !profile
+            .iter()
+            .any(|p| p.target_field == "ip_ranges" && p.value == "1.2.3.4"),
+        "passive provider IP observations are DNS relations, not scan authorization"
+    );
     assert!(profile
         .iter()
         .any(|p| p.target_field == "fofa_http_titles" && p.value == "Hello"));
@@ -642,8 +666,8 @@ async fn http_json_runtime_keeps_partial_data_when_one_request_drops_body() {
     // Three sequential requests; the middle one (query_type=site) promises a
     // body via Content-Length but drops the connection mid-stream, which is
     // exactly the reqwest "error decoding response body" that zeroed 0.zone
-    // enrichment in production. The fix must keep request #1 + #3 data and end
-    // the provider as a *trusted* Completed (not Failed → discarded).
+    // enrichment in production. The fix must keep request #1 + #3 data while
+    // leaving the provider Failed/retryable until the sibling request succeeds.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -767,8 +791,8 @@ async fn http_json_runtime_keeps_partial_data_when_one_request_drops_body() {
 
     assert_eq!(
         status.status,
-        AssetIntelProviderRunState::Completed,
-        "partial success must remain trusted, got: {status:?}"
+        AssetIntelProviderRunState::Failed,
+        "partial success must remain retryable, got: {status:?}"
     );
     assert_eq!(candidates.targets.len(), 2);
     let values: Vec<&str> = candidates
@@ -779,7 +803,10 @@ async fn http_json_runtime_keeps_partial_data_when_one_request_drops_body() {
     assert!(values.contains(&"a.com"), "domain request data kept");
     assert!(values.contains(&"c.com"), "apk request data kept");
     assert_eq!(evidence["failedRequests"], 1);
-    assert_eq!(evidence["state"], "completed");
+    assert_eq!(evidence["succeededQueries"], 2);
+    assert_eq!(evidence["failedQueries"], 1);
+    assert_eq!(evidence["state"], "failed");
+    assert!(provider_output_has_landable_records(&status, &evidence));
 }
 
 #[tokio::test]

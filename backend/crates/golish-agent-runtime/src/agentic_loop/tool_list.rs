@@ -52,8 +52,9 @@ pub(crate) async fn build_tool_list(
     // per-call guard already blocks them, but hiding them stops the model from
     // wasting turns trying a tool it could only ever be denied.
     hide_scans_for_zero_scan_stage(&mut tools, ctx.harness_stage);
-    // Scoping is org-tree-only: the in-scope target list (domains / IPs / URLs)
-    // is recorded in the NEXT stage (target_intel), never here. Hide
+    // Scoping is org-tree/review-only: the in-scope seed list (domains / IPs /
+    // URLs) is ingested by the trusted UI/CLI before the stage, never authored
+    // here or by Target Intel. Hide
     // `manage_targets` so the model literally cannot turn discovered subsidiaries
     // into targets or pop a target `scope_review` during scoping (user directive
     // 2026-06-13; methodology backstop at the tool boundary).
@@ -132,8 +133,8 @@ fn add_read_only_target_query_tools_for_stage(
 }
 
 /// Remove `manage_targets` from the exposed list when the active harness stage is
-/// `scoping`. Scoping locks the ORG TREE; recording individual targets is the
-/// job of `target_intel`. Hiding the tool here enforces that boundary even if the
+/// `scoping`. Scoping locks the ORG TREE/review decision; trusted UI/CLI seed
+/// ingestion owns individual target creation. Hiding the tool here enforces that boundary even if the
 /// model ignores the methodology. No-op for every other stage (and when no stage
 /// is active), so target recording stays available downstream.
 fn hide_manage_targets_in_scoping(

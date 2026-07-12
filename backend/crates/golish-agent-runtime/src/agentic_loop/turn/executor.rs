@@ -54,6 +54,13 @@ const MAX_REPETITION_RECOVERIES: u32 = 2;
 /// output.
 const MAX_MID_STREAM_RETRIES: u32 = 2;
 
+fn accepted_stage_submission_ends_loop(
+    stage_submission_accepted: bool,
+    harness_stage_active: bool,
+) -> bool {
+    stage_submission_accepted && harness_stage_active
+}
+
 /// E1 · corrective prompt injected when the model degenerated into repetition.
 fn repetition_recovery_message() -> Message {
     Message::User {
@@ -372,7 +379,7 @@ where
             }
 
             // Phase 8: ToolDispatch — allow-list filter + dispatch.
-            tool_dispatch_phase::run(
+            let dispatch = tool_dispatch_phase::run(
                 tool_calls_to_execute,
                 &tools,
                 ctx,
@@ -386,6 +393,16 @@ where
                 forced_tool_lock,
             )
             .await;
+            if accepted_stage_submission_ends_loop(
+                dispatch.stage_submission_accepted,
+                ctx.harness_stage.is_some(),
+            ) {
+                tracing::info!(
+                    target: "harness::submit_tool",
+                    "accepted stage deliverable ended the primary stage loop"
+                );
+                break;
+            }
         }
 
         record_turn_completion(
@@ -429,4 +446,17 @@ where
         chat_history,
         Some(total_usage),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::accepted_stage_submission_ends_loop;
+
+    #[test]
+    fn accepted_submission_ends_only_an_active_harness_stage_loop() {
+        assert!(accepted_stage_submission_ends_loop(true, true));
+        assert!(!accepted_stage_submission_ends_loop(true, false));
+        assert!(!accepted_stage_submission_ends_loop(false, true));
+        assert!(!accepted_stage_submission_ends_loop(false, false));
+    }
 }

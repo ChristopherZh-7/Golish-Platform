@@ -76,6 +76,17 @@ impl GolishDbRepoProvider {
     }
 }
 
+fn summarize_scope_review_results(
+    results: &[Option<String>],
+) -> (bool, Vec<ScopingReviewedTarget>) {
+    let parsed = results
+        .iter()
+        .filter_map(|result| result.as_deref().and_then(parse_scope_review_tool_result))
+        .collect::<Vec<_>>();
+    let approved = results.len() == 1 && parsed.len() == 1;
+    (approved, parsed.into_iter().flatten().collect())
+}
+
 #[async_trait]
 impl DbRepoProvider for GolishDbRepoProvider {
     // ── Wiki KB ──────────────────────────────────────────────
@@ -332,6 +343,29 @@ impl DbRepoProvider for GolishDbRepoProvider {
             stage_started_at,
             current_wave_target_ids,
             current_wave_asset_values,
+            None,
+        )
+        .await
+    }
+
+    async fn stage_asset_coverage_for_operation(
+        &self,
+        operation_id: Option<uuid::Uuid>,
+        organization_id: uuid::Uuid,
+        stage: &str,
+        session_id: Option<&str>,
+        stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        current_wave_target_ids: Option<Vec<uuid::Uuid>>,
+        current_wave_asset_values: Option<Vec<String>>,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.stage_asset_coverage_impl(
+            organization_id,
+            stage,
+            session_id,
+            stage_started_at,
+            current_wave_target_ids,
+            current_wave_asset_values,
+            operation_id,
         )
         .await
     }
@@ -345,6 +379,13 @@ impl DbRepoProvider for GolishDbRepoProvider {
         org_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<(String, String)>> {
         self.in_scope_typed_assets_impl(org_id).await
+    }
+
+    async fn scoping_target_snapshot(
+        &self,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
+        self.scoping_target_snapshot_impl(organization_id).await
     }
 
     async fn eas_port_delegated_assets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
@@ -364,6 +405,22 @@ impl DbRepoProvider for GolishDbRepoProvider {
         run_start: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<Vec<String>> {
         self.eas_web_capable_assets_impl(org_id, run_start).await
+    }
+
+    async fn eas_required_web_origins(
+        &self,
+        organization_id: Uuid,
+        since: chrono::DateTime<chrono::Utc>,
+        current_wave_target_ids: Option<Vec<Uuid>>,
+    ) -> anyhow::Result<Vec<String>> {
+        golish_db::repo::surface_identity_queries::list_eas_required_web_origins(
+            &self.pool,
+            organization_id,
+            since,
+            current_wave_target_ids.as_deref(),
+        )
+        .await
+        .map_err(Into::into)
     }
 
     async fn eas_service_not_applicable_assets(
@@ -407,6 +464,15 @@ impl DbRepoProvider for GolishDbRepoProvider {
         org_ids: &[Uuid],
     ) -> anyhow::Result<Vec<(Uuid, chrono::DateTime<chrono::Utc>)>> {
         self.org_stage_completions_get_impl(stage_kind, org_ids)
+            .await
+    }
+
+    async fn org_stage_completions_get_with_run_id(
+        &self,
+        stage_kind: &str,
+        org_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<(Uuid, chrono::DateTime<chrono::Utc>, Option<String>)>> {
+        self.org_stage_completions_get_with_run_id_impl(stage_kind, org_ids)
             .await
     }
 
@@ -541,6 +607,26 @@ impl DbRepoProvider for GolishDbRepoProvider {
             stage_kind,
             parent_wave_id,
             limit,
+        )
+        .await
+    }
+
+    async fn stage_asset_wave_create_next_or_seal_completion(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+        parent_wave_id: Option<Uuid>,
+        limit: i64,
+        stage_run_id: Option<&str>,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        self.stage_asset_wave_create_next_or_seal_completion_impl(
+            operation_id,
+            organization_id,
+            stage_kind,
+            parent_wave_id,
+            limit,
+            stage_run_id,
         )
         .await
     }
@@ -736,6 +822,30 @@ impl DbRepoProvider for GolishDbRepoProvider {
         .await
     }
 
+    async fn upsert_terminal_technique_outcome_if_unfinished(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+        asset: &str,
+        technique: &str,
+        outcome: &str,
+        source: Option<&str>,
+        query: Option<&str>,
+        evidence_ids: &[i64],
+    ) -> anyhow::Result<bool> {
+        self.upsert_terminal_technique_outcome_if_unfinished_impl(
+            organization_id,
+            run_id,
+            asset,
+            technique,
+            outcome,
+            source,
+            query,
+            evidence_ids,
+        )
+        .await
+    }
+
     async fn mark_target_intel_dns_empty_outcomes(
         &self,
         organization_id: Uuid,
@@ -835,7 +945,7 @@ impl DbRepoProvider for GolishDbRepoProvider {
         &self,
         organization_id: Uuid,
         run_id: &str,
-    ) -> Vec<golish_agent_kit::harness::SourceQueryFact> {
+    ) -> anyhow::Result<Vec<golish_agent_kit::harness::SourceQueryFact>> {
         self.source_query_facts_impl(organization_id, run_id).await
     }
 
@@ -875,19 +985,74 @@ impl DbRepoProvider for GolishDbRepoProvider {
     async fn scoping_actions_for_session(
         &self,
         session_id: Uuid,
+        organization_id: Uuid,
+        not_before: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Option<ScopingActionsSeen>> {
-        let (total, unit_review_invoked, organization_created) =
-            golish_db::repo::tool_calls::scoping_actions_for_session(&self.pool, session_id)
-                .await?;
-        // No recorded tool calls for this session ⇒ verification impossible
-        // (tracking disabled / nothing ran) ⇒ fail open (do not block).
+        let (
+            total,
+            unit_candidates_proposed,
+            unit_review_invoked,
+            subsidiaries_excluded,
+            organization_created,
+            scope_review_results,
+        ) = golish_db::repo::tool_calls::scoping_actions_for_session(
+            &self.pool,
+            session_id,
+            organization_id,
+            not_before,
+        )
+        .await?;
+        // No recorded tool calls in this operation's Scoping window means the
+        // persisted review lifecycle is unavailable. The interactive gate treats
+        // `None` as incomplete rather than borrowing an older session approval.
         if total == 0 {
             return Ok(None);
         }
+        let scope_review_attempts = scope_review_results.len();
+        let (scope_review_approved, scope_review_targets) =
+            summarize_scope_review_results(&scope_review_results);
         Ok(Some(ScopingActionsSeen {
+            unit_candidates_proposed,
             unit_review_invoked,
+            subsidiaries_excluded,
             organization_created,
+            scope_review_approved,
+            scope_review_attempts,
+            scope_review_targets,
         }))
+    }
+}
+
+#[cfg(test)]
+mod scoping_review_summary_tests {
+    use super::summarize_scope_review_results;
+
+    fn review(value: &str) -> Option<String> {
+        Some(
+            serde_json::json!({
+                "response": serde_json::json!([{
+                    "value": value,
+                    "type": "domain",
+                    "scope": "in"
+                }])
+                .to_string(),
+                "skipped": false
+            })
+            .to_string(),
+        )
+    }
+
+    #[test]
+    fn repeated_review_keeps_all_rows_but_is_never_approved() {
+        let (approved, rows) =
+            summarize_scope_review_results(&[review("edited.example"), review("trusted.example")]);
+        assert!(!approved);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["edited.example", "trusted.example"]
+        );
     }
 }
 

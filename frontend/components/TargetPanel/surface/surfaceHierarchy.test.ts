@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { DirectoryEntry } from "@/lib/pentest/api";
 import type { PortInfo, Target } from "@/lib/pentest/types";
-import type { ApiEndpoint, JsAnalysisResult, TargetAsset } from "@/lib/security-analysis";
+import type {
+  ApiEndpoint,
+  Fingerprint,
+  JsAnalysisResult,
+  TargetAsset,
+} from "@/lib/security-analysis";
 import {
   buildSurfaceHierarchy,
   normalizeEndpointKey,
@@ -108,6 +113,20 @@ const asset = (p: Partial<TargetAsset>): TargetAsset => ({
   status: "open",
   discoveredAt: "2026-07-01T00:00:00Z",
   updatedAt: "2026-07-01T00:00:00Z",
+  ...p,
+});
+const fingerprint = (p: Partial<Fingerprint>): Fingerprint => ({
+  id: "fingerprint-1",
+  targetId: "target-ip",
+  projectPath: null,
+  category: "technology",
+  name: "React",
+  version: null,
+  confidence: 0.7,
+  evidence: [],
+  cpe: null,
+  source: "whatweb",
+  detectedAt: "2026-07-01T00:00:00Z",
   ...p,
 });
 
@@ -227,5 +246,51 @@ describe("buildSurfaceHierarchy", () => {
     expect(vm.unassignedWebData.js).toHaveLength(1);
     expect(vm.unassignedWebData.urls).toHaveLength(1);
     expect(vm.unassignedWebData.params).toHaveLength(1);
+  });
+
+  it("attaches one fingerprint to every explicitly evidenced origin without guessing legacy rows", () => {
+    const vm = buildSurfaceHierarchy({
+      rootTarget: target({}),
+      relatedWebTargets: [
+        target({
+          id: "url-a",
+          type: "url",
+          value: "https://a.example.test/",
+          real_ip: "1.2.3.4",
+        }),
+        target({
+          id: "url-b",
+          type: "url",
+          value: "https://b.example.test/",
+          real_ip: "1.2.3.4",
+        }),
+      ],
+      fingerprints: [
+        fingerprint({
+          id: "shared-react",
+          evidence: [
+            { origin: "https://a.example.test:443", source: "whatweb" },
+            { url: "https://b.example.test/app", source: "whatweb" },
+          ],
+        }),
+        fingerprint({
+          id: "legacy-unassigned",
+          name: "nginx",
+          evidence: [{ source: "whatweb", raw: "nginx" }],
+        }),
+      ],
+    });
+
+    expect(
+      vm.webOrigins.find((origin) => origin.id === "https://a.example.test:443")?.fingerprints
+    ).toEqual([expect.objectContaining({ id: "shared-react" })]);
+    expect(
+      vm.webOrigins.find((origin) => origin.id === "https://b.example.test:443")?.fingerprints
+    ).toEqual([expect.objectContaining({ id: "shared-react" })]);
+    expect(
+      vm.webOrigins.flatMap((origin) => origin.fingerprints).some((item) =>
+        item.id === "legacy-unassigned"
+      )
+    ).toBe(false);
   });
 });

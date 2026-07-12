@@ -8,8 +8,8 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::asset_intel::{
-    merge_candidates, run_providers_for_org, select_asset_intel_providers, AssetIntelRunStatus,
-    ToolsConfigState,
+    enrichment_hydrate_config, merge_candidates, run_providers_for_org,
+    select_asset_intel_providers, AssetIntelRunStatus, ToolsConfigState,
 };
 use crate::organizations::{
     OrganizationCandidate, OrganizationCandidateKind, OrganizationCandidates,
@@ -452,6 +452,7 @@ impl OrganizationReconRunner {
         )
         .await;
 
+        let provider_config = enrichment_hydrate_config(args.config.clone());
         match run_providers_for_org(
             self.sink.as_ref(),
             &self.pool,
@@ -460,7 +461,7 @@ impl OrganizationReconRunner {
             selected,
             organization,
             &organization.name,
-            &args.config,
+            &provider_config,
         )
         .await
         {

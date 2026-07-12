@@ -10,53 +10,39 @@ use std::time::Instant;
 impl DbTracker {
     // -- Tool calls --------------------------------------------------------
 
-    pub fn start_tool_call(
+    pub async fn start_tool_call(
         &self,
         call_id: &str,
         tool_name: &str,
         args: &serde_json::Value,
     ) -> ToolCallGuard {
-        let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
-        let call_id_owned = call_id.to_string();
-        let tool_name = tool_name.to_string();
-        let args = args.clone();
+        let session_uuid = self.session_uuid();
         let mut gate = self.ready_gate.clone();
-
-        let call_id_for_guard = call_id_owned.clone();
-        tokio::spawn(async move {
-            if !await_db_ready(&mut gate).await {
-                return;
-            }
-            backend
-                .record_tool_call_start(&call_id_owned, session_uuid, &tool_name, &args)
+        if await_db_ready(&mut gate).await {
+            self.backend
+                .record_tool_call_start(call_id, session_uuid, tool_name, args)
                 .await;
-        });
+        }
 
         ToolCallGuard {
-            session_uuid: self.session_uuid,
-            call_id: call_id_for_guard,
+            session_uuid,
+            call_id: call_id.to_string(),
             started_at: Instant::now(),
         }
     }
 
-    pub fn finish_tool_call(&self, guard: ToolCallGuard, success: bool, result_text: &str) {
-        let backend = self.backend.clone();
+    pub async fn finish_tool_call(&self, guard: ToolCallGuard, success: bool, result_text: &str) {
         let session_uuid = guard.session_uuid;
         let call_id = guard.call_id;
         let duration = guard.started_at.elapsed().as_millis() as i32;
         let status = if success { "finished" } else { "failed" };
         let result_text = truncate_for_db(result_text, 50_000);
         let mut gate = self.ready_gate.clone();
-
-        tokio::spawn(async move {
-            if !await_db_ready(&mut gate).await {
-                return;
-            }
-            backend
+        if await_db_ready(&mut gate).await {
+            self.backend
                 .record_tool_call_finish(&call_id, session_uuid, status, &result_text, duration)
                 .await;
-        });
+        }
     }
 
     // -- Token usage / message chains --------------------------------------
@@ -70,7 +56,7 @@ impl DbTracker {
         duration_ms: u64,
     ) {
         let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
+        let session_uuid = self.session_uuid();
         let model = model.to_string();
         let provider = provider.to_string();
         let mut gate = self.ready_gate.clone();
@@ -96,7 +82,7 @@ impl DbTracker {
 
     pub fn record_terminal_output(&self, stream: &str, content: &str) {
         let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
+        let session_uuid = self.session_uuid();
         let task_id = self.task_id;
         let subtask_id = self.subtask_id;
         let stream = stream.to_string();
@@ -118,7 +104,7 @@ impl DbTracker {
 
     pub fn record_search(&self, engine: &str, query: &str, result: Option<&str>) {
         let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
+        let session_uuid = self.session_uuid();
         let task_id = self.task_id;
         let subtask_id = self.subtask_id;
         let engine = engine.to_string();
@@ -153,7 +139,7 @@ impl DbTracker {
 
     pub fn audit_with_source(&self, action: &str, category: &str, details: &str, source: &str) {
         let backend = self.backend.clone();
-        let session_id = self.session_uuid.to_string();
+        let session_id = self.session_uuid().to_string();
         let pp = self.project_path.clone();
         let action = action.to_string();
         let category = category.to_string();
@@ -189,7 +175,7 @@ impl DbTracker {
         duration_ms: u64,
     ) {
         let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
+        let session_uuid = self.session_uuid();
         let initiator = initiator.to_string();
         let executor = executor.to_string();
         let task = task.to_string();
@@ -224,7 +210,7 @@ impl DbTracker {
         thinking: Option<&str>,
     ) {
         let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
+        let session_uuid = self.session_uuid();
         let task_id = self.task_id;
         let subtask_id = self.subtask_id;
         let msg_type = msg_type.to_string();
@@ -261,7 +247,7 @@ impl DbTracker {
         result_preview: &str,
     ) {
         let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
+        let session_uuid = self.session_uuid();
         let task_id = self.task_id;
         let subtask_id = self.subtask_id;
         let action = action.to_string();

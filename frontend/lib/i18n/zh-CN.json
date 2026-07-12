@@ -124,7 +124,6 @@
       "fields": "组织资料",
       "scope": "范围",
       "targets": "目标",
-      "candidates": "候选项",
       "activity": "活动"
     },
     "metrics": {
@@ -159,8 +158,7 @@
       "runningProviders": "正在运行资产情报源",
       "noRun": "还没有运行资产情报。",
       "availableProviders": "可用情报源",
-      "lastRun": "上次运行",
-      "candidateScopeHint": "资产情报发现的候选项在审批和提升前不会进入主动扫描范围。"
+      "lastRun": "上次运行"
     },
     "fieldsPanel": {
       "title": "情报字段",
@@ -175,14 +173,6 @@
       "description": "IP、域名和 URL 按主机合并展示。",
       "moreLinked": "更多关联目标",
       "noLinkedTargets": "暂无绑定域名或 URL。"
-    },
-    "candidates": {
-      "title": "发现候选项",
-      "description": "子公司和资产在进入授权范围前需要先审核。",
-      "organizations": "组织候选项",
-      "targets": "目标候选项",
-      "waiting": "{{count}} 个候选项待审核",
-      "empty": "暂无候选项。"
     },
     "scope": {
       "title": "范围",

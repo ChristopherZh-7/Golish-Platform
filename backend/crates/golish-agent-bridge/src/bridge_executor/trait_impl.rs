@@ -200,6 +200,10 @@ impl AgentExecutor for BridgeAgentExecutor {
         ))
     }
 
+    fn stage_run_retry_budget_exhausted(&self, stage: StageKind) -> bool {
+        self.bridge.stage_run_reentry_guard.is_exhausted(stage)
+    }
+
     async fn generate_report(&self, execution_context: &ExecutionContext) -> Result<AgentResult> {
         tracing::info!("[TaskMode/Reporter] Generating final report");
         let start = std::time::Instant::now();

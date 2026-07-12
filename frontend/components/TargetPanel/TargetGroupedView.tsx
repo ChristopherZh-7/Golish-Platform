@@ -37,7 +37,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { assetIntel, organizationRecon, organizations as orgsApi } from "@/lib/api";
 import type { AssetIntelRun } from "@/lib/api/asset-intel";
 import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
-import type { Organization, OrganizationCandidate } from "@/lib/api/organizations";
+import type { Organization } from "@/lib/api/organizations";
 import { onCustomEvent, onEvent, sendCustomEvent } from "@/lib/events";
 import { notify } from "@/lib/notify";
 import type { Target } from "@/lib/pentest/types";
@@ -84,13 +84,8 @@ import { TargetSurfaceWorkbench } from "./TargetSurfaceWorkbench";
 // "./TargetGroupedView" so that test file stays unchanged.
 export {
   applyStreamEvent,
-  getCandidateCounts,
-  getCandidateItems,
-  getCandidateSourceFilter,
-  getEvidenceRawRows,
   getNextWorkspaceTabAfterAssetIntelRun,
   getProviderStatusClass,
-  getVisibleCandidateBuckets,
   type HydrateActivity,
 } from "@/lib/target-panel/asset-intel";
 export {
@@ -238,9 +233,6 @@ export function TargetGroupedView({
   const [assetProviders, setAssetProviders] = useState<assetIntel.AssetIntelProviderDescriptor[]>(
     []
   );
-  const [candidateUpdatingId, setCandidateUpdatingId] = useState<string | null>(null);
-  const [candidatePromotingId, setCandidatePromotingId] = useState<string | null>(null);
-  const [expandedCandidateIds, setExpandedCandidateIds] = useState<Set<string>>(new Set());
 
   const refreshOrgs = useCallback(async () => {
     setOrgLoading(true);
@@ -714,56 +706,6 @@ export function TargetGroupedView({
     []
   );
 
-  const handleCandidateStatus = useCallback(
-    async (candidate: OrganizationCandidate, status: "approved" | "rejected") => {
-      if (!selectedOrg) return;
-      const candidateKey =
-        candidate.id ?? `${candidate.kind}:${candidate.source}:${candidate.value}`;
-      setCandidateUpdatingId(candidateKey);
-      try {
-        await orgsApi.upsertOrganizationCandidates(selectedOrg.id, [{ ...candidate, status }]);
-        await refreshOrgs();
-      } catch (error) {
-        setInlineError(String(error));
-      } finally {
-        setCandidateUpdatingId(null);
-      }
-    },
-    [refreshOrgs, selectedOrg]
-  );
-
-  const handlePromoteCandidate = useCallback(
-    async (candidate: OrganizationCandidate) => {
-      if (!selectedOrg) return;
-      const candidateKey =
-        candidate.id ?? `${candidate.kind}:${candidate.source}:${candidate.value}`;
-      setCandidatePromotingId(candidateKey);
-      try {
-        if (candidate.kind === "organization") {
-          await orgsApi.createOrganization({
-            projectPath: getProjectPath(),
-            parentId: selectedOrg.id,
-            name: candidate.label || candidate.value,
-            description: `Promoted from ${candidate.source || "asset intel"} candidate`,
-          });
-          await refreshOrgs();
-        } else {
-          await onBatchAdd(
-            candidate.value,
-            selectedOrg.name,
-            selectedOrg.id,
-            candidate.source || "asset_intel"
-          );
-        }
-      } catch (error) {
-        setInlineError(String(error));
-      } finally {
-        setCandidatePromotingId(null);
-      }
-    },
-    [onBatchAdd, refreshOrgs, selectedOrg]
-  );
-
   const handleStartAddTarget = useCallback(
     (orgId: string) => {
       closeAllEditors();
@@ -1111,18 +1053,12 @@ export function TargetGroupedView({
                 organizationReconErrors={organizationReconErrors}
                 hydratingOrgId={hydratingOrgId}
                 hydratingAction={hydratingAction}
-                candidateUpdatingId={candidateUpdatingId}
-                candidatePromotingId={candidatePromotingId}
-                expandedCandidateIds={expandedCandidateIds}
-                setExpandedCandidateIds={setExpandedCandidateIds}
                 setEditingTargetId={setEditingTargetId}
                 setSelectedTargetId={setSelectedTargetId}
                 openHostGroup={openHostGroup}
                 handleRunAssetIntel={handleRunAssetIntel}
                 handleRunOrganizationRecon={handleRunOrganizationRecon}
                 handleExportOrganizationReconAssets={handleExportOrganizationReconAssets}
-                handlePromoteCandidate={handlePromoteCandidate}
-                handleCandidateStatus={handleCandidateStatus}
               />
             )}
           </div>

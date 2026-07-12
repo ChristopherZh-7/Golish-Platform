@@ -4,7 +4,7 @@
 //! barrier tools, nested sub-agent delegation, regular tool execution,
 //! event emission, and file modification tracking.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,9 +17,9 @@ use uuid::Uuid;
 use crate::definition::{SubAgentContext, SubAgentDefinition};
 use crate::executor_helpers::{epoch_secs, extract_file_path, is_write_tool};
 use crate::executor_types::{
-    cancellation_requested, coverage_gap_action_instruction, wait_for_cancelled, CoverageGapAction,
-    SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairKind, SubmitRepairMode,
-    ToolProvider, BARRIER_TOOL_NAME,
+    cancellation_requested, coverage_gap_action_instruction, normalize_probe_target,
+    wait_for_cancelled, CoverageGapAction, EasWebRepairTarget, SubAgentExecutorContext,
+    SubAgentToolObservation, SubmitRepairKind, SubmitRepairMode, ToolProvider, BARRIER_TOOL_NAME,
 };
 use crate::transcript::SubAgentTranscriptWriter;
 use golish_core::events::{AiEvent, ToolSource};
@@ -74,6 +74,15 @@ pub(super) fn stage_block_signature(tool_name: &str, result: &serde_json::Value)
         })
         .unwrap_or_default();
     Some(joined)
+}
+
+/// An accepted stage submission is itself a deterministic terminal barrier for
+/// the specialist. The accepted deliverable has already been captured in the
+/// shared side channel; asking the model for another turn only lets it re-open
+/// completed work, mutate targets, or submit the same payload repeatedly.
+fn stage_submission_accepted(tool_name: &str, result: &serde_json::Value) -> bool {
+    tool_name == "submit_stage_deliverable"
+        && result.get("status").and_then(|value| value.as_str()) == Some("accepted")
 }
 
 /// Tracks consecutive identical stage-gate block signatures across loop
@@ -1791,6 +1800,7 @@ fn submit_coverage_gap_repair_mode(
         },
         missing_required_checks: missing_min_invocation_tools(reasons),
         coverage_gap_actions,
+        eas_web_repair_targets: None,
         allowed_tools_override: Vec::new(),
         forbidden_tools: Vec::new(),
         directive_message: None,
@@ -1829,6 +1839,7 @@ pub fn submit_repair_mode_from_submit_result(
             reason,
             missing_required_checks: Vec::new(),
             coverage_gap_actions: Vec::new(),
+            eas_web_repair_targets: None,
             allowed_tools_override: Vec::new(),
             forbidden_tools: Vec::new(),
             directive_message: None,
@@ -1848,6 +1859,7 @@ pub fn submit_repair_mode_from_submit_result(
             reason,
             missing_required_checks: missing_min_invocation_tools(&reasons),
             coverage_gap_actions: Vec::new(),
+            eas_web_repair_targets: None,
             allowed_tools_override: Vec::new(),
             forbidden_tools: Vec::new(),
             directive_message: None,
@@ -1868,6 +1880,215 @@ fn submit_repair_update(
         return Some(SubmitRepairModeUpdate::Clear);
     }
     submit_repair_mode_from_submit_result(tool_name, result).map(SubmitRepairModeUpdate::Set)
+}
+
+fn submit_repair_update_after_tool_result(
+    tool_name: &str,
+    result: &serde_json::Value,
+    success: bool,
+    active_mode: Option<&SubmitRepairMode>,
+) -> Option<SubmitRepairModeUpdate> {
+    if let Some(update) = submit_repair_update(tool_name, result) {
+        return Some(match (update, active_mode) {
+            (SubmitRepairModeUpdate::Set(next_mode), Some(active_mode)) => {
+                SubmitRepairModeUpdate::Set(retain_eas_web_repair_targets_for_same_gap(
+                    next_mode,
+                    active_mode,
+                ))
+            }
+            (update, _) => update,
+        });
+    }
+    if !success
+        || !matches!(
+            tool_name,
+            "stage_worklist_next" | "check_stage_asset_coverage"
+        )
+    {
+        return None;
+    }
+    refine_eas_web_repair_mode_from_worklist(active_mode?, result).map(SubmitRepairModeUpdate::Set)
+}
+
+/// Retain a DB-backed EAS WEB exact lock across a repeated `needs_fix` only
+/// when the deterministic WEB gap identity is unchanged.
+///
+/// A changed action set must fail closed and force a fresh worklist read; this
+/// prevents already-closed origins from remaining authorized after the gate
+/// moves on to a different repair denominator.
+pub fn retain_eas_web_repair_targets_for_same_gap(
+    mut next_mode: SubmitRepairMode,
+    active_mode: &SubmitRepairMode,
+) -> SubmitRepairMode {
+    if next_mode.kind != SubmitRepairKind::CoverageGap
+        || active_mode.kind != SubmitRepairKind::CoverageGap
+        || next_mode.eas_web_repair_targets.is_some()
+        || active_mode.eas_web_repair_targets.is_none()
+    {
+        return next_mode;
+    }
+
+    let web_gap_assets = |mode: &SubmitRepairMode| {
+        mode.coverage_gap_actions
+            .iter()
+            .filter(|action| action.technique == "GOLISH-EAS-WEB-FINGERPRINT")
+            .map(|action| action.asset.trim().to_ascii_lowercase())
+            .collect::<BTreeSet<_>>()
+    };
+    let next_assets = web_gap_assets(&next_mode);
+    if !next_assets.is_empty() && next_assets == web_gap_assets(active_mode) {
+        next_mode.eas_web_repair_targets = active_mode.eas_web_repair_targets.clone();
+    }
+    next_mode
+}
+
+/// Refine an active EAS WEB coverage-repair lock from DB-backed worklist truth.
+///
+/// Worklist and coverage responses are bounded projections. A non-empty exact
+/// target set is authoritative for the next repair action, but an empty page is
+/// not proof that the denominator is closed. Only an explicit
+/// `ready_to_submit=true` response may replace the lock with an empty set.
+pub fn refine_eas_web_repair_mode_from_worklist(
+    active_mode: &SubmitRepairMode,
+    result: &serde_json::Value,
+) -> Option<SubmitRepairMode> {
+    if active_mode.kind != SubmitRepairKind::CoverageGap
+        || !active_mode
+            .coverage_gap_actions
+            .iter()
+            .any(|action| action.technique == "GOLISH-EAS-WEB-FINGERPRINT")
+    {
+        return None;
+    }
+
+    let exact_targets = collect_db_backed_eas_web_repair_targets(result);
+    if exact_targets.is_empty()
+        && result
+            .get("ready_to_submit")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        return None;
+    }
+
+    let mut refined = active_mode.clone();
+    refined.eas_web_repair_targets = Some(exact_targets);
+    Some(refined)
+}
+
+fn update_submit_repair_mode_in_batch(
+    effective_mode: &mut Option<SubmitRepairMode>,
+    observed_update: &mut Option<SubmitRepairModeUpdate>,
+    update: Option<SubmitRepairModeUpdate>,
+) {
+    let Some(update) = update else {
+        return;
+    };
+    match &update {
+        SubmitRepairModeUpdate::Set(mode) => *effective_mode = Some(mode.clone()),
+        SubmitRepairModeUpdate::Clear => *effective_mode = None,
+    }
+    *observed_update = Some(update);
+}
+
+fn collect_db_backed_eas_web_repair_targets(result: &serde_json::Value) -> Vec<EasWebRepairTarget> {
+    let mut targets = Vec::new();
+    let mut seen = HashSet::new();
+    for collection in ["items", "gap_examples"] {
+        let Some(items) = result.get(collection).and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            if item.get("technique").and_then(serde_json::Value::as_str)
+                != Some("GOLISH-EAS-WEB-FINGERPRINT")
+            {
+                continue;
+            }
+            let Some(asset) = item
+                .get("asset")
+                .and_then(serde_json::Value::as_str)
+                .map(normalize_probe_target)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            let row_target_id = item
+                .get("target_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let details = item.get("details").unwrap_or(&serde_json::Value::Null);
+            let recommended = details
+                .get("recommended_args")
+                .and_then(|value| value.get("target_urls"))
+                .and_then(serde_json::Value::as_array);
+            if let Some(recommended) = recommended {
+                for target in recommended {
+                    let Some(target_id) = target
+                        .get("target_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    else {
+                        continue;
+                    };
+                    if row_target_id.is_some_and(|row_target_id| row_target_id != target_id) {
+                        continue;
+                    }
+                    let Some(target_url) = target
+                        .get("target_url")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    else {
+                        continue;
+                    };
+                    if normalize_probe_target(target_url) != asset {
+                        continue;
+                    }
+                    let key = (target_id.to_string(), target_url.to_ascii_lowercase());
+                    if seen.insert(key) {
+                        targets.push(EasWebRepairTarget {
+                            target_id: target_id.to_string(),
+                            target_url: target_url.to_string(),
+                        });
+                    }
+                }
+                continue;
+            }
+
+            // Compatibility for a DB-backed worklist produced before
+            // recommended_args was added: target_id + missing_origins still
+            // carries the same deterministic identity.
+            let Some(target_id) = row_target_id else {
+                continue;
+            };
+            let Some(missing_origins) = details
+                .get("missing_origins")
+                .and_then(serde_json::Value::as_array)
+            else {
+                continue;
+            };
+            for target_url in missing_origins
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if normalize_probe_target(target_url) != asset {
+                    continue;
+                }
+                let key = (target_id.to_string(), target_url.to_ascii_lowercase());
+                if seen.insert(key) {
+                    targets.push(EasWebRepairTarget {
+                        target_id: target_id.to_string(),
+                        target_url: target_url.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    targets
 }
 
 fn submit_needs_fix_runtime_correction(
@@ -2057,6 +2278,7 @@ where
     // loop's stage-stall circuit breaker). Last write wins (one submit/turn).
     let mut last_block_sig: Option<String> = None;
     let mut submit_repair_update_seen: Option<SubmitRepairModeUpdate> = None;
+    let mut effective_submit_repair_mode = submit_repair_mode.cloned();
     let mut hard_supervisor_active = false;
 
     for tool_call in tool_calls {
@@ -2252,7 +2474,7 @@ where
                         post_shell_hook: ctx.post_shell_hook.clone(),
                         post_tool_result_hook: ctx.post_tool_result_hook.clone(),
                         tool_observer: ctx.tool_observer.clone(),
-                        initial_submit_repair_mode: ctx.initial_submit_repair_mode.clone(),
+                        initial_submit_repair_mode: effective_submit_repair_mode.clone(),
                         cancelled: ctx.cancelled,
                         // Propagate the stage boundary to nested sub-agents so a
                         // deeper delegate can't bypass the stage's forbidden tools.
@@ -2404,7 +2626,8 @@ where
             }
             result = async {
                 let tool_fut = async {
-            if let Some(blocked) = submit_repair_mode
+            if let Some(blocked) = effective_submit_repair_mode
+                .as_ref()
                 .and_then(|mode| mode.block_result_with_args(tool_name, &tool_args))
             {
                 tracing::warn!(
@@ -2647,6 +2870,7 @@ where
                 agent_id: agent_id.to_string(),
                 agent_name: agent_def.name.clone(),
                 parent_request_id: parent_request_id.to_string(),
+                tool_call_id: tool_call.id.clone(),
                 tool_name: tool_name.to_string(),
                 tool_args: tool_args.clone(),
                 result: result_value.clone(),
@@ -2662,8 +2886,28 @@ where
         if let Some(sig) = stage_block_signature(tool_name, &result_value) {
             last_block_sig = Some(sig);
         }
-        if let Some(update) = submit_repair_update(tool_name, &result_value) {
-            submit_repair_update_seen = Some(update);
+        let submit_repair_update = submit_repair_update_after_tool_result(
+            tool_name,
+            &result_value,
+            success,
+            effective_submit_repair_mode.as_ref(),
+        );
+        update_submit_repair_mode_in_batch(
+            &mut effective_submit_repair_mode,
+            &mut submit_repair_update_seen,
+            submit_repair_update,
+        );
+        if stage_submission_accepted(tool_name, &result_value) {
+            barrier_hit = true;
+            barrier_response = Some(
+                "Stage deliverable accepted; returning control to the stage orchestrator."
+                    .to_string(),
+            );
+            tracing::info!(
+                target: "harness::submit_tool",
+                agent_id = %agent_id,
+                "accepted stage deliverable ended the specialist loop"
+            );
         }
 
         if let Some(payload) =
@@ -2762,15 +3006,21 @@ fn registry_tool_outcome(value: serde_json::Value) -> (serde_json::Value, bool) 
 fn use_sub_agent_outer_tool_timeout(tool_name: &str) -> bool {
     !matches!(
         tool_name,
-        // These are Rust direct bridge tools that emit their own progress chunks
-        // and can legitimately run past a sub-agent's LLM idle timeout on large
-        // targets. Applying `tokio::time::timeout` here drops the future, so the
-        // tool is killed before it can persist its final DB truth. Shell/pentest
-        // commands already have a separate soft-timeout -> background-job path.
+        // These Rust direct/guarded bridge tools can legitimately run past a
+        // sub-agent's LLM idle timeout on large targets. They either emit their
+        // own progress or own a bounded runner timeout plus shared cancellation.
+        // Applying `tokio::time::timeout` here drops the wrapper future; a spawned
+        // child may outlive it, while authorized landing/evidence can no longer
+        // publish final DB truth. Generic shell/pentest commands retain their own
+        // separate timeout/background policy.
         "browser_collect_js_api"
             | "js_extract_apis"
             | "route_probe_paths"
             | "enum_preflight_web_origins"
+            | "eas_discover_ports"
+            | "eas_probe_http_liveness"
+            | "eas_fingerprint_services"
+            | "eas_fingerprint_web_stack"
     )
 }
 
@@ -2848,9 +3098,12 @@ mod tests {
     use super::{
         annotate_list_tools_with_guard, background_failure_runtime_correction,
         execute_registry_tool_with_active_org, inject_harness_org_id_arg,
-        model_visible_tool_result, registry_tool_outcome, structured_storage_hook_payload,
+        model_visible_tool_result, refine_eas_web_repair_mode_from_worklist, registry_tool_outcome,
+        stage_submission_accepted, structured_storage_hook_payload,
         submit_coverage_gap_repair_mode_from_reasons, submit_needs_fix_runtime_correction,
-        submit_repair_update, tool_result_for_history, use_sub_agent_outer_tool_timeout,
+        submit_repair_mode_from_submit_result, submit_repair_update,
+        submit_repair_update_after_tool_result, tool_result_for_history,
+        update_submit_repair_mode_in_batch, use_sub_agent_outer_tool_timeout,
         SubmitRepairModeUpdate, MAX_ROUTE_PROBE_MODEL_BATCH_BYTES,
         MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
     };
@@ -4432,6 +4685,371 @@ mod tests {
     }
 
     #[test]
+    fn coverage_gap_repair_requires_exact_eas_web_origin_when_gate_names_one() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: web fingerprint never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "https://211.91.20.180:443",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "reason": "missing_terminal_coverage",
+                "suggested_tools": ["eas_fingerprint_web_stack"]
+            }]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        assert!(mode
+            .block_result_with_args(
+                "eas_fingerprint_web_stack",
+                &serde_json::json!({
+                    "target_urls": ["https://211.91.20.180:443"]
+                }),
+            )
+            .is_none());
+
+        let blocked = mode
+            .block_result_with_args(
+                "eas_fingerprint_web_stack",
+                &serde_json::json!({
+                    "target_urls": ["http://211.91.20.180:443"]
+                }),
+            )
+            .expect("a guessed scheme must not inherit authorization from the host");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("not an exact EAS WEB origin"));
+    }
+
+    #[test]
+    fn coverage_gap_repair_allows_eas_web_wrapper_worklist_objects() {
+        let v = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: web fingerprint never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "app.example.com",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "reason": "missing_terminal_coverage",
+                "suggested_tools": ["eas_fingerprint_web_stack"]
+            }]
+        });
+        let update = submit_repair_update("submit_stage_deliverable", &v)
+            .expect("coverage gaps should activate repair mode");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        let blocked_before_refresh = mode
+            .block_result_with_args(
+                "eas_fingerprint_web_stack",
+                &serde_json::json!({
+                    "target_urls": [{
+                        "target_id": "d609c2b7-87de-40cf-bd7d-8de3d213f67b",
+                        "target_url": "https://app.example.com:443"
+                    }]
+                }),
+            )
+            .expect("host-level gate actions must not authorize guessed WEB origins");
+        assert!(blocked_before_refresh["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("stage_worklist_next"));
+
+        let worklist = serde_json::json!({
+            "tool": "stage_worklist_next",
+            "stage": "external_attack_surface",
+            "items": [{
+                "asset": "app.example.com",
+                "target_id": "d609c2b7-87de-40cf-bd7d-8de3d213f67b",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "state": "pending",
+                "details": {
+                    "recommended_args": {
+                        "target_urls": [{
+                            "target_id": "d609c2b7-87de-40cf-bd7d-8de3d213f67b",
+                            "target_url": "https://app.example.com:443"
+                        }]
+                    }
+                }
+            }, {
+                "asset": "106.117.210.102",
+                "target_id": "9fd0f197-83b1-4978-985e-38706e01b83a",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "state": "partial",
+                "details": {
+                    "recommended_args": {
+                        "target_urls": [{
+                            "target_id": "9fd0f197-83b1-4978-985e-38706e01b83a",
+                            "target_url": "http://106.117.210.102:1935"
+                        }]
+                    }
+                }
+            }]
+        });
+        let update = submit_repair_update_after_tool_result(
+            "stage_worklist_next",
+            &worklist,
+            true,
+            Some(&mode),
+        )
+        .expect("DB worklist should refine the WEB repair authorization");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected refined repair mode");
+        };
+
+        assert_eq!(mode.eas_web_repair_targets.as_ref().unwrap().len(), 2);
+        let mode: crate::SubmitRepairMode = serde_json::from_value(
+            serde_json::to_value(mode).expect("exact WEB repair lock serializes"),
+        )
+        .expect("exact WEB repair lock restores");
+        assert!(mode
+            .block_result_with_args(
+                "eas_fingerprint_web_stack",
+                &serde_json::json!({
+                    "target_urls": [{
+                        "target_id": "d609c2b7-87de-40cf-bd7d-8de3d213f67b",
+                        "target_url": "https://app.example.com:443"
+                    }, {
+                        "target_id": "9fd0f197-83b1-4978-985e-38706e01b83a",
+                        "target_url": "http://106.117.210.102:1935"
+                    }]
+                }),
+            )
+            .is_none());
+        assert!(mode
+            .block_result_with_args(
+                "eas_fingerprint_web_stack",
+                &serde_json::json!({
+                    "target_urls": ["https://app.example.com:443"]
+                }),
+            )
+            .is_none());
+
+        let blocked = mode
+            .block_result_with_args(
+                "eas_fingerprint_web_stack",
+                &serde_json::json!({
+                    "target_urls": [{
+                        "target_id": "wrong-target-id",
+                        "target_url": "https://app.example.com:443"
+                    }]
+                }),
+            )
+            .expect("an object-form target with the wrong binding must remain blocked");
+        assert!(blocked["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("current DB-backed stage worklist"));
+
+        for guessed in [
+            "http://app.example.com:443",
+            "https://app.example.com:80",
+            "https://outside.example.com:443",
+        ] {
+            let blocked = mode
+                .block_result_with_args(
+                    "eas_fingerprint_web_stack",
+                    &serde_json::json!({"target_urls": [guessed]}),
+                )
+                .expect("non-authoritative scheme/port/host must remain blocked");
+            assert!(blocked["blocked_reason"]
+                .as_str()
+                .unwrap()
+                .contains("current DB-backed stage worklist"));
+        }
+    }
+
+    #[test]
+    fn coverage_gap_repair_refines_web_targets_from_check_coverage_gap_examples() {
+        let submit = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: web fingerprint never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "211.91.20.180",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "reason": "missing_terminal_coverage"
+            }]
+        });
+        let mode = submit_repair_mode_from_submit_result("submit_stage_deliverable", &submit)
+            .expect("coverage repair mode");
+        let coverage = serde_json::json!({
+            "stage": "external_attack_surface",
+            "gap_examples": [{
+                "asset": "211.91.20.180",
+                "target_id": "target-211",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "state": "partial",
+                "details": {
+                    "missing_origins": ["https://211.91.20.180:443"]
+                }
+            }]
+        });
+        let update = submit_repair_update_after_tool_result(
+            "check_stage_asset_coverage",
+            &coverage,
+            true,
+            Some(&mode),
+        )
+        .expect("DB coverage gaps should refine exact WEB authorization");
+        let SubmitRepairModeUpdate::Set(mode) = update else {
+            panic!("expected refined repair mode");
+        };
+        assert_eq!(
+            mode.eas_web_repair_targets,
+            Some(vec![crate::EasWebRepairTarget {
+                target_id: "target-211".to_string(),
+                target_url: "https://211.91.20.180:443".to_string(),
+            }])
+        );
+    }
+
+    #[test]
+    fn eas_web_worklist_refresh_is_authoritative_for_later_calls_in_the_same_batch() {
+        let submit = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: web fingerprint never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "app.example.com",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "reason": "missing_terminal_coverage"
+            }]
+        });
+        let initial = submit_repair_mode_from_submit_result("submit_stage_deliverable", &submit)
+            .expect("coverage repair mode");
+        let target = serde_json::json!({
+            "target_id": "d609c2b7-87de-40cf-bd7d-8de3d213f67b",
+            "target_url": "https://app.example.com:443"
+        });
+        let worklist = serde_json::json!({
+            "ready_to_submit": false,
+            "items": [{
+                "asset": "app.example.com",
+                "target_id": target["target_id"],
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "details": {"recommended_args": {"target_urls": [target.clone()]}}
+            }]
+        });
+
+        let update = submit_repair_update_after_tool_result(
+            "stage_worklist_next",
+            &worklist,
+            true,
+            Some(&initial),
+        );
+        let mut effective = Some(initial);
+        let mut observed = None;
+        update_submit_repair_mode_in_batch(&mut effective, &mut observed, update);
+
+        assert!(
+            effective
+                .as_ref()
+                .expect("repair mode remains active")
+                .block_result_with_args(
+                    "eas_fingerprint_web_stack",
+                    &serde_json::json!({"target_urls": [target]}),
+                )
+                .is_none(),
+            "the refreshed exact lock must guard the next call in this assistant batch"
+        );
+        assert!(matches!(observed, Some(SubmitRepairModeUpdate::Set(_))));
+    }
+
+    #[test]
+    fn bounded_empty_refresh_cannot_erase_a_nonempty_eas_web_lock() {
+        let submit = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["external attack surface incomplete: web fingerprint never attempted"],
+            "coverage_gap_actions": [{
+                "asset": "app.example.com",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "reason": "missing_terminal_coverage"
+            }]
+        });
+        let initial = submit_repair_mode_from_submit_result("submit_stage_deliverable", &submit)
+            .expect("coverage repair mode");
+        let first_page = serde_json::json!({
+            "ready_to_submit": false,
+            "items": [{
+                "asset": "app.example.com",
+                "target_id": "target-app",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "details": {"recommended_args": {"target_urls": [{
+                    "target_id": "target-app",
+                    "target_url": "https://app.example.com:443"
+                }]}}
+            }]
+        });
+        let locked = refine_eas_web_repair_mode_from_worklist(&initial, &first_page)
+            .expect("a nonempty DB page establishes the exact lock");
+
+        let bounded_empty = serde_json::json!({
+            "ready_to_submit": false,
+            "items": [],
+            "omitted_item_count": 188
+        });
+        assert_eq!(
+            refine_eas_web_repair_mode_from_worklist(&locked, &bounded_empty),
+            None,
+            "an empty bounded sample is not proof that no exact WEB work remains"
+        );
+
+        let ready = serde_json::json!({"ready_to_submit": true, "items": []});
+        let closed = refine_eas_web_repair_mode_from_worklist(&locked, &ready)
+            .expect("ready_to_submit explicitly closes the lock");
+        assert_eq!(closed.eas_web_repair_targets, Some(Vec::new()));
+    }
+
+    #[test]
+    fn repeated_needs_fix_for_same_web_gap_keeps_refined_exact_lock() {
+        let submit = serde_json::json!({
+            "status": "needs_fix",
+            "reasons": ["EAS WEB exact origins remain"],
+            "coverage_gap_actions": [{
+                "asset": "http://218.12.76.157:1935",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "reason": "missing_exact_origin",
+                "suggested_tools": ["eas_fingerprint_web_stack"]
+            }]
+        });
+        let initial = submit_repair_mode_from_submit_result("submit_stage_deliverable", &submit)
+            .expect("coverage repair mode");
+        let worklist = serde_json::json!({
+            "ready_to_submit": false,
+            "items": [{
+                "asset": "218.12.76.157",
+                "target_id": "target-218",
+                "technique": "GOLISH-EAS-WEB-FINGERPRINT",
+                "details": {"recommended_args": {"target_urls": [{
+                    "target_id": "target-218",
+                    "target_url": "http://218.12.76.157:1935"
+                }]}}
+            }]
+        });
+        let locked = refine_eas_web_repair_mode_from_worklist(&initial, &worklist)
+            .expect("DB worklist establishes the exact lock");
+
+        let update = submit_repair_update_after_tool_result(
+            "submit_stage_deliverable",
+            &submit,
+            false,
+            Some(&locked),
+        )
+        .expect("needs_fix keeps repair mode active");
+        let SubmitRepairModeUpdate::Set(next) = update else {
+            panic!("expected Set repair mode");
+        };
+
+        assert_eq!(
+            next.eas_web_repair_targets, locked.eas_web_repair_targets,
+            "a repeated needs_fix for the identical WEB gap must not erase the DB-backed lock"
+        );
+    }
+
+    #[test]
     fn coverage_gap_repair_blocks_raw_pentest_run_for_eas_actions() {
         let v = serde_json::json!({
             "status": "needs_fix",
@@ -4677,6 +5295,10 @@ mod tests {
             "browser_collect_js_api",
             "js_extract_apis",
             "route_probe_paths",
+            "eas_discover_ports",
+            "eas_probe_http_liveness",
+            "eas_fingerprint_services",
+            "eas_fingerprint_web_stack",
         ] {
             assert!(
                 !use_sub_agent_outer_tool_timeout(tool_name),
@@ -4725,6 +5347,22 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn accepted_stage_submission_is_a_terminal_barrier() {
+        assert!(stage_submission_accepted(
+            "submit_stage_deliverable",
+            &serde_json::json!({"status": "accepted"})
+        ));
+        assert!(!stage_submission_accepted(
+            "submit_stage_deliverable",
+            &serde_json::json!({"status": "received"})
+        ));
+        assert!(!stage_submission_accepted(
+            "stage_worklist_status",
+            &serde_json::json!({"status": "accepted"})
+        ));
     }
 
     #[test]

@@ -132,6 +132,7 @@ fn map_inner_result(
 }
 
 pub use response_parsing::{
+    refine_eas_web_repair_mode_from_worklist, retain_eas_web_repair_targets_for_same_gap,
     submit_coverage_gap_repair_mode_from_reasons, submit_repair_mode_from_submit_result,
 };
 

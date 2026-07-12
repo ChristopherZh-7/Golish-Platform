@@ -208,13 +208,10 @@ pub(crate) async fn run_http_json_provider(
     let mut request_evidence = Vec::new();
     let mut artifacts = Vec::new();
     let mut request_errors: Vec<ReconTaskError> = Vec::new();
-    // Run *every* request and keep whatever succeeds. The legacy loop returned
-    // (and the downstream trust gate then discarded) on the first request
-    // error, so a single flaky 0.zone request ("error decoding response body"
-    // on a large/slow body) silently dropped the other six query types. Now a
-    // failure is logged + recorded and the loop continues; the provider only
-    // ends `Failed` when *nothing* succeeded.
-    let mut any_request_succeeded = false;
+    // Run every non-fatal request and keep whatever succeeds. Partial records
+    // remain landable observations, but any failed sibling keeps the provider
+    // status Failed/retryable until a later full pass replaces its exact error.
+    let mut succeeded_requests = 0usize;
     'requests: for (index, request) in applicable_requests.iter().enumerate() {
         if index > 0 && !request_delay.is_zero() {
             // Rate-limit pacing: keep back-to-back requests under the upstream
@@ -255,7 +252,8 @@ pub(crate) async fn run_http_json_provider(
                 candidates: delta,
                 profile,
             } => {
-                any_request_succeeded = true;
+                succeeded_requests += 1;
+                let profile_count = profile.len();
                 profile_entries.extend(profile);
                 let added_total = delta.organizations.len() + delta.targets.len();
                 if added_total > 0 {
@@ -279,9 +277,12 @@ pub(crate) async fn run_http_json_provider(
                         },
                     );
                 }
+                let normalized_record_count = added_total + profile_count;
                 request_evidence.push(serde_json::json!({
                     "requestId": request.id,
-                    "status": "ok",
+                    "status": request_evidence_status(normalized_record_count),
+                    "queryType": request.id,
+                    "records": normalized_record_count,
                     "httpStatus": http_status_code,
                     "artifact": response_path,
                 }));
@@ -302,7 +303,9 @@ pub(crate) async fn run_http_json_provider(
                 );
                 request_evidence.push(serde_json::json!({
                     "requestId": request.id,
+                    "queryType": request.id,
                     "status": "failed",
+                    "records": 0,
                     "reason": reason,
                     "error": message,
                 }));
@@ -331,7 +334,8 @@ pub(crate) async fn run_http_json_provider(
     let first_error_detail = request_errors
         .first()
         .map(|error| format!("{}: {}", error.code, error.message));
-    let (state, manifest_status) = summarize_http_run(any_request_succeeded, record_count);
+    let (state, manifest_status) =
+        summarize_http_run(succeeded_requests, failed_requests, record_count);
     let state_label = match state {
         AssetIntelProviderRunState::Completed => "completed",
         AssetIntelProviderRunState::CheckedEmpty => "checked_empty",
@@ -358,7 +362,7 @@ pub(crate) async fn run_http_json_provider(
     let status = AssetIntelProviderRunStatus {
         provider_id: provider_id.clone(),
         status: state,
-        message: if !any_request_succeeded {
+        message: if succeeded_requests == 0 {
             match &first_error_detail {
                 Some(detail) => format!("{provider_id} failed: {detail}"),
                 None => format!("{provider_id} failed: all {failed_requests} request(s) errored"),
@@ -385,6 +389,8 @@ pub(crate) async fn run_http_json_provider(
             "state": state_label,
             "candidateCount": candidate_count,
             "profileFieldCount": profile_entries.len(),
+            "succeededQueries": succeeded_requests,
+            "failedQueries": failed_requests,
             "failedRequests": failed_requests,
             "requests": request_evidence,
             "manifestPath": manifest_path,
@@ -701,15 +707,14 @@ fn is_provider_fatal(reason: &str) -> bool {
 
 /// Map a finished request loop into the provider's terminal state.
 ///
-/// `any_request_succeeded` is the gate: a partially-successful run is
-/// `Completed` (so the trust gate keeps the data we did get), an all-empty but
-/// reachable run is `CheckedEmpty`, and only a run where every request errored
-/// is `Failed`.
+/// A provider is terminal only when every applicable request completed. Partial
+/// successes keep their normalized records but remain `Failed`/retryable.
 fn summarize_http_run(
-    any_request_succeeded: bool,
+    succeeded_requests: usize,
+    failed_requests: usize,
     record_count: usize,
 ) -> (AssetIntelProviderRunState, ReconTaskStatus) {
-    if !any_request_succeeded {
+    if succeeded_requests == 0 || failed_requests > 0 {
         (AssetIntelProviderRunState::Failed, ReconTaskStatus::Failed)
     } else if record_count == 0 {
         (
@@ -721,6 +726,17 @@ fn summarize_http_run(
             AssetIntelProviderRunState::Completed,
             ReconTaskStatus::Completed,
         )
+    }
+}
+
+/// Typed per-request evidence state consumed by the exact technique mapper.
+/// The legacy `ok` label was outside that mapper's vocabulary and therefore
+/// made a successful HTTP response look like an execution error.
+fn request_evidence_status(normalized_record_count: usize) -> &'static str {
+    if normalized_record_count == 0 {
+        "empty"
+    } else {
+        "found"
     }
 }
 
@@ -879,30 +895,38 @@ mod http_runner_tests {
 
     #[test]
     fn summarize_failed_when_no_request_succeeded() {
-        let (state, manifest) = summarize_http_run(false, 0);
+        let (state, manifest) = summarize_http_run(0, 2, 0);
         assert_eq!(state, AssetIntelProviderRunState::Failed);
         assert_eq!(manifest, ReconTaskStatus::Failed);
         // Even if some earlier provider data lingered in the counter, a run
         // where every request errored is still Failed (untrusted downstream).
-        let (state, _) = summarize_http_run(false, 9);
+        let (state, _) = summarize_http_run(0, 2, 9);
         assert_eq!(state, AssetIntelProviderRunState::Failed);
     }
 
     #[test]
     fn summarize_checked_empty_when_reachable_but_no_records() {
-        let (state, manifest) = summarize_http_run(true, 0);
+        let (state, manifest) = summarize_http_run(2, 0, 0);
         assert_eq!(state, AssetIntelProviderRunState::CheckedEmpty);
         assert_eq!(manifest, ReconTaskStatus::CheckedEmpty);
     }
 
     #[test]
-    fn summarize_completed_when_partial_success_has_records() {
-        // The whole point of the fix: one failed request among several does
-        // not stop the run from being a trusted Completed when others produced
-        // records.
-        let (state, manifest) = summarize_http_run(true, 5);
+    fn summarize_failed_but_landable_when_partial_success_has_records() {
+        let (state, manifest) = summarize_http_run(2, 1, 5);
+        assert_eq!(state, AssetIntelProviderRunState::Failed);
+        assert_eq!(manifest, ReconTaskStatus::Failed);
+
+        let (state, manifest) = summarize_http_run(2, 0, 5);
         assert_eq!(state, AssetIntelProviderRunState::Completed);
         assert_eq!(manifest, ReconTaskStatus::Completed);
+    }
+
+    #[test]
+    fn successful_request_evidence_uses_found_or_empty_not_ok() {
+        assert_eq!(request_evidence_status(0), "empty");
+        assert_eq!(request_evidence_status(1), "found");
+        assert_eq!(request_evidence_status(17), "found");
     }
 
     #[test]

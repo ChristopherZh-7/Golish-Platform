@@ -8,6 +8,32 @@ use crate::harness::types::StageKind;
 // 此处重导出，保持 `technique_resolver::AssetClass` 既有引用零改动。
 pub use golish_pentest_domain::AssetClass;
 
+/// Classify one coverage row using the stage's authorization boundary.
+///
+/// EAS PORT/SERVICE work is permitted only for an explicitly typed IP/CIDR
+/// target. Domain/URL rows remain vhost/origin scoped even when their value is an
+/// HTTP URL whose host is an IP literal; stripping the scheme there would
+/// silently promote an exact-origin seed into authorization for its bare host.
+/// Other stages retain the shared host-identity classification contract.
+pub fn classify_stage_asset(
+    stage: StageKind,
+    target_type: Option<&str>,
+    value: &str,
+) -> AssetClass {
+    if stage == StageKind::ExternalAttackSurface {
+        match target_type.map(AssetClass::from_target_type) {
+            Some(class @ (AssetClass::Domain | AssetClass::Url)) => return class,
+            Some(class @ (AssetClass::Ip | AssetClass::Cidr)) => return class,
+            Some(AssetClass::Other) | None => {
+                if golish_pentest_domain::canonical_web_origin(value).is_some() {
+                    return AssetClass::Url;
+                }
+            }
+        }
+    }
+    AssetClass::classify(target_type, value)
+}
+
 /// 该 stage 的完整静态技术集（与 stage JSON 的 expected_techniques 保持一致；
 /// 这是回退基线，动态逻辑只在此之上"按资产类型裁剪"，绝不新增 stage 未声明的技术）。
 fn stage_baseline(stage: StageKind) -> Vec<&'static str> {
@@ -89,9 +115,12 @@ pub fn technique_applies(stage: StageKind, class: AssetClass, tech: &str) -> boo
         // If target_intel has not registered a concrete IP, EAS must not turn
         // the domain string into a port-scan target.
         StageKind::ExternalAttackSurface => match tech {
-            "GOLISH-EAS-PORT" | "GOLISH-EAS-SERVICE-FINGERPRINT" => {
-                matches!(class, Ip | Cidr)
-            }
+            "GOLISH-EAS-PORT" => matches!(class, Ip | Cidr),
+            // A CIDR discovery wave records range-level LIVENESS/PORT and
+            // materialises concrete child IP targets. Service/version work is
+            // intentionally owned by those IPs in the supplemental wave;
+            // `eas_fingerprint_services` never accepts a range directly.
+            "GOLISH-EAS-SERVICE-FINGERPRINT" => matches!(class, Ip),
             "GOLISH-EAS-WEB-FINGERPRINT" => false,
             _ => true,
         },
@@ -132,6 +161,17 @@ pub fn technique_applies_to_value(
     value: &str,
     tech: &str,
 ) -> bool {
+    // A wildcard target is an authorization pattern, never an executable host.
+    // Target Intel nevertheless keeps one passive SUBDOMAIN responsibility so a
+    // failed/empty expansion remains distinguishable from "not applicable".
+    // Concrete children materialized as domain targets own every later stage.
+    if wildcard_scope_pattern(value) {
+        return match stage {
+            StageKind::TargetIntel => tech == "GOLISH-INTEL-SUBDOMAIN",
+            StageKind::ExternalAttackSurface | StageKind::Enumeration => false,
+            _ => technique_applies(stage, class, tech),
+        };
+    }
     if !technique_applies(stage, class, tech) {
         return false;
     }
@@ -145,6 +185,51 @@ pub fn technique_applies_to_value(
     true
 }
 
+fn wildcard_scope_pattern(value: &str) -> bool {
+    let Some(base) = value.trim().trim_end_matches('.').strip_prefix("*.") else {
+        return false;
+    };
+    let Some(key) = golish_pentest_domain::canonical_asset_key(base) else {
+        return false;
+    };
+    key.class == golish_pentest_domain::AssetClass::Domain && key.key.contains('.')
+}
+
+/// Whether `candidate` is a concrete domain child whose Target Intel work is
+/// represented by `anchor`'s passive SUBDOMAIN responsibility.
+///
+/// Both exact domain roots and wildcard authorization patterns may anchor strict
+/// children. A wildcard never covers its apex, and wildcard candidates are kept
+/// as independent authorization patterns. URL/IP/CIDR/organization display
+/// strings are rejected so suffix-shaped non-domain identities cannot collapse
+/// the denominator.
+pub fn target_intel_anchor_covers_child(anchor: &str, candidate: &str) -> bool {
+    let anchor = anchor.trim().trim_end_matches('.').to_ascii_lowercase();
+    let candidate = candidate.trim().trim_end_matches('.').to_ascii_lowercase();
+    if anchor.is_empty()
+        || candidate.is_empty()
+        || candidate.starts_with("*.")
+        || anchor.contains("://")
+        || candidate.contains("://")
+    {
+        return false;
+    }
+    let anchor_base = anchor.strip_prefix("*.").unwrap_or(&anchor);
+    let Some(anchor_key) = golish_pentest_domain::canonical_asset_key(anchor_base) else {
+        return false;
+    };
+    let Some(candidate_key) = golish_pentest_domain::canonical_asset_key(&candidate) else {
+        return false;
+    };
+    if anchor_key.class != golish_pentest_domain::AssetClass::Domain
+        || candidate_key.class != golish_pentest_domain::AssetClass::Domain
+    {
+        return false;
+    }
+    candidate_key.key != anchor_key.key
+        && candidate_key.key.ends_with(&format!(".{}", anchor_key.key))
+}
+
 /// Evidence-aware extension of [`technique_applies_to_value`]. Only
 /// `Enumeration + Ip/Cidr` changes: an exact normalized HTTP(S) origin is
 /// intrinsically web-capable, while a bare IP/CIDR still requires EAS/httpx
@@ -156,6 +241,18 @@ pub fn technique_applies_web_aware(
     tech: &str,
     web_capable: bool,
 ) -> bool {
+    // The evidence-aware branches below intentionally bypass the static
+    // technique matrix for WEB work, so repeat the value-level authorization
+    // guard before either special case. Target Intel keeps only its passive
+    // child-expansion responsibility; evidence can never turn a wildcard into a
+    // Web Origin or any Enumeration/EAS work item.
+    if wildcard_scope_pattern(value) {
+        return match stage {
+            StageKind::TargetIntel => tech == "GOLISH-INTEL-SUBDOMAIN",
+            StageKind::ExternalAttackSurface | StageKind::Enumeration => false,
+            _ => technique_applies_to_value(stage, class, value, tech),
+        };
+    }
     if matches!(stage, StageKind::ExternalAttackSurface) && tech == "GOLISH-EAS-WEB-FINGERPRINT" {
         return web_capable
             && matches!(
@@ -320,6 +417,32 @@ mod tests {
     }
 
     #[test]
+    fn eas_classification_never_promotes_ip_origin_url_to_bare_ip() {
+        let origin = "http://127.0.0.1:54537";
+        assert_eq!(
+            classify_stage_asset(StageKind::ExternalAttackSurface, Some("url"), origin),
+            AssetClass::Url
+        );
+        assert_eq!(
+            classify_stage_asset(StageKind::ExternalAttackSurface, Some("domain"), origin),
+            AssetClass::Domain
+        );
+        assert_eq!(
+            classify_stage_asset(StageKind::ExternalAttackSurface, None, origin),
+            AssetClass::Url
+        );
+        assert_eq!(
+            classify_stage_asset(StageKind::ExternalAttackSurface, Some("ip_address"), origin),
+            AssetClass::Ip
+        );
+        assert_eq!(
+            classify_stage_asset(StageKind::Enumeration, Some("url"), origin),
+            AssetClass::Ip,
+            "Enumeration retains its exact-origin host classification contract"
+        );
+    }
+
+    #[test]
     fn target_intel_drops_domain_only_techniques_for_ip() {
         let ip = techniques_for(StageKind::TargetIntel, AssetClass::Ip);
         assert!(!ip.contains(&"GOLISH-INTEL-SUBDOMAIN".to_string()));
@@ -454,13 +577,17 @@ mod tests {
     }
 
     #[test]
-    fn eas_port_and_service_apply_only_to_ip_or_cidr_hosts() {
+    fn eas_port_applies_to_ip_or_cidr_but_service_requires_concrete_ip() {
         let domain = techniques_for(StageKind::ExternalAttackSurface, AssetClass::Domain);
         assert_eq!(domain, vec!["GOLISH-EAS-LIVENESS".to_string()]);
 
         let ip = techniques_for(StageKind::ExternalAttackSurface, AssetClass::Ip);
         assert!(ip.contains(&"GOLISH-EAS-PORT".to_string()));
         assert!(ip.contains(&"GOLISH-EAS-SERVICE-FINGERPRINT".to_string()));
+
+        let cidr = techniques_for(StageKind::ExternalAttackSurface, AssetClass::Cidr);
+        assert!(cidr.contains(&"GOLISH-EAS-PORT".to_string()));
+        assert!(!cidr.contains(&"GOLISH-EAS-SERVICE-FINGERPRINT".to_string()));
     }
 
     // ── Host-aware coverage 2b: EAS + enumeration matrices (design §3.2/§3.3) ──
@@ -478,10 +605,11 @@ mod tests {
         // concrete IP/CIDR target registered by target_intel.
         let domain = techniques_for(Eas, AssetClass::Domain);
         assert_eq!(domain, vec!["GOLISH-EAS-LIVENESS".to_string()]);
-        // ip / cidr are host-level → keep liveness/port/service. Web-fingerprint
-        // is evidence-aware and appears only after a web surface is confirmed.
+        // Concrete IPs keep liveness/port/service. CIDRs keep range-level
+        // liveness/port; discovered child IPs own service in the next wave.
+        // Web-fingerprint is evidence-aware and appears only after a web surface.
         assert_eq!(techniques_for(Eas, AssetClass::Ip).len(), 3);
-        assert_eq!(techniques_for(Eas, AssetClass::Cidr).len(), 3);
+        assert_eq!(techniques_for(Eas, AssetClass::Cidr).len(), 2);
         // fail-safe: unknown keeps the full set.
         assert_eq!(techniques_for(Eas, AssetClass::Other).len(), 4);
     }
@@ -571,6 +699,69 @@ mod tests {
             "a.com",
             "GOLISH-INTEL-WHOIS",
             true
+        ));
+    }
+
+    #[test]
+    fn wildcard_scope_pattern_only_owns_passive_intel_child_expansion() {
+        for technique in stage_baseline(StageKind::TargetIntel) {
+            assert_eq!(
+                technique_applies_web_aware(
+                    StageKind::TargetIntel,
+                    AssetClass::Other,
+                    "*.moresec.cn",
+                    technique,
+                    true,
+                ),
+                technique == "GOLISH-INTEL-SUBDOMAIN",
+                "wildcard Target Intel responsibility drifted for {technique}"
+            );
+        }
+        for stage in [StageKind::ExternalAttackSurface, StageKind::Enumeration] {
+            for technique in stage_baseline(stage) {
+                assert!(
+                    !technique_applies_web_aware(
+                        stage,
+                        AssetClass::Other,
+                        "*.moresec.cn",
+                        technique,
+                        true,
+                    ),
+                    "wildcard pattern must not own executable {stage:?}/{technique} work"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn target_intel_anchor_handles_wildcard_strict_children_without_aliasing_apex() {
+        assert!(target_intel_anchor_covers_child(
+            "*.moresec.cn",
+            "app.moresec.cn"
+        ));
+        assert!(target_intel_anchor_covers_child(
+            "moresec.cn",
+            "app.moresec.cn"
+        ));
+        assert!(!target_intel_anchor_covers_child(
+            "*.moresec.cn",
+            "moresec.cn"
+        ));
+        assert!(!target_intel_anchor_covers_child(
+            "moresec.cn",
+            "*.moresec.cn"
+        ));
+        assert!(!target_intel_anchor_covers_child(
+            "organization:moresec.cn",
+            "app.moresec.cn"
+        ));
+        assert!(!target_intel_anchor_covers_child(
+            "https://moresec.cn",
+            "app.moresec.cn"
+        ));
+        assert!(!target_intel_anchor_covers_child(
+            "*.moresec.cn",
+            "app.vendor.net"
         ));
     }
 }

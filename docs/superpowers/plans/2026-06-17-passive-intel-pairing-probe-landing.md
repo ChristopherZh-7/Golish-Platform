@@ -1,5 +1,7 @@
 # 测绘被动情报：域名↔IP 配对 + 探活 + 自动落库 实现计划
 
+> Current authorization/identity steps are superseded by [`2026-07-11-intel-eas-asset-identity-closure.md`](../../design/2026-07-11-intel-eas-asset-identity-closure.md). Keep this plan only as provider-pairing history; do not restore profile/DNS IP promotion or passive `real_ip` liveness.
+
 > **状态更新（2026-06-22 · 核当前代码 + git log）**：✅ **已落地**（Phase A–F）。commits `8312365d`（pairing → landing loop）+ `976836cd`（enrich is primary）+ `f055decb`（Phase F notes + progress + feature_list）。
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 `.cursor/skills/executing-plans` 逐任务实现此计划。每个任务单独 commit。TDD：先写失败测试，跑红，再实现转绿。纯函数（配对抽取 / scope 过滤 / liveness 映射）必须有单测；落库/探活为非致命旁路，失败只告警。

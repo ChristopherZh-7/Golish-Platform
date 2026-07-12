@@ -1056,7 +1056,13 @@ pub async fn run(args: Args) -> Result<()> {
     // 5) Consume the event stream: auto-resolve scoping HITL and collect events
     //    for the report.
     let collected: Arc<Mutex<Vec<AiEvent>>> = Arc::new(Mutex::new(Vec::new()));
-    spawn_event_consumer(rt_rx, bridge.clone(), collected.clone(), args.auto_approve);
+    spawn_event_consumer(
+        rt_rx,
+        bridge.clone(),
+        collected.clone(),
+        args.auto_approve,
+        trusted_scope_review_response(&args.target),
+    );
 
     // 6) Orchestrate the slice (mirrors execute_task_mode, headless).
     let task_input = build_objective(&args, to_stage, seed.as_ref());
@@ -1439,7 +1445,13 @@ async fn run_resume(mut args: Args) -> Result<()> {
         crate::ai::commands::configure_bridge_background_listeners(&bridge, &agent_state).await;
         bridge.mark_frontend_ready().await;
         let collected: Arc<Mutex<Vec<AiEvent>>> = Arc::new(Mutex::new(Vec::new()));
-        spawn_event_consumer(rt_rx, bridge.clone(), collected.clone(), args.auto_approve);
+        spawn_event_consumer(
+            rt_rx,
+            bridge.clone(),
+            collected.clone(),
+            args.auto_approve,
+            trusted_scope_review_response(&args.target),
+        );
 
         let continuation = args.execute.as_deref().unwrap_or("继续");
         let result = orchestrate_resume(&bridge, &db_pool, &target, continuation).await;
@@ -1650,11 +1662,44 @@ async fn orchestrate_resume(
 
 /// Watch the runtime event stream: auto-resolve `ask_human` requests (scoping
 /// HITL) when `--auto-approve`, and collect events for the post-run report.
+fn trusted_scope_review_response(targets: &[String]) -> Option<String> {
+    let rows = targets
+        .iter()
+        .map(|target| target.trim())
+        .filter(|target| !target.is_empty())
+        .map(|target| {
+            let target_type = golish_app_core::domain::targets::detect_type(target);
+            serde_json::json!({
+                "value": target,
+                "type": target_type.as_str(),
+                "scope": "in",
+            })
+        })
+        .collect::<Vec<_>>();
+    (!rows.is_empty()).then(|| serde_json::Value::Array(rows).to_string())
+}
+
+fn stage_run_auto_approval_reason(
+    input_type: &str,
+    trusted_scope_response: Option<&str>,
+) -> String {
+    if input_type == "scope_review" {
+        // Headless approval is derived from trusted CLI seeds, not model-authored
+        // ask_human context. The deterministic scoping gate then compares it
+        // with the rows that seed_upstream actually persisted.
+        if let Some(response) = trusted_scope_response {
+            return response.to_string();
+        }
+    }
+    format!("auto-approved (headless --stage-run, {input_type})")
+}
+
 fn spawn_event_consumer(
     mut rx: mpsc::UnboundedReceiver<RuntimeEvent>,
     bridge: Arc<AgentBridge>,
     collected: Arc<Mutex<Vec<AiEvent>>>,
     auto_approve: bool,
+    trusted_scope_response: Option<String>,
 ) {
     tokio::spawn(async move {
         while let Some(rt_ev) = rx.recv().await {
@@ -1674,8 +1719,9 @@ fn spawn_event_consumer(
                     let decision = ApprovalDecision {
                         request_id: request_id.clone(),
                         approved: true,
-                        reason: Some(format!(
-                            "auto-approved (headless --stage-run, {input_type})"
+                        reason: Some(stage_run_auto_approval_reason(
+                            input_type,
+                            trusted_scope_response.as_deref(),
                         )),
                         remember: false,
                         always_allow: false,
@@ -2414,6 +2460,18 @@ mod tests {
             organization_id: Some(ORG_ID),
             stage: Some(StageKind::Enumeration),
         }
+    }
+
+    #[test]
+    fn headless_scope_review_returns_exact_table_payload() {
+        let rows = trusted_scope_review_response(&["moresec.cn".to_string()])
+            .expect("CLI target becomes a trusted review row");
+        assert_eq!(
+            stage_run_auto_approval_reason("scope_review", Some(&rows)),
+            rows
+        );
+        assert!(stage_run_auto_approval_reason("scope_review", None).contains("auto-approved"));
+        assert!(stage_run_auto_approval_reason("unit_review", Some(&rows)).contains("unit_review"));
     }
 
     fn valid_resume_candidate() -> ResumeCandidate {

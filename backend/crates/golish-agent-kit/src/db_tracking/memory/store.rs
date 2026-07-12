@@ -7,7 +7,7 @@ use super::super::DbTracker;
 impl DbTracker {
     pub fn store_memory(&self, content: &str, mem_type: &str, metadata: Option<serde_json::Value>) {
         let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
+        let session_uuid = self.session_uuid();
         let content = content.to_string();
         let mem_type = mem_type.to_string();
         let project_path = self.project_path.clone();
@@ -54,7 +54,7 @@ impl DbTracker {
         metadata: Option<serde_json::Value>,
     ) {
         let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
+        let session_uuid = self.session_uuid();
         let content = content.to_string();
         let mem_type = mem_type.to_string();
         let mut gate = self.ready_gate.clone();
@@ -93,7 +93,7 @@ impl DbTracker {
         metadata: Option<serde_json::Value>,
     ) {
         let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
+        let session_uuid = self.session_uuid();
         let content = content.to_string();
         let mem_type = mem_type.to_string();
         let doc_type = doc_type.to_string();
@@ -149,7 +149,7 @@ impl DbTracker {
         );
 
         let backend = self.backend.clone();
-        let session_uuid = self.session_uuid;
+        let session_uuid = self.session_uuid();
         let content = content.to_string();
         let mem_type = mem_type.to_string();
         let tool_name = tool_name.map(str::to_string);

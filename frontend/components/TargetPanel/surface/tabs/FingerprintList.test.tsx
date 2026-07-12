@@ -28,6 +28,16 @@ describe("FingerprintList", () => {
     expect(screen.getByText("1 detected")).toBeInTheDocument();
   });
 
+  it("renders database 0..1 confidence values as percentages", () => {
+    render(<FingerprintList fingerprints={[fp({ confidence: 0.8 })]} />);
+    expect(screen.getByText("80%")).toBeInTheDocument();
+  });
+
+  it("keeps legacy 0..100 confidence values compatible", () => {
+    render(<FingerprintList fingerprints={[fp({ confidence: 90 })]} />);
+    expect(screen.getByText("90%")).toBeInTheDocument();
+  });
+
   it("shows empty state when no fingerprints", () => {
     render(<FingerprintList fingerprints={[]} />);
     expect(screen.getByText(/No service\/version fingerprint/)).toBeInTheDocument();

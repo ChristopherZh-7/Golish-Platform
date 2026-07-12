@@ -124,7 +124,6 @@
       "fields": "Profile",
       "scope": "Scope",
       "targets": "Targets",
-      "candidates": "Candidates",
       "activity": "Activity"
     },
     "metrics": {
@@ -159,8 +158,7 @@
       "runningProviders": "Running asset intel providers",
       "noRun": "No asset intel run yet.",
       "availableProviders": "Available providers",
-      "lastRun": "Last run",
-      "candidateScopeHint": "Candidates from asset intel runs stay out of active scan scope until approved and promoted."
+      "lastRun": "Last run"
     },
     "fieldsPanel": {
       "title": "Intel fields",
@@ -175,14 +173,6 @@
       "description": "IPs, domains, and URLs grouped by host.",
       "moreLinked": "More linked targets",
       "noLinkedTargets": "No linked domains or URLs yet."
-    },
-    "candidates": {
-      "title": "Discovery candidates",
-      "description": "Review discovered subsidiaries and assets before they become in-scope targets.",
-      "organizations": "Organization candidates",
-      "targets": "Target candidates",
-      "waiting": "{{count}} candidate(s) waiting for review",
-      "empty": "No candidates yet."
     },
     "scope": {
       "title": "Scope",

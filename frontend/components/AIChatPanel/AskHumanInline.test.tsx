@@ -423,6 +423,44 @@ describe("AskHumanInline auto-confirm countdown", () => {
     expect(onSubmit).toHaveBeenCalledWith("Production");
   });
 
+  it("never auto-confirms a subsidiary scope decision", () => {
+    const onSubmit = vi.fn();
+    const onSkip = vi.fn();
+    render(
+      <AskHumanInline
+        request={req({
+          inputType: "choice",
+          options: ["不纳入子公司（仅母公司）", "纳入：≥51% 控股子公司"],
+          context:
+            '{"decision":"subsidiary_scope","organization_id":"11111111-2222-3333-4444-555555555555"}',
+        })}
+        onSubmit={onSubmit}
+        onSkip={onSkip}
+      />
+    );
+    runOutClock();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSkip).not.toHaveBeenCalled();
+  });
+
+  it("keeps an in-flight legacy subsidiary choice waiting too", () => {
+    const onSubmit = vi.fn();
+    render(
+      <AskHumanInline
+        request={req({
+          inputType: "choice",
+          question: "杭州默安科技有限公司是否纳入子公司？",
+          options: ["不纳入子公司（仅母公司）", "纳入：≥51% 控股子公司"],
+          context: "Subsidiary scope decision",
+        })}
+        onSubmit={onSubmit}
+        onSkip={vi.fn()}
+      />
+    );
+    runOutClock();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("falls back to Skip when a choice has no options and nothing was typed", () => {
     const onSubmit = vi.fn();
     const onSkip = vi.fn();

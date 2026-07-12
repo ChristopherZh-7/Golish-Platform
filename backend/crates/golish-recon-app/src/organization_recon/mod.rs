@@ -19,15 +19,17 @@ pub(crate) mod types;
 pub(crate) use persistence::land_target_intel_coverage;
 // Standalone RDAP WHOIS landing (plan 2026-06-18-slim-enrich): exposed to the
 // agent as the `recon_lookup_whois` tool, separate from provider survey.
-pub(crate) use persistence::land_whois;
+pub(crate) use persistence::{land_whois, WhoisLandingState};
 // Scope ownership check reused by the asset_intel landing path
 // (design 2026-06-17 passive-intel-pairing §2④) to keep third-party noise out
 // of auto-promoted targets.
-pub(crate) use persistence::value_belongs_to_organization;
+pub(crate) use persistence::{normalized_host, value_belongs_to_organization};
 // Per-asset landing refresh (fix 2026-06-17 enrich-timing): callable from the
 // submit-gate read path to close the "enrich lands before targets are registered"
 // ordering gap (DNS/SUBDOMAIN never reached the gate-read tables).
-pub use persistence::{refresh_per_asset_landing, refresh_per_asset_landing_summary};
+pub use persistence::{
+    refresh_per_asset_landing, refresh_per_asset_landing_summary, PerAssetLandingSummary,
+};
 
 pub use commands::*;
 pub use runner::ORGANIZATION_RECON_EVENT;

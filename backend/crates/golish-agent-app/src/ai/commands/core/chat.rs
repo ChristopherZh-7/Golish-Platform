@@ -261,8 +261,6 @@ async fn execute_task_mode_with_continuity(
     use golish_core::events::AiEvent;
     use golish_db::{models::NewSession, repo::sessions};
 
-    let executor = BridgeAgentExecutor::from_request(bridge.clone(), request.clone())
-        .context("upgrade owned request into Task execution")?;
     let task_input = extract_user_message_from_wrapped_prompt(prompt);
     let continuity_decision =
         continuity_decision_from_prompt(task_input).unwrap_or(continuity_decision);
@@ -293,6 +291,13 @@ async fn execute_task_mode_with_continuity(
         chat_session_id = %_session_id,
         "task mode session row created"
     );
+    // The bridge is configured before the durable TaskMode session row exists, so
+    // its DB tracker initially carries a random UUID. Rebind the shared tracker
+    // identity now, before constructing/executing the stage runner, so every
+    // ask_human lifecycle row is visible to the session-scoped Scoping gate.
+    bridge.set_tracker_session_uuid(uuid_session_id);
+    let executor = BridgeAgentExecutor::from_request(bridge.clone(), request.clone())
+        .context("upgrade owned request into Task execution")?;
 
     let event_tx = bridge.get_or_create_event_tx();
 
@@ -1129,6 +1134,27 @@ mod chat_title_tests {
         should_auto_start_task_operation, task_profile_lead_instructions,
         task_prompt_from_start_operation, truncate_for_title,
     };
+
+    #[tokio::test]
+    async fn task_mode_tracker_rebind_updates_existing_runtime_clones() {
+        let pool = std::sync::Arc::new(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://localhost/golish_test")
+                .expect("lazy pool"),
+        );
+        let initial = uuid::Uuid::new_v4();
+        let canonical = uuid::Uuid::new_v4();
+        let tracker = golish_agent_kit::db_tracking::DbTracker::new(
+            std::sync::Arc::new(crate::ai::tracking_bridge::PgTrackingBackend::new(pool)),
+            initial,
+            crate::ai::tracking_bridge::CoreDbReadyGate(golish_core::DbReadyGate::new()),
+        );
+        let runtime_clone = tracker.clone();
+
+        tracker.set_session_uuid(canonical);
+
+        assert_eq!(runtime_clone.session_uuid(), canonical);
+    }
 
     #[test]
     fn ascii_under_limit_returned_as_is() {

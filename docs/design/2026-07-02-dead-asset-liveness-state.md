@@ -1,5 +1,7 @@
 # 死資產標記（target liveness_state）設計方案
 
+> Superseded by [`2026-07-11-intel-eas-asset-identity-closure.md`](2026-07-11-intel-eas-asset-identity-closure.md) for `real_ip`/liveness semantics: passive DNS `real_ip` is cache only and must not mark a target alive. This unimplemented draft remains historical context.
+
 > **目標**：給每個 in-scope target 一個一等、持久化的「存活狀態」欄位 `liveness_state`，讓 EAS 探活後能把死資產標記下來，下游階段（enumeration / vuln_triage）不再對已確認死亡的資產灌覆蓋率分母、不再浪費工具，前端也能顯示「活 / 死 / 不可達 / 未探」。
 >
 > **架構**：`targets` 表加一個 nullable `liveness_state` 欄位（I10 expand-first）；EAS 落庫寫點（`update_recon_extended_by_id`）在寫 `http_status`/`real_ip`/`ports` 的同時，用與 `coverage_truth::build_liveness_values_sql` 完全一致的存活判據把 `liveness_state` 蓋上；下游 seed 查詢與覆蓋率 gate 讀這個欄位把「確認死亡」的資產排除出分母、標成 `not_applicable`；ts-rs `Target` 導出該欄位供前端渲染徽章。

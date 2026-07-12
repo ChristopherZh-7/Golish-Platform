@@ -74,15 +74,203 @@ fn org_ids_from_create_result(result: &str) -> Vec<Uuid> {
     ids
 }
 
+fn approved_human_response(result: Option<&str>) -> Option<String> {
+    let result = serde_json::from_str::<serde_json::Value>(result?).ok()?;
+    if result.get("error").is_some()
+        || result
+            .get("skipped")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    let response = result.get("response")?.as_str()?.trim();
+    (!response.is_empty()).then(|| response.to_string())
+}
+
+fn context_organization_id(args: &serde_json::Value) -> Option<Uuid> {
+    let context = args.get("context")?.as_str()?;
+    serde_json::from_str::<serde_json::Value>(context)
+        .ok()?
+        .get("organization_id")?
+        .as_str()?
+        .parse()
+        .ok()
+}
+
+fn subsidiary_scope_decision(
+    args: &serde_json::Value,
+    result: Option<&str>,
+    expected_organization_id: Uuid,
+    expected_organization_name: Option<&str>,
+) -> Option<bool> {
+    if args.get("input_type").and_then(serde_json::Value::as_str) != Some("choice") {
+        return None;
+    }
+
+    let context = args
+        .get("context")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let question = args
+        .get("question")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let options = args
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let structured_context = serde_json::from_str::<serde_json::Value>(context).ok();
+    let structured_decision = structured_context
+        .as_ref()
+        .and_then(|value| value.get("decision"))
+        .and_then(serde_json::Value::as_str);
+    let prompt_text = format!("{context} {question} {options}").to_ascii_lowercase();
+    let subsidiary_words = prompt_text.contains("subsidiar")
+        || prompt_text.contains("子公司")
+        || prompt_text.contains("分支机构");
+    let subsidiary_decision = match structured_decision {
+        Some(decision) if decision.eq_ignore_ascii_case("subsidiary_scope") => {
+            context_organization_id(args) == Some(expected_organization_id)
+        }
+        Some(_) => false,
+        None => {
+            // Backward compatibility for in-flight runs created before the
+            // structured context contract landed. The exact current root name
+            // must occur in the prompt; a generic subsidiary choice from a
+            // sibling engagement can never satisfy this gate.
+            let exact_root_named = expected_organization_name
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(|name| prompt_text.contains(&name.to_ascii_lowercase()))
+                .unwrap_or(false);
+            subsidiary_words && exact_root_named
+        }
+    };
+    if !subsidiary_decision {
+        return None;
+    }
+
+    let response = approved_human_response(result)?.to_ascii_lowercase();
+    if [
+        "不纳入子公司",
+        "不包含子公司",
+        "仅母公司",
+        "仅测试母公司",
+        "只测试母公司",
+        "no subsidiaries",
+        "exclude subsidiaries",
+        "parent company only",
+        "root only",
+    ]
+    .iter()
+    .any(|marker| response.contains(marker))
+    {
+        return Some(true);
+    }
+    if [
+        "纳入：",
+        "纳入:",
+        "纳入子公司",
+        "include subsidiaries",
+        "subsidiaries in scope",
+    ]
+    .iter()
+    .any(|marker| response.contains(marker))
+    {
+        return Some(false);
+    }
+    None
+}
+
+fn successful_candidate_proposal(
+    args: &serde_json::Value,
+    result: Option<&str>,
+    expected_organization_id: Uuid,
+) -> bool {
+    if args.get("action").and_then(serde_json::Value::as_str) != Some("propose_candidates")
+        || args
+            .get("organization_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|id| id.parse::<Uuid>().ok())
+            != Some(expected_organization_id)
+    {
+        return false;
+    }
+    let Some(result) =
+        result.and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+    else {
+        return false;
+    };
+    result.get("error").is_none()
+        && result.get("action").and_then(serde_json::Value::as_str) == Some("propose_candidates")
+        && result
+            .get("organization_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|id| id.parse::<Uuid>().ok())
+            == Some(expected_organization_id)
+        && result
+            .get("recorded")
+            .and_then(serde_json::Value::as_i64)
+            .is_some()
+}
+
+fn approved_unit_review(
+    args: &serde_json::Value,
+    result: Option<&str>,
+    expected_organization_id: Uuid,
+) -> bool {
+    if args.get("input_type").and_then(serde_json::Value::as_str) != Some("unit_review")
+        || context_organization_id(args) != Some(expected_organization_id)
+    {
+        return false;
+    }
+    approved_human_response(result)
+        .and_then(|response| serde_json::from_str::<serde_json::Value>(&response).ok())
+        .and_then(|response| response.as_array().map(|_| ()))
+        .is_some()
+}
+
+fn unit_flow_for_org(
+    rows: &[(String, serde_json::Value, Option<String>)],
+    expected_organization_id: Uuid,
+) -> (bool, bool) {
+    let mut proposal_completed = false;
+    let mut review_completed = false;
+    for (name, args, result) in rows {
+        if name == "manage_organizations"
+            && successful_candidate_proposal(args, result.as_deref(), expected_organization_id)
+        {
+            proposal_completed = true;
+        } else if name == "ask_human"
+            && proposal_completed
+            && approved_unit_review(args, result.as_deref(), expected_organization_id)
+        {
+            review_completed = true;
+        }
+    }
+    (proposal_completed, review_completed)
+}
+
 /// For the red_team scoping gate: cross-verify (against real recorded tool calls
 /// AND the resulting DB state) whether this session actually performed the
 /// unit-candidate review flow rather than just asserting a claim or merely
 /// *attempting* a create.
 ///
-/// Returns `(total_calls, unit_review_invoked, organization_created)`:
-/// - `total_calls` lets the caller FAIL OPEN when `0` (tracking disabled / no
-///   calls recorded), never blocking on infra absence.
-/// - `unit_review_invoked`: a `ask_human(input_type="unit_review")` call exists.
+/// Returns `(total_calls, unit_candidates_proposed, unit_review_invoked,
+/// subsidiaries_excluded, organization_created, scope_review_results)`:
+/// - only rows created at/after `not_before` belong to the current operation's
+///   Scoping stage; an older approval in the same chat session is never reused.
+/// - `total_calls` lets the caller distinguish absent tracking from a completed
+///   lifecycle that simply omitted the required review.
+/// - `unit_review_invoked`: a successful, non-skipped, parseable same-root
+///   `ask_human(input_type="unit_review")` completed after candidate proposal.
+/// - `subsidiaries_excluded`: the latest parseable persisted subsidiary-scope
+///   choice explicitly limited this engagement to the root/parent organization.
 /// - `organization_created`: a `manage_organizations(action="create"/"create_batch")`
 ///   call this session reported a real org id for, AND that org row actually
 ///   exists in `organizations` now. A swallowed duplicate-key failure (no id in
@@ -91,17 +279,74 @@ fn org_ids_from_create_result(result: &str) -> Vec<Uuid> {
 pub async fn scoping_actions_for_session(
     pool: &PgPool,
     session_id: Uuid,
-) -> Result<(i64, bool, bool)> {
-    let (total, unit_review_invoked): (i64, bool) = sqlx::query_as(
-        r#"SELECT
-             COUNT(*) AS total,
-             COALESCE(BOOL_OR(name = 'ask_human' AND args->>'input_type' = 'unit_review'), false) AS unit_review
+    organization_id: Uuid,
+    not_before: chrono::DateTime<chrono::Utc>,
+) -> Result<(i64, bool, bool, bool, bool, Vec<Option<String>>)> {
+    let total: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
            FROM tool_calls
-           WHERE session_id = $1"#,
+           WHERE session_id = $1
+             AND created_at >= $2"#,
     )
     .bind(session_id)
+    .bind(not_before)
     .fetch_one(pool)
     .await?;
+
+    let organization_name: Option<String> =
+        sqlx::query_scalar("SELECT name FROM organizations WHERE id = $1")
+            .bind(organization_id)
+            .fetch_optional(pool)
+            .await?;
+
+    let subsidiary_choice_rows: Vec<(serde_json::Value, Option<String>)> = sqlx::query_as(
+        r#"SELECT args, result
+           FROM tool_calls
+           WHERE session_id = $1
+             AND created_at >= $2
+             AND name = 'ask_human'
+             AND status = 'finished'::toolcall_status
+             AND args->>'input_type' = 'choice'
+           ORDER BY created_at ASC, id ASC"#,
+    )
+    .bind(session_id)
+    .bind(not_before)
+    .fetch_all(pool)
+    .await?;
+    let subsidiaries_excluded = subsidiary_choice_rows
+        .iter()
+        .filter_map(|(args, result)| {
+            subsidiary_scope_decision(
+                args,
+                result.as_deref(),
+                organization_id,
+                organization_name.as_deref(),
+            )
+        })
+        .next_back()
+        .unwrap_or(false);
+
+    // Preserve lifecycle order and validate both payloads against the same
+    // trusted root org. A skipped/error review or a review issued before the
+    // proposal cannot satisfy the included-subsidiary branch.
+    let unit_flow_rows: Vec<(String, serde_json::Value, Option<String>)> = sqlx::query_as(
+        r#"SELECT name, args, result
+           FROM tool_calls
+           WHERE session_id = $1
+             AND created_at >= $2
+             AND status = 'finished'::toolcall_status
+             AND (
+               (name = 'manage_organizations' AND args->>'action' = 'propose_candidates')
+               OR (name = 'ask_human' AND args->>'input_type' = 'unit_review')
+             )
+           ORDER BY created_at ASC, id ASC"#,
+    )
+    .bind(session_id)
+    .bind(not_before)
+    .fetch_all(pool)
+    .await?;
+    let (unit_candidates_proposed, unit_review_invoked) =
+        unit_flow_for_org(&unit_flow_rows, organization_id);
 
     // Collect the result payloads of this session's create calls, then keep only
     // the org ids that a SUCCESSFUL create reported (parsed in Rust to avoid
@@ -109,10 +354,13 @@ pub async fn scoping_actions_for_session(
     let create_results: Vec<(Option<String>,)> = sqlx::query_as(
         r#"SELECT result FROM tool_calls
            WHERE session_id = $1
+             AND created_at >= $2
              AND name = 'manage_organizations'
+             AND status = 'finished'::toolcall_status
              AND args->>'action' IN ('create', 'create_batch')"#,
     )
     .bind(session_id)
+    .bind(not_before)
     .fetch_all(pool)
     .await?;
 
@@ -137,7 +385,35 @@ pub async fn scoping_actions_for_session(
         existing > 0
     };
 
-    Ok((total, unit_review_invoked, organization_created))
+    // Read EVERY completed review in this operation window. Looking only at the
+    // latest row lets a model wash away an earlier human edit/rejection by
+    // opening a second dialog and confirming the stale DB snapshot.
+    let scope_review_results: Vec<Option<String>> =
+        sqlx::query_scalar(scoping_scope_review_results_sql())
+            .bind(session_id)
+            .bind(not_before)
+            .fetch_all(pool)
+            .await?;
+
+    Ok((
+        total,
+        unit_candidates_proposed,
+        unit_review_invoked,
+        subsidiaries_excluded,
+        organization_created,
+        scope_review_results,
+    ))
+}
+
+fn scoping_scope_review_results_sql() -> &'static str {
+    r#"SELECT result
+       FROM tool_calls
+       WHERE session_id = $1
+         AND created_at >= $2
+         AND name = 'ask_human'
+         AND status = 'finished'::toolcall_status
+         AND args->>'input_type' = 'scope_review'
+       ORDER BY created_at ASC, id ASC"#
 }
 
 pub async fn list_by_name(pool: &PgPool, name: &str, limit: i64) -> Result<Vec<ToolCall>> {
@@ -210,7 +486,163 @@ pub struct ToolCallStats {
 
 #[cfg(test)]
 mod tests {
-    use super::org_ids_from_create_result;
+    use super::{
+        org_ids_from_create_result, scoping_scope_review_results_sql, subsidiary_scope_decision,
+        unit_flow_for_org,
+    };
+    use uuid::Uuid;
+
+    #[test]
+    fn persisted_parent_only_choice_is_a_deterministic_subsidiary_exclusion() {
+        let organization_id = Uuid::new_v4();
+        let args = serde_json::json!({
+            "input_type": "choice",
+            "context": serde_json::json!({
+                "decision": "subsidiary_scope",
+                "organization_id": organization_id
+            }).to_string(),
+            "question": "是否纳入子公司？",
+            "options": ["不纳入子公司（仅测试母公司本身）", "纳入：≥51% 控股子公司"]
+        });
+        assert_eq!(
+            subsidiary_scope_decision(
+                &args,
+                Some(r#"{"response":"不纳入子公司（仅测试母公司本身）","skipped":false}"#),
+                organization_id,
+                Some("杭州默安科技有限公司")
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            subsidiary_scope_decision(
+                &args,
+                Some(r#"{"response":"纳入：≥51% 控股子公司","skipped":false}"#),
+                organization_id,
+                Some("杭州默安科技有限公司")
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            subsidiary_scope_decision(
+                &args,
+                Some(r#"{"response":"不纳入子公司","skipped":false}"#),
+                Uuid::new_v4(),
+                Some("另一家公司")
+            ),
+            None,
+            "a choice bound to another root must not satisfy this engagement"
+        );
+        assert_eq!(
+            subsidiary_scope_decision(
+                &args,
+                Some(r#"{"skipped":true}"#),
+                organization_id,
+                Some("杭州默安科技有限公司")
+            ),
+            None,
+            "skipping the choice is not an explicit parent-only decision"
+        );
+
+        let entity_args = serde_json::json!({
+            "input_type": "choice",
+            "context": "Company lookup result confirmation",
+            "question": "这是目标公司吗？",
+            "options": ["杭州默安科技有限公司"]
+        });
+        assert_eq!(
+            subsidiary_scope_decision(
+                &entity_args,
+                Some(r#"{"response":"杭州默安科技有限公司","skipped":false}"#),
+                organization_id,
+                Some("杭州默安科技有限公司")
+            ),
+            None
+        );
+
+        let legacy_args = serde_json::json!({
+            "input_type": "choice",
+            "context": "Subsidiary scope decision",
+            "question": "杭州默安科技有限公司是否纳入子公司？",
+            "options": ["不纳入子公司（仅测试母公司本身）", "纳入子公司"]
+        });
+        assert_eq!(
+            subsidiary_scope_decision(
+                &legacy_args,
+                Some(r#"{"response":"不纳入子公司","skipped":false}"#),
+                organization_id,
+                Some("杭州默安科技有限公司")
+            ),
+            Some(true),
+            "an in-flight legacy choice remains usable only when it names the exact root"
+        );
+        assert_eq!(
+            subsidiary_scope_decision(
+                &legacy_args,
+                Some(r#"{"response":"不纳入子公司","skipped":false}"#),
+                organization_id,
+                Some("另一家公司")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn included_subsidiary_flow_requires_same_org_success_and_order() {
+        let organization_id = Uuid::new_v4();
+        let proposal = (
+            "manage_organizations".to_string(),
+            serde_json::json!({
+                "action": "propose_candidates",
+                "organization_id": organization_id
+            }),
+            Some(
+                serde_json::json!({
+                    "action": "propose_candidates",
+                    "organization_id": organization_id,
+                    "recorded": 0
+                })
+                .to_string(),
+            ),
+        );
+        let review = (
+            "ask_human".to_string(),
+            serde_json::json!({
+                "input_type": "unit_review",
+                "context": serde_json::json!({"organization_id": organization_id}).to_string()
+            }),
+            Some(r#"{"response":"[]","skipped":false}"#.to_string()),
+        );
+
+        assert_eq!(
+            unit_flow_for_org(&[proposal.clone(), review.clone()], organization_id),
+            (true, true)
+        );
+        assert_eq!(
+            unit_flow_for_org(&[review.clone(), proposal.clone()], organization_id),
+            (true, false),
+            "a review before candidate proposal cannot approve the flow"
+        );
+
+        let mut skipped_review = review.clone();
+        skipped_review.2 = Some(r#"{"skipped":true}"#.to_string());
+        assert_eq!(
+            unit_flow_for_org(&[proposal.clone(), skipped_review], organization_id),
+            (true, false)
+        );
+        assert_eq!(
+            unit_flow_for_org(&[proposal, review], Uuid::new_v4()),
+            (false, false),
+            "another organization's proposal and review cannot satisfy this root"
+        );
+    }
+
+    #[test]
+    fn scoping_review_query_preserves_every_attempt_in_order() {
+        let sql = scoping_scope_review_results_sql();
+        assert!(sql.contains("created_at >= $2"));
+        assert!(sql.contains("ORDER BY created_at ASC, id ASC"));
+        assert!(!sql.contains("LIMIT 1"));
+    }
 
     /// A successful `manage_organizations(action="create")` result carries a real
     /// `id` ⇒ that's the org the gate must confirm exists.

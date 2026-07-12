@@ -2813,6 +2813,7 @@ dependencies = [
  "chrono",
  "dirs",
  "golish-core",
+ "golish-pentest-domain",
  "golish-platform",
  "pg-embed",
  "reqwest 0.12.28",

@@ -218,11 +218,24 @@ export const ScopeReviewTable = forwardRef<
     onSkip: () => void;
   }
 >(function ScopeReviewTable({ kind, initial, onConfirm, onSkip }, ref) {
-  const [bulkText, setBulkText] = useState(() => initialBulkText(kind, initial));
+  const seededRowsRef = useRef(normalizeScopeRows(kind, initial));
+  const seededBulkTextRef = useRef(initialBulkText(kind, initial));
+  const [bulkText, setBulkText] = useState(() => seededBulkTextRef.current);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleConfirm = () => onConfirm(parseBulkRows(kind, bulkText));
+  const handleConfirm = () => {
+    // An unchanged scope-review is approval of the exact trusted rows that were
+    // presented, including explicit type/scope=out. Re-parsing the value-only
+    // textarea would silently turn every row into scope=in. Deliberate edits are
+    // still returned as a new proposal; the backend gate requires the trusted
+    // UI/CLI ingestion snapshot to be updated before that proposal can advance.
+    if (kind === "scope_review" && bulkText === seededBulkTextRef.current) {
+      onConfirm(seededRowsRef.current.filter((row) => (row.value ?? "").trim().length > 0));
+      return;
+    }
+    onConfirm(parseBulkRows(kind, bulkText));
+  };
 
   // Expose `confirm()` so the parent's auto-confirm countdown submits the
   // user's latest edits (parsed from the textarea), identical to clicking

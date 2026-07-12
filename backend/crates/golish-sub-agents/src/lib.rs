@@ -69,13 +69,15 @@ pub use file_loader::AgentFileInfo;
 
 // Re-export executor types
 pub use executor::{
-    execute_sub_agent, submit_coverage_gap_repair_mode_from_reasons,
+    execute_sub_agent, refine_eas_web_repair_mode_from_worklist,
+    retain_eas_web_repair_targets_for_same_gap, submit_coverage_gap_repair_mode_from_reasons,
     submit_repair_mode_from_submit_result, SubAgentExecutorContext, ToolProvider,
 };
 pub use executor_types::{
-    CoverageGapAction, PostShellHook, StageCapabilitySuggestion, StageToolGuard, StageToolHider,
-    SubAgentChainError, SubAgentChainPersistence, SubAgentToolObservation, SubAgentToolObserver,
-    SubAgentToolResultHook, SubAgentToolRouter, SubmitRepairKind, SubmitRepairMode,
+    CoverageGapAction, EasWebRepairTarget, PostShellHook, StageCapabilitySuggestion,
+    StageToolGuard, StageToolHider, SubAgentChainError, SubAgentChainPersistence,
+    SubAgentToolObservation, SubAgentToolObserver, SubAgentToolResultHook, SubAgentToolRouter,
+    SubmitRepairKind, SubmitRepairMode,
 };
 
 // Re-export prompt registry

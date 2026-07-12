@@ -131,7 +131,7 @@ pub async fn create_default_sub_agents_from_registry(
         SubAgentDefinition::new(
             "recon",
             "Recon",
-            "Passive target-intelligence collector for the target_intel stage. Enriches one organization's footprint via providers (0.zone/quake/ENScan) plus passive subdomain + URL history, and registers discovered assets as in-scope targets. ZERO-TOUCH: no live probing or exploitation — that stays with the Pentester. The stage_run tool fans one Recon out per org.",
+            "Passive target-intelligence collector for the target_intel stage. Enriches one organization's footprint via providers (0.zone/quake/ENScan) plus passive subdomain + URL history. Deterministic backend landing registers only authorized domain identities; DNS/provider IP observations remain relationships, not scan targets. ZERO-TOUCH: no live probing or exploitation — that stays with the Pentester. The stage_run tool fans one Recon out per org.",
             // No `recon.tera` in the registry (its prompt is static and its body
             // carries literal braces); use the hardcoded prompt directly instead
             // of rendering a missing template that only warns and falls back.
@@ -142,7 +142,10 @@ pub async fn create_default_sub_agents_from_registry(
             "recon_discover_subsidiaries".into(),
             "recon_map_assets".into(),
             "recon_lookup_whois".into(),
-            "manage_targets".into(),
+            "check_stage_asset_coverage".into(),
+            "stage_worklist_status".into(),
+            "stage_worklist_next".into(),
+            "query_target_data".into(),
             "submit_stage_deliverable".into(),
             "record_finding".into(),
             "search_knowledge_base".into(),

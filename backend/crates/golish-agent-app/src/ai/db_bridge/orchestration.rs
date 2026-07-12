@@ -160,6 +160,29 @@ impl GolishDbRepoProvider {
         .map_err(Into::into)
     }
 
+    pub(super) async fn stage_asset_wave_create_next_or_seal_completion_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+        parent_wave_id: Option<Uuid>,
+        limit: i64,
+        stage_run_id: Option<&str>,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        golish_db::repo::stage_asset_waves::create_next_or_seal_completion(
+            &self.pool,
+            operation_id,
+            organization_id,
+            stage_kind,
+            parent_wave_id,
+            limit,
+            stage_run_id,
+        )
+        .await
+        .map(|maybe| maybe.map(stage_asset_wave_to_view))
+        .map_err(Into::into)
+    }
+
     pub(super) async fn stage_asset_wave_complete_impl(&self, wave_id: Uuid) -> anyhow::Result<()> {
         golish_db::repo::stage_asset_waves::complete(&self.pool, wave_id)
             .await

@@ -315,6 +315,7 @@ impl RepairDirective {
                     })
                 })
                 .collect(),
+            eas_web_repair_targets: None,
             allowed_tools_override: self.allowed_tools.clone(),
             forbidden_tools: self.forbidden_tools.clone(),
             directive_message: Some(self.model_instruction()),
