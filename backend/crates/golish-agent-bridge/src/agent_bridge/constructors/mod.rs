@@ -401,6 +401,7 @@ impl AgentBridge {
             harness_active_stage_execution_id: Arc::new(RwLock::new(None)),
             harness_active_stage_run_unit_id: Arc::new(RwLock::new(None)),
             harness_active_worker_lease: Arc::new(RwLock::new(None)),
+            resume_runtime_memory_source: Arc::new(RwLock::new(None)),
             stage_run_reentry_guard: Arc::new(crate::agentic_loop::StageRunReentryGuard::default()),
             session_request_slot,
             session_request_generation,

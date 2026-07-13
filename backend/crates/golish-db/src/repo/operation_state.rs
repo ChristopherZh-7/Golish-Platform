@@ -20,6 +20,8 @@ pub enum OperationContractValidationError {
     UnknownRuntimeMemoryContract(String),
     #[error("attack execution v2 requires runtime_memory_contract=v2_only, got {0}")]
     RuntimeMemoryV2Required(String),
+    #[error("attack execution dual-write requires a runtime-memory V2 writer, got {0}")]
+    RuntimeMemoryV2WriterRequired(String),
 }
 
 impl OperationContractValidationError {
@@ -27,6 +29,7 @@ impl OperationContractValidationError {
         match self {
             Self::UnknownRuntimeMemoryContract(_) => "ATTACK_RUNTIME_MEMORY_CONTRACT_UNKNOWN",
             Self::RuntimeMemoryV2Required(_) => "ATTACK_RUNTIME_MEMORY_V2_REQUIRED",
+            Self::RuntimeMemoryV2WriterRequired(_) => "ATTACK_RUNTIME_MEMORY_V2_WRITER_REQUIRED",
         }
     }
 }
@@ -52,6 +55,13 @@ pub fn validate_operation_contracts(
         return Err(OperationContractValidationError::RuntimeMemoryV2Required(
             runtime_memory_contract.to_string(),
         ));
+    }
+    if attack_execution_contract.writes_v2() && runtime_memory_contract == "legacy_v1" {
+        return Err(
+            OperationContractValidationError::RuntimeMemoryV2WriterRequired(
+                runtime_memory_contract.to_string(),
+            ),
+        );
     }
     Ok(())
 }
@@ -308,7 +318,8 @@ SET state_blob = jsonb_set(
          THEN state_blob -> $3 ELSE '{}'::jsonb END,
     true
 )
-WHERE operation_id = $1"#;
+WHERE operation_id = $1
+  AND runtime_memory_contract <> 'v2_only'"#;
 
 const ADVANCE_STAGE_SQL: &str = r#"UPDATE operation_state
 SET current_stage = $2,
@@ -791,6 +802,7 @@ mod tests {
     fn generic_state_blob_checkpoint_preserves_reserved_transport_namespace() {
         assert!(WRITE_STATE_BLOB_SQL.contains("jsonb_set"));
         assert!(WRITE_STATE_BLOB_SQL.contains("state_blob -> $3"));
+        assert!(WRITE_STATE_BLOB_SQL.contains("runtime_memory_contract <> 'v2_only'"));
         assert!(!WRITE_STATE_BLOB_SQL.contains("SET state_blob = $2"));
     }
 

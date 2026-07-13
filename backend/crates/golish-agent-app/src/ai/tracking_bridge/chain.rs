@@ -52,9 +52,8 @@ fn persistence_agent_type(agent_id: &str) -> anyhow::Result<AgentType> {
         "installer" => Ok(AgentType::Installer),
         // Stage specialists are server-owned pentest workers even when their
         // prompt-level ids are more specific than the persisted DB enum.
-        "pentester" | "recon" | "prober" | "enumerator" | "vuln_scanner" => {
-            Ok(AgentType::Pentester)
-        }
+        "pentester" | "recon" | "prober" | "enumerator" | "vuln_scanner" | "attack_analyst"
+        | "candidate_verifier" => Ok(AgentType::Pentester),
         other => anyhow::bail!("unsupported bound-worker persistence agent '{other}'"),
     }
 }
@@ -178,6 +177,17 @@ impl golish_sub_agents::SubAgentChainPersistence for PgChainPersistence {
                 message_chain_id: bound.chain_id,
                 session_id: bound.session_id,
                 agent: persistence_agent_type(&bound.agent_type)?,
+                selected_source: bound.runtime_memory_source.map(|source| match source {
+                    golish_sub_agents::BoundWorkerRuntimeMemorySource::Legacy => {
+                        golish_agent_kit::db_traits::RuntimeMemoryRecordSource::Legacy
+                    }
+                    golish_sub_agents::BoundWorkerRuntimeMemorySource::V2 => {
+                        golish_agent_kit::db_traits::RuntimeMemoryRecordSource::V2
+                    }
+                    golish_sub_agents::BoundWorkerRuntimeMemorySource::LegacyFallback => {
+                        golish_agent_kit::db_traits::RuntimeMemoryRecordSource::LegacyFallback
+                    }
+                }),
             })
             .await?;
         anyhow::ensure!(
@@ -261,7 +271,15 @@ mod tests {
 
     #[test]
     fn chain_bound_worker_maps_stage_specialists_to_persisted_pentester_type() {
-        for specialist in ["recon", "prober", "enumerator", "vuln_scanner"] {
+        for specialist in [
+            "recon",
+            "prober",
+            "enumerator",
+            "vuln_scanner",
+            "attack_analyst",
+            "candidate_verifier",
+            "pentester",
+        ] {
             assert_eq!(
                 persistence_agent_type(specialist).expect("known specialist"),
                 AgentType::Pentester

@@ -56,6 +56,13 @@ pub struct AccessValidationSourceSnapshot {
     pub target_identity_hash: String,
 }
 
+fn post_exploit_target_identity_hash(source_hash: String) -> String {
+    source_hash
+        .strip_prefix("sha256:")
+        .unwrap_or(&source_hash)
+        .to_string()
+}
+
 /// Reload the immutable target snapshot for one exact allowed access-validation
 /// unit. Model-visible input supplies only the opaque unit id; it cannot replace
 /// the target value/hash that will be persisted into the Foothold.
@@ -102,7 +109,7 @@ pub async fn load_access_validation_source(
     Ok(AccessValidationSourceSnapshot {
         target_type_at_time: row.0,
         target_value_at_time: row.1,
-        target_identity_hash: row.2,
+        target_identity_hash: post_exploit_target_identity_hash(row.2),
     })
 }
 
@@ -182,6 +189,11 @@ pub async fn validate_with_connection(
         _ => None,
     }
     .ok_or_else(|| anyhow::anyhow!("post_exploit_access_source_not_authorized"))?;
+    let source_snapshot = (
+        source_snapshot.0,
+        source_snapshot.1,
+        post_exploit_target_identity_hash(source_snapshot.2),
+    );
     if source_snapshot
         != (
             input.target_type_at_time.clone(),

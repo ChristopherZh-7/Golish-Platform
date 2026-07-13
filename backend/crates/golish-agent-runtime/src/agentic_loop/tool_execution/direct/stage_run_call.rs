@@ -35,11 +35,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use golish_agent_kit::db_traits::{
-    AgentType, ClaimWorkerAndBindChain, CloseWaveGatePass, ClosedWaveGatePass, DbRepoProvider,
-    FinishWorkerAttempt, LoadInheritedStageHandoffs, LoadWorkerCheckpoint, OrgScopeUnit,
-    RuntimeExpiredWorkerDisposition, RuntimeMemoryRepository, RuntimeStageHandoffView,
-    RuntimeStageUnitStatus, RuntimeWorkerFence, RuntimeWorkerStatus, SeedStageRuntime,
-    SeededStageRuntime, StageAssetWaveView, TerminalizeCandidateAttempt,
+    AgentType, AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveUnitStateView,
+    ClaimWorkerAndBindChain, CloseAttackV2VerificationUnit, CloseWaveGatePass, ClosedWaveGatePass,
+    DbRepoProvider, FinishWorkerAttempt, LoadInheritedStageHandoffs, LoadWorkerCheckpoint,
+    OrgScopeUnit, RuntimeExpiredWorkerDisposition, RuntimeMemoryRecordSource,
+    RuntimeMemoryRepository, RuntimeStageHandoffView, RuntimeStageUnitStatus, RuntimeWorkerFence,
+    RuntimeWorkerStatus, SeedStageRuntime, SeededStageRuntime, StageAssetWaveView,
+    TerminalizeCandidateAttempt,
 };
 use golish_agent_kit::harness::handoff_catalog::{
     MAX_CANONICAL_REFS, MAX_EVIDENCE_IDS, MAX_TYPED_CLAIMS,
@@ -67,7 +69,7 @@ use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_core::AttackExecutionContract;
 use golish_sub_agents::{
     submit_coverage_gap_repair_mode_from_reasons, BoundWorkerChainContext,
-    BoundWorkerToolLifecycle, SubAgentContext, SubmitRepairMode,
+    BoundWorkerRuntimeMemorySource, BoundWorkerToolLifecycle, SubAgentContext, SubmitRepairMode,
 };
 
 use super::super::super::worker_lease::{WorkerLeaseSupervisor, WORKER_LEASE_TTL_SECS};
@@ -76,12 +78,245 @@ use super::super::super::{AgenticLoopContext, StageRunReentryGuard, ToolExecutio
 use super::candidate_verification::claim_candidate_verifier;
 use super::sub_agent_call::{execute_sub_agent_call, execute_sub_agent_call_with_bound};
 
+fn bound_runtime_memory_source(
+    source: Option<golish_agent_kit::db_traits::RuntimeMemoryRecordSource>,
+) -> Option<BoundWorkerRuntimeMemorySource> {
+    source.map(|source| match source {
+        golish_agent_kit::db_traits::RuntimeMemoryRecordSource::Legacy => {
+            BoundWorkerRuntimeMemorySource::Legacy
+        }
+        golish_agent_kit::db_traits::RuntimeMemoryRecordSource::V2 => {
+            BoundWorkerRuntimeMemorySource::V2
+        }
+        golish_agent_kit::db_traits::RuntimeMemoryRecordSource::LegacyFallback => {
+            BoundWorkerRuntimeMemorySource::LegacyFallback
+        }
+    })
+}
+
 /// One per-org unit the fan-out runs the stage specialist against.
 #[derive(Debug, Clone, PartialEq)]
 struct OrgUnit {
     id: String,
     name: String,
     ownership_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateManifestRuntimeAction {
+    SeedInitialHandoff,
+    LoadFrozen,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidateWaveRuntimePlan {
+    operation_id: uuid::Uuid,
+    scope_snapshot_id: uuid::Uuid,
+    wave_run_id: Option<uuid::Uuid>,
+    generation: i32,
+    organization_ids: Vec<uuid::Uuid>,
+    wave_unit_ids: HashMap<uuid::Uuid, uuid::Uuid>,
+    manifest_actions: HashMap<uuid::Uuid, CandidateManifestRuntimeAction>,
+    already_advanced: bool,
+}
+
+fn candidate_wave_runtime_plan(
+    stage: StageKind,
+    authority: AttackV2WaveAuthorityView,
+) -> anyhow::Result<CandidateWaveRuntimePlan> {
+    anyhow::ensure!(
+        matches!(stage, StageKind::AttackCandidate | StageKind::Verification),
+        "Candidate Wave authority is only valid for Candidate stages"
+    );
+    let (operation_id, scope_snapshot_id, wave_run_id, generation, wave_status, units) =
+        match authority {
+            AttackV2WaveAuthorityView::Initial {
+                operation_id,
+                scope_snapshot_id,
+                generation,
+                units,
+            } => {
+                anyhow::ensure!(
+                    stage == StageKind::AttackCandidate && generation == 0,
+                    "initial Candidate Wave authority is not valid for this stage"
+                );
+                (
+                    operation_id,
+                    scope_snapshot_id,
+                    None,
+                    generation,
+                    "initial".to_string(),
+                    units,
+                )
+            }
+            AttackV2WaveAuthorityView::Current {
+                operation_id,
+                scope_snapshot_id,
+                wave_run_id,
+                generation,
+                status,
+                units,
+            } => {
+                if stage == StageKind::AttackCandidate
+                    && matches!(status.as_str(), "review" | "verification")
+                {
+                    anyhow::ensure!(
+                        !units.is_empty()
+                            && units.iter().all(|unit| match unit.state {
+                                AttackV2WaveUnitStateView::FrozenManifest => {
+                                    unit.wave_unit_id.is_some()
+                                        && matches!(unit.status.as_str(), "review" | "verification")
+                                }
+                                AttackV2WaveUnitStateView::TerminalNoInput => {
+                                    unit.wave_unit_id.is_some() && unit.status == "terminal"
+                                }
+                                AttackV2WaveUnitStateView::AwaitingManifest => false,
+                            }),
+                        "advanced Candidate Wave contains unfinished or invalid units"
+                    );
+                    return Ok(CandidateWaveRuntimePlan {
+                        operation_id,
+                        scope_snapshot_id,
+                        wave_run_id: Some(wave_run_id),
+                        generation,
+                        organization_ids: Vec::new(),
+                        wave_unit_ids: HashMap::new(),
+                        manifest_actions: HashMap::new(),
+                        already_advanced: true,
+                    });
+                }
+                if stage == StageKind::Verification && status == "open" && generation > 0 {
+                    return Ok(CandidateWaveRuntimePlan {
+                        operation_id,
+                        scope_snapshot_id,
+                        wave_run_id: Some(wave_run_id),
+                        generation,
+                        organization_ids: Vec::new(),
+                        wave_unit_ids: HashMap::new(),
+                        manifest_actions: HashMap::new(),
+                        already_advanced: true,
+                    });
+                }
+                let expected_wave_status = match stage {
+                    StageKind::AttackCandidate => "open",
+                    StageKind::Verification => "verification",
+                    _ => unreachable!("Candidate Wave stages were validated above"),
+                };
+                anyhow::ensure!(
+                    status == expected_wave_status,
+                    "durable Candidate Wave status does not match the active stage"
+                );
+                (
+                    operation_id,
+                    scope_snapshot_id,
+                    Some(wave_run_id),
+                    generation,
+                    status,
+                    units,
+                )
+            }
+            AttackV2WaveAuthorityView::Terminal {
+                operation_id,
+                scope_snapshot_id,
+                wave_run_id,
+                generation,
+            } if stage == StageKind::Verification => {
+                return Ok(CandidateWaveRuntimePlan {
+                    operation_id,
+                    scope_snapshot_id,
+                    wave_run_id: Some(wave_run_id),
+                    generation,
+                    organization_ids: Vec::new(),
+                    wave_unit_ids: HashMap::new(),
+                    manifest_actions: HashMap::new(),
+                    already_advanced: true,
+                });
+            }
+            AttackV2WaveAuthorityView::Terminal { .. } => {
+                anyhow::bail!("durable Candidate Wave is already terminal")
+            }
+        };
+    anyhow::ensure!(!units.is_empty(), "Candidate Wave has no frozen units");
+    let mut organization_ids = Vec::new();
+    let mut wave_unit_ids = HashMap::new();
+    let mut manifest_actions = HashMap::new();
+    let mut seen = HashSet::new();
+    for unit in units {
+        anyhow::ensure!(
+            seen.insert(unit.organization_id),
+            "Candidate Wave contains a duplicate organization"
+        );
+        if unit.state == AttackV2WaveUnitStateView::TerminalNoInput {
+            anyhow::ensure!(
+                unit.status == "terminal" && unit.wave_unit_id.is_some(),
+                "terminal-no-input WaveUnit has invalid authority"
+            );
+            continue;
+        }
+        if stage == StageKind::AttackCandidate
+            && matches!(unit.status.as_str(), "review" | "verification")
+        {
+            anyhow::ensure!(
+                unit.state == AttackV2WaveUnitStateView::FrozenManifest
+                    && unit.wave_unit_id.is_some(),
+                "completed Candidate WaveUnit has invalid authority"
+            );
+            continue;
+        }
+        let action = match (stage, unit.entry, unit.state) {
+            (
+                StageKind::AttackCandidate,
+                AttackV2WaveEntryView::VulnTriageHandoff,
+                AttackV2WaveUnitStateView::AwaitingManifest,
+            ) => CandidateManifestRuntimeAction::SeedInitialHandoff,
+            (
+                StageKind::AttackCandidate,
+                AttackV2WaveEntryView::VulnTriageHandoff
+                | AttackV2WaveEntryView::FactDeltaConsolidation,
+                AttackV2WaveUnitStateView::FrozenManifest,
+            ) => CandidateManifestRuntimeAction::LoadFrozen,
+            (
+                StageKind::Verification,
+                AttackV2WaveEntryView::VulnTriageHandoff
+                | AttackV2WaveEntryView::FactDeltaConsolidation,
+                AttackV2WaveUnitStateView::FrozenManifest,
+            ) => CandidateManifestRuntimeAction::LoadFrozen,
+            _ => anyhow::bail!("Candidate WaveUnit entry/state is not runnable"),
+        };
+        if wave_status == "initial" {
+            anyhow::ensure!(
+                unit.wave_unit_id.is_none() && unit.status == "initial",
+                "initial Candidate WaveUnit unexpectedly exists"
+            );
+        } else {
+            let unit_status_matches_stage = match stage {
+                StageKind::AttackCandidate => matches!(unit.status.as_str(), "open" | "reasoning"),
+                StageKind::Verification => unit.status == "verification",
+                _ => false,
+            };
+            anyhow::ensure!(
+                unit_status_matches_stage,
+                "Candidate WaveUnit status does not match the active Candidate stage"
+            );
+            let wave_unit_id = unit
+                .wave_unit_id
+                .ok_or_else(|| anyhow::anyhow!("current Candidate WaveUnit id is missing"))?;
+            wave_unit_ids.insert(unit.organization_id, wave_unit_id);
+        }
+        organization_ids.push(unit.organization_id);
+        manifest_actions.insert(unit.organization_id, action);
+    }
+    let already_advanced = stage == StageKind::AttackCandidate && organization_ids.is_empty();
+    Ok(CandidateWaveRuntimePlan {
+        operation_id,
+        scope_snapshot_id,
+        wave_run_id,
+        generation,
+        organization_ids,
+        wave_unit_ids,
+        manifest_actions,
+        already_advanced,
+    })
 }
 
 struct ClaimedV2StageWorker {
@@ -103,9 +338,17 @@ fn candidate_v2_stage_run_enabled(
     runtime_contract: RuntimeMemoryContract,
     attack_contract: AttackExecutionContract,
 ) -> bool {
-    matches!(stage, StageKind::AttackCandidate | StageKind::Verification)
-        && runtime_contract == RuntimeMemoryContract::V2Only
-        && attack_contract.executes_v2_verifier()
+    match stage {
+        StageKind::AttackCandidate => {
+            runtime_contract.policy().write != RuntimeMemoryWriteStrategy::LegacyOnly
+                && attack_contract.writes_v2()
+        }
+        StageKind::Verification => {
+            runtime_contract == RuntimeMemoryContract::V2Only
+                && attack_contract.executes_v2_verifier()
+        }
+        _ => false,
+    }
 }
 
 fn effective_stage_run_specialist(
@@ -1144,6 +1387,7 @@ async fn load_v2_inherited_handoff_section(
 async fn claim_v2_stage_worker(
     repository: Arc<dyn RuntimeMemoryRepository>,
     tracker: golish_agent_kit::db_tracking::DbTracker,
+    resume_runtime_memory_source: Option<RuntimeMemoryRecordSource>,
     seeded: &mut SeededStageRuntime,
     specialist: &str,
     objective: &str,
@@ -1171,6 +1415,7 @@ async fn claim_v2_stage_worker(
                 stage_execution_id: seeded.worker.stage_execution_id,
                 stage_run_unit_id: seeded.worker.stage_run_unit_id,
                 worker_run_id: seeded.worker.id,
+                selected_source: resume_runtime_memory_source,
             })
             .await?;
         seeded.worker = reaped.worker;
@@ -1254,6 +1499,7 @@ async fn claim_v2_stage_worker(
         chain_id: claimed.message_chain_id,
         session_id: tracker.session_uuid(),
         agent_type: specialist.to_string(),
+        runtime_memory_source: bound_runtime_memory_source(resume_runtime_memory_source),
         initial_chain: claimed.worker.checkpoint.clone(),
         initial_prompt_already_checkpointed: fresh_chain,
         checkpoint_version: Arc::new(AtomicI64::new(claimed.worker.checkpoint_version)),
@@ -3329,6 +3575,36 @@ fn stage_run_gate_repair_directive(
     })
 }
 
+fn verification_close_command(
+    wave_plan: &CandidateWaveRuntimePlan,
+    seeded: &SeededStageRuntime,
+) -> anyhow::Result<CloseAttackV2VerificationUnit> {
+    anyhow::ensure!(
+        wave_plan.operation_id == seeded.unit.operation_id
+            && wave_plan.scope_snapshot_id == seeded.unit.scope_snapshot_id
+            && wave_plan.generation == seeded.unit.generation
+            && seeded.unit.stage_kind == StageKind::Verification.as_str(),
+        "Verification runtime unit does not match its durable Wave authority"
+    );
+    let wave_run_id = wave_plan
+        .wave_run_id
+        .ok_or_else(|| anyhow::anyhow!("Verification Wave id authority is missing"))?;
+    let wave_unit_id = wave_plan
+        .wave_unit_ids
+        .get(&seeded.unit.organization_id)
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("Verification WaveUnit authority is missing"))?;
+    Ok(CloseAttackV2VerificationUnit {
+        operation_id: seeded.unit.operation_id,
+        scope_snapshot_id: wave_plan.scope_snapshot_id,
+        wave_run_id,
+        wave_unit_id,
+        organization_id: seeded.unit.organization_id,
+        verification_stage_execution_id: seeded.unit.stage_execution_id,
+        verification_stage_run_unit_id: seeded.unit.id,
+    })
+}
+
 async fn execute_candidate_verification_scheduler<M>(
     ctx: &AgenticLoopContext<'_>,
     model: &M,
@@ -3336,6 +3612,7 @@ async fn execute_candidate_verification_scheduler<M>(
     tool_id: &str,
     units: &[OrgUnit],
     runtime_by_org: &HashMap<String, SeededStageRuntime>,
+    wave_plan: &CandidateWaveRuntimePlan,
 ) -> Result<ToolExecutionResult>
 where
     M: RigCompletionModel + Sync,
@@ -3364,6 +3641,7 @@ where
                 seeded.unit.id,
                 seeded.unit.organization_id,
                 &request_id,
+                bound_runtime_memory_source(ctx.resume_runtime_memory_source),
             )
             .await?
             else {
@@ -3421,7 +3699,45 @@ where
                 verifier_success = matches!(&result, Ok(value) if value.success),
                 "Candidate Attempt terminalized from persisted exact result"
             );
+            let _ = ctx.events.event_tx.send(AiEvent::HarnessTrace {
+                operation_id: seeded.unit.operation_id.to_string(),
+                stage: StageKind::Verification.as_str().to_string(),
+                agent_path: "main>stage_run:candidate_verifier".to_string(),
+                trace: HarnessTraceKind::CandidateAttemptTerminalized {
+                    scope_snapshot_id: terminal.scope_snapshot_id.to_string(),
+                    wave_run_id: terminal.wave_run_id.to_string(),
+                    wave_unit_id: terminal.wave_unit_id.to_string(),
+                    organization_id: terminal.organization_id.to_string(),
+                    candidate_id: terminal.candidate_id.to_string(),
+                    attempt_id: terminal.attempt_id.to_string(),
+                    finding_id: terminal.finding_id.map(|id| id.to_string()),
+                    status: terminal.status,
+                    evidence_count: terminal.evidence_count,
+                    fact_delta_count: terminal.fact_delta_count,
+                    replayed: terminal.replayed,
+                },
+            });
         }
+        let close_command = verification_close_command(wave_plan, seeded)?;
+        let wave_unit_id = close_command.wave_unit_id;
+        let closed = repository
+            .close_attack_v2_verification_unit(close_command)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "Candidate VerificationUnit did not close from exact durable truth: {error}"
+                )
+            })?;
+        anyhow::ensure!(
+            closed.wave_unit_id == wave_unit_id
+                && closed.verification_closed
+                && closed.consolidation_status == "ready"
+                && closed.verification_stage_run_unit_id == seeded.unit.id
+                && closed.verification_stage_run_unit_status == "passed"
+                && closed.verification_primary_worker_run_id == seeded.worker.id
+                && closed.verification_primary_worker_status == "passed",
+            "Candidate VerificationUnit close returned mismatched authority"
+        );
     }
     Ok(ToolExecutionResult {
         value: json!({
@@ -3554,6 +3870,7 @@ where
     let mut auto_added_orgs: Vec<String> = Vec::new();
     let mut rejected_orgs: Vec<String> = Vec::new();
     let mut v2_runtime_by_org: HashMap<String, SeededStageRuntime> = HashMap::new();
+    let mut candidate_wave_plan: Option<CandidateWaveRuntimePlan> = None;
 
     // Any contract that writes V2 derives its complete fan-out solely from the
     // frozen scope snapshot. Model org arguments are retained only for audit
@@ -3592,17 +3909,81 @@ where
                     success: false,
                 });
             }
+            if matches!(stage, StageKind::AttackCandidate | StageKind::Verification) {
+                let authority = match runtime_memory
+                    .attack_v2_wave_authority_for_operation(operation_id)
+                    .await
+                {
+                    Ok(authority) => authority,
+                    Err(error) => {
+                        return Ok(ToolExecutionResult {
+                            value: json!({
+                                "error": format!("Candidate V2 Wave authority load failed before provider dispatch: {error}"),
+                                "passed": false,
+                                "provider_dispatched": false,
+                            }),
+                            success: false,
+                        });
+                    }
+                };
+                let plan = match candidate_wave_runtime_plan(stage, authority) {
+                    Ok(plan) if plan.operation_id == operation_id => plan,
+                    Ok(_) => {
+                        return Ok(ToolExecutionResult {
+                            value: json!({
+                                "error": "Candidate V2 Wave authority returned a mismatched operation",
+                                "passed": false,
+                                "provider_dispatched": false,
+                            }),
+                            success: false,
+                        });
+                    }
+                    Err(error) => {
+                        return Ok(ToolExecutionResult {
+                            value: json!({
+                                "error": format!("Candidate V2 Wave authority is not runnable: {error}"),
+                                "passed": false,
+                                "provider_dispatched": false,
+                            }),
+                            success: false,
+                        });
+                    }
+                };
+                if plan.organization_ids.is_empty()
+                    && (stage == StageKind::Verification || plan.already_advanced)
+                {
+                    return Ok(ToolExecutionResult {
+                        value: json!({
+                            "passed": true,
+                            "provider_dispatched": false,
+                            "candidate_attempts_claimed": 0,
+                            "terminalization": "durable_wave_cursor_ready_without_provider",
+                            "wave_generation": plan.generation,
+                            "durable_wave_already_advanced": plan.already_advanced,
+                        }),
+                        success: true,
+                    });
+                }
+                candidate_wave_plan = Some(plan);
+            }
+            let unit_generation = candidate_wave_plan
+                .as_ref()
+                .map_or(1, |plan| plan.generation);
+            let organization_ids = candidate_wave_plan
+                .as_ref()
+                .map(|plan| plan.organization_ids.clone());
             let seeded = match runtime_memory
                 .seed_stage_runtime(SeedStageRuntime {
                     operation_id,
                     stage_execution_id,
                     stage_kind: stage.as_str().to_string(),
-                    unit_generation: 1,
+                    unit_generation,
                     specialist: specialist.clone(),
-                    worker_generation: 1,
+                    worker_generation: unit_generation,
                     work_item_kind: "organization".to_string(),
                     work_item_key: stage.as_str().to_string(),
                     agent_path_prefix: format!("main>stage_run:{}", stage.as_str()),
+                    organization_ids,
                 })
                 .await
             {
@@ -3640,18 +4021,39 @@ where
                     });
                 };
                 for runtime in &seeded {
-                    if let Err(error) = repo
-                        .attack_v2_seed_candidate_manifest_for_unit(
-                            operation_id,
-                            runtime.unit.id,
-                            runtime.unit.organization_id,
-                        )
-                        .await
-                    {
+                    let action = candidate_wave_plan
+                        .as_ref()
+                        .and_then(|plan| {
+                            plan.manifest_actions
+                                .get(&runtime.unit.organization_id)
+                                .copied()
+                        })
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Candidate manifest action authority is missing")
+                        })?;
+                    let manifest = match action {
+                        CandidateManifestRuntimeAction::SeedInitialHandoff => {
+                            repo.attack_v2_seed_candidate_manifest_for_unit(
+                                operation_id,
+                                runtime.unit.id,
+                                runtime.unit.organization_id,
+                            )
+                            .await
+                        }
+                        CandidateManifestRuntimeAction::LoadFrozen => {
+                            repo.attack_v2_candidate_manifest_for_unit(
+                                operation_id,
+                                runtime.unit.id,
+                                runtime.unit.organization_id,
+                            )
+                            .await
+                        }
+                    };
+                    if let Err(error) = manifest {
                         return Ok(ToolExecutionResult {
                             value: json!({
                                 "error": format!(
-                                    "attack_candidate exact manifest seed failed before provider dispatch: {error}"
+                                    "attack_candidate exact manifest authority failed before provider dispatch: {error}"
                                 ),
                                 "organization_id": runtime.unit.organization_id,
                                 "passed": false,
@@ -3697,6 +4099,9 @@ where
     }
 
     if stage == StageKind::Verification && !v2_runtime_by_org.is_empty() {
+        let wave_plan = candidate_wave_plan.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Candidate Verification scheduler is missing Wave authority")
+        })?;
         return execute_candidate_verification_scheduler(
             ctx,
             model,
@@ -3704,6 +4109,7 @@ where
             tool_id,
             &units,
             &v2_runtime_by_org,
+            wave_plan,
         )
         .await;
     }
@@ -4163,6 +4569,7 @@ where
                 let claimed = match claim_v2_stage_worker(
                     runtime_memory.clone(),
                     tracker,
+                    ctx.resume_runtime_memory_source,
                     seeded,
                     &specialist,
                     &objective,
@@ -5381,6 +5788,345 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    fn wave_runtime_unit(
+        organization_id: uuid::Uuid,
+        entry: golish_agent_kit::db_traits::AttackV2WaveEntryView,
+        state: golish_agent_kit::db_traits::AttackV2WaveUnitStateView,
+    ) -> golish_agent_kit::db_traits::AttackV2WaveRuntimeUnitView {
+        golish_agent_kit::db_traits::AttackV2WaveRuntimeUnitView {
+            wave_unit_id: Some(uuid::Uuid::new_v4()),
+            organization_id,
+            ordinal: 0,
+            status: "open".to_string(),
+            entry,
+            state,
+        }
+    }
+
+    #[test]
+    fn initial_candidate_wave_plan_uses_generation_zero_and_initial_seed_only() {
+        use golish_agent_kit::db_traits::{
+            AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveRuntimeUnitView,
+            AttackV2WaveUnitStateView,
+        };
+
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let organizations = [uuid::Uuid::new_v4(), uuid::Uuid::new_v4()];
+        let authority = AttackV2WaveAuthorityView::Initial {
+            operation_id,
+            scope_snapshot_id,
+            generation: 0,
+            units: organizations
+                .iter()
+                .enumerate()
+                .map(|(ordinal, organization_id)| AttackV2WaveRuntimeUnitView {
+                    wave_unit_id: None,
+                    organization_id: *organization_id,
+                    ordinal: ordinal as i32,
+                    status: "initial".to_string(),
+                    entry: AttackV2WaveEntryView::VulnTriageHandoff,
+                    state: AttackV2WaveUnitStateView::AwaitingManifest,
+                })
+                .collect(),
+        };
+
+        let plan = candidate_wave_runtime_plan(StageKind::AttackCandidate, authority)
+            .expect("initial authority is runnable");
+
+        assert_eq!(plan.generation, 0);
+        assert_eq!(plan.organization_ids, organizations);
+        assert!(plan
+            .manifest_actions
+            .values()
+            .all(|action| matches!(action, CandidateManifestRuntimeAction::SeedInitialHandoff)));
+    }
+
+    #[test]
+    fn follow_on_candidate_wave_excludes_no_input_and_never_initial_seeds() {
+        use golish_agent_kit::db_traits::{
+            AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveUnitStateView,
+        };
+
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let wave_run_id = uuid::Uuid::new_v4();
+        let runnable_org = uuid::Uuid::new_v4();
+        let no_input_org = uuid::Uuid::new_v4();
+        let mut no_input_unit = wave_runtime_unit(
+            no_input_org,
+            AttackV2WaveEntryView::FactDeltaConsolidation,
+            AttackV2WaveUnitStateView::TerminalNoInput,
+        );
+        no_input_unit.status = "terminal".to_string();
+        let authority = AttackV2WaveAuthorityView::Current {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id,
+            generation: 2,
+            status: "open".to_string(),
+            units: vec![
+                wave_runtime_unit(
+                    runnable_org,
+                    AttackV2WaveEntryView::FactDeltaConsolidation,
+                    AttackV2WaveUnitStateView::FrozenManifest,
+                ),
+                no_input_unit,
+            ],
+        };
+
+        let plan = candidate_wave_runtime_plan(StageKind::AttackCandidate, authority)
+            .expect("follow-on authority is runnable");
+
+        assert_eq!(plan.generation, 2);
+        assert_eq!(plan.organization_ids, vec![runnable_org]);
+        assert_eq!(
+            plan.manifest_actions.get(&runnable_org),
+            Some(&CandidateManifestRuntimeAction::LoadFrozen)
+        );
+        assert!(!plan
+            .manifest_actions
+            .values()
+            .any(|action| matches!(action, CandidateManifestRuntimeAction::SeedInitialHandoff)));
+    }
+
+    #[test]
+    fn candidate_reentry_runs_only_units_not_already_waiting_for_review() {
+        use golish_agent_kit::db_traits::{
+            AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveUnitStateView,
+        };
+
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let wave_run_id = uuid::Uuid::new_v4();
+        let runnable_org = uuid::Uuid::new_v4();
+        let reviewed_org = uuid::Uuid::new_v4();
+        let mut reviewed_unit = wave_runtime_unit(
+            reviewed_org,
+            AttackV2WaveEntryView::FactDeltaConsolidation,
+            AttackV2WaveUnitStateView::FrozenManifest,
+        );
+        reviewed_unit.status = "review".to_string();
+        let authority = AttackV2WaveAuthorityView::Current {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id,
+            generation: 2,
+            status: "open".to_string(),
+            units: vec![
+                wave_runtime_unit(
+                    runnable_org,
+                    AttackV2WaveEntryView::FactDeltaConsolidation,
+                    AttackV2WaveUnitStateView::FrozenManifest,
+                ),
+                reviewed_unit,
+            ],
+        };
+
+        let plan = candidate_wave_runtime_plan(StageKind::AttackCandidate, authority)
+            .expect("a partial response-loss replay must resume only unfinished organizations");
+
+        assert_eq!(plan.organization_ids, vec![runnable_org]);
+        assert!(!plan.manifest_actions.contains_key(&reviewed_org));
+        assert!(!plan.already_advanced);
+    }
+
+    #[test]
+    fn candidate_response_loss_after_wave_entered_review_skips_provider() {
+        use golish_agent_kit::db_traits::{
+            AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveUnitStateView,
+        };
+
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let wave_run_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let mut reviewed_unit = wave_runtime_unit(
+            organization_id,
+            AttackV2WaveEntryView::FactDeltaConsolidation,
+            AttackV2WaveUnitStateView::FrozenManifest,
+        );
+        reviewed_unit.status = "review".to_string();
+        let authority = AttackV2WaveAuthorityView::Current {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id,
+            generation: 2,
+            status: "review".to_string(),
+            units: vec![reviewed_unit],
+        };
+
+        let plan = candidate_wave_runtime_plan(StageKind::AttackCandidate, authority)
+            .expect("a committed review cursor is replay-safe Candidate completion");
+
+        assert!(plan.already_advanced);
+        assert!(plan.organization_ids.is_empty());
+    }
+
+    #[test]
+    fn candidate_review_cursor_rejects_an_unfinished_wave_unit() {
+        use golish_agent_kit::db_traits::{
+            AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveUnitStateView,
+        };
+
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let wave_run_id = uuid::Uuid::new_v4();
+        let unfinished = wave_runtime_unit(
+            uuid::Uuid::new_v4(),
+            AttackV2WaveEntryView::FactDeltaConsolidation,
+            AttackV2WaveUnitStateView::FrozenManifest,
+        );
+        let authority = AttackV2WaveAuthorityView::Current {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id,
+            generation: 2,
+            status: "review".to_string(),
+            units: vec![unfinished],
+        };
+
+        assert!(candidate_wave_runtime_plan(StageKind::AttackCandidate, authority).is_err());
+    }
+
+    #[test]
+    fn verification_wave_plan_uses_durable_generation_and_runnable_orgs_only() {
+        use golish_agent_kit::db_traits::{
+            AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveUnitStateView,
+        };
+
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let wave_run_id = uuid::Uuid::new_v4();
+        let runnable_org = uuid::Uuid::new_v4();
+        let mut verification_unit = wave_runtime_unit(
+            runnable_org,
+            AttackV2WaveEntryView::FactDeltaConsolidation,
+            AttackV2WaveUnitStateView::FrozenManifest,
+        );
+        verification_unit.status = "verification".to_string();
+        let authority = AttackV2WaveAuthorityView::Current {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id,
+            generation: 4,
+            status: "verification".to_string(),
+            units: vec![verification_unit],
+        };
+
+        let plan = candidate_wave_runtime_plan(StageKind::Verification, authority)
+            .expect("Verification authority is runnable");
+
+        assert_eq!(plan.generation, 4);
+        assert_eq!(plan.wave_run_id, Some(wave_run_id));
+        assert_eq!(plan.organization_ids, vec![runnable_org]);
+        assert!(!plan.already_advanced);
+    }
+
+    #[test]
+    fn verification_response_loss_after_opened_follow_on_skips_provider() {
+        use golish_agent_kit::db_traits::{
+            AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveUnitStateView,
+        };
+
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let wave_run_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let authority = AttackV2WaveAuthorityView::Current {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id,
+            generation: 2,
+            status: "open".to_string(),
+            units: vec![wave_runtime_unit(
+                organization_id,
+                AttackV2WaveEntryView::FactDeltaConsolidation,
+                AttackV2WaveUnitStateView::FrozenManifest,
+            )],
+        };
+
+        let plan = candidate_wave_runtime_plan(StageKind::Verification, authority)
+            .expect("committed follow-on cursor is a replay-safe Verification outcome");
+
+        assert!(plan.already_advanced);
+        assert!(plan.organization_ids.is_empty());
+        assert_eq!(plan.generation, 2);
+    }
+
+    #[test]
+    fn verification_response_loss_after_terminal_close_skips_provider() {
+        use golish_agent_kit::db_traits::AttackV2WaveAuthorityView;
+
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let wave_run_id = uuid::Uuid::new_v4();
+        let authority = AttackV2WaveAuthorityView::Terminal {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id,
+            generation: 1,
+        };
+
+        let plan = candidate_wave_runtime_plan(StageKind::Verification, authority)
+            .expect("terminal durable cursor is a replay-safe Verification outcome");
+
+        assert!(plan.already_advanced);
+        assert!(plan.organization_ids.is_empty());
+    }
+
+    #[test]
+    fn verification_close_command_binds_attack_wave_and_stage_runtime_unit() {
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let wave_run_id = uuid::Uuid::new_v4();
+        let wave_unit_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let stage_execution_id = uuid::Uuid::new_v4();
+        let stage_run_unit_id = uuid::Uuid::new_v4();
+        let plan = CandidateWaveRuntimePlan {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id: Some(wave_run_id),
+            generation: 3,
+            organization_ids: vec![organization_id],
+            wave_unit_ids: HashMap::from([(organization_id, wave_unit_id)]),
+            manifest_actions: HashMap::from([(
+                organization_id,
+                CandidateManifestRuntimeAction::LoadFrozen,
+            )]),
+            already_advanced: false,
+        };
+        let seeded = SeededStageRuntime {
+            unit: golish_agent_kit::db_traits::RuntimeStageUnitView {
+                id: stage_run_unit_id,
+                operation_id,
+                stage_execution_id,
+                scope_snapshot_id,
+                organization_id,
+                stage_kind: "verification".to_string(),
+                generation: 3,
+                specialist: Some("candidate_verifier".to_string()),
+                status: RuntimeStageUnitStatus::Queued,
+                gate_attempt: 0,
+                pass_watermark: json!({}),
+                row_version: 0,
+            },
+            worker: running_worker_with_expiry(chrono::Utc::now() + chrono::Duration::minutes(1)),
+            organization_name: "Org".to_string(),
+            scope_hash: "scope-hash".to_string(),
+        };
+
+        let command = verification_close_command(&plan, &seeded)
+            .expect("close command derives only from durable authority");
+
+        assert_eq!(command.operation_id, operation_id);
+        assert_eq!(command.scope_snapshot_id, scope_snapshot_id);
+        assert_eq!(command.wave_run_id, wave_run_id);
+        assert_eq!(command.wave_unit_id, wave_unit_id);
+        assert_eq!(command.verification_stage_run_unit_id, stage_run_unit_id);
+    }
+
     #[derive(Debug)]
     enum FakeTerminalWrite {
         ProducerTerminalWon,
@@ -6011,10 +6757,38 @@ mod tests {
             RuntimeMemoryContract::V2Only,
             AttackExecutionContract::V2Only,
         ));
+        for runtime in [
+            RuntimeMemoryContract::DualWriteLegacyRead,
+            RuntimeMemoryContract::DualWriteV2Preferred,
+            RuntimeMemoryContract::V2Only,
+        ] {
+            for attack in [
+                AttackExecutionContract::DualWriteReadLegacy,
+                AttackExecutionContract::DualWriteReadV2Fallback,
+                AttackExecutionContract::V2Only,
+            ] {
+                assert!(
+                    candidate_v2_stage_run_enabled(StageKind::AttackCandidate, runtime, attack),
+                    "AttackCandidate V2 synthesis must run for runtime={} attack={}",
+                    runtime.as_str(),
+                    attack.as_str(),
+                );
+            }
+        }
+        assert!(!candidate_v2_stage_run_enabled(
+            StageKind::AttackCandidate,
+            RuntimeMemoryContract::LegacyV1,
+            AttackExecutionContract::DualWriteReadLegacy,
+        ));
+        assert!(!candidate_v2_stage_run_enabled(
+            StageKind::AttackCandidate,
+            RuntimeMemoryContract::V2Only,
+            AttackExecutionContract::Legacy,
+        ));
     }
 
     #[test]
-    fn candidate_verifier_is_an_additive_v2_specialist_not_a_legacy_stage_default() {
+    fn candidate_specialists_follow_their_distinct_rollout_contracts() {
         use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
         use golish_core::AttackExecutionContract;
 
@@ -6061,6 +6835,18 @@ mod tests {
                 Some("analyst"),
                 Some((
                     RuntimeMemoryContract::V2Only,
+                    AttackExecutionContract::DualWriteReadV2Fallback,
+                )),
+            )
+            .as_deref(),
+            Some("attack_analyst")
+        );
+        assert_eq!(
+            effective_stage_run_specialist(
+                StageKind::AttackCandidate,
+                Some("analyst"),
+                Some((
+                    RuntimeMemoryContract::LegacyV1,
                     AttackExecutionContract::DualWriteReadV2Fallback,
                 )),
             )
@@ -6381,6 +7167,7 @@ mod tests {
             chain_id: uuid::Uuid::new_v4(),
             session_id: uuid::Uuid::new_v4(),
             agent_type: "recon".to_string(),
+            runtime_memory_source: None,
             initial_chain: json!([]),
             initial_prompt_already_checkpointed: true,
             checkpoint_version: Arc::new(AtomicI64::new(7)),
@@ -6670,7 +7457,8 @@ mod tests {
             from_stage_kind: "target_intel".to_string(),
             stage_execution_id: uuid::Uuid::new_v4(),
             source_stage_run_unit_id: uuid::Uuid::new_v4(),
-            deliverable_submission_id: uuid::Uuid::new_v4(),
+            deliverable_submission_id: Some(uuid::Uuid::new_v4()),
+            authority_kind: "deliverable_final_seal".to_string(),
             scope_hash: "scope-sha".to_string(),
             payload: json!({
                 "typed_claims": [
@@ -6735,6 +7523,78 @@ mod tests {
             &[foreign]
         )
         .is_err());
+    }
+
+    #[test]
+    fn access_validation_inherits_server_authored_verified_candidate_claim_only() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let handoff = golish_agent_kit::db_traits::RuntimeStageHandoffView {
+            id: uuid::Uuid::new_v4(),
+            operation_id,
+            organization_id,
+            scope_snapshot_id: uuid::Uuid::new_v4(),
+            from_stage_kind: "verification".to_string(),
+            stage_execution_id: uuid::Uuid::new_v4(),
+            source_stage_run_unit_id: uuid::Uuid::new_v4(),
+            deliverable_submission_id: None,
+            authority_kind: "verification_wave_close".to_string(),
+            scope_hash: "scope-sha".to_string(),
+            payload: json!({
+                "typed_claims": [
+                    {
+                        "kind": "candidate_attempt_terminal",
+                        "payload": {"disposition": "refuted", "reason": "must-not-inherit"}
+                    },
+                    {
+                        "kind": "candidate_attempt_terminal",
+                        "payload": {"disposition": "blocked", "reason": "blocked-must-not-inherit"}
+                    },
+                    {
+                        "kind": "verified_candidate_attempt",
+                        "payload": {"attempt_id": uuid::Uuid::new_v4()}
+                    },
+                    {
+                        "kind": "attack_fact_delta_proposal",
+                        "payload": {"fact_delta_id": uuid::Uuid::new_v4()}
+                    }
+                ],
+                "canonical_fact_refs": [{
+                    "key": {
+                        "kind": "finding",
+                        "finding_id": uuid::Uuid::new_v4()
+                    },
+                    "source_table": "findings",
+                    "source_row_version": 1,
+                    "content_sha256": "c".repeat(64),
+                    "evidence_ids": [7]
+                }]
+            }),
+            payload_sha256: "a".repeat(64),
+            evidence_ids: vec![7],
+            coverage_watermark: json!({"terminal_attempt_count": 1}),
+            unit_gate_decision_hash: "b".repeat(64),
+            aggregate_pass_token_hash: None,
+            gate_passed_at: chrono::Utc::now(),
+            schema_version: 1,
+        };
+        let access = load_embedded_stage_spec(StageKind::AccessValidation)
+            .expect("load access_validation spec");
+        let section = bounded_inherited_handoff_section(
+            operation_id,
+            organization_id,
+            &access.inherits_evidence_from,
+            &[handoff],
+        )
+        .expect("filter typed Verification handoff")
+        .expect("Access Validation inherits verified Candidate");
+        assert!(section.contains("verified_candidate_attempt"));
+        assert!(section.contains("\"kind\":\"finding\""));
+        assert!(section.contains("source_row_version"));
+        assert!(!section.contains("candidate_attempt_terminal"));
+        assert!(!section.contains("must-not-inherit"));
+        assert!(!section.contains("blocked-must-not-inherit"));
+        assert!(!section.contains("attack_fact_delta_proposal"));
     }
 
     #[test]

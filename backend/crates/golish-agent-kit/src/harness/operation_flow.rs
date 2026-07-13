@@ -71,6 +71,11 @@ pub struct StageFlowOutcome {
     /// （serde 缺省 false），旧 checkpoint / 现有构造点零回归。
     #[serde(default)]
     pub reopen_wave: bool,
+    /// `true` means the V2 consolidation transaction already applied the
+    /// durable fuel/depth policy and advanced (or closed) the global Wave
+    /// cursor. Graph-local counters must not override that committed decision.
+    #[serde(default)]
+    pub durable_wave_cursor: bool,
 }
 
 impl StageFlowOutcome {
@@ -80,6 +85,7 @@ impl StageFlowOutcome {
             gate_allowed: true,
             made_progress: true,
             reopen_wave: false,
+            durable_wave_cursor: false,
         }
     }
     /// gate 过但没有进展（触发 bail-to-reporting）。
@@ -88,6 +94,7 @@ impl StageFlowOutcome {
             gate_allowed: true,
             made_progress: false,
             reopen_wave: false,
+            durable_wave_cursor: false,
         }
     }
     /// gate 没过（在该 stage interrupt/返工）。
@@ -96,6 +103,7 @@ impl StageFlowOutcome {
             gate_allowed: false,
             made_progress: false,
             reopen_wave: false,
+            durable_wave_cursor: false,
         }
     }
 
@@ -105,13 +113,17 @@ impl StageFlowOutcome {
             gate_allowed: true,
             made_progress: true,
             reopen_wave: true,
+            durable_wave_cursor: false,
         }
     }
 }
 
-/// Convert exact persisted Verification truth into graph flow. V2 never opens
-/// a process-local chain wave from deliverable candidates; Task 10's durable
-/// FactDelta consolidation transaction exclusively owns that cursor change.
+/// Convert exact persisted Verification truth into graph flow. Progress means
+/// at least one proof-backed, Finding-linked, exact-lineage `verified` Attempt;
+/// merely having approved/refuted/blocked Candidates is not enough to enter
+/// AccessValidation. V2 never opens a process-local chain wave from deliverable
+/// candidates; the durable FactDelta consolidation transaction exclusively owns
+/// that cursor change.
 pub fn exact_verification_flow_outcome(
     truth: &super::attack_execution::VerificationTruthSet,
 ) -> StageFlowOutcome {
@@ -122,8 +134,15 @@ pub fn exact_verification_flow_outcome(
             && truth
                 .snapshots
                 .iter()
-                .any(|snapshot| snapshot.approved_ever > 0),
+                .flat_map(|snapshot| &snapshot.attempts)
+                .any(|attempt| {
+                    attempt.status == "verified"
+                        && !attempt.proof_evidence_ids.is_empty()
+                        && attempt.finding_id.is_some()
+                        && attempt.finding_lineage_exact
+                }),
         reopen_wave: false,
+        durable_wave_cursor: true,
     }
 }
 
@@ -356,6 +375,22 @@ pub trait StageRunner: Send + Sync {
     async fn run_stage(&self, stage: StageKind) -> StageFlowOutcome;
 }
 
+fn verification_wave_update(
+    current_wave: u32,
+    stage: StageKind,
+    outcome: StageFlowOutcome,
+) -> FlowUpdate {
+    let next_wave = current_wave.saturating_add(1);
+    let wave_cap =
+        super::chain_wave::DEFAULT_MAX_WAVES.min(super::chain_wave::DEFAULT_MAX_CHAIN_DEPTH);
+    let within_caps = next_wave <= wave_cap;
+    if outcome.reopen_wave && (outcome.durable_wave_cursor || within_caps) {
+        FlowUpdate::OpenNextWave(stage, outcome)
+    } else {
+        FlowUpdate::CloseWaves(stage, outcome)
+    }
+}
+
 /// 增量 4a · 构造一张**由 [`StageRunner`] 真驱动**的 metalcraft 图：每个 stage 节点体
 /// 调 `runner.run_stage(stage)`，产出 → [`FlowUpdate::ExecutedWith`]；gate 未过 →
 /// `Interrupt`（暂停返工，可 resume）。分支/终点边复用 [`add_flow_edges`]。
@@ -397,15 +432,7 @@ pub fn build_runner_graph(
                     // stay inside the tighter of the fuel/depth budgets (mirrors
                     // `decide_chain_wave`). Independent of the servicer's signal so
                     // the loop is provably bounded even if the signal misbehaves.
-                    let next_wave = state.wave.saturating_add(1);
-                    let wave_cap = super::chain_wave::DEFAULT_MAX_WAVES
-                        .min(super::chain_wave::DEFAULT_MAX_CHAIN_DEPTH);
-                    let within_caps = next_wave <= wave_cap;
-                    let update = if outcome.reopen_wave && within_caps {
-                        FlowUpdate::OpenNextWave(s, outcome)
-                    } else {
-                        FlowUpdate::CloseWaves(s, outcome)
-                    };
+                    let update = verification_wave_update(state.wave, s, outcome);
                     Ok(NodeOutcome::Update(update))
                 }
             });
@@ -904,6 +931,24 @@ mod tests {
             }
             other => panic!("expected Completed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn durable_v2_cursor_is_not_overridden_by_process_local_wave_cap() {
+        let cap = super::super::chain_wave::DEFAULT_MAX_WAVES
+            .min(super::super::chain_wave::DEFAULT_MAX_CHAIN_DEPTH);
+        let legacy = StageFlowOutcome::pass_reopen_wave();
+        assert!(matches!(
+            verification_wave_update(cap, StageKind::Verification, legacy),
+            FlowUpdate::CloseWaves(StageKind::Verification, _)
+        ));
+
+        let mut durable = StageFlowOutcome::pass_reopen_wave();
+        durable.durable_wave_cursor = true;
+        assert!(matches!(
+            verification_wave_update(cap, StageKind::Verification, durable),
+            FlowUpdate::OpenNextWave(StageKind::Verification, _)
+        ));
     }
 
     #[tokio::test]

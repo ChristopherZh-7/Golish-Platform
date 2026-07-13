@@ -159,6 +159,29 @@ async fn runtime_memory_contract_is_frozen_and_database_constrained() {
         .expect("start migrated embedded postgres");
     let pool = db.pool();
 
+    let runtime_rollout: (String, i16, i64) = sqlx::query_as(
+        "SELECT contract, contract_rank, row_version FROM runtime_memory_rollout WHERE singleton_id=1",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("read cutover runtime rollout");
+    assert_eq!(
+        runtime_rollout,
+        ("dual_write_legacy_read".to_string(), 1, 1),
+        "fresh migrations enable sampling but cannot self-attest live parity"
+    );
+    let attack_rollout: (String, i16, i64) = sqlx::query_as(
+        "SELECT contract, rank, row_version FROM attack_execution_rollout WHERE singleton=TRUE",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("read cutover attack rollout");
+    assert_eq!(
+        attack_rollout,
+        ("dual_write_read_legacy".to_string(), 1, 1),
+        "fresh migrations keep Candidate reads on the retained legacy contract"
+    );
+
     let legacy_operation = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO operation_state (operation_id, profile, current_stage) VALUES ($1, $2, $3)",
@@ -185,9 +208,23 @@ async fn runtime_memory_contract_is_frozen_and_database_constrained() {
         "v2_only",
     ] {
         let operation_id = Uuid::new_v4();
-        repo::operation_state::insert(pool, operation_id, "assessment", "scoping", contract)
-            .await
-            .expect("insert supported frozen contract");
+        let attack_contract = if contract == "v2_only" {
+            "v2_only"
+        } else {
+            "legacy"
+        };
+        sqlx::query(
+            r#"INSERT INTO operation_state
+               (operation_id, profile, current_stage, runtime_memory_contract,
+                attack_execution_contract)
+               VALUES ($1, 'assessment', 'scoping', $2, $3)"#,
+        )
+        .bind(operation_id)
+        .bind(contract)
+        .bind(attack_contract)
+        .execute(pool)
+        .await
+        .expect("insert supported compatible frozen contracts");
         let row = repo::operation_state::get(pool, operation_id)
             .await
             .expect("read operation")
@@ -195,13 +232,14 @@ async fn runtime_memory_contract_is_frozen_and_database_constrained() {
         assert_eq!(row.runtime_memory_contract, contract);
     }
 
-    let invalid = repo::operation_state::insert(
-        pool,
-        Uuid::new_v4(),
-        "assessment",
-        "scoping",
-        "legacy_read_v2_write",
+    let invalid = sqlx::query(
+        r#"INSERT INTO operation_state
+           (operation_id, profile, current_stage, runtime_memory_contract,
+            attack_execution_contract)
+           VALUES ($1, 'assessment', 'scoping', 'legacy_read_v2_write', 'legacy')"#,
     )
+    .bind(Uuid::new_v4())
+    .execute(pool)
     .await;
     assert!(
         invalid.is_err(),

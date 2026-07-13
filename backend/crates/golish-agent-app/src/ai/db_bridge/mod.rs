@@ -469,6 +469,13 @@ impl DbRepoProvider for GolishDbRepoProvider {
             .await
     }
 
+    async fn attack_v2_consolidate_wave(
+        &self,
+        input: golish_agent_kit::db_traits::AttackV2ConsolidateWave,
+    ) -> anyhow::Result<golish_agent_kit::db_traits::AttackV2WaveConsolidationView> {
+        self.attack_v2_consolidate_wave_impl(input).await
+    }
+
     async fn reporting_build_validated_revision(
         &self,
         operation_id: Uuid,
@@ -1220,7 +1227,7 @@ mod operation_state_integration_tests {
             op,
             "assessment",
             StageKind::ExternalAttackSurface.as_str(),
-            RuntimeMemoryContract::LegacyV1,
+            RuntimeMemoryContract::V2Only,
         )
         .await
         .expect("insert operation_state");
@@ -1261,7 +1268,7 @@ mod operation_state_integration_tests {
             op,
             "assessment",
             StageKind::ExternalAttackSurface.as_str(),
-            RuntimeMemoryContract::LegacyV1,
+            RuntimeMemoryContract::V2Only,
         )
         .await
         .expect("insert operation_state");

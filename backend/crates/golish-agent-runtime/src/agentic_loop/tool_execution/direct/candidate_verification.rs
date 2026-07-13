@@ -11,7 +11,9 @@ use std::time::Duration;
 use golish_agent_kit::db_traits::{
     ClaimCandidateAttempt, HeartbeatCandidateAttempt, RuntimeMemoryRepository, RuntimeWorkerFence,
 };
-use golish_sub_agents::{BoundWorkerChainContext, BoundWorkerToolLifecycle};
+use golish_sub_agents::{
+    BoundWorkerChainContext, BoundWorkerRuntimeMemorySource, BoundWorkerToolLifecycle,
+};
 
 use crate::agentic_loop::worker_tool_lifecycle::RuntimeWorkerToolLifecycle;
 
@@ -31,6 +33,7 @@ pub async fn claim_candidate_verifier(
     verification_stage_run_unit_id: uuid::Uuid,
     organization_id: uuid::Uuid,
     parent_request_id: &str,
+    runtime_memory_source: Option<BoundWorkerRuntimeMemorySource>,
 ) -> anyhow::Result<Option<ClaimedCandidateVerifier>> {
     let lease_owner = format!("candidate_verifier:{parent_request_id}");
     let Some(claimed) = repository
@@ -74,6 +77,7 @@ pub async fn claim_candidate_verifier(
         chain_id: claimed.message_chain_id,
         session_id: tracker.session_uuid(),
         agent_type: "candidate_verifier".to_string(),
+        runtime_memory_source,
         initial_chain: claimed.worker.checkpoint.clone(),
         initial_prompt_already_checkpointed: claimed.worker.checkpoint_version > 0,
         checkpoint_version: Arc::new(AtomicI64::new(claimed.worker.checkpoint_version)),

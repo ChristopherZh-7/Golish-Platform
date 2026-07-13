@@ -539,7 +539,7 @@ async fn bare_fact_delta_event_fails_closed_until_the_accepted_transition_exists
         .bind(&typed_event.payload.source_stream_key)
         .fetch_one(db.pool())
         .await
-        .expect("count assertions for unimplemented accepted transition"),
+        .expect("count assertions for a bare accepted-delta event"),
         0,
         "the projector must not invent FactDelta authority"
     );

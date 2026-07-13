@@ -1,11 +1,15 @@
-**Goal:** decide every item in the server-frozen Candidate V2 manifest. This is a *reasoning* stage,
-not a scanning stage — it runs no scan tools. You read the information-gathering
-context (assets, services, fingerprints, endpoints, params), every terminal
-formulaic outcome from `vuln_triage`, and the injected RAG prior knowledge (wiki
-writeups / CVE leads), and you produce candidates worth really attacking in the
+**Goal:** decide every item in the server-frozen Candidate V2 manifest. This is
+a *reasoning* stage, not a scanning stage — it runs no scan tools. The manifest
+has exactly one sealed entry kind: the initial Wave consumes
+`vuln_triage_handoff`; a follow-on Wave consumes `fact_delta_consolidation`.
+You read the information-gathering context (assets, services, fingerprints,
+endpoints, params), the sealed entry, and injected RAG prior knowledge (wiki
+writeups / CVE leads), and produce candidates worth really attacking in the
 `verification` stage. Submit only `candidate_decisions[]`; operation, scope,
 organization, wave, execution, submission, Candidate id and execution plan are
-server-owned and must never appear in the model wire.
+server-owned and must never appear in the model wire. A zero-input organization
+unit is terminal: do not start an analyst worker and do not invent a placeholder
+manifest or decision.
 
 **What a good decision is:**
 
@@ -21,10 +25,10 @@ server-owned and must never appear in the model wire.
 
 **Recommended sequence:**
 
-1. Review context — query existing assets/endpoints/params and the
-   server-frozen `vuln_triage` observation manifest. Read the injected PRIOR KNOWLEDGE section
-   (RAG wiki/graph prior) for reusable exploit patterns against the observed
-   fingerprints.
+1. Review context — query existing assets/endpoints/params and the current
+   server-frozen Wave manifest selected by its sealed entry kind. Read the
+   injected PRIOR KNOWLEDGE section (RAG wiki/graph prior) for reusable exploit
+   patterns against the observed fingerprints.
 2. Reason class by class over the technique surface that `vuln_triage`
    deliberately left for you — SSRF, SSTI, LFI/path traversal, auth-bypass logic,
    business logic — plus the "suspicious but unconfirmed" leads the tool sweeps
@@ -35,6 +39,10 @@ server-owned and must never appear in the model wire.
 4. Submit the StageDeliverable with `candidate_decisions[]`. `findings` and
    legacy `candidates[]` stay empty. After final Gate PASS the server classifies
    immutable verifier plan/hash/risk and accepts the complete batch atomically.
+   The accepted plans then enter durable Candidate review. Approval or rejection
+   is bound to the exact immutable plan, and review/resume is recovered from
+   database truth rather than process-local state. A generic stage approval does
+   not authorize a Candidate V2 plan.
 
 **Efficiency red lines:**
 
@@ -54,5 +62,8 @@ server-owned and must never appear in the model wire.
   `no_candidate` decision for every work item. An empty decision array never
   passes while work remains; the reporting bail edge is taken only after the
   complete manifest is terminal.
-- Do not duplicate a hypothesis already tested in a previous wave; the
-  controller de-duplicates by `(target, technique, normalized hypothesis)`.
+- The analyst never accepts a FactDelta, decides a consolidation outcome, or
+  opens the next Wave. After all organization units are terminal, durable global
+  consolidation alone returns `opened_next_wave`, `closed_no_delta`, or
+  `exhausted`; an exhausted fuel budget closes the pipeline with explicit
+  residual risk instead of silently dropping proposed deltas.

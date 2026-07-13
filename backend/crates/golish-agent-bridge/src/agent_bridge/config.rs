@@ -26,6 +26,15 @@ use golish_indexer::IndexerState;
 use super::AgentBridge;
 
 impl AgentBridge {
+    /// Pin every resume-time graph/worker/chain read in this top-level request to
+    /// the complete source selected by the trusted server preflight.
+    pub async fn set_resume_runtime_memory_source(
+        &self,
+        source: golish_agent_kit::db_traits::RuntimeMemoryRecordSource,
+    ) {
+        *self.resume_runtime_memory_source.write().await = Some(source);
+    }
+
     /// Publish one subtask's trusted runtime identity after validating the
     /// redundant worker-lease unit witness. Validation happens before any
     /// handle is mutated so a malformed context cannot partially overwrite the

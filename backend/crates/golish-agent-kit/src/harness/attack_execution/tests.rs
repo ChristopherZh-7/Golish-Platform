@@ -1,10 +1,13 @@
 use super::{
     canonical_plan_hash, classifier_recipe_for, classify_candidate, decide_review_barrier,
-    transition_attempt, validate_terminal_result, AttemptDisposition, AttemptEvent, AttemptStatus,
-    CandidateAttemptResult, CandidateBudget, CandidateClassificationInput, CandidateTargetClass,
-    FactDeltaDraft, FindingSeverity, ReviewBarrierAction, ReviewBarrierSnapshot,
+    select_attack_read, transition_attempt, validate_terminal_result, AttackDecisionSemantic,
+    AttackDecisionSemanticKind, AttackReadSource, AttackReviewCounts, AttackShadowComparison,
+    AttemptDisposition, AttemptEvent, AttemptStatus, CandidateAttemptResult, CandidateBudget,
+    CandidateClassificationInput, CandidateTargetClass, CompleteAttackRead, FactDeltaDraft,
+    FactDeltaKind, FindingSeverity, ReviewBarrierAction, ReviewBarrierSnapshot, V2AttackRead,
     VerificationRiskClass, VerifiedFindingDraft,
 };
+use golish_core::AttackExecutionContract;
 use uuid::Uuid;
 
 fn finding_fixture() -> VerifiedFindingDraft {
@@ -149,6 +152,24 @@ fn valid_terminal_results_keep_evidence_roles_disjoint() {
 }
 
 #[test]
+fn fact_delta_kind_is_a_closed_domain_set() {
+    assert_eq!(
+        serde_json::to_value(FactDeltaKind::ALL).unwrap(),
+        serde_json::json!(["created", "updated", "refuted", "new_surface"])
+    );
+    assert!(serde_json::from_value::<FactDeltaDraft>(serde_json::json!({
+        "fact_kind": "model_invented_prose",
+        "canonical_ref_kind": "attack_candidate_work_item",
+        "canonical_ref_id": Uuid::from_u128(99),
+        "canonical_ref_version": 1,
+        "canonical_ref_hash": "sha256:canonical",
+        "summary": "untrusted prose must not become a new delta kind",
+        "evidence_ids": [17]
+    }))
+    .is_err());
+}
+
+#[test]
 fn classifier_is_canonical_and_foreground_only() {
     let a = classify_candidate(&candidate_fixture()).unwrap();
     let b = classify_candidate(&candidate_fixture_with_reordered_prior_refs()).unwrap();
@@ -220,4 +241,161 @@ fn review_barrier_branches_only_from_the_exact_db_snapshot() {
         decide_review_barrier(&stale_dispatch).unwrap(),
         ReviewBarrierAction::ResetStaleDispatch
     );
+}
+
+fn semantic_decision(
+    work_item_key: &str,
+    kind: AttackDecisionSemanticKind,
+    semantic_hash: &str,
+) -> AttackDecisionSemantic {
+    AttackDecisionSemantic::try_new(work_item_key, kind, semantic_hash).unwrap()
+}
+
+fn complete_attack_read(
+    decisions: Vec<AttackDecisionSemantic>,
+    counts: AttackReviewCounts,
+) -> CompleteAttackRead {
+    CompleteAttackRead::try_new(decisions, counts).unwrap()
+}
+
+fn legacy_attack_read() -> CompleteAttackRead {
+    complete_attack_read(
+        vec![
+            semantic_decision(
+                "legacy-work-1",
+                AttackDecisionSemanticKind::Candidate,
+                "sha256:legacy-candidate",
+            ),
+            semantic_decision(
+                "legacy-work-2",
+                AttackDecisionSemanticKind::NoCandidate,
+                "sha256:legacy-no-candidate",
+            ),
+        ],
+        AttackReviewCounts::new(2, 2, 1, 1),
+    )
+}
+
+#[test]
+fn dual_legacy_returns_whole_legacy_and_reports_v2_mismatch() {
+    let legacy = legacy_attack_read();
+    let v2 = complete_attack_read(
+        vec![
+            semantic_decision(
+                "legacy-work-1",
+                AttackDecisionSemanticKind::Candidate,
+                "sha256:v2-candidate-mismatch",
+            ),
+            semantic_decision(
+                "legacy-work-2",
+                AttackDecisionSemanticKind::NoCandidate,
+                "sha256:legacy-no-candidate",
+            ),
+        ],
+        AttackReviewCounts::new(2, 2, 1, 1),
+    );
+
+    let selected = select_attack_read(
+        AttackExecutionContract::DualWriteReadLegacy,
+        Some(legacy.clone()),
+        V2AttackRead::Complete(v2),
+    )
+    .unwrap();
+
+    assert_eq!(selected.source(), AttackReadSource::Legacy);
+    assert_eq!(selected.record(), &legacy);
+    assert_eq!(
+        selected.shadow_comparison(),
+        Some(AttackShadowComparison::Mismatch)
+    );
+    assert!(!selected.executes_v2_verifier());
+}
+
+#[test]
+fn dual_shadow_equal_whole_records_report_match_without_running_verifier() {
+    for contract in [
+        AttackExecutionContract::DualWriteReadLegacy,
+        AttackExecutionContract::DualWriteReadV2Fallback,
+    ] {
+        let legacy = legacy_attack_read();
+        let selected = select_attack_read(
+            contract,
+            Some(legacy.clone()),
+            V2AttackRead::Complete(legacy.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected.shadow_comparison(),
+            Some(AttackShadowComparison::Match),
+            "contract={contract:?}"
+        );
+        assert_eq!(selected.record(), &legacy);
+        assert!(!selected.executes_v2_verifier());
+    }
+}
+
+#[test]
+fn dual_v2_fallback_with_missing_child_returns_exact_whole_legacy_record() {
+    let legacy = legacy_attack_read();
+    let incomplete_v2 = V2AttackRead::from_parts(
+        vec![semantic_decision(
+            "legacy-work-1",
+            AttackDecisionSemanticKind::Candidate,
+            "sha256:v2-candidate",
+        )],
+        // The aggregate says one Candidate and one no-Candidate decision, but
+        // the no-Candidate child row is intentionally absent.
+        AttackReviewCounts::new(2, 2, 1, 1),
+    );
+    assert!(matches!(incomplete_v2, V2AttackRead::Incomplete));
+
+    let selected = select_attack_read(
+        AttackExecutionContract::DualWriteReadV2Fallback,
+        Some(legacy.clone()),
+        incomplete_v2,
+    )
+    .unwrap();
+
+    assert_eq!(selected.source(), AttackReadSource::LegacyFallback);
+    assert_eq!(selected.record(), &legacy);
+    assert_eq!(
+        selected.shadow_comparison(),
+        Some(AttackShadowComparison::V2Missing)
+    );
+    // An atomic record equality assertion makes field-level fallback
+    // impossible to hide behind matching review counts.
+    assert_eq!(selected.into_record(), legacy);
+}
+
+#[test]
+fn v2_only_with_incomplete_v2_errors_despite_complete_legacy() {
+    let legacy = legacy_attack_read();
+    let incomplete_v2 = V2AttackRead::from_parts(
+        vec![semantic_decision(
+            "legacy-work-1",
+            AttackDecisionSemanticKind::Candidate,
+            "sha256:v2-candidate",
+        )],
+        AttackReviewCounts::new(2, 2, 1, 1),
+    );
+
+    let error = select_attack_read(AttackExecutionContract::V2Only, Some(legacy), incomplete_v2)
+        .unwrap_err();
+
+    assert_eq!(error.code(), "ATTACK_V2_READ_REQUIRED");
+}
+
+#[test]
+fn only_v2_only_executes_verifier() {
+    for contract in AttackExecutionContract::ALL {
+        let legacy = legacy_attack_read();
+        let v2 = V2AttackRead::Complete(legacy.clone());
+        let selected = select_attack_read(contract, Some(legacy), v2).unwrap();
+        assert_eq!(
+            selected.executes_v2_verifier(),
+            contract == AttackExecutionContract::V2Only,
+            "contract={contract:?}"
+        );
+    }
 }

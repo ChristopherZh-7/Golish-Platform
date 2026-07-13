@@ -24,9 +24,9 @@
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
 | golish-platform | 跨平台抽象层，全仓库唯一允许写 cfg(target_os) 的地方 | [→](backend/golish-platform.md) | ✅ |
-| golish-core | 最底层基础类型与 trait（Tool/会话/事件/计划/HITL/operation rollout + opaque Candidate context） | [→](backend/golish-core.md) | ✅ |
+| golish-core | 最底层基础类型与 trait（Tool/会话/HITL/operation rollout + opaque Candidate context + safe terminal/consolidation trace wire） | [→](backend/golish-core.md) | ✅ |
 | golish-settings | 集中式 TOML 配置（env 插值/原子写/类型安全 schema） | [→](backend/golish-settings.md) | ✅ |
-| golish-events | AI 事件协调 + transcript（DomainEvent/Coordinator/Writer） | [→](backend/golish-events.md) | ✅ |
+| golish-events | AI 事件协调 + transcript/op_trace（含 Candidate Attempt terminal / Wave consolidation 安全摘要） | [→](backend/golish-events.md) | ✅ |
 | golish-models | LLM 模型注册表与能力定义（metadata 取代字符串猜） | [→](backend/golish-models.md) | ✅ |
 | golish-context | LLM 上下文窗口与 token 预算/压缩/截断 | [→](backend/golish-context.md) | ✅ |
 | golish-cli-output | CLI 事件渲染（terminal/JSON/quiet 三模式） | [→](backend/golish-cli-output.md) | ✅ |
@@ -37,7 +37,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-db | PostgreSQL 持久化层（frozen runtime/attack + terminal source freeze + Reporting validated/final transaction protocol） | [→](backend/golish-db.md) | ✅ |
+| golish-db | PostgreSQL 持久化层（runtime/attack V2 rollout + atomic exact-resume source claim + Candidate admission/attestation + typed Verification/Wave/FactDelta authority） | [→](backend/golish-db.md) | ✅ |
 | golish-graphiti | legacy GraphClient + scoped temporal node/edge Assertion-lineage graph（attested generation rebuild，旧 API 兼容） | [→](backend/golish-graphiti.md) | ✅ |
 | golish-indexer | 代码索引基座（IndexerBackend + vtcode 后端 + git 工具） | [→](backend/golish-indexer.md) | ✅ |
 | golish-artifacts | 自动维护项目文档提案（README/CLAUDE，未集成） | [→](backend/golish-artifacts.md) | ✅ |
@@ -91,10 +91,10 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-agent-kit | agent runtime 底层构件（typed stage/runtime contracts + prompt-safe ContextPack + Candidate V2 + DB-authoritative Reporting Gate） | [→](backend/golish-agent-kit.md) | ✅ |
-| golish-agent-runtime | 高层 agent runtime（流式 loop + frozen worker fencing + Candidate compound scheduler + ContextPack injection + gate retry） | [→](backend/golish-agent-runtime.md) | ✅ |
-| golish-agent-bridge | app↔runtime 桥接层（stable request owner + trusted stage/unit/worker lease handles + runtime-memory/canonical UoW/scoped ContextPack 注入） | [→](backend/golish-agent-bridge.md) | ✅ |
-| golish-sub-agents | sub-agent 系统（legacy chain + server-owned V2 prebound chain/tool lifecycle + closed Candidate verifier） | [→](backend/golish-sub-agents.md) | ✅ |
+| golish-agent-kit | agent runtime 底层构件（typed stage/runtime contracts + Candidate/whole-source resume selector + one-shot preclaim + durable Wave/consolidation seams + Reporting Gate） | [→](backend/golish-agent-kit.md) | ✅ |
+| golish-agent-runtime | 高层 agent runtime（流式 loop + source-pinned worker restore + Wave-authoritative Candidate/Attempt scheduler + exact Unit close） | [→](backend/golish-agent-runtime.md) | ✅ |
+| golish-agent-bridge | app↔runtime 桥接层（stable request owner + request-local resume source + trusted lease/runtime-memory/UoW/ContextPack 注入） | [→](backend/golish-agent-bridge.md) | ✅ |
+| golish-sub-agents | sub-agent 系统（source-pinned V2 prebound lifecycle + Wave-read-only analyst + opaque Attempt verifier） | [→](backend/golish-sub-agents.md) | ✅ |
 
 ### App 层（Tauri command facades）
 
@@ -102,7 +102,7 @@
 |---|---|---|---|
 | golish-app-core | 应用边界共享类型（L5：GolishError/DbState/scoping/runtime + opaque trusted operator + generation-guarded recon ports） | [→](backend/golish-app-core.md) | ✅ |
 | golish-cleanup-app | Cleanup P7b exact terminal truth、backoff/fair DB-global worker、Gate/residual 与可恢复两阶段组织删除 | [→](backend/golish-cleanup-app.md) | ✅ |
-| golish-agent-app | agent 服务命令面（runtime-memory/Candidate + Memory projector/KG + server-witnessed Cleanup/Reporting transaction authority） | [→](backend/golish-agent-app.md) | ✅ |
+| golish-agent-app | agent 服务命令面（atomic exact-resume source claim + Candidate whole-record shadow/rollout/Wave/Attempt bridges + Memory projector + Cleanup/Reporting authority） | [→](backend/golish-agent-app.md) | ✅ |
 | golish-pentest-app | pentest 服务命令面（AI 工具桥 + EAS/Enumeration guarded producers + lease-fenced Post-Exploit/Cleanup wrappers） | [→](backend/golish-pentest-app.md) | ✅ |
 | golish-recon-app | recon 服务命令面（stable candidate/unit-review ts-rs contracts + existing-child identity projection + asset-intel landing） | [→](backend/golish-recon-app.md) | ✅ |
 | golish-vuln-app | vuln-intel 服务命令面（feed/搜索/匹配/PoC·Nuclei 富化 + wiki） | [→](backend/golish-vuln-app.md) | ✅ |
@@ -116,7 +116,7 @@
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
 | golish | 组合根 + Tauri 桌面应用（DB-ready Memory Supervisor lifecycle + AppState + ~300 命令 + CLI） | [→](backend/golish.md) | ✅ |
-| golish / stage_run | headless 单/区间阶段实跑 + V2 one-operation frozen CLI fleet + contract-aware exact recovery/diagnostics | [→](backend/golish/stage_run.md) | ✅ |
+| golish / stage_run | headless 单/区间实跑 + whole-source exact claim/recovery + runtime/attack Wave/Attempt/FactDelta DB diagnostics | [→](backend/golish/stage_run.md) | ✅ |
 | rig-anthropic-vertex | rig fork：Claude on Vertex AI（CompletionModel + GCP 认证 + server tools） | [→](backend/rig-anthropic-vertex.md) | ✅ |
 | rig-gemini-vertex | rig fork：Gemini on Vertex AI（CompletionModel + GCP 认证 + 流式） | [→](backend/rig-gemini-vertex.md) | ✅ |
 | rig-openai-responses | rig fork：OpenAI Responses API（显式 reasoning 事件，o1/o3/gpt-5.x） | [→](backend/rig-openai-responses.md) | ✅ |
@@ -126,11 +126,11 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| components | React UI 组件（durable Candidate review/Attempt read model + Cleanup waiver/Reporting frozen-CAS 二次确认） | [→](frontend/components.md) | ✅ |
+| components | React UI 组件（DB-backed Candidate review/Attempt；terminal/consolidation trace 仅触发 exact refresh） | [→](frontend/components.md) | ✅ |
 | hooks | React hooks（Tauri 事件订阅/终端/补全/主题/键盘等） | [→](frontend/hooks.md) | ✅ |
-| lib | 非-UI 基础设施（typed attack/Cleanup exact-scope API + legacy/current normalization + generated ts-rs） | [→](frontend/lib.md) | ✅ |
+| lib | 非-UI 基础设施（typed attack/Cleanup API + generated safe Candidate terminal/consolidation trace wire） | [→](frontend/lib.md) | ✅ |
 | pages | 独立页面（ComponentTestbed；主 shell 在 App.tsx） | [→](frontend/pages.md) | ✅ |
-| services | 事件服务（ai-events 处理器注册表 + Candidate/Reporting refresh-only trace + terminal-events） | [→](frontend/services.md) | ✅ |
+| services | 事件服务（ai-events 注册表 + Candidate review/Attempt/Wave consolidation refresh-only trace + terminal-events） | [→](frontend/services.md) | ✅ |
 | store | Zustand 全局 store（12 slice + selectors + types；Candidate/Reporting refresh hint + backend-first atomic conversation clear） | [→](frontend/store.md) | ✅ |
 | styles | 终端/xterm 特化 CSS（通用走 Tailwind 4） | [→](frontend/styles.md) | ✅ |
 

@@ -186,6 +186,10 @@ pub struct AgenticLoopContext<'a> {
     pub sidecar_state: Option<&'a Arc<dyn SessionCaptureBackend>>,
     pub chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
     pub runtime_memory: Option<Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository>>,
+    /// Whole-record source selected once by a trusted resume preflight. Every
+    /// graph/worker/chain read in this request must honor the same value.
+    pub resume_runtime_memory_source:
+        Option<golish_agent_kit::db_traits::RuntimeMemoryRecordSource>,
     /// Exact-scope, server-authorized ContextPack provider. The opaque trusted
     /// context remains inside the provider; runtime supplies only its own
     /// operation/unit/worker identity hint and semantic query.

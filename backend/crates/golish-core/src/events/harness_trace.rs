@@ -183,6 +183,48 @@ pub enum HarnessTraceKind {
         #[ts(type = "number")]
         resume_version: i64,
     },
+
+    /// Refresh/progress hint emitted after the authoritative DB terminalizer
+    /// has closed one exact CandidateAttempt. This trace deliberately carries
+    /// only immutable lineage ids, the terminal DB status (`verified`,
+    /// `refuted`, or `blocked`), aggregate counts, and replay state. It must
+    /// never contain operationally sensitive execution data.
+    CandidateAttemptTerminalized {
+        scope_snapshot_id: String,
+        wave_run_id: String,
+        wave_unit_id: String,
+        organization_id: String,
+        candidate_id: String,
+        attempt_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finding_id: Option<String>,
+        status: String,
+        #[ts(type = "number")]
+        evidence_count: u32,
+        #[ts(type = "number")]
+        fact_delta_count: u32,
+        replayed: bool,
+    },
+
+    /// Refresh/progress hint emitted after the operation-level Wave
+    /// consolidation transaction commits. It contains only immutable ids,
+    /// the deterministic decision (`opened_next_wave`, `closed_no_delta`, or
+    /// `exhausted`), aggregate counts, and replay state.
+    AttackWaveConsolidated {
+        scope_snapshot_id: String,
+        consolidation_id: String,
+        source_wave_run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_wave_run_id: Option<String>,
+        decision_kind: String,
+        #[ts(type = "number")]
+        accepted_fact_delta_count: u32,
+        #[ts(type = "number")]
+        rejected_fact_delta_count: u32,
+        #[ts(type = "number")]
+        residual_risk_count: u32,
+        replayed: bool,
+    },
 }
 
 /// Build a `>`-joined agent lineage string from an optional parent path and the
@@ -300,6 +342,93 @@ mod tests {
             serde_json::to_value(resumed).unwrap()["kind"],
             "candidate_review_resumed"
         );
+    }
+
+    #[test]
+    fn candidate_pipeline_traces_serialize_only_safe_fields() {
+        use std::collections::BTreeSet;
+
+        let attempt = HarnessTraceKind::CandidateAttemptTerminalized {
+            scope_snapshot_id: "scope-1".into(),
+            wave_run_id: "wave-1".into(),
+            wave_unit_id: "unit-1".into(),
+            organization_id: "org-1".into(),
+            candidate_id: "candidate-1".into(),
+            attempt_id: "attempt-1".into(),
+            finding_id: Some("finding-1".into()),
+            status: "verified".into(),
+            evidence_count: 3,
+            fact_delta_count: 1,
+            replayed: false,
+        };
+        let consolidated = HarnessTraceKind::AttackWaveConsolidated {
+            scope_snapshot_id: "scope-1".into(),
+            consolidation_id: "consolidation-1".into(),
+            source_wave_run_id: "wave-1".into(),
+            target_wave_run_id: Some("wave-2".into()),
+            decision_kind: "opened_next_wave".into(),
+            accepted_fact_delta_count: 1,
+            rejected_fact_delta_count: 2,
+            residual_risk_count: 0,
+            replayed: true,
+        };
+
+        let attempt_json = serde_json::to_value(attempt).expect("attempt trace serializes");
+        let consolidated_json =
+            serde_json::to_value(consolidated).expect("consolidation trace serializes");
+        fn keys(value: &serde_json::Value) -> BTreeSet<&str> {
+            value
+                .as_object()
+                .expect("trace is an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+        }
+
+        assert_eq!(
+            keys(&attempt_json),
+            BTreeSet::from([
+                "attempt_id",
+                "candidate_id",
+                "evidence_count",
+                "fact_delta_count",
+                "finding_id",
+                "kind",
+                "organization_id",
+                "replayed",
+                "scope_snapshot_id",
+                "status",
+                "wave_run_id",
+                "wave_unit_id",
+            ])
+        );
+        assert_eq!(
+            keys(&consolidated_json),
+            BTreeSet::from([
+                "accepted_fact_delta_count",
+                "consolidation_id",
+                "decision_kind",
+                "kind",
+                "rejected_fact_delta_count",
+                "replayed",
+                "residual_risk_count",
+                "scope_snapshot_id",
+                "source_wave_run_id",
+                "target_wave_run_id",
+            ])
+        );
+
+        for value in [attempt_json, consolidated_json] {
+            let encoded = serde_json::to_string(&value)
+                .expect("trace encodes")
+                .to_ascii_lowercase();
+            for forbidden in ["payload", "lease", "plan", "exploit"] {
+                assert!(
+                    !encoded.contains(forbidden),
+                    "trace leaked forbidden material marker {forbidden}: {encoded}"
+                );
+            }
+        }
     }
 
     #[test]

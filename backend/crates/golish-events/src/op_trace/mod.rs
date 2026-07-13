@@ -387,6 +387,31 @@ fn summarize_event(event: &AiEvent) -> String {
                 wave_run_id,
                 resume_version,
             } => format!("candidate_review {wave_run_id} resumed v{resume_version}"),
+            K::CandidateAttemptTerminalized {
+                attempt_id,
+                status,
+                evidence_count,
+                fact_delta_count,
+                replayed,
+                ..
+            } => format!(
+                "candidate_attempt {attempt_id} {status} evidence={evidence_count} deltas={fact_delta_count} replayed={replayed}"
+            ),
+            K::AttackWaveConsolidated {
+                source_wave_run_id,
+                target_wave_run_id,
+                decision_kind,
+                accepted_fact_delta_count,
+                rejected_fact_delta_count,
+                residual_risk_count,
+                replayed,
+                ..
+            } => {
+                let target_wave_run_id = target_wave_run_id.as_deref().unwrap_or("-");
+                format!(
+                    "attack_wave {source_wave_run_id} -> {target_wave_run_id} {decision_kind} accepted={accepted_fact_delta_count} rejected={rejected_fact_delta_count} residuals={residual_risk_count} replayed={replayed}"
+                )
+            }
             K::StageRunOrgProgress {
                 org_name,
                 status,

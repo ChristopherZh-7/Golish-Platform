@@ -148,7 +148,8 @@ SELECT candidate_id, operation_id, organization_id, target, hypothesis, hypothes
        candidate_plan_hash, risk_class, row_version, terminal_attempt_id, \
        terminal_finding_id, created_at, updated_at \
 FROM attack_candidates \
-WHERE operation_id = $1 AND organization_id IS NOT DISTINCT FROM $2 \
+WHERE operation_id = $1 AND operation_uuid IS NULL \
+  AND organization_id IS NOT DISTINCT FROM $2 \
 ORDER BY wave, created_at";
 
 /// 列某 operation 某一波（org 隔离，IDOR）的候选。
@@ -163,14 +164,16 @@ SELECT candidate_id, operation_id, organization_id, target, hypothesis, hypothes
        candidate_plan_hash, risk_class, row_version, terminal_attempt_id, \
        terminal_finding_id, created_at, updated_at \
 FROM attack_candidates \
-WHERE operation_id = $1 AND organization_id IS NOT DISTINCT FROM $2 AND wave = $3 \
+WHERE operation_id = $1 AND operation_uuid IS NULL \
+  AND organization_id IS NOT DISTINCT FROM $2 AND wave = $3 \
 ORDER BY created_at";
 
 /// 更新某候选的 disposition（IDOR：按 candidate_id + operation_id + org 三重限定，
 /// 防跨 operation / 跨 org 改他人候选）。返回受影响行数（0 = 未命中/越权）。
 const UPDATE_DISPOSITION_SQL: &str = "\
 UPDATE attack_candidates SET disposition = $4, updated_at = NOW() \
-WHERE candidate_id = $1 AND operation_id = $2 AND organization_id IS NOT DISTINCT FROM $3";
+WHERE candidate_id = $1 AND operation_id = $2 AND operation_uuid IS NULL \
+  AND organization_id IS NOT DISTINCT FROM $3";
 
 fn prior_refs_json(refs: &[String]) -> serde_json::Value {
     serde_json::Value::Array(
@@ -324,6 +327,7 @@ struct ReplayCandidateRow {
 #[derive(Debug, sqlx::FromRow)]
 struct LockedWaveUnit {
     generation: i32,
+    max_candidates_total: i32,
     wave_status: String,
     unit_status: String,
     review_closed: bool,
@@ -362,6 +366,13 @@ fn stable_reason_code(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn fresh_candidate_batch_fits(current: i64, fresh: usize, cap: i32) -> bool {
+    i64::try_from(fresh)
+        .ok()
+        .and_then(|fresh| current.checked_add(fresh))
+        .is_some_and(|projected| projected <= i64::from(cap))
 }
 
 async fn exact_linked_evidence(
@@ -537,20 +548,21 @@ pub async fn accept_gate_passed_candidate_batch_with_connection(
     }
 
     let wave = sqlx::query_as::<_, LockedWaveUnit>(
-        r#"SELECT run.generation,run.status AS wave_status,
+        r#"SELECT run.generation,run.max_candidates_total,run.status AS wave_status,
                   unit.status AS unit_status,unit.review_closed,unit.terminal_at,
                   unit.manifest_hash,unit.manifest_count,unit.manifest_frozen_at
            FROM attack_wave_runs AS run
            JOIN attack_wave_units AS unit
              ON unit.wave_run_id=run.id AND unit.operation_id=run.operation_id
             AND unit.scope_snapshot_id=run.scope_snapshot_id
-           JOIN stage_run_units AS entry_unit
+      LEFT JOIN stage_run_units AS entry_unit
              ON entry_unit.id=unit.entry_stage_run_unit_id
             AND entry_unit.operation_id=unit.operation_id
             AND entry_unit.stage_execution_id=unit.entry_stage_execution_id
+            AND entry_unit.scope_snapshot_id=unit.scope_snapshot_id
             AND entry_unit.organization_id=unit.organization_id
             AND entry_unit.stage_kind=unit.entry_stage_kind
-           JOIN stage_handoffs AS handoff
+      LEFT JOIN stage_handoffs AS handoff
              ON handoff.operation_id=unit.operation_id
             AND handoff.scope_snapshot_id=unit.scope_snapshot_id
             AND handoff.organization_id=unit.organization_id
@@ -559,11 +571,39 @@ pub async fn accept_gate_passed_candidate_batch_with_connection(
             AND handoff.deliverable_submission_id=unit.entry_deliverable_submission_id
             AND handoff.from_stage_kind=unit.entry_stage_kind
             AND handoff.invalidated_at IS NULL
+      LEFT JOIN attack_wave_consolidations AS consolidation
+             ON consolidation.id=unit.entry_consolidation_id
+            AND consolidation.target_wave_run_id=unit.wave_run_id
+            AND consolidation.operation_id=unit.operation_id
+            AND consolidation.scope_snapshot_id=unit.scope_snapshot_id
+            AND consolidation.decision_kind='opened_next_wave'
            WHERE run.id=$1 AND run.operation_id=$2 AND run.scope_snapshot_id=$3
              AND unit.id=$4 AND unit.organization_id=$5
-             AND unit.entry_stage_kind='vuln_triage'
-             AND entry_unit.status='passed' AND entry_unit.terminal_at IS NOT NULL
-           FOR UPDATE OF run,unit,entry_unit,handoff"#,
+             AND (
+                 (
+                     unit.entry_consolidation_id IS NULL
+                     AND unit.entry_stage_kind='vuln_triage'
+                     AND entry_unit.status='passed'
+                     AND entry_unit.terminal_at IS NOT NULL
+                     AND handoff.id IS NOT NULL
+                 )
+                 OR (
+                     unit.entry_consolidation_id IS NOT NULL
+                     AND consolidation.id IS NOT NULL
+                     AND EXISTS (
+                         SELECT 1
+                           FROM attack_wave_consolidation_members AS member
+                          WHERE member.consolidation_id=consolidation.id
+                            AND member.target_wave_run_id=unit.wave_run_id
+                            AND member.target_wave_unit_id=unit.id
+                            AND member.operation_id=unit.operation_id
+                            AND member.scope_snapshot_id=unit.scope_snapshot_id
+                            AND member.organization_id=unit.organization_id
+                            AND member.target_work_item_id IS NOT NULL
+                     )
+                 )
+             )
+           FOR UPDATE OF run,unit"#,
     )
     .bind(command.wave_run_id)
     .bind(command.operation_id)
@@ -574,8 +614,8 @@ pub async fn accept_gate_passed_candidate_batch_with_connection(
     .await?
     .ok_or_else(|| crate::DbError::NotFound("attack_wave_units".to_string()))?;
 
-    let decision_authority: Option<bool> = sqlx::query_scalar(
-        r#"SELECT TRUE
+    let decision_authority: Option<i32> = sqlx::query_scalar(
+        r#"SELECT decision_unit.generation
              FROM stage_run_units AS decision_unit
              JOIN stage_deliverable_submissions AS submission
                ON submission.id=$1
@@ -611,9 +651,9 @@ pub async fn accept_gate_passed_candidate_batch_with_connection(
     .bind(command.organization_id)
     .fetch_optional(&mut *connection)
     .await?;
-    if decision_authority.is_none() {
+    if decision_authority != Some(wave.generation) {
         return Err(attack_conflict(
-            "Candidate acceptance requires the exact current attack_candidate final-pass submission",
+            "Candidate acceptance requires the exact current-generation attack_candidate final-pass submission",
         ));
     }
     let work_items = sqlx::query_as::<_, LockedWorkItem>(
@@ -821,6 +861,20 @@ pub async fn accept_gate_passed_candidate_batch_with_connection(
     {
         return Err(attack_conflict(
             "fresh Candidate acceptance requires an open reasoning WaveUnit",
+        ));
+    }
+    let current_candidate_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM attack_candidates WHERE operation_uuid=$1")
+            .bind(command.operation_id)
+            .fetch_one(&mut *connection)
+            .await?;
+    if !fresh_candidate_batch_fits(
+        current_candidate_count,
+        command.candidates.len(),
+        wave.max_candidates_total,
+    ) {
+        return Err(attack_conflict(
+            "ATTACK_CANDIDATE_FUEL_EXHAUSTED: fresh Candidate batch exceeds frozen operation cap",
         ));
     }
     let mut candidate_ids = Vec::with_capacity(command.candidates.len());
@@ -1108,6 +1162,10 @@ mod tests {
         for sql in [LIST_BY_OPERATION_SQL, LIST_BY_WAVE_SQL] {
             assert!(sql.contains("operation_id = $1"));
             assert!(sql.contains("organization_id IS NOT DISTINCT FROM $2"));
+            assert!(
+                sql.contains("operation_uuid IS NULL"),
+                "legacy read must never mix V2 Candidate rows"
+            );
         }
         assert!(LIST_BY_WAVE_SQL.contains("wave = $3"));
     }
@@ -1118,6 +1176,7 @@ mod tests {
         assert!(UPDATE_DISPOSITION_SQL.contains("WHERE candidate_id = $1"));
         assert!(UPDATE_DISPOSITION_SQL.contains("operation_id = $2"));
         assert!(UPDATE_DISPOSITION_SQL.contains("organization_id IS NOT DISTINCT FROM $3"));
+        assert!(UPDATE_DISPOSITION_SQL.contains("operation_uuid IS NULL"));
         assert!(UPDATE_DISPOSITION_SQL.contains("disposition = $4"));
     }
 
@@ -1126,5 +1185,13 @@ mod tests {
         let v = prior_refs_json(&["CVE-2024-1".to_string(), "wiki:foo".to_string()]);
         assert_eq!(v, serde_json::json!(["CVE-2024-1", "wiki:foo"]));
         assert_eq!(prior_refs_json(&[]), serde_json::json!([]));
+    }
+
+    #[test]
+    fn fresh_candidate_batch_reserves_the_entire_operation_batch() {
+        assert!(fresh_candidate_batch_fits(7, 3, 10));
+        assert!(!fresh_candidate_batch_fits(8, 3, 10));
+        assert!(fresh_candidate_batch_fits(10, 0, 10));
+        assert!(!fresh_candidate_batch_fits(i64::MAX, 1, i32::MAX));
     }
 }

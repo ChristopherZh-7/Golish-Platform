@@ -869,6 +869,10 @@ def _compact_json(value: object, trunc: int) -> str:
     return _short(rendered, trunc)
 
 
+def _yes_no(value: object) -> str:
+    return "yes" if bool(value) else "no"
+
+
 def _has_legacy_checkpoint(state_blob: object) -> bool:
     if not isinstance(state_blob, dict):
         return False
@@ -940,11 +944,39 @@ def _runtime_memory_lines(
     else:
         out.append("    rollout: (missing singleton) ⚠ anomaly: runtime rollout is undefined")
 
+    attack_rollout_rows = q(
+        """/* run_tree:attack_rollout */
+        SELECT jsonb_build_object(
+            'contract', contract,
+            'rank', rank,
+            'row_version', row_version,
+            'updated_at', updated_at
+        )
+        FROM attack_execution_rollout
+        WHERE singleton = TRUE"""
+    )
+    attack_rollout, attack_rollout_error = _runtime_records(attack_rollout_rows)
+    if attack_rollout_error:
+        out.append(f"    attack_rollout: {attack_rollout_error}")
+    elif attack_rollout:
+        record = attack_rollout[0]
+        out.append(
+            "    attack_rollout: "
+            f"contract={record.get('contract')} rank={record.get('rank')} "
+            f"row_version={record.get('row_version')} updated_at={record.get('updated_at')}"
+        )
+    else:
+        out.append(
+            "    attack_rollout: (missing singleton) "
+            "⚠ anomaly: attack rollout is undefined"
+        )
+
     operation_rows = q(
         """/* run_tree:runtime_operations */
         SELECT jsonb_build_object(
             'operation_id', os.operation_id,
             'runtime_memory_contract', os.runtime_memory_contract,
+            'attack_execution_contract', os.attack_execution_contract,
             'profile', os.profile,
             'current_stage', os.current_stage,
             'project_scope_id', os.project_scope_id,
@@ -985,7 +1017,8 @@ def _runtime_memory_lines(
             f"profile={operation.get('profile')} current_stage={current_stage}"
         )
         out.append(
-            f"      project_scope={operation.get('project_scope_id')} "
+            f"      attack_contract={operation.get('attack_execution_contract')} "
+            f"project_scope={operation.get('project_scope_id')} "
             f"engagement_org={operation.get('engagement_org_id')} "
             f"stage_started_at={operation.get('stage_started_at')} "
             f"superseded_by={operation.get('superseded_by')}"
@@ -1003,6 +1036,326 @@ def _runtime_memory_lines(
             if error:
                 out.append(f"      {label}: {error}")
             return records
+
+        attack_waves = fetch_records(
+            "attack_waves",
+            """/* run_tree:attack_waves */
+            SELECT jsonb_build_object(
+                'id', wave.id,
+                'scope_snapshot_id', wave.scope_snapshot_id,
+                'generation', wave.generation,
+                'status', wave.status,
+                'policy_hash', wave.policy_hash,
+                'max_waves', wave.max_waves,
+                'max_candidates_total', wave.max_candidates_total,
+                'max_chain_depth', wave.max_chain_depth,
+                'max_attempts_total', wave.max_attempts_total,
+                'row_version', wave.row_version,
+                'created_at', wave.created_at,
+                'updated_at', wave.updated_at,
+                'terminal_at', wave.terminal_at
+            )
+            FROM attack_wave_runs AS wave
+            WHERE wave.operation_id = %s
+            ORDER BY wave.generation, wave.id""",
+        )
+        out.append(f"      attack_waves: {len(attack_waves)}")
+        for wave in attack_waves:
+            out.append(
+                f"        wave id={wave.get('id')} "
+                f"snapshot={wave.get('scope_snapshot_id')} "
+                f"generation={wave.get('generation')} status={wave.get('status')} "
+                f"policy_hash={wave.get('policy_hash')}"
+            )
+            out.append(
+                f"          caps waves={wave.get('max_waves')} "
+                f"candidates={wave.get('max_candidates_total')} "
+                f"depth={wave.get('max_chain_depth')} "
+                f"attempts={wave.get('max_attempts_total')} "
+                f"row_version={wave.get('row_version')}"
+            )
+            out.append(
+                f"          created_at={wave.get('created_at')} "
+                f"updated_at={wave.get('updated_at')} "
+                f"terminal_at={wave.get('terminal_at')}"
+            )
+
+        wave_unit_counts = fetch_records(
+            "attack_wave_unit_counts",
+            """/* run_tree:attack_wave_unit_counts */
+            SELECT jsonb_build_object(
+                'wave_run_id', unit.wave_run_id,
+                'total', COUNT(*),
+                'open_count', COUNT(*) FILTER (WHERE unit.status = 'open'),
+                'reasoning_count', COUNT(*) FILTER (WHERE unit.status = 'reasoning'),
+                'review_count', COUNT(*) FILTER (WHERE unit.status = 'review'),
+                'verification_count', COUNT(*) FILTER (WHERE unit.status = 'verification'),
+                'terminal_count', COUNT(*) FILTER (WHERE unit.status = 'terminal'),
+                'review_closed_count', COUNT(*) FILTER (WHERE unit.review_closed),
+                'verification_closed_count', COUNT(*) FILTER (WHERE unit.verification_closed),
+                'consolidation_pending_count', COUNT(*) FILTER (
+                    WHERE unit.consolidation_status = 'pending'
+                ),
+                'consolidation_ready_count', COUNT(*) FILTER (
+                    WHERE unit.consolidation_status = 'ready'
+                ),
+                'consolidation_consumed_count', COUNT(*) FILTER (
+                    WHERE unit.consolidation_status = 'consumed'
+                ),
+                'consolidation_terminal_count', COUNT(*) FILTER (
+                    WHERE unit.consolidation_status = 'terminal'
+                )
+            )
+            FROM attack_wave_units AS unit
+            WHERE unit.operation_id = %s
+            GROUP BY unit.wave_run_id
+            ORDER BY unit.wave_run_id""",
+        )
+        out.append("      attack_wave_unit_counts:")
+        if not wave_unit_counts:
+            out.append("        (none)")
+        for counts in wave_unit_counts:
+            out.append(
+                f"        wave={counts.get('wave_run_id')} total={counts.get('total')} "
+                f"status open={counts.get('open_count')} "
+                f"reasoning={counts.get('reasoning_count')} "
+                f"review={counts.get('review_count')} "
+                f"verification={counts.get('verification_count')} "
+                f"terminal={counts.get('terminal_count')}"
+            )
+            out.append(
+                f"          closed review={counts.get('review_closed_count')} "
+                f"verification={counts.get('verification_closed_count')} "
+                f"consolidation pending={counts.get('consolidation_pending_count')} "
+                f"ready={counts.get('consolidation_ready_count')} "
+                f"consumed={counts.get('consolidation_consumed_count')} "
+                f"terminal={counts.get('consolidation_terminal_count')}"
+            )
+
+        candidate_attempts = fetch_records(
+            "candidate_attempt_ownership",
+            """/* run_tree:candidate_attempt_ownership */
+            SELECT jsonb_build_object(
+                'id', attempt.id,
+                'candidate_id', attempt.candidate_id,
+                'wave_run_id', attempt.wave_run_id,
+                'wave_unit_id', attempt.wave_unit_id,
+                'organization_id', attempt.organization_id,
+                'ordinal', attempt.ordinal,
+                'status', attempt.status,
+                'row_version', attempt.row_version,
+                'terminal_at', attempt.terminal_at,
+                'stage_worker_run_id', attempt.stage_worker_run_id,
+                'worker_status', worker.status,
+                'worker_generation', worker.worker_generation,
+                'specialist', worker.specialist,
+                'attempt_epoch', worker.attempt_epoch,
+                'checkpoint_version', worker.checkpoint_version,
+                'checkpoint_present', worker.checkpoint IS NOT NULL,
+                'checkpoint_bytes', CASE
+                    WHEN worker.checkpoint IS NULL THEN 0
+                    ELSE OCTET_LENGTH(worker.checkpoint::text)
+                END,
+                'lease_present', worker.lease_token IS NOT NULL,
+                'lease_owner', worker.lease_owner,
+                'lease_expires_at', worker.lease_expires_at,
+                'lease_expired', worker.lease_expires_at IS NOT NULL
+                    AND worker.lease_expires_at <= NOW(),
+                'active_tool_call_id', worker.active_tool_call_id,
+                'active_tool_name', tool.name,
+                'active_tool_status', tool.status,
+                'ownership_matches', worker.id IS NULL OR (
+                    worker.operation_id = attempt.operation_id
+                    AND worker.organization_id = attempt.organization_id
+                    AND worker.work_item_kind = 'candidate_attempt'
+                    AND worker.work_item_key = attempt.id::text
+                    AND worker.specialist = 'candidate_verifier'
+                    AND unit.id IS NOT NULL
+                    AND unit.operation_id = attempt.operation_id
+                    AND unit.scope_snapshot_id = attempt.scope_snapshot_id
+                    AND unit.organization_id = attempt.organization_id
+                    AND unit.stage_kind = 'verification'
+                )
+            )
+            FROM candidate_attempts AS attempt
+            LEFT JOIN stage_worker_runs AS worker
+              ON worker.id = attempt.stage_worker_run_id
+            LEFT JOIN stage_run_units AS unit
+              ON unit.id = worker.stage_run_unit_id
+            LEFT JOIN tool_calls AS tool
+              ON tool.id = worker.active_tool_call_id
+            WHERE attempt.operation_id = %s
+            ORDER BY attempt.created_at, attempt.id""",
+        )
+        out.append(f"      candidate_attempt_ownership: {len(candidate_attempts)}")
+        for attempt in candidate_attempts:
+            out.append(
+                f"        attempt={attempt.get('id')} "
+                f"candidate={attempt.get('candidate_id')} "
+                f"wave={attempt.get('wave_run_id')} unit={attempt.get('wave_unit_id')} "
+                f"org={attempt.get('organization_id')} ordinal={attempt.get('ordinal')} "
+                f"status={attempt.get('status')} row_version={attempt.get('row_version')} "
+                f"terminal_at={attempt.get('terminal_at')}"
+            )
+            out.append(
+                f"          worker={attempt.get('stage_worker_run_id')} "
+                f"status={attempt.get('worker_status')} "
+                f"generation={attempt.get('worker_generation')} "
+                f"specialist={attempt.get('specialist')} "
+                f"epoch={attempt.get('attempt_epoch')}"
+            )
+            out.append(
+                f"          checkpoint_version={attempt.get('checkpoint_version')} "
+                f"checkpoint_present={_yes_no(attempt.get('checkpoint_present'))} "
+                f"checkpoint_bytes={attempt.get('checkpoint_bytes')} "
+                f"lease_present={_yes_no(attempt.get('lease_present'))} "
+                f"lease_owner={attempt.get('lease_owner')} "
+                f"expires={attempt.get('lease_expires_at')} "
+                f"expired={_yes_no(attempt.get('lease_expired'))}"
+            )
+            if attempt.get("active_tool_call_id") is not None:
+                out.append(
+                    f"          active_tool={attempt.get('active_tool_call_id')} "
+                    f"name={attempt.get('active_tool_name')} "
+                    f"status={attempt.get('active_tool_status')}"
+                )
+            if not attempt.get("ownership_matches"):
+                out.append(
+                    f"      ⚠ cross-org rejection: candidate attempt={attempt.get('id')} "
+                    "does not match its exact verification worker"
+                )
+
+        attack_lanes = fetch_records(
+            "attack_lane",
+            """/* run_tree:attack_lane */
+            SELECT jsonb_build_object(
+                'lane_key', lane.lane_key,
+                'stage_worker_run_id', lane.stage_worker_run_id,
+                'lease_present', lane.lease_token IS NOT NULL,
+                'lease_owner', lane.lease_owner,
+                'lease_expires_at', lane.lease_expires_at,
+                'lease_expired', lane.lease_expires_at IS NOT NULL
+                    AND lane.lease_expires_at <= NOW(),
+                'updated_at', lane.updated_at
+            )
+            FROM attack_execution_lanes AS lane
+            WHERE lane.stage_worker_run_id IS NULL
+               OR EXISTS (
+                    SELECT 1
+                    FROM stage_worker_runs AS worker
+                    WHERE worker.id = lane.stage_worker_run_id
+                      AND worker.operation_id = %s
+               )
+            ORDER BY lane.lane_key""",
+        )
+        out.append(f"      attack_lane: {len(attack_lanes)}")
+        for lane in attack_lanes:
+            out.append(
+                f"        lane={lane.get('lane_key')} "
+                f"worker={lane.get('stage_worker_run_id')} "
+                f"lease_present={_yes_no(lane.get('lease_present'))} "
+                f"owner={lane.get('lease_owner')} "
+                f"expires={lane.get('lease_expires_at')} "
+                f"expired={_yes_no(lane.get('lease_expired'))} "
+                f"updated_at={lane.get('updated_at')}"
+            )
+
+        fact_deltas = fetch_records(
+            "attack_fact_deltas",
+            """/* run_tree:attack_fact_deltas */
+            SELECT jsonb_build_object(
+                'id', delta.id,
+                'source_attempt_id', delta.source_attempt_id,
+                'candidate_id', delta.candidate_id,
+                'wave_run_id', delta.wave_run_id,
+                'wave_unit_id', delta.wave_unit_id,
+                'organization_id', delta.organization_id,
+                'canonical_ref_kind', delta.canonical_ref_kind,
+                'canonical_ref_id', delta.canonical_ref_id,
+                'canonical_ref_version', delta.canonical_ref_version,
+                'canonical_ref_hash', delta.canonical_ref_hash,
+                'delta_kind', delta.delta_kind,
+                'dedupe_hash', delta.dedupe_hash,
+                'status', delta.status,
+                'consumed_by_wave_run_id', delta.consumed_by_wave_run_id,
+                'evidence_count', (
+                    SELECT COUNT(*)
+                    FROM attack_fact_delta_evidence AS evidence
+                    WHERE evidence.fact_delta_id = delta.id
+                ),
+                'created_at', delta.created_at,
+                'consumed_at', delta.consumed_at
+            )
+            FROM attack_fact_deltas AS delta
+            WHERE delta.operation_id = %s
+            ORDER BY delta.created_at, delta.id""",
+        )
+        out.append(f"      attack_fact_deltas: {len(fact_deltas)}")
+        for delta in fact_deltas:
+            out.append(
+                f"        delta={delta.get('id')} attempt={delta.get('source_attempt_id')} "
+                f"candidate={delta.get('candidate_id')} wave={delta.get('wave_run_id')} "
+                f"unit={delta.get('wave_unit_id')} org={delta.get('organization_id')} "
+                f"kind={delta.get('delta_kind')}"
+            )
+            out.append(
+                f"          canonical={delta.get('canonical_ref_kind')}:"
+                f"{delta.get('canonical_ref_id')}@{delta.get('canonical_ref_version')} "
+                f"hash={delta.get('canonical_ref_hash')} dedupe={delta.get('dedupe_hash')}"
+            )
+            out.append(
+                f"          status={delta.get('status')} "
+                f"consumer_wave={delta.get('consumed_by_wave_run_id')} "
+                f"evidence_count={delta.get('evidence_count')} "
+                f"created_at={delta.get('created_at')} "
+                f"consumed_at={delta.get('consumed_at')}"
+            )
+
+        residual_risks = fetch_records(
+            "attack_residual_risks",
+            """/* run_tree:attack_residual_risks */
+            SELECT jsonb_build_object(
+                'id', risk.id,
+                'wave_run_id', risk.wave_run_id,
+                'wave_unit_id', risk.wave_unit_id,
+                'organization_id', risk.organization_id,
+                'reason_code', risk.reason_code,
+                'policy_hash', risk.policy_hash,
+                'wave_count', risk.wave_count,
+                'candidate_count', risk.candidate_count,
+                'chain_depth', risk.chain_depth,
+                'attempt_count', risk.attempt_count,
+                'disclosure_status', risk.disclosure_status,
+                'evidence_count', (
+                    SELECT COUNT(*)
+                    FROM attack_residual_risk_evidence AS evidence
+                    WHERE evidence.residual_risk_id = risk.id
+                ),
+                'created_at', risk.created_at,
+                'disclosed_at', risk.disclosed_at
+            )
+            FROM attack_residual_risks AS risk
+            WHERE risk.operation_id = %s
+            ORDER BY risk.created_at, risk.id""",
+        )
+        out.append(f"      attack_residual_risks: {len(residual_risks)}")
+        for risk in residual_risks:
+            out.append(
+                f"        residual={risk.get('id')} wave={risk.get('wave_run_id')} "
+                f"unit={risk.get('wave_unit_id')} org={risk.get('organization_id')} "
+                f"reason={risk.get('reason_code')} policy_hash={risk.get('policy_hash')}"
+            )
+            out.append(
+                f"          counters waves={risk.get('wave_count')} "
+                f"candidates={risk.get('candidate_count')} "
+                f"depth={risk.get('chain_depth')} attempts={risk.get('attempt_count')} "
+                f"disclosure={risk.get('disclosure_status')} "
+                f"evidence_count={risk.get('evidence_count')}"
+            )
+            out.append(
+                f"          created_at={risk.get('created_at')} "
+                f"disclosed_at={risk.get('disclosed_at')}"
+            )
 
         stage_executions = fetch_records(
             "stage_executions",
@@ -1215,9 +1568,13 @@ def _runtime_memory_lines(
                 'message_chain_id', worker.message_chain_id,
                 'status', worker.status,
                 'gate_attempt', worker.gate_attempt,
-                'checkpoint', worker.checkpoint,
                 'checkpoint_version', worker.checkpoint_version,
-                'lease_token', worker.lease_token,
+                'checkpoint_present', worker.checkpoint IS NOT NULL,
+                'checkpoint_bytes', CASE
+                    WHEN worker.checkpoint IS NULL THEN 0
+                    ELSE OCTET_LENGTH(worker.checkpoint::text)
+                END,
+                'lease_present', worker.lease_token IS NOT NULL,
                 'lease_owner', worker.lease_owner,
                 'lease_acquired_at', worker.lease_acquired_at,
                 'lease_expires_at', worker.lease_expires_at,
@@ -1248,6 +1605,12 @@ def _runtime_memory_lines(
         if not workers:
             out.append("      stage_workers: (none)")
         for worker in workers:
+            lease_present = worker.get("lease_present")
+            if lease_present is None:
+                lease_present = worker.get("lease_token") is not None
+            checkpoint_present = worker.get("checkpoint_present")
+            if checkpoint_present is None:
+                checkpoint_present = worker.get("checkpoint") is not None
             out.append(
                 f"      worker id={worker.get('id')} unit={worker.get('stage_run_unit_id')} "
                 f"execution={worker.get('stage_execution_id')} org={worker.get('organization_id')} "
@@ -1260,9 +1623,10 @@ def _runtime_memory_lines(
                 f"agent_path={worker.get('agent_path')}"
             )
             out.append(
-                f"        lease token={worker.get('lease_token')} owner={worker.get('lease_owner')} "
+                f"        lease present={_yes_no(lease_present)} "
+                f"owner={worker.get('lease_owner')} "
                 f"epoch={worker.get('attempt_epoch')} expires={worker.get('lease_expires_at')} "
-                f"expired={'yes' if worker.get('lease_expired') else 'no'} "
+                f"expired={_yes_no(worker.get('lease_expired'))} "
                 f"heartbeat={worker.get('heartbeat_at')}"
             )
             if worker.get("active_tool_call_id") is not None:
@@ -1284,10 +1648,9 @@ def _runtime_memory_lines(
             out.append(
                 f"        chain={worker.get('message_chain_id')} "
                 f"checkpoint_version={worker.get('checkpoint_version')} "
+                f"checkpoint_present={_yes_no(checkpoint_present)} "
+                f"checkpoint_bytes={worker.get('checkpoint_bytes')} "
                 f"parent_request={worker.get('parent_request_id')}"
-            )
-            out.append(
-                f"        checkpoint={_compact_json(worker.get('checkpoint'), trunc)}"
             )
             if worker.get("status") == "recovery_required" or (
                 worker.get("lease_expired") and worker.get("active_tool_call_id") is not None
@@ -1295,7 +1658,7 @@ def _runtime_memory_lines(
                 recovery = "manual_required"
             elif worker.get("lease_expired"):
                 recovery = "requeue_eligible"
-            elif worker.get("lease_token") is not None:
+            elif lease_present:
                 recovery = "wait_for_live_lease"
             elif worker.get("status") in {"passed", "failed", "exhausted", "superseded"}:
                 recovery = "terminal"
@@ -1329,7 +1692,6 @@ def _runtime_memory_lines(
                 'tool_request_id', submission.tool_request_id,
                 'stage_kind', submission.stage_kind,
                 'attempt_epoch', submission.attempt_epoch,
-                'lease_token', submission.lease_token,
                 'payload_sha256', submission.payload_sha256,
                 'submitted_at', submission.submitted_at,
                 'scope_member', submission.organization_id IS NULL OR EXISTS (

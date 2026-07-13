@@ -292,6 +292,31 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
                         wave_run_id,
                         resume_version,
                     } => format!("candidate_review {wave_run_id} resumed v{resume_version}"),
+                    K::CandidateAttemptTerminalized {
+                        attempt_id,
+                        status,
+                        evidence_count,
+                        fact_delta_count,
+                        replayed,
+                        ..
+                    } => format!(
+                        "candidate_attempt {attempt_id} {status} evidence={evidence_count} deltas={fact_delta_count} replayed={replayed}"
+                    ),
+                    K::AttackWaveConsolidated {
+                        source_wave_run_id,
+                        target_wave_run_id,
+                        decision_kind,
+                        accepted_fact_delta_count,
+                        rejected_fact_delta_count,
+                        residual_risk_count,
+                        replayed,
+                        ..
+                    } => {
+                        let target_wave_run_id = target_wave_run_id.as_deref().unwrap_or("-");
+                        format!(
+                            "attack_wave {source_wave_run_id} -> {target_wave_run_id} {decision_kind} accepted={accepted_fact_delta_count} rejected={rejected_fact_delta_count} residuals={residual_risk_count} replayed={replayed}"
+                        )
+                    }
                     K::StageRunOrgProgress {
                         org_name, status, ..
                     } => format!("stage_run {org_name} {status}"),
@@ -400,4 +425,71 @@ pub fn save_summary(base_dir: &Path, session_id: &str, summary: &str) -> anyhow:
     std::fs::write(&path, summary)?;
 
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use golish_core::events::HarnessTraceKind;
+
+    #[test]
+    fn candidate_pipeline_traces_render_safe_compaction_summaries() {
+        let events = vec![
+            TranscriptEvent {
+                timestamp: Utc::now(),
+                event: AiEvent::HarnessTrace {
+                    operation_id: "op-1".into(),
+                    stage: "verification".into(),
+                    agent_path: "main".into(),
+                    trace: HarnessTraceKind::CandidateAttemptTerminalized {
+                        scope_snapshot_id: "scope-1".into(),
+                        wave_run_id: "wave-1".into(),
+                        wave_unit_id: "unit-1".into(),
+                        organization_id: "org-1".into(),
+                        candidate_id: "candidate-1".into(),
+                        attempt_id: "attempt-1".into(),
+                        finding_id: Some("finding-1".into()),
+                        status: "verified".into(),
+                        evidence_count: 3,
+                        fact_delta_count: 1,
+                        replayed: false,
+                    },
+                },
+            },
+            TranscriptEvent {
+                timestamp: Utc::now(),
+                event: AiEvent::HarnessTrace {
+                    operation_id: "op-1".into(),
+                    stage: "verification".into(),
+                    agent_path: "main".into(),
+                    trace: HarnessTraceKind::AttackWaveConsolidated {
+                        scope_snapshot_id: "scope-1".into(),
+                        consolidation_id: "consolidation-1".into(),
+                        source_wave_run_id: "wave-1".into(),
+                        target_wave_run_id: Some("wave-2".into()),
+                        decision_kind: "opened_next_wave".into(),
+                        accepted_fact_delta_count: 1,
+                        rejected_fact_delta_count: 2,
+                        residual_risk_count: 0,
+                        replayed: true,
+                    },
+                },
+            },
+        ];
+
+        let output = format_for_summarizer(&events);
+        assert!(output
+            .contains("candidate_attempt attempt-1 verified evidence=3 deltas=1 replayed=false"));
+        assert!(output.contains(
+            "attack_wave wave-1 -> wave-2 opened_next_wave accepted=1 rejected=2 residuals=0 replayed=true"
+        ));
+        let rendered = output.to_ascii_lowercase();
+        for forbidden in ["payload", "lease", "plan", "exploit"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "summary leaked forbidden material marker {forbidden}: {output}"
+            );
+        }
+    }
 }

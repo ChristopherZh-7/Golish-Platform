@@ -1,5 +1,7 @@
 # Candidate 审批、逐条验证与 FactDelta 波次 V2 修正版实现计划
 
+> **Rollout 补充说明（2026-07-13）：** Task 0-11 的 Candidate / Attempt / FactDelta 基础实现仍然有效；仅 Task 12 的 deployment rollout / cutover 步骤由 `docs/superpowers/plans/2026-07-13-attack-rollout-shadow-promotion.md` 的 retained Candidate cohort 方案取代，不作废本计划其余内容。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。
 
 **目标：** 在修正版运行期记忆底座上，把扫描 observation 转成可审查的 Candidate 工作队列，逐 CandidateAttempt 做计划绑定、单 lane、可恢复验证，并且只让 evidence-backed terminal result 生成 Finding 或打开下一波。

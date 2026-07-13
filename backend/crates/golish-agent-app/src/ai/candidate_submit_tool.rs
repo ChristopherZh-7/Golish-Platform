@@ -84,7 +84,7 @@ impl Tool for SubmitCandidateAttemptTool {
                         "type": "object",
                         "additionalProperties": false,
                         "properties": {
-                            "fact_kind": { "type": "string", "minLength": 1 },
+                            "fact_kind": { "type": "string", "enum": ["created", "updated", "refuted", "new_surface"] },
                             "canonical_ref_kind": { "type": "string", "minLength": 1 },
                             "canonical_ref_id": { "type": "string", "format": "uuid" },
                             "canonical_ref_version": { "type": "integer", "minimum": 1 },

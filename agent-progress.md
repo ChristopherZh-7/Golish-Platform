@@ -6,6 +6,116 @@
 
 ---
 
+#### 2026-07-14 · Runtime Memory / Candidate Pipeline V2 full implementation closure
+
+- **本轮目标**：在 checkpoint `13b29628` 上完成已授权的 Runtime Memory whole-record resume、
+  Candidate Task 10–12、typed Verification / FactDelta follow-on Wave、shadow cohort promotion、fuel、
+  Post-Exploit hash bridge 与全链路收口；跑完仓库级门禁、启动烟测并形成一个本地 commit，不 push，
+  不发起真实扫描、exploit、LLM、embedding、Graphiti 或其他外部请求。
+- **已完成实现**：
+  - Runtime Memory resume 先由 trusted preflight 选择一个完整 `Legacy|V2|LegacyFallback` source，
+    再以 exact source token 原子 CAS `waiting -> running`；source 固定在 top-level request，
+    Bridge→runtime→stage worker/chain/checkpoint 全程原样传播，worker 不得逐次重选或 field-merge。
+  - additive `20260712000012`–`00018` 完成 FactDelta→follow-on Wave authority、Candidate shadow
+    attestation、typed Verification seal、operation-wide fuel reservation、attack retained cohort、runtime
+    retained cohort/attestation，以及 Candidate tagged SHA-256→Post-Exploit bare digest 的 exact bridge。
+    corrected `00002/00005` fresh default 只到 rank 1；rank 2/3 必须由真实 retained cohort 与 DB-owned
+    receipt 晋级，不能靠 migration/空分母直跳。
+  - Candidate approval/Attempt/Worker/lane、terminal Finding/lineage、typed Verification handoff、
+    accepted/rejected FactDelta consolidation、residual risk、next Wave 与 Candidate→Memory/KG/RAG→
+    Post-Exploit→Cleanup→Reporting replay/retention 路径均接入 exact DB truth；前端新增两种 HarnessTrace
+    事件处理与 generated bindings。
+  - 全量回归暴露的三个真实边界已按 fail-closed 语义修复：Reporting target FK-null 不再被 fuel trigger
+    误判为 business mutation；Candidate `sha256:<hex>` 与既有 Foothold bare digest 在 trusted seam 等价；
+    rollout-default fixtures 按当前 retained-cohort 合同定位。最后的 startup reaper 测试改用真实
+    `recon` claim+bound chain，而不是裸 SQL 伪造 unknown specialist/running worker；生产 whole-record
+    谓词没有放宽。
+- **运行过的验证**（所有 Cargo build/test 前均运行 `just space-guard`）：
+  - focused：golish-db 42/42（run `b245f728`）、golish-agent-kit 70/70（`8874d287`）、
+    golish-agent-runtime 81/81（`77468236-f333-4a2b-b9b2-c14c66d91ec3`）、sub-agents 26/26
+    （`e68b74a4-e98c-4c55-95e8-7b05bb3906fd`）、agent-app 38/38
+    （`0b0d7a6e-71c4-41b1-abd3-4de17be45e1f`）、golish CLI/resume 56/56
+    （`c0b6b6fb-9485-4e35-8b3b-8a4f9a70d444`）、`v2_closeout_replay` 3/3
+    （`61188b0e-2ccd-4c02-a3d2-0be5c7f41c83`）、startup reaper exact-chain 1/1
+    （`e7553696-63c2-4b50-b9f0-569bb9d7c9cc`）。
+  - frontend：5 files / 30 tests passed；`pnpm typecheck` exit 0。
+  - final：`just lint-rust`、`just test-rust`、第二次完整 `./init.sh`、`just precommit` 全部 exit 0；
+    precommit 输出 `✓ All checks passed!`。第一次 final `init.sh` 的代码/测试全绿但按设计在未暂存的
+    intended generated diff 上被 `check-types` 拒绝；暂存两份 generator output 后，`just check-types`
+    重新生成无新增 drift，第二次 `init.sh` 整条 exit 0。
+  - static：`cargo fmt --all -- --check`、`git diff --check`、JSON parse、58-crate DAG、Python 7/7、
+    py_compile、Finding-write authority 均 exit 0；ownership no-new ratchet 相对 `13b29628` 为
+    `current=106, baseline=107, removed=1`，只证明零新增，不宣称历史 full checker clean。
+  - smoke：`just dev` 到 Vite ready、Rust binary、embedded PostgreSQL ready、migrations complete、
+    frontend ready；主动 Ctrl-C 后 `just kill`，1420 无监听。未触发 scan/LLM/external API。
+- **已记录证据**：上述可重放命令、run ID、exit code 与关键输出已同步到本记录和
+  `feature_list.json`；唯一 `in_progress` count=1。feature 不改 `passing`，因为尚无授权 live
+  workspace/scope 的多组织 restart、Candidate/FactDelta/follow-on Wave/report lineage transcript+DB 证据。
+- **commit 记录**：本轮计划以 `feat(harness): finish runtime memory candidate v2 implementation`
+  单一 commit 落在 `codex/runtime-memory-candidate-v2`；具体 hash 以 `git log -1` 为准，未 push。
+- **风险 / blocker**：fresh rollout singleton 停在 rank 1 是 retained-cohort 安全设计，不是代码缺口；
+  rank 2/3 必须等真实 exact samples。仓库完整 ownership checker 仍有历史基线（253 ownership +
+  18 raw-SQL 的独立审计结果），本轮只满足 no-new ratchet与 Finding writer authority。唯一产品级
+  blocker 是缺少用户指定并授权的真实 acceptance workspace/scope。
+- **下一步建议**：用户给出明确 workspace 与 scope 后，执行一次受控多组织 run/restart；先读该
+  session 的 `run.log`，再跑 `python3 scripts/run_tree.py --workspace <ws> <session> --full --db`，
+  核对 frozen org snapshot、exact source、CandidateAttempt、accepted FactDelta、next Wave、Finding/report
+  lineage 与 DB receipt。只有证据完整后才把 feature 改为 `passing` 并允许 rollout 继续晋级。
+- **以下文件已修改但未提交**：本记录所述 Runtime Memory/Candidate V2 实现、00012–00018、测试、
+  generated bindings、stage resources、脚本、设计/计划/模块卡、`feature_list.json` 与本 progress；
+  将在本轮同一 commit 中提交。
+
+---
+
+#### 2026-07-14 · Attack rollout Candidate admission/cohort promotion safety closure
+
+- **本轮目标**：收口 attack rollout 审计项 #2/#7；不提交。把 fresh deployment 停在
+  rank 1，以 DB-owned Candidate admission/cutoff 为 promotion 分母，封住 raw adjacent UPDATE、
+  late sample、空 operation 与 final-seal/promotion 同事务死锁旁路。
+- **TDD RED 证据**（每条 Cargo 命令前均运行 `just space-guard`）：
+  - `cargo nextest run -p golish-db --test attack_rollout_cohort_migrations --status-level fail`
+    → run `261e223e-f05b-450e-968f-8a9caa52aec3`，dual attack + runtime `legacy_v1` 被旧矩阵错误接受。
+  - 同一独立 test 的 schema case → run `adc88055-846d-4adb-ac08-e925d62e3f8a`，
+    `attack_execution_candidate_admissions` 尚不存在（SQLSTATE `42P01`）。
+- **已完成实现**：
+  - `00005` 只做 attack rank0→1；新增 additive `00016_attack_rollout_candidate_cohort.sql`。
+    gen0 首个 WaveUnit 在 rollout `FOR SHARE` 下写 operation/scope/Wave/Unit/contract/rank/version +
+    BIGSERIAL admission；已 admission operation 可完成 follow-on，旧 contract 的首次 late admission/
+    Candidate Unit 被拒绝。
+  - promotion 在 rollout `FOR UPDATE` 下冻结 `MAX(admission_seq)`，left-join admission→exact
+    terminal Wave/WaveUnit→唯一 final-passed Candidate Unit→shadow。DB 从 canonical Candidate/
+    work-item/evidence rows递归重建 serde-compatible semantic JSON/hash，任一缺失、未终态、mismatch
+    均 typed not-ready；raw UPDATE 走同一 gate。trigger 内生成 immutable receipt，receipt trigger
+    再从 DB 重算 cutoff/counts，caller 不能自报。
+  - Rust reconciler 对同 cohort 再 rehydrate whole record，返回 `Promoted|NotReady|AlreadyCurrent`，
+    每次最多相邻一级；00017 的 `lock_execution_rollout_pair()` 在任何 rollout row lock 前取得。
+    Candidate final seal 先业务 commit，再独立 best-effort reconcile；新 operation 先独立 reconcile，
+    再冻结两份 contract。promotion 失败不反向否定已提交 seal。
+  - operation 合同矩阵收紧：dual attack 拒绝 runtime `legacy_v1`；attack `v2_only` 仍只允许
+    runtime `v2_only`。closed shadow 使用的 Candidate/work-item/evidence semantic source 同步冻结。
+  - 同步 attack rollout design/plan、`golish-db`/repo、`golish-agent-app/ai` 模块卡、INDEX；
+    ownership map 补登记既有新 repo `attack_execution_shadow=agent`。admission/receipt 是
+    `attack_execution_rollout` 模块内部表，无新增 repo key。
+- **GREEN / 已记录证据**：
+  - 在 `00017` advisory pair lock 落地后重跑独立 migration/behavior 整文件最终 **5/5**：run
+    `51b976ce-7a11-4e17-be10-99abf4d6c9b0`。覆盖 fresh rank1、合同矩阵、首次 admission、open-Wave
+    block、late Unit cutoff、SQL canonical rebuild、closed-source tamper rejection、raw UPDATE、
+    DB-generated receipt/direct-forgery rejection与 typed repo reconcile。
+  - `cargo check -p golish-db -p golish-agent-app` exit 0；
+    `cargo clippy -p golish-db -p golish-agent-app --all-targets -- -D warnings` 于最终审计重跑 exit 0；
+    本 slice 四个 Rust 文件 `rustfmt --check` 与 scoped `git diff --check` exit 0。
+  - `python3 -m unittest scripts.tests.test_check_repo_ownership -v` 1/1 exit 0；全树 ownership checker
+    不再报告 `attack_execution_shadow` 未登记。本轮按 ownership 约束未修改 Verification-owned giant。
+- **当前状态 / 风险**：父 feature 继续 `in_progress`。共享树 full `cargo fmt --check` 仍报告
+  其它并行文件格式 drift；`check_repo_ownership.py` 仍有既有全树 ownership/raw-SQL 基线噪声，
+  与 00016 新表无关；尚未跑最终 `just precommit`，不得宣称整功能 passing。
+- **以下文件已修改但未提交**：`00016_attack_rollout_candidate_cohort.sql`、独立
+  `attack_rollout_cohort_migrations.rs`、`attack_execution_{rollout,shadow}.rs`、
+  `operation_state.rs`、runtime final-seal/create reconcile 接线、上述设计/计划/模块卡/ownership map
+  与本 progress；共享树其它并行改动均未回滚或覆盖。
+
+---
+
 ## 当前已验证状态
 
 > 这是项目当前状态的**唯一真相来源**。任何与此处冲突的"agent 记忆"或"以前的回复"都不算数。
@@ -17,11 +127,11 @@
 | **包管理** | `pnpm`（前端）+ `cargo` nextest（后端） |
 | **标准启动** | `just dev`（全栈热重载,端口 1420）/ `just dev-fe`（仅前端 mock） |
 | **标准验证** | `just precommit` = `just check && just test` |
-| **当前状态（2026-07-13）** | `runtime-memory-candidate-pipeline-v2-2026-07-12` 是唯一 `in_progress` feature。P1 foundation、Candidate corrected Task 0-9、Memory/KG/RAG、typed Post-Exploit/Cleanup/Reporting safe slice 与可达 CandidateAttempt UI 已落地；最终 `just precommit` 整体 exit 0 并输出 `✓ All checks passed!`，当前 Rust workspace 清单为 5285 tests。标准 `just dev` smoke 已到 DB migrations complete / DB ready / frontend ready，随后主动停止且 1420 无残留。 |
-| **当前 blocker（2026-07-13）** | Candidate Task 10 需要一个新的 additive schema 来表达 FactDelta-set 后续 Wave entry；冻结的 `20260712000004` 只允许 exact final-passed `vuln_triage` handoff，不能合法表达第二波。尚未获得新增 migration（建议 `20260712000012`）的明确确认；独立 Task 11 Attempt UI 已完成，但禁止复用首波 handoff、禁止推进依赖 Task 10 的多波 integration，也禁止创建 `00005` cutover。 |
-| **提交状态（2026-07-13）** | 基线 checkpoint `ab7b0c4a` 与本记录所在的 `feat(harness): checkpoint runtime memory and candidate pipeline v2` safe-slice checkpoint 均在分支 `codex/runtime-memory-candidate-v2`；未 push。本记录与实现同一 commit，具体 hash 以 `git log -1` 为准。 |
-| **当前最高优先级（2026-07-13）** | 等用户明确确认是否允许新增 `20260712000012_attack_fact_delta_wave_entry.sql`；确认后按 TDD 完成 Candidate Task 10 FactDelta consolidation/fuel/follow-on wave，再做 Task 11 余下集成与 Task 12 shadow/cutover。未确认前不得创建 `00002/00005/00012` 或伪造首波 provenance。 |
-| **历史快照说明** | 紧随其后的 3 条 2026-05/06 长记录只为考古保留，已被上面带 `2026-07-13` 的字段完全取代，不再代表当前状态。 |
+| **当前状态（2026-07-14）** | `runtime-memory-candidate-pipeline-v2-2026-07-12` 是唯一 `in_progress` feature。Runtime Memory whole-record resume/atomic claim、Candidate multi-wave V2、typed Verification/FactDelta、shadow cohorts/fuel、Memory→Post-Exploit→Cleanup→Reporting 与 00012–00018 均已实现；fresh `./init.sh`、`just precommit` 与 dev smoke 全绿。代码实现完成，但未把确定性本地门禁冒充真实 live acceptance。 |
+| **当前 blocker（2026-07-14）** | 只缺用户指定并授权的真实 workspace/scope acceptance：多组织 restart/resume，以及 CandidateAttempt→FactDelta→follow-on Wave→Finding/report lineage 必须由 `run.log`、`transcript.json`、`run_tree.py --full --db` 和 DB rows 共同证明。fresh rollout 留在 rank 1 是 retained cohort 设计，不是未实现。 |
+| **提交状态（2026-07-14）** | 分支 `codex/runtime-memory-candidate-v2`，checkpoint `13b29628`；本轮最终 commit message 为 `feat(harness): finish runtime memory candidate v2 implementation`，具体 hash 以 `git log -1` 为准，未 push。 |
+| **当前最高优先级（2026-07-14）** | 先完成用户授权 live acceptance 与 DB/transcript truth 审计；证据完整后才把 feature 改 `passing`，并只让 DB-owned retained cohort/receipt 推进 rollout rank。禁止手工改 singleton 或用空 cohort 直跳。 |
+| **历史快照说明** | 本表中未带 `2026-07-14` 的同名长行均为旧版考古快照，只保留兼容追溯，绝不代表当前 feature、blocker、commit 或未提交状态。 |
 | **当前最高优先级** | **用户已澄清北极星 = crate-per-service（每个功能独立 crate、类微服务）**。新写 `docs/superpowers/plans/2026-05-30-crate-per-service-split.md`（servitization 阶段 3 S3-2 可执行化），feature_list `arch-crate-per-service-split` 已转 **`in_progress`**（M0 阶段）。**2026-05-30 进展**：§6 的 4 决策全按推荐拍板 + Tauri 跨 crate 注册机制 web 核实（Discussion #5378：invoke_handler 只调一次 → 单聚合 generate_handler! 路径引用）。**M0 State 下沉半边 = 完成+验证**：新建 `golish-app-core`(L5) 收 GolishError+DbState（AppState 故意留 golish），`golish/src/{error,state/db}.rs` 改 re-export，`check_dag.py` 加 L5；`cargo check -p golish-app-core` ✅ + `check_dag.py` ✅(46 crates) + golish 编译用户确认 OK。**M1（vuln 叶子）整体完成+验证**（MCP-agent-2 接 dead session yj5fxhjr 半成品）：vuln_intel(M1a)+wiki(M1b) 均 git mv 进 golish-vuln-app；`cargo check` 两 crate + `check_dag`(47 crates) + `check_repo_ownership` 全 exit 0；M0 欠的多 crate 命令注册由此 compile-level 实证。**M2（recon 服务）整体完成+验证（2026-05-31 · MCP-agent-4 · 层次 A 编译期依赖链）**：`golish-recon-app` 抽入 11 模块组（targets/organizations/scan_queue/sensitive_scan/custom_rules/scan_runner/intel_providers/wordlists + asset_intel + integrations），`scoping` 下沉 golish-app-core，asset_intel 解 PentestState（`ToolsConfigState` 共享同一 `Arc<ConfigManager>`），integrations（含 tauri webview 捕获引擎）搬迁 + tauri_app 启动接线。验证：`cargo check` 两 crate + `nextest -p golish-recon-app`(106✓) + `clippy -p golish-recon-app -D warnings` + `check_dag`(48 crates) + `check_repo_ownership` 全 exit 0。**M3（pentest 服务）整体完成+验证（2026-05-31 · MCP-agent-3 · 层次 A 编译期依赖链）**：`golish-pentest-app`(L5.6) 抽入 9 模块组（pentest/pentest_ai/pentest_bridge/findings/methodology/pipeline/execution_plans/evidence/security_analysis + 连带 output_parser）；**两个共享件下沉 golish-app-core**：`pty_interactive`（golish state/runtime/ai + pentest_ai 双用）+ `ports`(VaultReadPort/PgVaultAdapter，S1-2a)。pentest-app 编译期依赖 recon-app(targets)/pipeline(L3)/app-core；ai/ 入向桥 `pub(crate) use golish_pentest_app::{pentest,pentest_ai,pentest_bridge}`。验证：`cargo check` 两 crate + `nextest -p golish-pentest-app`(**47✓**) + `clippy -p golish-pentest-app -D` + `clippy -p golish --lib -D` + `check_dag`(**49 crates**) + `check_repo_ownership` 全 exit 0。**M4 调查 + M4-A（AppState 解耦）完成（2026-05-31 · MCP-agent-3）**：M4（agent）实证发现**真实 blocker**——`ai/commands/*`(19 文件) 几乎全 take 单体 `AppState`，而 `AppState` 聚合 `AiState`(定义在 ai/commands/mod.rs)，三者互锁 → 直接抽 ai/ 会造成 golish↔agent-app 循环（见 `docs/superpowers/plans/2026-05-31-m4-agent-app-feasibility.md`）。用户选「开 A：AppState 解耦」。**M4-A 完成**：新建 `golish-agent-app`(L5.6)，`AiState` 搬入 + 新 `AgentState`(13 字段 ≈ AppState 减 command_index/telemetry/langfuse)；`AppState::extract_agent_state()` + 启动 `.manage()`；**19 个 ai/commands 全部 `State<AppState>`→`State<AgentState>`**；bridge_config/mcp 接线改走 AgentState。验证：cargo check 两 crate + `clippy -p golish --lib -D` + `clippy -p golish-agent-app -D` + `check_dag`(**50 crates**) + `check_repo_ownership` 全 exit 0；ReadLints 无错（顺带 #[allow(dead_code)] 3 处 pre-existing 死字段 pty/sidecar/db_pool_ready，recompile surfaced）。**M4-proper 完成+验证（2026-05-31 · MCP-agent-3 接另一 MCP 半成品收尾）**：另一 MCP 已 `git mv` ai/ 全子树 + conversation_store 入 golish-agent-app、runtime/ 下沉 golish-app-core（TauriRuntime 解耦 AppState 改 take pty_output_tap 参数）、golish 侧 ai.rs/runtime.rs/conversation_store shim + facade + 守卫，但只跑 cargo check（带 4 unused warning）、从未跑 clippy、且在删死 re-export 前被掐断。本会话补完：① agent-app lib.rs 加 crate 级 `#![allow(clippy::too_many_arguments)]`（agents.rs:43 16 参命令）；② 删 4 个死 re-export（state AgentState / tools pentest_ai+pentest_bridge / db PgPentestStore，db/mod.rs 现空占位）。验证全绿：cargo check 两 crate + clippy 两 crate `-D warnings` + nextest -p golish-agent-app(**15✓**) + check_dag(**50 crates**) + check_repo_ownership 全 exit 0。**M5 platform 完成+验证（2026-05-31 · MCP-agent-3 · 用户「开 M5 platform」）**：抽 `golish-platform-app`(L5.5 纯叶子，零兄弟依赖)——`tools/{vault,audit,notes,recordings}.rs`(4 文件全 `State<DbState>`)`git mv` 入 crate，跨服务读经 golish_db::repo(L2) 不经兄弟 crate；导入重映射 `crate::{error,state::DbState,tools::scoping}`→`golish_app_core::*`；crate 级 too_many_arguments allow；facade vault/workspace 转发；golish tools/mod 删 4 pub mod + 删死 scoping re-export；守卫 check_dag(platform-app=5.5)+check_repo_ownership(SOURCE_ROOTS + DOMAIN_RULES 清 4 + ALLOWLIST/RAW_SQL 迁前缀)。验证全绿：cargo check 两 crate + clippy 两 crate -D + nextest -p golish-platform-app(**1✓**) + check_dag(**51 crates**) + check_repo_ownership 全 exit 0。**🎯 crate-per-service 北极星：5 个服务域(vuln/recon/pentest/agent/platform)全部层次 A 抽完。** epic 维持 in_progress 待层次 B（端口切兄弟硬依赖升真微服务）/ precommit / commit 收口。**层次 B 启动 · S1-2b1 完成（2026-05-31 · MCP-agent-3 · 用户「开层次 B 端口化」→「按推荐开干 b1」）**：发现 S1-2b 设计过期（写于层次 A 前，假设端口放 golish/src/ports），修正端口家为 **golish-app-core/src/ports/recon/**（6 消费方已分散到 4 app crate，不能依赖 golish）。建 ReconScansPort(10 method)+ReconAssetsPort(1 method)（镜像 repo 签名去 pool、返回同 Row 类型 remote-ready、纯透传适配器）；GolishDbRepoProvider 加 2 端口字段 new(pool) 内构造（外部签名不变）；agent-app recon.rs 11 调用点迁端口；守卫加 ('ports/recon','recon') + 删 5 条 ALLOWLIST。验证全绿：check app-core/agent-app + nextest ports::recon(2✓) + clippy 三处 -D 零告警 + check_dag(51) + repo_ownership(OK,ALLOWLIST 净减 5)。**b2 完成（2026-05-31，用户「接着开 b2」）**：security_analysis.rs（pentest，10 自由 Tauri 命令）5 recon 表迁端口；因须保留 pool_ready 就绪门，用『就绪门后内联构造适配器』（非 struct 注入）；扩 ReconScansPort +4 + ReconAssetsPort +1 method；删 5 条 ALLOWLIST（累计 28→18）；验证全绿（check pentest-app + nextest ports::recon 2✓ + clippy app-core/pentest-app/golish --lib -D 零告警 + 双守卫）。**b3-b6 完成（2026-05-31，用户「连续干 b3-b6」）→ S1-2b ReconPort 全 6 子片完成,22 条 recon 跨服务耦合全切断（ALLOWLIST 28→6）**：新建 ReconTargetsPort/ReconSitemapPort/ReconDirectoryPort + 扩 ReconScansPort（js_analysis_update_file_path_by_url、passive_scans_list_global_by_project，含端口 DTO ReconPassiveScanGlobal 解泛型 object-safety + app-core 加 chrono）；迁 8 文件（pentest_bridge 5 + pipeline/storage + platform/audit + vuln/matching），`&PgPool` 消费方用 Arc::new(pool.clone()) 注入。验证全绿：check 3 消费方 + nextest ports::recon(5✓) + nextest pentest/platform/vuln(48✓ 无回归) + clippy 五处 -D 零告警 + 双守卫。剩余 ALLOWLIST 6 = pentest_plan/vuln/agent_log/scan_queue（S1-2c/d/e/f，非 recon）。 **commit + S1-2c/d/e/f 完成（2026-05-31，用户「你帮我commit吧...后面全部做完」）**：① M0–S1-2b 已 commit `45f4bb2`（229 文件，未 push，本地 ahead 12）；② S1-2c（VulnIntelPort+WikiKbPort）/ S1-2d（PentestPlanPort）/ S1-2e（AgentLogReadPort，含 DTO 解泛型）/ S1-2f（scan_queue REPO_OWNER vuln→recon 伪阳性修正）全部完成 → **S1-2 横向耦合端口化整体完成，ALLOWLIST 28→0（cross-service ratchet 清空，每条横向 repo 耦合都走 golish-app-core/ports/ 服务端口）**。验证全绿：clippy app-core/agent/platform/golish --lib -D 零告警 + nextest app-core ports(10 object-safe) + nextest agent/platform/vuln(16✓ 无回归) + check_dag(51) + check_repo_ownership OK clean(ALLOWLIST 空)。**下一步 = commit S1-2c-f；（用户回来后）跑 just precommit 决定 push**。**§2.1：2 个 in_progress = arch-crate-per-service-split（父 epic）+ arch-s1-2b-recon-port（子里程碑），同一工作流父/子两粒度。** M0–S1-2b 已 commit(45f4bb2,未 push)；S1-2c-f 待 commit；全套未 push、未跑 just precommit 全量。前置端口：`arch-s1-2b-recon-port`（`not_started`，设计已写，ReconPort 是 M2 recon 抽取的前置）。父条目 `arch-s1-2-port-horizontal-coupling` 已 **passing**（S1-2a 走路骨架确立）。`target-surface-workbench` 继续 `blocked`。**§2.1 当前 in_progress 数 = 1（arch-crate-per-service-split）**。 |
 | **当前 blocker** | `xiaomi-mimo-provider` 已从 `in_progress` 切 `blocked`，等待 tool-use compatibility layer 与真实 MiMo E2E 后再决定 passing。2026-05-27 复测发现 `ask_human` 被误包成普通 ToolApprovalRequest；已修为直接发 `AskHumanRequest`，但需重启 dev app 后真实复测。**2026-05-30 更新**：本机 `just check` **全绿**（fmt + check-fe + test-fe + lint-rust（clippy `-D warnings` 0 告警 + `cargo fmt --check`）+ test-rust-all（nextest **2592 passed / 7 skipped / 0 failed**）+ check-types（ts-rs 绑定无漂移）均 ✅）。此前记录的 clippy warnings 与 sandbox PermissionDenied baseline failures 在本机最新工作树**未复现**。 |
 | **未提交的半成品** | **2026-06-15（MCP-agent-1）：0.zone apk 微信公众号映射补全——已 commit `3ea3466d`（8 文件：0.zone http partial-success/retry [与 MCP-3 entangled，含 http.rs/models] + wechat 映射 0-zone.json/profile_patch.rs/org-fields.ts/测试；未 push）。i18n `en/zh-CN.json` 的 wechat 标签因与他会话「assets」hunk 共文件**未纳入**（feature 经英文回退仍显示，中文标签待协调提交）。TDD 全绿（nextest asset_intel 66/66 + clippy -D 零告警 + 前端全量 1322 + check-fe exit 0），未跑全量 precommit。详见会话记录最新一条。** **2026-06-14（MCP-agent-2）：engagement 总览/扇出全栈移除 + stage-run 闭环——47 项改动未 commit（branch `feat/stage-run-fanout`）；完整 `just check` 全量全绿（`cargo clippy --workspace -- -D warnings` 0 告警 + `cargo nextest --workspace` 3269 passed/7 skipped + check-fe/test-fe 绿）。详见会话记录最新一条。** **2026-05-30：架构优化批已拆 9 commit 落 `feat/recon-service`（`98beea9`→`6aaa0fb`，HEAD `d060ce4`）。** 其上叠了 **P0-3b 残余作用域 SQL 下沉**（T1-T6 全部完成，**未 commit**）：26 个 tracked 文件改动 + 6 个新 repo 模块（untracked：`repo/{scan_queue,sensitive_scan,conversation_store,directory_entries,sitemap_store,custom_rules}.rs`）。验证：rg 命令层裸作用域 SQL 清零、`golish-db` nextest 46/46、`golish --lib` nextest 318/318、`clippy golish-db+golish` 全绿，并跑通**全栈 `just precommit` → `✓ All checks passed!`（exit 0）**（含用户授权后修的 1 个 pre-existing `integrations/commands.rs:179` baseline）。**已按拆分提交 4 个 commit**（`65e0292`/`06af27a`/`d023386`/`c2f5ad2`，落 `feat/recon-service`，未 push）。**2026-05-30 续（MCP-2）：P2 拆分①完成——`golish-pentest-domain/src/models.rs`(1310) 模块化为 module-root + `models/{tool_config,asset_intel,runtime,tests}.rs`（全 < 500 行），全验证通过（crate check/nextest 17✓/clippy `-D warnings`/`cargo check --workspace` 全绿），**未 commit**（`M models.rs` + `?? models/`）。P2 拆分②完成——`golish/src/tools/pentest_bridge/js_collect.rs`(1357) 模块化为 module-root + `js_collect/{extract,judge,quality,sitemap,tool_impl,tests}.rs`（全 < 500 行，max 470），全验证通过（`cargo check -p golish`/`nextest js_collect` 26✓/`clippy -p golish --all-targets -D warnings` 全绿），**未 commit**（`M js_collect.rs` + `?? js_collect/`）。P2 拆分③完成——`golish/src/tools/integrations/capture/engine.rs`(1483) 模块化为 module-root + `engine/{extract,helpers,tests}.rs`（全 < 500 行，engine.rs 496）；生命周期/webview 方法留 root 避免 super:: 改写，全验证通过（`cargo check -p golish`/`nextest capture::engine` 23✓/`clippy -p golish --all-targets -D warnings` 全绿），**未 commit**（`M engine.rs` + `?? engine/`）。P2 拆分④（进行中）——`frontend/mocks.ts`(4135→2353) 抽出事件系统/AI 模拟/showcase 三层到 `mocks/{event-bus,events,simulations,showcase}.ts`（公共面零变更；`showcase.ts` 1146 仍 >500 待再分），`check-fe`+`test-fe` 全绿；剩余 demos/有状态 ipc 待续。**✅ 已按块 commit**：经 `just precommit` 全绿（`✓ All checks passed!`，~21.7min）后落 5 个 commit 到 `feat/recon-service`（`a71319b` pentest-domain models / `03871db` js_collect / `63c196e` capture engine / `83a105c` frontend mocks / `dd3c367` docs progress，**未 push**）。**2026-05-30 收尾（MCP-agent-2）：本会话架构体检全批（拆/合并/优化/dedup）已 `cargo fmt --all` 后按主题拆 20 个 commit（`a85f7d4`(scripts)→…→ docs(progress)，**未 push**）；提交后工作树 clean。完整 `just precommit` 本轮未重跑（树稍早已全绿，fmt 仅排版）。** **2026-05-30 续（MCP-5 · 接 MCP-3 转交）：S1-1 repo 数据所有权守卫 + check_dag 修复**——已修既有 `golish-graphiti(L1)→golish-db(L2)` DAG 违规（graphiti 归 L2，非删依赖）；`just arch` → **exit 0**（双守卫全绿）。已落 4 commit 到 `feat/recon-service`（`b0811ea`/`dc9ad0f`/`821c101` + 1 docs commit，**未 push**），提交后工作树 clean。feature_list `arch-s1-1-repo-ownership-guard` → **passing**；`just precommit` 未重跑（改动集零 Rust/TS/Cargo diff）。 **2026-05-30 续（MCP-agent-4 数据工程）：S1-2a `VaultReadPort` 走路骨架** —— 另一会话写 Tasks 1-4（端口/迁移/注入），本会话接手 Task 5（守卫拔 ratchet）+ Task 6（文档/feature_list/progress）。改动：`?? golish/src/ports/`(3 文件)、`M golish/src/lib.rs`、`M tools/pentest_bridge/{vault_ops,auth_probe,mod}.rs`、`M scripts/check_repo_ownership.py`、`M docs/architecture.md`、`M feature_list.json`、`M agent-progress.md`、`?? docs/{design,plans}/2026-05-30-s1-2-*`。验证：`cargo check -p golish` exit 0、`just arch` exit 0（ALLOWLIST **30→28**）、guard OK clean、`rg golish_db::repo::vault` 于 pentest_bridge 空。**2026-05-30 续（MCP-agent-3 后端工程，用户授权 C: A+B 一气呵成）**：跑 `cargo nextest -p golish ports::platform::vault` → **1 passed/373 skipped exit 0**（4m53s 冷编译）+ `just precommit` → **✓ All checks passed! exit 0**（29.6 min · fmt+check-fe+test-fe+lint-rust+test-rust-all 全绿）；按 plan 拆 **6 commit 落 feat/recon-service**：`6abaec8`(feat 端口骨架,4f+118)/`1e162de`(refactor VaultTool,1f)/`1a7018b`(refactor AuthProbeTool,1f)/`1149ddb`(refactor 构造点注入,1f)/`389d3fd`(chore 拔 ratchet,1f) + `23e47a6`(docs S1-2 design+plan+architecture+feature_list+progress,5f +947-3)；**未 push**，本地 ahead 10。**2026-05-30 续 2（MCP-agent-3 · 用户授权"你想怎么搞合适"）**：S1-2 父条目 `arch-s1-2-port-horizontal-coupling` → **passing**（走路骨架确立）；**新增** `arch-s1-2b-recon-port` 条目 `not_started`（等用户审 §10 5 决策再转 in_progress）；**新写** `docs/design/2026-05-30-s1-2b-recon-read-port.md` S1-2b 高层设计（22 条 allowlist 精确清单+grep 实证、6 子片划分 b1-b6、ReconPort trait 25 method 含读+写、守卫配合、5 待拍板决策）；命名差异关键：a 是 ReadPort（read-only），b 是 Port（含写，因 agent-bridge 适配器内有 insert/upsert/update）。新增/修改 3 文件：`?? docs/design/2026-05-30-s1-2b-recon-read-port.md`、`M feature_list.json`、`M agent-progress.md`。**待 commit + 不 push**（push 需用户单独点头，按 AGENTS.md §2.7 红线保守处理）。 **2026-05-30 续（MCP-agent-2）：M1 crate 抽取全套未 commit** —— `?? backend/crates/golish-app-core/`(M0)、`?? backend/crates/golish-vuln-app/{Cargo.toml,src/lib.rs}` + `RM` 19 文件（vuln_intel 8 + wiki 11，git mv 进 golish-vuln-app/src/）、`M backend/Cargo.toml`、`M golish/{Cargo.toml, src/commands_facade/{vuln_intel,wiki}.rs, src/tools/mod.rs, src/error.rs, src/state/db.rs, src/event_emitter.rs}`、`M scripts/check_{dag,repo_ownership}.py`、`M feature_list.json`、`M agent-progress.md`。验证：`cargo check` 两 crate + 双守卫全 exit 0；**未跑 just precommit 全量、未 commit、未 push**。 |
@@ -33,6 +143,13 @@
 > 倒序排列,最新一轮在最上面。每轮一条。
 
 > 历史会话已归档：`docs/archive/agent-progress-archive-2026-06-28.md`。主文件只保留最近 20 条会话，避免旧日志干扰新判断；需要追溯旧验证证据时去 archive grep。
+
+#### 2026-07-13 · Candidate Task 10–12 authorized continuation
+
+- **本轮目标**：执行用户已明确授权的 `20260712000012_attack_fact_delta_wave_entry.sql` 与相关 `golish-db` / Candidate 多波实现；先以 TDD 完成 typed FactDelta-set → follow-on Wave provenance、原子 consolidation/fuel/residual，再完成 Task 11 integration，最后仅在 shadow gate 全绿时处理 `00005` cutover。
+- **开工证据**：分支 `codex/runtime-memory-candidate-v2`，起点 HEAD `13b29628`，工作树 clean；`just space-guard` exit 0；`./init.sh` 完整 exit 0，`fmt`、`check-fe`、`test-fe`、`lint-rust`、`test-rust-all`、`check-types` 全部通过。用户随后在聊天中明确表示已给权限并要求开始。
+- **执行约束**：不改写冻结 `20260712000001` / 已存在 `00004`；不复用首波 `vuln_triage` handoff伪造后续 Wave；不发起真实扫描、exploit、外部 API、embedding 或 Graphiti 请求；不 push。`00002/00005` 只有各自 shadow/cutover gate 满足后才允许处理。
+- **当前状态**：本轮正在执行，尚未宣称 Task 10–12 完成；以下 RED/GREEN、模块卡、feature evidence、commit 与剩余风险将在收尾前补齐。
 
 #### 2026-07-13 · V2 safe-slice final gate / startup smoke / checkpoint closeout
 

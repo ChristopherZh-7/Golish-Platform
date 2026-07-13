@@ -79,9 +79,38 @@ pub enum AttemptDisposition {
     Blocked,
 }
 
+/// Closed semantic changes that a terminal CandidateAttempt may propose.
+/// Model prose belongs in `summary`; it must never mint a new delta kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactDeltaKind {
+    Created,
+    Updated,
+    Refuted,
+    NewSurface,
+}
+
+impl FactDeltaKind {
+    pub const ALL: [Self; 4] = [
+        Self::Created,
+        Self::Updated,
+        Self::Refuted,
+        Self::NewSurface,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Updated => "updated",
+            Self::Refuted => "refuted",
+            Self::NewSurface => "new_surface",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FactDeltaDraft {
-    pub fact_kind: String,
+    pub fact_kind: FactDeltaKind,
     pub canonical_ref_kind: String,
     pub canonical_ref_id: Uuid,
     pub canonical_ref_version: i64,

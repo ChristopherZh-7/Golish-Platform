@@ -8,8 +8,6 @@ use golish_memory_domain::{
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use sha2::{Digest, Sha256};
-
 use super::findings::{self, CandidateVerifiedFindingWrite};
 use super::{attack_execution_lanes, attack_fact_deltas, attack_waves};
 
@@ -65,9 +63,19 @@ pub struct TerminalizedFinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalizedCandidateAttempt {
+    pub scope_snapshot_id: Uuid,
+    pub wave_run_id: Uuid,
+    pub wave_unit_id: Uuid,
+    pub organization_id: Uuid,
+    pub candidate_id: Uuid,
     pub attempt_id: Uuid,
+    pub status: String,
+    /// Compatibility name retained for existing scheduler logging. It is
+    /// always identical to `status`.
     pub disposition: String,
     pub finding_id: Option<Uuid>,
+    pub evidence_count: u32,
+    pub fact_delta_count: u32,
     pub replayed: bool,
 }
 
@@ -126,12 +134,12 @@ struct VerifiedFindingPayload {
 
 #[derive(Debug)]
 struct FactDeltaPayload {
-    fact_kind: String,
+    fact_kind: attack_fact_deltas::AttackFactDeltaKind,
     canonical_ref_kind: String,
     canonical_ref_id: Uuid,
     canonical_ref_version: i64,
     canonical_ref_hash: String,
-    summary: String,
+    _summary: String,
     evidence_ids: Vec<i64>,
 }
 
@@ -144,6 +152,88 @@ struct TerminalPayload {
     blocker_reason_code: Option<String>,
     finding: Option<VerifiedFindingPayload>,
     fact_deltas: Vec<FactDeltaPayload>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct FuelExhaustedCandidateTerminalEvent {
+    pub project_scope_id: Uuid,
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub attempt_id: Uuid,
+    pub candidate_id: Uuid,
+    pub approval_id: Uuid,
+    pub candidate_plan_hash: String,
+    pub result_hash: String,
+    pub target_type_at_time: String,
+    pub target_value_at_time: String,
+    pub target_identity_hash: String,
+    pub source_version: i64,
+    pub occurred_at: DateTime<Utc>,
+    pub blocker_evidence_ids: Vec<i64>,
+}
+
+pub(super) async fn append_fuel_exhausted_candidate_terminal_event(
+    tx: &mut Transaction<'_, Postgres>,
+    terminal: &FuelExhaustedCandidateTerminalEvent,
+) -> crate::Result<()> {
+    let mut evidence_ids = terminal.blocker_evidence_ids.clone();
+    evidence_ids.sort_unstable();
+    evidence_ids.dedup();
+    if evidence_ids.is_empty() || evidence_ids.iter().any(|evidence_id| *evidence_id <= 0) {
+        return Err(conflict(
+            "fuel-exhausted Candidate terminal event requires exact evidence",
+        ));
+    }
+    let source_stream_key = format!("candidate-attempt:{}", terminal.attempt_id);
+    let source = SourceRef {
+        source_kind: CanonicalSourceKind::CandidateAttempt,
+        row_id: CanonicalRowId::Uuid(terminal.attempt_id),
+        source_stream_key: source_stream_key.clone(),
+        version: terminal.source_version,
+    };
+    let event = KnowledgeEventEnvelopeV1 {
+        event_id: Uuid::new_v5(
+            &terminal.attempt_id,
+            KnowledgeEventNameV1::CandidateAttemptTerminal
+                .as_str()
+                .as_bytes(),
+        ),
+        project_scope_id: Some(ProjectScopeId(terminal.project_scope_id)),
+        organization_id_at_time: Some(terminal.organization_id),
+        source_operation_id: terminal.operation_id,
+        event_name: KnowledgeEventNameV1::CandidateAttemptTerminal,
+        schema_version: 1,
+        payload: KnowledgeEventPayloadV1 {
+            source,
+            source_stream_key,
+            source_version: terminal.source_version,
+            structured_payload: serde_json::json!({
+                "attempt_id": terminal.attempt_id,
+                "candidate_id": terminal.candidate_id,
+                "approval_id": terminal.approval_id,
+                "disposition": "blocked",
+                "candidate_plan_hash": terminal.candidate_plan_hash,
+                "result_hash": terminal.result_hash,
+                "finding_id": serde_json::Value::Null,
+                "target_type_at_time": terminal.target_type_at_time,
+                "target_value_at_time": terminal.target_value_at_time,
+                "target_identity_hash": terminal.target_identity_hash,
+                "evidence_ids": evidence_ids,
+                "proof_evidence_ids": [],
+                "refutation_evidence_ids": [],
+                "blocker_evidence_ids": evidence_ids,
+                "blocker_reason_code": "max_attempts_total",
+                "fact_delta_count": 0,
+            }),
+        },
+        occurred_at: terminal.occurred_at,
+    };
+    super::knowledge_outbox::append_event_with_catalog_deliveries(tx, &event)
+        .await
+        .map_err(|error| {
+            crate::DbError::Other(anyhow::anyhow!("candidate_terminal_outbox_failed: {error}"))
+        })?;
+    Ok(())
 }
 
 async fn append_candidate_terminal_event(
@@ -217,6 +307,29 @@ async fn append_candidate_terminal_event(
 
 fn conflict(message: &str) -> crate::DbError {
     crate::DbError::Other(anyhow::anyhow!(message.to_string()))
+}
+
+async fn durable_terminal_counts(
+    tx: &mut Transaction<'_, Postgres>,
+    attempt_id: Uuid,
+) -> crate::Result<(u32, u32)> {
+    let (evidence_count, fact_delta_count): (i64, i64) = sqlx::query_as(
+        r#"SELECT
+               (SELECT COUNT(DISTINCT evidence_id)
+                  FROM candidate_attempt_evidence
+                 WHERE attempt_id=$1),
+               (SELECT COUNT(*)
+                  FROM attack_fact_deltas
+                 WHERE source_attempt_id=$1)"#,
+    )
+    .bind(attempt_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let evidence_count = u32::try_from(evidence_count)
+        .map_err(|_| conflict("Candidate Attempt evidence count exceeds trace capacity"))?;
+    let fact_delta_count = u32::try_from(fact_delta_count)
+        .map_err(|_| conflict("Candidate Attempt FactDelta count exceeds trace capacity"))?;
+    Ok((evidence_count, fact_delta_count))
 }
 
 fn sorted_unique_positive(ids: &[i64]) -> Option<Vec<i64>> {
@@ -387,8 +500,11 @@ fn parse_terminal_payload(result: &serde_json::Value) -> crate::Result<TerminalP
                         return Err(conflict("FactDelta evidence_ids are required"));
                     }
                     Ok(FactDeltaPayload {
-                        fact_kind: required_string(delta, "fact_kind")
-                            .ok_or_else(|| conflict("FactDelta fact_kind is required"))?,
+                        fact_kind: delta
+                            .get("fact_kind")
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(attack_fact_deltas::AttackFactDeltaKind::parse)
+                            .ok_or_else(|| conflict("FactDelta fact_kind is invalid"))?,
                         canonical_ref_kind: required_string(delta, "canonical_ref_kind")
                             .ok_or_else(|| conflict("FactDelta canonical_ref_kind is required"))?,
                         canonical_ref_id,
@@ -401,7 +517,7 @@ fn parse_terminal_payload(result: &serde_json::Value) -> crate::Result<TerminalP
                             })?,
                         canonical_ref_hash: required_string(delta, "canonical_ref_hash")
                             .ok_or_else(|| conflict("FactDelta canonical_ref_hash is required"))?,
-                        summary: required_string(delta, "summary")
+                        _summary: required_string(delta, "summary")
                             .ok_or_else(|| conflict("FactDelta summary is required"))?,
                         evidence_ids,
                     })
@@ -603,10 +719,20 @@ pub async fn terminalize_candidate_attempt(
                 &actual_evidence,
             )
             .await?;
+            let (evidence_count, fact_delta_count) =
+                durable_terminal_counts(tx, command.attempt_id).await?;
             return Ok(TerminalizedCandidateAttempt {
+                scope_snapshot_id: command.scope_snapshot_id,
+                wave_run_id: command.wave_run_id,
+                wave_unit_id: command.wave_unit_id,
+                organization_id: command.organization_id,
+                candidate_id: command.candidate_id,
                 attempt_id: command.attempt_id,
+                status: payload.disposition.clone(),
                 disposition: payload.disposition,
                 finding_id: None,
+                evidence_count,
+                fact_delta_count,
                 replayed: true,
             });
         }
@@ -671,10 +797,20 @@ pub async fn terminalize_candidate_attempt(
             &actual_evidence,
         )
         .await?;
+        let (evidence_count, fact_delta_count) =
+            durable_terminal_counts(tx, command.attempt_id).await?;
         return Ok(TerminalizedCandidateAttempt {
+            scope_snapshot_id: command.scope_snapshot_id,
+            wave_run_id: command.wave_run_id,
+            wave_unit_id: command.wave_unit_id,
+            organization_id: command.organization_id,
+            candidate_id: command.candidate_id,
             attempt_id: command.attempt_id,
+            status: payload.disposition.clone(),
             disposition: payload.disposition,
             finding_id: Some(finding_id),
+            evidence_count,
+            fact_delta_count,
             replayed: true,
         });
     }
@@ -788,26 +924,14 @@ pub async fn terminalize_candidate_attempt(
     };
 
     for delta in &payload.fact_deltas {
-        let dedupe_material = serde_json::json!({
-            "source_attempt_id": command.attempt_id,
-            "fact_kind": delta.fact_kind,
-            "canonical_ref_kind": delta.canonical_ref_kind,
-            "canonical_ref_id": delta.canonical_ref_id,
-            "canonical_ref_version": delta.canonical_ref_version,
-            "canonical_ref_hash": delta.canonical_ref_hash,
-            "summary": delta.summary,
-            "evidence_ids": delta.evidence_ids,
-        });
-        let mut hasher = Sha256::new();
-        hasher.update(serde_json::to_vec(&dedupe_material)?);
-        let digest = hasher.finalize();
-        let dedupe_hash = format!(
-            "sha256:{}",
-            digest
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        );
+        let dedupe_hash = attack_fact_deltas::semantic_dedupe_hash(
+            &state.target_identity_hash,
+            &delta.canonical_ref_kind,
+            delta.canonical_ref_id,
+            delta.canonical_ref_version,
+            &delta.canonical_ref_hash,
+            delta.fact_kind.as_str(),
+        )?;
         attack_fact_deltas::propose_fact_delta(
             tx,
             attack_fact_deltas::ProposeAttackFactDelta {
@@ -823,7 +947,7 @@ pub async fn terminalize_candidate_attempt(
                 canonical_ref_id: delta.canonical_ref_id,
                 canonical_ref_version: delta.canonical_ref_version,
                 canonical_ref_hash: delta.canonical_ref_hash.clone(),
-                delta_kind: delta.fact_kind.clone(),
+                delta_kind: delta.fact_kind.as_str().to_string(),
                 dedupe_hash,
                 evidence_ids: delta.evidence_ids.clone(),
             },
@@ -887,10 +1011,20 @@ pub async fn terminalize_candidate_attempt(
         &actual_evidence,
     )
     .await?;
+    let (evidence_count, fact_delta_count) =
+        durable_terminal_counts(tx, command.attempt_id).await?;
     Ok(TerminalizedCandidateAttempt {
+        scope_snapshot_id: command.scope_snapshot_id,
+        wave_run_id: command.wave_run_id,
+        wave_unit_id: command.wave_unit_id,
+        organization_id: command.organization_id,
+        candidate_id: command.candidate_id,
         attempt_id: command.attempt_id,
+        status: payload.disposition.clone(),
         disposition: payload.disposition,
         finding_id,
+        evidence_count,
+        fact_delta_count,
         replayed: false,
     })
 }
@@ -952,4 +1086,29 @@ pub async fn terminalize_verified_finding(
         attempt_id: terminal.attempt_id,
         replayed: terminal.replayed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_terminal_payload;
+
+    #[test]
+    fn raw_terminal_payload_rejects_unknown_fact_delta_kind() {
+        let error = parse_terminal_payload(&serde_json::json!({
+            "disposition": "blocked",
+            "blocker_reason_code": "follow_on_only",
+            "fact_deltas": [{
+                "fact_kind": "model_invented_prose",
+                "canonical_ref_kind": "attack_candidate_work_item",
+                "canonical_ref_id": uuid::Uuid::from_u128(99),
+                "canonical_ref_version": 1,
+                "canonical_ref_hash": "sha256:canonical",
+                "summary": "untrusted prose must not become a new delta kind",
+                "evidence_ids": [17]
+            }]
+        }))
+        .expect_err("raw Candidate result must fail closed on an unknown delta kind");
+
+        assert!(error.to_string().contains("FactDelta fact_kind"));
+    }
 }

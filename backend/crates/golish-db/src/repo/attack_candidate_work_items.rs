@@ -265,7 +265,7 @@ struct FrozenEntryEvidenceAuthority {
     manifest_hash: Option<String>,
     manifest_count: Option<i32>,
     manifest_frozen_at: Option<DateTime<Utc>>,
-    handoff_evidence_ids: Vec<i64>,
+    entry_consolidation_id: Option<Uuid>,
 }
 
 pub fn canonical_manifest_hash(manifest: &CandidateManifestRow) -> String {
@@ -638,11 +638,12 @@ pub async fn seed_from_final_vuln_triage_handoff(
     .await?
     .ok_or_else(|| invalid("exact vuln_triage final handoff is unavailable"))?;
     if authority.scope_snapshot_id != unit.0
-        || authority.source_generation != unit.1
+        || authority.source_generation < 0
+        || unit.1 != 0
         || authority.evidence_ids.is_empty()
     {
         return Err(invalid(
-            "vuln_triage final handoff scope/generation/evidence mismatch",
+            "initial Candidate Wave generation or vuln_triage handoff authority mismatch",
         ));
     }
     let ordinal: i32 = sqlx::query_scalar(
@@ -728,21 +729,10 @@ pub async fn seed_from_final_vuln_triage_handoff(
             evidence_ids,
         });
     }
-    let wave_run_id = Uuid::new_v5(
-        &Uuid::NAMESPACE_OID,
-        format!("{operation_id}:candidate-wave:{}", unit.1).as_bytes(),
-    );
-    let wave_unit_id = Uuid::new_v5(
-        &Uuid::NAMESPACE_OID,
-        format!("{wave_run_id}:{organization_id}").as_bytes(),
-    );
-    let policy_snapshot = serde_json::json!({
-        "max_attempts_total": 200,
-        "max_candidates_total": 100,
-        "max_chain_depth": 3,
-        "max_waves": 3,
-    });
-    let policy_hash = sha256_prefixed(serde_json::to_vec(&policy_snapshot)?.as_slice());
+    let wave_run_id = attack_waves::deterministic_initial_wave_run_id(operation_id, unit.1);
+    let wave_unit_id =
+        attack_waves::deterministic_initial_wave_unit_id(wave_run_id, organization_id);
+    let (policy_snapshot, policy_hash) = attack_waves::deterministic_initial_policy()?;
     attack_waves::open_from_vuln_triage_handoff(
         &mut tx,
         &attack_waves::OpenAttackWaveUnit {
@@ -916,38 +906,18 @@ pub async fn load_frozen_entry_evidence_ids_with_connection(
 ) -> crate::Result<Vec<i64>> {
     let authority = sqlx::query_as::<_, FrozenEntryEvidenceAuthority>(
         r#"SELECT wave_unit.manifest_hash,wave_unit.manifest_count,
-                  wave_unit.manifest_frozen_at,
-                  handoff.evidence_ids AS handoff_evidence_ids
+                  wave_unit.manifest_frozen_at,wave_unit.entry_consolidation_id
              FROM attack_wave_units AS wave_unit
              JOIN attack_wave_runs AS wave
                ON wave.id=wave_unit.wave_run_id
               AND wave.operation_id=wave_unit.operation_id
               AND wave.scope_snapshot_id=wave_unit.scope_snapshot_id
-             JOIN stage_run_units AS entry_unit
-               ON entry_unit.id=wave_unit.entry_stage_run_unit_id
-              AND entry_unit.operation_id=wave_unit.operation_id
-              AND entry_unit.stage_execution_id=wave_unit.entry_stage_execution_id
-              AND entry_unit.scope_snapshot_id=wave_unit.scope_snapshot_id
-              AND entry_unit.organization_id=wave_unit.organization_id
-              AND entry_unit.stage_kind=wave_unit.entry_stage_kind
-             JOIN stage_handoffs AS handoff
-               ON handoff.operation_id=entry_unit.operation_id
-              AND handoff.scope_snapshot_id=entry_unit.scope_snapshot_id
-              AND handoff.organization_id=entry_unit.organization_id
-              AND handoff.stage_execution_id=entry_unit.stage_execution_id
-              AND handoff.source_stage_run_unit_id=entry_unit.id
-              AND handoff.deliverable_submission_id=wave_unit.entry_deliverable_submission_id
-              AND handoff.from_stage_kind=entry_unit.stage_kind
             WHERE wave_unit.id=$1
               AND wave_unit.wave_run_id=$2
               AND wave_unit.operation_id=$3
               AND wave_unit.scope_snapshot_id=$4
               AND wave_unit.organization_id=$5
-              AND wave_unit.entry_stage_kind='vuln_triage'
-              AND entry_unit.status='passed'
-              AND entry_unit.terminal_at IS NOT NULL
-              AND handoff.invalidated_at IS NULL
-            FOR SHARE OF wave_unit,wave,entry_unit,handoff"#,
+            FOR SHARE OF wave_unit,wave"#,
     )
     .bind(wave_unit_id)
     .bind(wave_run_id)
@@ -956,7 +926,83 @@ pub async fn load_frozen_entry_evidence_ids_with_connection(
     .bind(organization_id)
     .fetch_optional(&mut *connection)
     .await?
-    .ok_or_else(|| invalid("attack candidate entry handoff authority mismatch"))?;
+    .ok_or_else(|| invalid("attack candidate entry authority mismatch"))?;
+    let entry_evidence_ids: Vec<i64> =
+        if let Some(consolidation_id) = authority.entry_consolidation_id {
+            sqlx::query_scalar(
+                r#"SELECT DISTINCT evidence.evidence_id
+                 FROM attack_wave_consolidations AS consolidation
+                 JOIN attack_wave_consolidation_members AS member
+                   ON member.consolidation_id=consolidation.id
+                  AND member.operation_id=consolidation.operation_id
+                  AND member.scope_snapshot_id=consolidation.scope_snapshot_id
+                  AND member.source_wave_run_id=consolidation.source_wave_run_id
+                 JOIN attack_fact_delta_decisions AS decision
+                   ON decision.fact_delta_id=member.fact_delta_id
+                  AND decision.disposition='accepted'
+                 JOIN attack_fact_delta_evidence AS evidence
+                   ON evidence.fact_delta_id=member.fact_delta_id
+                  AND evidence.role='fact_delta'
+                WHERE consolidation.id=$1
+                  AND consolidation.decision_kind='opened_next_wave'
+                  AND consolidation.target_wave_run_id=$2
+                  AND consolidation.operation_id=$3
+                  AND consolidation.scope_snapshot_id=$4
+                  AND member.target_wave_unit_id=$5
+                  AND member.organization_id=$6
+                  AND member.target_work_item_id IS NOT NULL
+                ORDER BY evidence.evidence_id"#,
+            )
+            .bind(consolidation_id)
+            .bind(wave_run_id)
+            .bind(operation_id)
+            .bind(scope_snapshot_id)
+            .bind(wave_unit_id)
+            .bind(organization_id)
+            .fetch_all(&mut *connection)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                r#"SELECT handoff.evidence_ids
+                 FROM attack_wave_units AS wave_unit
+                 JOIN stage_run_units AS entry_unit
+                   ON entry_unit.id=wave_unit.entry_stage_run_unit_id
+                  AND entry_unit.operation_id=wave_unit.operation_id
+                  AND entry_unit.stage_execution_id=wave_unit.entry_stage_execution_id
+                  AND entry_unit.scope_snapshot_id=wave_unit.scope_snapshot_id
+                  AND entry_unit.organization_id=wave_unit.organization_id
+                  AND entry_unit.stage_kind=wave_unit.entry_stage_kind
+                 JOIN stage_handoffs AS handoff
+                   ON handoff.operation_id=entry_unit.operation_id
+                  AND handoff.scope_snapshot_id=entry_unit.scope_snapshot_id
+                  AND handoff.organization_id=entry_unit.organization_id
+                  AND handoff.stage_execution_id=entry_unit.stage_execution_id
+                  AND handoff.source_stage_run_unit_id=entry_unit.id
+                  AND handoff.deliverable_submission_id=wave_unit.entry_deliverable_submission_id
+                  AND handoff.from_stage_kind=entry_unit.stage_kind
+                WHERE wave_unit.id=$1
+                  AND wave_unit.wave_run_id=$2
+                  AND wave_unit.operation_id=$3
+                  AND wave_unit.scope_snapshot_id=$4
+                  AND wave_unit.organization_id=$5
+                  AND wave_unit.entry_stage_kind='vuln_triage'
+                  AND entry_unit.status='passed'
+                  AND entry_unit.terminal_at IS NOT NULL
+                  AND handoff.invalidated_at IS NULL
+                FOR SHARE OF wave_unit,entry_unit,handoff"#,
+            )
+            .bind(wave_unit_id)
+            .bind(wave_run_id)
+            .bind(operation_id)
+            .bind(scope_snapshot_id)
+            .bind(organization_id)
+            .fetch_optional(&mut *connection)
+            .await?
+            .ok_or_else(|| invalid("attack candidate entry handoff authority mismatch"))?
+        };
+    if entry_evidence_ids.is_empty() {
+        return Err(invalid("attack candidate entry evidence is empty"));
+    }
     let (manifest_hash, manifest_count, _manifest_frozen_at) = match (
         authority.manifest_hash,
         authority.manifest_count,
@@ -992,13 +1038,10 @@ pub async fn load_frozen_entry_evidence_ids_with_connection(
         .iter()
         .flat_map(|item| item.evidence_ids.iter().copied())
         .collect::<BTreeSet<_>>();
-    let handoff_evidence = authority
-        .handoff_evidence_ids
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    if evidence_ids.iter().any(|id| !handoff_evidence.contains(id)) {
+    let entry_evidence = entry_evidence_ids.into_iter().collect::<BTreeSet<_>>();
+    if evidence_ids.iter().any(|id| !entry_evidence.contains(id)) {
         return Err(invalid(
-            "attack candidate manifest evidence is not linked by its exact entry handoff",
+            "attack candidate manifest evidence is not linked by its exact sealed entry",
         ));
     }
     Ok(evidence_ids.into_iter().collect())

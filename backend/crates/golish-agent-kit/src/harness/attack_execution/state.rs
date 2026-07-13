@@ -137,8 +137,7 @@ fn finding_draft_is_valid(result: &CandidateAttemptResult) -> bool {
 
 fn fact_deltas_are_valid(result: &CandidateAttemptResult) -> bool {
     result.fact_deltas.iter().all(|delta| {
-        !delta.fact_kind.trim().is_empty()
-            && !delta.canonical_ref_kind.trim().is_empty()
+        !delta.canonical_ref_kind.trim().is_empty()
             && !delta.canonical_ref_id.is_nil()
             && delta.canonical_ref_version > 0
             && !delta.canonical_ref_hash.trim().is_empty()

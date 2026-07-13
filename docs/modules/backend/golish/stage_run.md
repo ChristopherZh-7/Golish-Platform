@@ -24,7 +24,7 @@
 |---|---|
 | stage_run 入口（boot → orchestrate → report） | headless 跑 + 报告 |
 | `--stage-run-resume <selector>` | 恢复旧 stage-run chat key / DB session UUID / operation UUID；复用旧 DB session UUID、task/operation、org、profile、stage freshness、transcript 和 worker chain |
-| `--allow-orphan-running` + exact expected ids | 仅在操作者确认旧进程已死时接受残留 `running`；默认只接受 `waiting` |
+| `--allow-orphan-running` + exact expected ids | 仅作 orphan 身份诊断；durable resume claim 仍严格要求 `waiting`，残留 `running` 必须先由 startup reaper 与显式 repair 转回 `waiting` |
 | `--repair-missing-graph-flow` | 在 exact identity + flat checkpoint 校验后，用 guarded `jsonb_set` 只补 `graph_flow`，保留 `stage_run_workers`/producer checkpoints/未知 sibling |
 | `--repair-reaped-task` | 仅将带固定 startup-reaper abandoned marker 的 exact failed orphan 以 session/profile/stage/org/state/update-time CAS 恢复为 `waiting`；普通失败不可恢复 |
 | `--org`/`--target` seeding（`maybe_seed`/`seed_upstream`/`build_objective`） | 上游目标种入 |
@@ -32,7 +32,7 @@
 | `--ephemeral-db` / `--keep-ephemeral-db` | stage-run 测试专用临时嵌入式 PG；默认清理，可显式保留 pgdata |
 | `--db-smoke-summary` | 停 PG 前打印 session/project/org 关键表计数，验证真实落库 |
 | `scripts/stage_smoke.py` / `just stage-smoke` | 包装真实 `golish --stage-run`，默认临时 DB，可选本地 HTTP fixture；脚本可显式传 `--provider` / `--model`，枚举 smoke 可用 `--route-probe-max-runtime-ms` / `--route-probe-max-requests` 控制 route_probe 前台预算 |
-| `scripts/run_tree.py --db` | 输出 rollout/frozen contract、scope decision/hash/members、execution/unit/worker lease+epoch+active tool+chain+checkpoint、submission/handoff、V2/legacy selected source，并标出 duplicate/cross-org/stale-tool anomaly |
+| `scripts/run_tree.py --db` | 输出 runtime/attack rollout、operation-frozen 双 contract、scope decision/hash/members、execution/unit/worker lease+epoch+active tool+chain+checkpoint、Candidate Wave/caps/Unit closure counts、Attempt↔Worker ownership、global lane、FactDelta/residual risk、submission/handoff与 anomaly；只显示 lease/checkpoint presence/size，不泄露 token/body |
 
 ## 关键文件
 
@@ -66,6 +66,8 @@
   补种。`organizations.domains/app_domains/ip_ranges` 及 provider 数据都不能替代 CLI seed。
 - V2-writing fresh CLI 只取得一次 universal top-level request token、只调用一次 `orchestrate`；全部 descendant Unit/Worker 共用同一个 operation 与 sealed snapshot。只有 `LegacyV1` parent/child fleet 才逐个取得 fresh request-scoped retry budget。
 - Fresh V2 `orchestrate` 以 CLI 已解析的真实 workspace canonical path 注册稳定 `project_scope_id`，再把 registration + trusted `CliRuntimeScope` 交给 `TaskOrchestrator::run_stage` 原子创建唯一 operation；exact resume 同样注册 current workspace 并与 frozen operation scope 对比，错 workspace直接拒绝。path 只作 provenance，不能用 basename/字符串猜测 operation ownership。
+- runtime/attack deployment singleton 的 forward-only cutover migration 都只推进到 rank 1 的 dual-write/legacy-read sampling；后续相邻 rank 必须由 retained whole-record Candidate cohort gate 晋级，当前不会凭 migration 直接到 `v2_only`。fresh headless operation 冻结创建时 default，exact resume 继续使用旧 operation 自身的双 contract，不因当前 singleton 改变而重绑。Candidate generation/org/runnable set 由 DB Wave authority 决定，CLI objective/`--org` 不能覆盖；`run_tree.py --db` 是核对 rollout、Wave terminal/no-input、Attempt lease 与 FactDelta/residual lineage 的首选诊断入口。
+- **resume authority 必须整源选择**：`LegacyV1` / `DualWriteLegacyRead` 只读完整 legacy checkpoint；`DualWriteV2Preferred` 只有在 execution + sealed scope + 全部 Unit/Worker/chain/tool fence 构成完整 relational source 时才整源选 V2，且只在 typed structural-incomplete / chain decode failure 时整源回退 legacy；live lease、DB error、cross-identity/tool fence drift 一律 fail closed。选中的 whole-record source 会显式传入 `TaskOrchestrator`/`DbFlowCheckpointer` 与 request-local `AgentBridge`；后续 graph、worker checkpoint、bound-chain load 全部使用同一 source，preferred-relational 绝不读写 `graph_flow` 或按 worker 重新选择，fallback 才走 legacy。`V2Only` 只接受 relational source，`state_blob` 只有 server-owned namespace 也可恢复。relational/legacy chain 都按 durable specialist → DB `agent_type` 映射（如 `enumerator` / `attack_analyst` / `candidate_verifier` → `pentester`），并真实 serde-decode chain body。
 - **LegacyV1 子公司扇出兼容（2026-06-14 · 方案 C）**：旧 step 6.5 手写 Rust per-child 循环 → `run_fleet_scheduler`；`run_legacy_child_operation_fleet` 与 `OrgFleetExecutor::run_org` 都检查 frozen contract，任一 V2-writing contract 都不会创建 child task/operation。
 - **逐子进度 eprintln（2026-06-14 收敛后补回中途可见性）**：调度器（IO-free 内核）新增第 4 个注入 trait `FleetProgress`，CLI 传 `engagement::fleet_run::CliFleetProgress{label:"subsidiary"}` → 每个子公司进 executor 前后打 `[stage-run] ── subsidiary i/N: 名 → running/PASS/BLOCK/FAIL ──`（恢复 T1 把手写循环换成 `run_fleet_scheduler` 后丢的那条逐子可见性）。GUI 单卡路径传 `NoopProgress`（进度走 `StageRunOrgProgress` 事件）。续跑跳过的 org 只 `on_org_done`（SKIP(done)）、不 `on_org_start`。i/N 由调度器静态 org 序提供（checklist 串行下即真实顺序）。
 - **session 四身份必须同值**：`initialize_agent(.., &session_id)`（event/evidence 写入）、`set_session_id`（终端）、`set_chat_session_id`（gate/refiner 查账本）、transcript 目录都用同一个 `stage-run-{uuid}`。2026-06-12 前 event 侧残留 `"cli"`，导致 evidence 落账后 gate/refiner 查不到（账本 facts=0、submit-only 锁不可达）。
@@ -74,11 +76,13 @@
   Resume 必须把旧 chat key 同时用于 event/evidence/run_id，把旧 `sessions.id`
   设回 tracker persistence session，并调用旧 task 的 `resume()`；同 stage 入口不会刷新
   `stage_started_at`。
-- **fail-closed orphan/claim**：默认只收 `waiting`。残留 `running` 必须显式 flag
-  加 expected DB session/task/operation/org/stage；进程内 bridge lease 无法跨进程证明
-  owner 已死，因此不按时间猜 orphan。CLI 使用 operation UUID 派生的非阻塞 PG
-  advisory lock 原子 claim，锁后重新读取全部身份；dedicated detached connection
-  覆盖整个 resume，崩溃/断连自动释放，不持 DB transaction 跨 LLM/network。
+- **fail-closed orphan/claim**：durable claim 只收 `waiting`。残留 `running` 即使带显式
+  flag + expected identities 也不能证明跨进程 owner 已死，必须先由 startup reaper 与
+  `--repair-reaped-task` 转回 `waiting`。CLI 保留 operation advisory lock 防双 CLI；在
+  bridge/provider/project-scope 全部初始化后、真正 orchestrator resume 前，再以单条 SQL
+  将 exact task `waiting -> running`，同时 CAS task timestamp、operation contract/profile/
+  stage/org/superseded、relational execution id 或完整 legacy blob，并拒绝任一 live Worker
+  lease。TaskOrchestrator 消费 one-shot preclaim，不再发第二次无 fence status update。
 - **首 stage 无 `graph_flow`**：graph executor 只在 node 返回后写嵌套 checkpoint；
   Ctrl-C 落在首 worker 内时，flat HarnessResumeState + `stage_run_workers` 仍有效但
   普通 `resume()` 不可加载。显式 repair 在 advisory claim 下要求 flat

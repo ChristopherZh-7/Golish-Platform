@@ -15,11 +15,13 @@ class FixtureQuery:
     def __init__(self, rows: dict[str, list[tuple]]) -> None:
         self.rows = rows
         self.calls: list[tuple[str, tuple]] = []
+        self.sql_by_id: dict[str, str] = {}
 
     def __call__(self, sql: str, params: tuple = ()) -> list[tuple]:
         match = re.search(r"/\* run_tree:([a-z_]+) \*/", sql)
         query_id = match.group(1) if match else "unmarked"
         self.calls.append((query_id, params))
+        self.sql_by_id[query_id] = sql
         return self.rows.get(query_id, [])
 
 
@@ -28,7 +30,9 @@ def row(**values: object) -> tuple[dict[str, object]]:
 
 
 class RuntimeMemoryDiagnosisTests(unittest.TestCase):
-    def render(self, rows: dict[str, list[tuple]]) -> str:
+    def render_with_query(
+        self, rows: dict[str, list[tuple]]
+    ) -> tuple[str, FixtureQuery]:
         self.assertTrue(
             hasattr(run_tree, "_runtime_memory_lines"),
             "run_tree must expose the offline-testable runtime-memory renderer",
@@ -41,7 +45,11 @@ class RuntimeMemoryDiagnosisTests(unittest.TestCase):
             trunc=240,
         )
         self.assertTrue(query.calls, "renderer must execute diagnostic queries")
-        return "\n".join(lines)
+        return "\n".join(lines), query
+
+    def render(self, rows: dict[str, list[tuple]]) -> str:
+        rendered, _query = self.render_with_query(rows)
+        return rendered
 
     def test_session_operation_ids_accepts_runtime_trace_detail_but_not_model_args(self) -> None:
         runtime_operation_id = "00000000-0000-0000-0000-0000000000a1"
@@ -288,10 +296,9 @@ class RuntimeMemoryDiagnosisTests(unittest.TestCase):
             "stage=external_attack_surface generation=2 specialist=prober status=running gate_attempt=3 row_version=5",
             "worker id=worker-1 unit=stage-unit-1 execution=stage-exec-1 org=org-child generation=4",
             "specialist=prober work_item=organization:org-child status=recovery_required gate_attempt=3",
-            "lease token=lease-1 owner=runtime-a epoch=6 expires=2026-07-13T01:02:30Z expired=yes",
+            "lease present=yes owner=runtime-a epoch=6 expires=2026-07-13T01:02:30Z expired=yes",
             "active_tool id=tool-active-1 request=request-tool-1 name=eas_discover_ports status=running",
-            "chain=chain-1 checkpoint_version=11",
-            'checkpoint={"pending": ["PORT"], "turn": 8}',
+            "chain=chain-1 checkpoint_version=11 checkpoint_present=yes",
             "recovery=manual_required",
             "submission id=submission-1 execution=stage-exec-1 unit=stage-unit-1 worker=worker-1 org=org-child",
             "tool=tool-submit-1/request-submit-1 stage=external_attack_surface epoch=6 payload_sha256=payload-sha",
@@ -302,6 +309,259 @@ class RuntimeMemoryDiagnosisTests(unittest.TestCase):
         for fragment in expected_fragments:
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, rendered)
+        self.assertNotIn("lease-1", rendered)
+        self.assertNotIn('"pending": ["PORT"]', rendered)
+
+    def test_attack_pipeline_diagnostics_are_aggregate_safe_and_redacted(self) -> None:
+        rendered, query = self.render_with_query(
+            {
+                "attack_rollout": [
+                    row(
+                        contract="v2_only",
+                        rank=3,
+                        row_version=9,
+                        updated_at="2026-07-13T03:00:00Z",
+                    )
+                ],
+                "runtime_operations": [
+                    row(
+                        operation_id="op-attack",
+                        runtime_memory_contract="v2_only",
+                        attack_execution_contract="v2_only",
+                        profile="red_team",
+                        current_stage="verification",
+                        project_scope_id="project-1",
+                        engagement_org_id="org-root",
+                        superseded_by=None,
+                        stage_started_at="2026-07-13T03:01:00Z",
+                        state_blob={},
+                    )
+                ],
+                "stage_executions": [
+                    row(
+                        id="stage-verification",
+                        stage_kind="verification",
+                        status="started",
+                        started_at="2026-07-13T03:01:00Z",
+                        completed_at=None,
+                    )
+                ],
+                "scope_snapshots": [
+                    row(
+                        id="snapshot-1",
+                        scope_decision_id="decision-1",
+                        project_scope_id="project-1",
+                        project_path_at_freeze="/fixture/project",
+                        root_organization_id="org-root",
+                        mode="included",
+                        scope_hash="scope-sha",
+                        schema_version=1,
+                        frozen_at="2026-07-13T03:00:00Z",
+                        sealed_at="2026-07-13T03:00:01Z",
+                    )
+                ],
+                "attack_waves": [
+                    row(
+                        id="wave-0",
+                        scope_snapshot_id="snapshot-1",
+                        generation=0,
+                        status="terminal",
+                        policy_hash="policy-sha",
+                        max_waves=3,
+                        max_candidates_total=100,
+                        max_chain_depth=3,
+                        max_attempts_total=200,
+                        row_version=4,
+                        created_at="2026-07-13T03:02:00Z",
+                        updated_at="2026-07-13T03:05:00Z",
+                        terminal_at="2026-07-13T03:05:00Z",
+                        policy_snapshot={"raw_exploit_recipe": "must-not-render"},
+                    ),
+                    row(
+                        id="wave-1",
+                        scope_snapshot_id="snapshot-1",
+                        generation=1,
+                        status="verification",
+                        policy_hash="policy-sha",
+                        max_waves=3,
+                        max_candidates_total=100,
+                        max_chain_depth=3,
+                        max_attempts_total=200,
+                        row_version=1,
+                        created_at="2026-07-13T03:05:00Z",
+                        updated_at="2026-07-13T03:06:00Z",
+                        terminal_at=None,
+                    ),
+                ],
+                "attack_wave_unit_counts": [
+                    row(
+                        wave_run_id="wave-0",
+                        total=2,
+                        open_count=0,
+                        reasoning_count=0,
+                        review_count=0,
+                        verification_count=0,
+                        terminal_count=2,
+                        review_closed_count=2,
+                        verification_closed_count=2,
+                        consolidation_pending_count=0,
+                        consolidation_ready_count=0,
+                        consolidation_consumed_count=2,
+                        consolidation_terminal_count=0,
+                    ),
+                    row(
+                        wave_run_id="wave-1",
+                        total=2,
+                        open_count=1,
+                        reasoning_count=0,
+                        review_count=0,
+                        verification_count=1,
+                        terminal_count=0,
+                        review_closed_count=1,
+                        verification_closed_count=0,
+                        consolidation_pending_count=2,
+                        consolidation_ready_count=0,
+                        consolidation_consumed_count=0,
+                        consolidation_terminal_count=0,
+                    ),
+                ],
+                "candidate_attempt_ownership": [
+                    row(
+                        id="attempt-1",
+                        candidate_id="candidate-1",
+                        wave_run_id="wave-1",
+                        wave_unit_id="wave-unit-1",
+                        organization_id="org-child",
+                        ordinal=0,
+                        status="running",
+                        row_version=5,
+                        terminal_at=None,
+                        stage_worker_run_id="worker-1",
+                        worker_status="running",
+                        worker_generation=2,
+                        specialist="candidate_verifier",
+                        attempt_epoch=6,
+                        checkpoint_version=11,
+                        checkpoint_present=True,
+                        checkpoint_bytes=87,
+                        lease_present=True,
+                        lease_owner="runtime-a",
+                        lease_expires_at="2026-07-13T03:07:00Z",
+                        lease_expired=False,
+                        active_tool_call_id="tool-1",
+                        active_tool_name="verify_execute_candidate_action",
+                        active_tool_status="running",
+                        ownership_matches=True,
+                        checkpoint={"raw_exploit_payload": "must-not-render"},
+                        lease_token="full-lease-token-must-not-render",
+                        result_json={"raw_exploit_material": "must-not-render"},
+                    )
+                ],
+                "attack_lane": [
+                    row(
+                        lane_key="global:exploit",
+                        stage_worker_run_id="worker-1",
+                        lease_present=True,
+                        lease_owner="runtime-a",
+                        lease_expires_at="2026-07-13T03:07:00Z",
+                        lease_expired=False,
+                        updated_at="2026-07-13T03:06:30Z",
+                        lease_token="full-lane-token-must-not-render",
+                    )
+                ],
+                "attack_fact_deltas": [
+                    row(
+                        id="delta-1",
+                        source_attempt_id="attempt-0",
+                        candidate_id="candidate-0",
+                        wave_run_id="wave-0",
+                        wave_unit_id="wave-unit-0",
+                        organization_id="org-child",
+                        canonical_ref_kind="api_endpoint",
+                        canonical_ref_id="endpoint-1",
+                        canonical_ref_version=7,
+                        canonical_ref_hash="canonical-sha",
+                        delta_kind="new_surface",
+                        dedupe_hash="delta-sha",
+                        status="consumed",
+                        consumed_by_wave_run_id="wave-1",
+                        evidence_count=2,
+                        created_at="2026-07-13T03:04:00Z",
+                        consumed_at="2026-07-13T03:05:00Z",
+                        summary="raw exploit details must-not-render",
+                        target_value_at_time="https://secret.invalid/payload",
+                    )
+                ],
+                "attack_residual_risks": [
+                    row(
+                        id="residual-1",
+                        wave_run_id="wave-1",
+                        wave_unit_id="wave-unit-1",
+                        organization_id="org-child",
+                        reason_code="max_waves_exhausted",
+                        policy_hash="policy-sha",
+                        wave_count=3,
+                        candidate_count=8,
+                        chain_depth=3,
+                        attempt_count=9,
+                        disclosure_status="pending",
+                        evidence_count=2,
+                        created_at="2026-07-13T03:07:00Z",
+                        disclosed_at=None,
+                        reason_detail="raw exploit details must-not-render",
+                    )
+                ],
+            }
+        )
+
+        expected_fragments = [
+            "attack_rollout: contract=v2_only rank=3 row_version=9",
+            "attack_contract=v2_only",
+            "attack_waves: 2",
+            "wave id=wave-0 snapshot=snapshot-1 generation=0 status=terminal policy_hash=policy-sha",
+            "caps waves=3 candidates=100 depth=3 attempts=200 row_version=4",
+            "attack_wave_unit_counts:",
+            "wave=wave-0 total=2 status open=0 reasoning=0 review=0 verification=0 terminal=2",
+            "closed review=2 verification=2 consolidation pending=0 ready=0 consumed=2 terminal=0",
+            "candidate_attempt_ownership: 1",
+            "attempt=attempt-1 candidate=candidate-1 wave=wave-1 unit=wave-unit-1 org=org-child ordinal=0 status=running",
+            "worker=worker-1 status=running generation=2 specialist=candidate_verifier epoch=6",
+            "checkpoint_version=11 checkpoint_present=yes checkpoint_bytes=87 lease_present=yes",
+            "attack_lane: 1",
+            "lane=global:exploit worker=worker-1 lease_present=yes owner=runtime-a",
+            "attack_fact_deltas: 1",
+            "delta=delta-1 attempt=attempt-0 candidate=candidate-0 wave=wave-0 unit=wave-unit-0 org=org-child kind=new_surface",
+            "canonical=api_endpoint:endpoint-1@7 hash=canonical-sha dedupe=delta-sha",
+            "status=consumed consumer_wave=wave-1 evidence_count=2",
+            "attack_residual_risks: 1",
+            "residual=residual-1 wave=wave-1 unit=wave-unit-1 org=org-child reason=max_waves_exhausted",
+            "counters waves=3 candidates=8 depth=3 attempts=9 disclosure=pending evidence_count=2",
+        ]
+        for fragment in expected_fragments:
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, rendered)
+
+        for secret in [
+            "full-lease-token-must-not-render",
+            "full-lane-token-must-not-render",
+            "raw_exploit_recipe",
+            "raw_exploit_payload",
+            "raw_exploit_material",
+            "raw exploit details",
+            "https://secret.invalid/payload",
+        ]:
+            with self.subTest(secret=secret):
+                self.assertNotIn(secret, rendered)
+
+        self.assertNotIn(
+            "JOIN attack_fact_delta_evidence",
+            query.sql_by_id["attack_fact_deltas"],
+        )
+        self.assertNotIn(
+            "JOIN attack_residual_risk_evidence",
+            query.sql_by_id["attack_residual_risks"],
+        )
+        self.assertNotIn(" JOIN ", query.sql_by_id["attack_wave_unit_counts"])
 
     def test_duplicate_active_and_cross_org_rows_are_rejected_and_force_legacy_fallback(self) -> None:
         rendered = self.render(

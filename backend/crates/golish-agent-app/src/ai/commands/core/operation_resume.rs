@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use golish_agent_bridge::bridge_executor::BridgeAgentExecutor;
 use golish_agent_kit::db_traits::{
-    DbRepoProvider, ProjectScopeRegistration, RuntimeMemoryRepository,
+    DbRepoProvider, ProjectScopeRegistration, RuntimeMemoryRecordSource, RuntimeMemoryRepository,
 };
 use golish_agent_kit::task_orchestrator::TaskOrchestrator;
 use golish_core::events::AiEvent;
@@ -19,6 +19,97 @@ use uuid::Uuid;
 
 use crate::ai::AgentBridge;
 use crate::state::AgentState;
+
+pub(super) async fn select_exact_resume_runtime_source(
+    pool: &sqlx::PgPool,
+    operation_id: Uuid,
+    session_id: Uuid,
+) -> anyhow::Result<RuntimeMemoryRecordSource> {
+    use golish_db::repo::runtime_memory_tx::RuntimeMemoryRecordSource as DbSource;
+
+    let source =
+        golish_db::repo::tasks::exact_resumable_runtime_source(pool, operation_id, session_id)
+            .await
+            .context("select one complete runtime-memory source for exact resume")?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "resume refused: operation has no complete idle runtime-memory source"
+                )
+            })?;
+    let source = match source {
+        DbSource::Legacy => RuntimeMemoryRecordSource::Legacy,
+        DbSource::V2 => RuntimeMemoryRecordSource::V2,
+        DbSource::LegacyFallback => RuntimeMemoryRecordSource::LegacyFallback,
+    };
+    if source == RuntimeMemoryRecordSource::V2 {
+        let chains = golish_db::repo::message_chains::list_exact_resume_bound_chains(
+            pool,
+            operation_id,
+            session_id,
+        )
+        .await
+        .context("load exact relational resume worker chains")?;
+        for row in chains {
+            match row.message_chain_id {
+                Some(expected_chain_id) => {
+                    anyhow::ensure!(
+                        row.exact_chain_id == Some(expected_chain_id),
+                        "resume refused: Worker {} chain crossed session/task/agent ownership",
+                        row.worker_run_id
+                    );
+                    let chain = row.chain.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "resume refused: Worker {} bound chain body is missing",
+                            row.worker_run_id
+                        )
+                    })?;
+                    serde_json::from_value::<Vec<rig::completion::Message>>(chain).with_context(
+                        || {
+                            format!(
+                                "resume refused: Worker {} bound chain cannot be decoded",
+                                row.worker_run_id
+                            )
+                        },
+                    )?;
+                }
+                None => anyhow::ensure!(
+                    row.worker_status == "queued",
+                    "resume refused: non-queued Worker {} has no bound chain",
+                    row.worker_run_id
+                ),
+            }
+        }
+    }
+    Ok(source)
+}
+
+pub(super) async fn claim_exact_resume_runtime_source(
+    pool: &sqlx::PgPool,
+    operation_id: Uuid,
+    session_id: Uuid,
+    source: RuntimeMemoryRecordSource,
+) -> anyhow::Result<()> {
+    use golish_db::repo::runtime_memory_tx::RuntimeMemoryRecordSource as DbSource;
+
+    let source = match source {
+        RuntimeMemoryRecordSource::Legacy => DbSource::Legacy,
+        RuntimeMemoryRecordSource::V2 => DbSource::V2,
+        RuntimeMemoryRecordSource::LegacyFallback => DbSource::LegacyFallback,
+    };
+    let claimed = golish_db::repo::tasks::claim_exact_resumable_runtime_source(
+        pool,
+        operation_id,
+        session_id,
+        source,
+    )
+    .await
+    .context("atomically claim exact runtime-memory resume source")?;
+    anyhow::ensure!(
+        claimed,
+        "resume refused: task or selected runtime-memory source changed before the durable claim"
+    );
+    Ok(())
+}
 
 pub(super) async fn has_resumable_task_for_session(
     state: &AgentState,
@@ -118,6 +209,12 @@ pub(crate) async fn start_trusted_candidate_review_resume(
     {
         anyhow::bail!("Candidate resume operation/project/profile/stage identity drifted");
     }
+    let resume_source = select_exact_resume_runtime_source(
+        state.db_pool.as_ref(),
+        claim.operation_id,
+        claim.session_id,
+    )
+    .await?;
 
     let executor = BridgeAgentExecutor::from_request(bridge.clone(), request.clone())
         .context("upgrade Candidate resume request into Task execution")?;
@@ -130,6 +227,16 @@ pub(crate) async fn start_trusted_candidate_review_resume(
     orchestrator.set_profile_override(Some(claim.profile.clone()));
     orchestrator.set_chat_session_id(&claim.chat_session_key);
     orchestrator.set_approval_coordinator(bridge.coordinator().cloned());
+    claim_exact_resume_runtime_source(
+        state.db_pool.as_ref(),
+        claim.operation_id,
+        claim.session_id,
+        resume_source,
+    )
+    .await?;
+    orchestrator.set_resume_runtime_memory_source(resume_source);
+    orchestrator.set_resume_task_preclaimed(true);
+    bridge.set_resume_runtime_memory_source(resume_source).await;
 
     let operation_id = claim.operation_id;
     let task_bridge = bridge.clone();

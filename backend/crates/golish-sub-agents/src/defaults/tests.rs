@@ -501,6 +501,39 @@ fn attack_analyst_is_reasoning_only_and_distinct_from_verifier() {
 }
 
 #[test]
+fn candidate_specialist_prompts_do_not_own_the_durable_wave_cursor() {
+    let analyst = build_attack_analyst_prompt();
+    for required in [
+        "initial vuln_triage_handoff",
+        "follow-on fact_delta_consolidation",
+        "zero-input",
+        "durable Candidate review",
+    ] {
+        assert!(
+            analyst.contains(required),
+            "missing analyst contract: {required}"
+        );
+    }
+    assert!(analyst.contains("never decides or opens the next Wave"));
+
+    let verifier = build_candidate_verifier_prompt();
+    for required in [
+        "FactDelta proposals",
+        "canonical ref/version/hash",
+        "opened_next_wave",
+        "closed_no_delta",
+        "exhausted",
+        "residual risk",
+    ] {
+        assert!(
+            verifier.contains(required),
+            "missing verifier contract: {required}"
+        );
+    }
+    assert!(verifier.contains("never accepts, consumes, or opens"));
+}
+
+#[test]
 fn post_exploit_operator_has_only_closed_stage_wrappers() {
     let agents = create_default_sub_agents();
     let operator = agents

@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Verification V2 is gated only by exact persisted WaveUnit/CandidateAttempt truth. Legacy operations retain their persisted completion contract until Task 12 cutover.",
+  "$comment": "Verification V2 is gated only by exact persisted WaveUnit/CandidateAttempt truth and exact Candidate plan approval. Each active org runs one foreground CandidateAttempt at a time; a zero-input org in any Wave is an explicit closed terminal, not missing work. A verifier may submit an evidence-backed FactDelta proposal with an exact canonical ref/version/hash, but does not accept or consume it and does not decide the Wave cursor. After every org is terminal, the durable consolidation alone returns opened_next_wave, closed_no_delta, or exhausted. exhausted persists reportable residual risk under the frozen fuel policy. Legacy operations retain their persisted completion and static approval contract until Task 12 cutover.",
 
   "id": "verification",
   "kind": "verification",
@@ -8,6 +8,7 @@
   "requires_stages": ["vuln_triage"],
   "allowed_next_stages": ["access_validation", "reporting"],
 
+  "$comment_allowed_tools": "The static tool classes are legacy-only compatibility. Exact V2Only dispatch exposes only the scheduler-bound ordinal wrapper, recent-evidence read, and Attempt submit surface.",
   "allowed_tool_types": ["web/injection", "exploit"],
 
   "deliverable_schema": "StageDeliverable",
@@ -17,6 +18,7 @@
 
   "max_other_skips": 1,
 
+  "$comment_human_approval": "The static one-shot approval remains for legacy operations. Exact V2Only ignores it and authorizes execution only through the durable approval bound to the exact Candidate plan hash, capability/action set, arguments, and budget.",
   "human_approval": {
     "required_before": ["exploit_validation"]
   },

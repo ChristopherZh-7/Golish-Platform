@@ -385,6 +385,85 @@ async fn resolve_one(
     Ok(row)
 }
 
+fn fact_delta_observation_is_valid(
+    delta_kind: &str,
+    observed_at: DateTime<Utc>,
+    attempt_started_at: DateTime<Utc>,
+    attempt_terminal_at: DateTime<Utc>,
+) -> bool {
+    if attempt_terminal_at < attempt_started_at || observed_at > attempt_terminal_at {
+        return false;
+    }
+    match delta_kind {
+        // A refutation deliberately points at an older canonical fact.  The
+        // fresh authority is the Attempt-scoped fact_delta evidence, which the
+        // caller validates separately; the referenced row must merely be the
+        // exact row that existed no later than terminalization.
+        "refuted" => true,
+        // Created/new-surface rows, and the updated projection of an older
+        // subject, must have been written while this Attempt was active.
+        "created" | "updated" | "new_surface" => observed_at >= attempt_started_at,
+        _ => false,
+    }
+}
+
+/// Resolve one FactDelta subject through the same closed canonical catalog as
+/// StageHandoff, but with delta-specific time semantics.  Refutation may name
+/// an older exact fact; created/updated/new-surface must project a row written
+/// during the source Attempt.  Future/post-terminal rows always fail closed.
+pub async fn resolve_for_fact_delta(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+    expected_organization_id: Uuid,
+    project_path_at_freeze: &str,
+    attempt_started_at: DateTime<Utc>,
+    attempt_terminal_at: DateTime<Utc>,
+    delta_kind: &str,
+    key: &CanonicalFactKey,
+) -> Result<CanonicalFactRef, CanonicalFactRefError> {
+    if !matches!(
+        delta_kind,
+        "created" | "updated" | "refuted" | "new_surface"
+    ) {
+        return Err(CanonicalFactRefError::Rejected {
+            code: "fact_delta_kind_unsupported",
+        });
+    }
+    let row = resolve_one(
+        connection,
+        operation_id,
+        expected_organization_id,
+        project_path_at_freeze,
+        key,
+    )
+    .await?
+    .ok_or(CanonicalFactRefError::Rejected {
+        code: "canonical_fact_unknown_or_foreign",
+    })?;
+    if row.organization_id != expected_organization_id {
+        return Err(CanonicalFactRefError::Rejected {
+            code: "canonical_fact_foreign_organization",
+        });
+    }
+    if !fact_delta_observation_is_valid(
+        delta_kind,
+        row.observed_at,
+        attempt_started_at,
+        attempt_terminal_at,
+    ) {
+        return Err(CanonicalFactRefError::Rejected {
+            code: "canonical_fact_delta_time_mismatch",
+        });
+    }
+    Ok(CanonicalFactRef {
+        key: key.clone(),
+        organization_id: row.organization_id,
+        observed_at: row.observed_at,
+        content_sha256: row.content_sha256,
+        evidence_ids: row.evidence_ids,
+    })
+}
+
 /// Resolve untrusted key hints through the closed server catalog. Returned
 /// timestamp/hash/evidence fields always come from locked repository rows.
 pub async fn resolve_for_handoff(
@@ -481,5 +560,47 @@ mod tests {
             "id": Uuid::new_v4(),
         }));
         assert!(unknown.is_err());
+    }
+
+    #[test]
+    fn fact_delta_time_policy_allows_old_refutation_but_not_old_creation_or_update() {
+        let started_at = Utc::now();
+        let terminal_at = started_at + chrono::Duration::seconds(20);
+        let old_fact = started_at - chrono::Duration::days(30);
+        let during_attempt = started_at + chrono::Duration::seconds(5);
+        let after_attempt = terminal_at + chrono::Duration::seconds(1);
+
+        assert!(fact_delta_observation_is_valid(
+            "refuted",
+            old_fact,
+            started_at,
+            terminal_at,
+        ));
+        for kind in ["created", "updated", "new_surface"] {
+            assert!(!fact_delta_observation_is_valid(
+                kind,
+                old_fact,
+                started_at,
+                terminal_at,
+            ));
+            assert!(fact_delta_observation_is_valid(
+                kind,
+                during_attempt,
+                started_at,
+                terminal_at,
+            ));
+        }
+        assert!(!fact_delta_observation_is_valid(
+            "refuted",
+            after_attempt,
+            started_at,
+            terminal_at,
+        ));
+        assert!(!fact_delta_observation_is_valid(
+            "model_invented_kind",
+            during_attempt,
+            started_at,
+            terminal_at,
+        ));
     }
 }

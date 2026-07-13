@@ -22,6 +22,16 @@ fn write_session(base: &Path, session: &str) {
     fs::write(sub_dir.join("transcript.json"), sub).unwrap();
 }
 
+fn write_candidate_pipeline_session(base: &Path, session: &str) {
+    let dir = session_dir(base, session);
+    fs::create_dir_all(&dir).unwrap();
+    let transcript = "\
+{\"_timestamp\":\"2026-07-13T00:00:01Z\",\"type\":\"harness_trace\",\"operation_id\":\"op-1\",\"stage\":\"verification\",\"agent_path\":\"main\",\"kind\":\"candidate_attempt_terminalized\",\"scope_snapshot_id\":\"scope-1\",\"wave_run_id\":\"wave-1\",\"wave_unit_id\":\"unit-1\",\"organization_id\":\"org-1\",\"candidate_id\":\"candidate-1\",\"attempt_id\":\"attempt-1\",\"finding_id\":\"finding-1\",\"status\":\"verified\",\"evidence_count\":3,\"fact_delta_count\":1,\"replayed\":false}
+{\"_timestamp\":\"2026-07-13T00:00:02Z\",\"type\":\"harness_trace\",\"operation_id\":\"op-1\",\"stage\":\"verification\",\"agent_path\":\"main\",\"kind\":\"attack_wave_consolidated\",\"scope_snapshot_id\":\"scope-1\",\"consolidation_id\":\"consolidation-1\",\"source_wave_run_id\":\"wave-1\",\"target_wave_run_id\":\"wave-2\",\"decision_kind\":\"opened_next_wave\",\"accepted_fact_delta_count\":1,\"rejected_fact_delta_count\":2,\"residual_risk_count\":0,\"replayed\":true}
+";
+    fs::write(dir.join("transcript.json"), transcript).unwrap();
+}
+
 #[test]
 fn collect_records_merges_and_orders_with_agent_path() {
     let tmp = tempfile::tempdir().unwrap();
@@ -66,6 +76,31 @@ fn render_timeline_shows_decision_and_agent() {
     assert!(out.contains("gate BLOCK"), "render: {out}");
     assert!(out.contains("main>pentester"), "render: {out}");
     assert!(out.contains("status: blocked"), "render: {out}");
+}
+
+#[test]
+fn render_timeline_summarizes_candidate_pipeline_traces_without_sensitive_material() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_candidate_pipeline_session(tmp.path(), "candidate-pipeline");
+
+    let out = render_timeline(tmp.path(), "candidate-pipeline");
+    assert!(
+        out.contains("candidate_attempt attempt-1 verified evidence=3 deltas=1 replayed=false"),
+        "render: {out}"
+    );
+    assert!(
+        out.contains(
+            "attack_wave wave-1 -> wave-2 opened_next_wave accepted=1 rejected=2 residuals=0 replayed=true"
+        ),
+        "render: {out}"
+    );
+    let rendered = out.to_ascii_lowercase();
+    for forbidden in ["payload", "lease", "plan", "exploit"] {
+        assert!(
+            !rendered.contains(forbidden),
+            "timeline leaked forbidden material marker {forbidden}: {out}"
+        );
+    }
 }
 
 #[test]

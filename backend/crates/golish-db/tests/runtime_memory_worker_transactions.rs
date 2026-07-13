@@ -2,12 +2,15 @@ use golish_db::models::{AgentType, NewSession};
 use golish_db::repo::{
     canonical_fact_refs, message_chains, operation_state, project_scopes, runtime_memory_rollout,
     runtime_memory_tx, sessions, stage_asset_waves, stage_deliverable_submissions, stage_handoffs,
-    stage_run_units, stage_worker_runs, tool_calls,
+    stage_run_units, stage_worker_runs, tasks, tool_calls,
 };
 use golish_db::{DbConfig, GolishDb};
 use serial_test::serial;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+const RUNTIME_MEMORY_V2_CUTOVER: &str =
+    include_str!("../migrations/20260712000002_runtime_memory_v2_cutover.sql");
 
 fn reserve_local_port() -> u16 {
     std::net::TcpListener::bind(("127.0.0.1", 0))
@@ -29,6 +32,310 @@ async fn fixture() -> (GolishDb, tempfile::TempDir) {
         .await
         .expect("start migrated embedded postgres");
     (db, data_dir)
+}
+
+/// Restore deployment defaults for tests that exercise pre-cutover contracts.
+///
+/// Both singletons are reset together so a future attack V2 cutover cannot make a legacy runtime
+/// fixture freeze the invalid `(runtime=legacy, attack=v2_only)` contract combination.
+async fn reset_deployment_rollouts_for_fixture(db: &GolishDb) {
+    let mut tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin rollout fixture reset");
+    sqlx::raw_sql(
+        r#"ALTER TABLE runtime_memory_rollout
+               DISABLE TRIGGER runtime_memory_rollout_forward_only;
+           ALTER TABLE runtime_memory_rollout
+               DISABLE TRIGGER zz_runtime_memory_rollout_attestation_gate;
+           ALTER TABLE runtime_memory_rollout
+               DISABLE TRIGGER zz_runtime_memory_rollout_promotion_receipt;
+           ALTER TABLE attack_execution_rollout
+               DISABLE TRIGGER attack_execution_rollout_forward_only;
+           ALTER TABLE attack_execution_rollout
+               DISABLE TRIGGER zz_attack_runtime_rollout_compatibility;
+           ALTER TABLE attack_execution_rollout
+               DISABLE TRIGGER zz_attack_execution_rollout_promotion_receipt;
+           UPDATE attack_execution_rollout
+              SET contract='legacy', rank=0, row_version=0, updated_at=NOW()
+            WHERE singleton=TRUE;
+           UPDATE runtime_memory_rollout
+              SET contract='legacy_v1', contract_rank=0, row_version=0, updated_at=NOW()
+            WHERE singleton_id=1;
+           ALTER TABLE runtime_memory_rollout
+               ENABLE TRIGGER runtime_memory_rollout_forward_only;
+           ALTER TABLE runtime_memory_rollout
+               ENABLE TRIGGER zz_runtime_memory_rollout_attestation_gate;
+           ALTER TABLE runtime_memory_rollout
+               ENABLE TRIGGER zz_runtime_memory_rollout_promotion_receipt;
+           ALTER TABLE attack_execution_rollout
+               ENABLE TRIGGER attack_execution_rollout_forward_only;
+           ALTER TABLE attack_execution_rollout
+               ENABLE TRIGGER zz_attack_runtime_rollout_compatibility;
+           ALTER TABLE attack_execution_rollout
+               ENABLE TRIGGER zz_attack_execution_rollout_promotion_receipt;"#,
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("reset rollout singletons for fixture");
+    tx.commit().await.expect("commit rollout fixture reset");
+}
+
+/// Test-only deployment control for selector/state-machine coverage. Production
+/// promotion is always attestation-gated; fixtures may freeze an operation at
+/// each historical contract without manufacturing rollout evidence.
+async fn set_runtime_rollout_for_fixture(
+    db: &GolishDb,
+    contract: runtime_memory_rollout::RuntimeMemoryContract,
+) {
+    let mut tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin runtime rollout fixture");
+    sqlx::raw_sql(
+        r#"ALTER TABLE runtime_memory_rollout
+               DISABLE TRIGGER runtime_memory_rollout_forward_only;
+           ALTER TABLE runtime_memory_rollout
+               DISABLE TRIGGER zz_runtime_memory_rollout_attestation_gate;
+           ALTER TABLE runtime_memory_rollout
+               DISABLE TRIGGER zz_runtime_memory_rollout_promotion_receipt;"#,
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("disable production rollout gates for explicit fixture");
+    sqlx::query(
+        r#"UPDATE runtime_memory_rollout
+              SET contract=$1,contract_rank=$2,row_version=$2,updated_at=NOW()
+            WHERE singleton_id=1"#,
+    )
+    .bind(contract.as_str())
+    .bind(contract.rank())
+    .execute(&mut *tx)
+    .await
+    .expect("set explicit frozen runtime contract fixture");
+    sqlx::raw_sql(
+        r#"ALTER TABLE runtime_memory_rollout
+               ENABLE TRIGGER runtime_memory_rollout_forward_only;
+           ALTER TABLE runtime_memory_rollout
+               ENABLE TRIGGER zz_runtime_memory_rollout_attestation_gate;
+           ALTER TABLE runtime_memory_rollout
+               ENABLE TRIGGER zz_runtime_memory_rollout_promotion_receipt;"#,
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("restore production rollout gates after fixture setup");
+    tx.commit().await.expect("commit runtime rollout fixture");
+}
+
+#[tokio::test]
+#[serial]
+async fn complete_migrations_enable_runtime_sampling_and_new_operation_freezes_it() {
+    let (mut db, _data_dir) = fixture().await;
+
+    let migrated_rollout = runtime_memory_rollout::get(db.pool())
+        .await
+        .expect("read fully migrated runtime rollout");
+    assert_eq!(migrated_rollout.contract, "dual_write_legacy_read");
+    assert_eq!(migrated_rollout.contract_rank, 1);
+    assert_eq!(migrated_rollout.row_version, 1);
+
+    let v2_session_id = sessions::create(
+        db.pool(),
+        NewSession {
+            title: Some("post-cutover runtime operation".to_string()),
+            workspace_path: Some("/tmp/runtime-worker-cutover-v2".to_string()),
+            workspace_label: None,
+            model: None,
+            provider: None,
+            project_path: Some("/tmp/runtime-worker-cutover-v2".to_string()),
+        },
+    )
+    .await
+    .expect("create post-cutover session")
+    .id;
+    let v2_project = project_scopes::register_first_open(
+        db.pool(),
+        "/tmp/runtime-worker-cutover-v2",
+        "runtime-worker-cutover-v2-sha",
+    )
+    .await
+    .expect("register post-cutover project");
+    let v2_operation_id = Uuid::new_v4();
+    let created_v2 = runtime_memory_tx::create_runtime_operation(
+        db.pool(),
+        &runtime_memory_tx::CreateRuntimeOperationRow {
+            operation_id: v2_operation_id,
+            initial_stage_execution_id: Uuid::new_v4(),
+            session_id: v2_session_id,
+            title: Some("post-cutover operation".to_string()),
+            input: "freeze sampling runtime contract".to_string(),
+            profile: "assessment".to_string(),
+            entry_stage: "scoping".to_string(),
+            project_scope_id: v2_project.project_scope_id,
+            cli_scope: None,
+        },
+    )
+    .await
+    .expect("new operation must freeze post-cutover rollout");
+    assert_eq!(
+        created_v2.operation.runtime_memory_contract,
+        "dual_write_legacy_read"
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn exact_resume_source_claim_allows_only_one_waiting_contender() {
+    let (mut db, _data_dir) = fixture().await;
+    let session_id = sessions::create(
+        db.pool(),
+        NewSession {
+            title: Some("atomic resume source claim".to_string()),
+            workspace_path: Some("/tmp/runtime-resume-claim".to_string()),
+            workspace_label: None,
+            model: None,
+            provider: None,
+            project_path: Some("/tmp/runtime-resume-claim".to_string()),
+        },
+    )
+    .await
+    .expect("create resume-claim session")
+    .id;
+    let project_scope = project_scopes::register_first_open(
+        db.pool(),
+        "/tmp/runtime-resume-claim",
+        "runtime-resume-claim-sha",
+    )
+    .await
+    .expect("register resume-claim project scope");
+    let operation_id = Uuid::new_v4();
+    runtime_memory_tx::create_runtime_operation(
+        db.pool(),
+        &runtime_memory_tx::CreateRuntimeOperationRow {
+            operation_id,
+            initial_stage_execution_id: Uuid::new_v4(),
+            session_id,
+            title: Some("resume source claim".to_string()),
+            input: "resume exact graph checkpoint".to_string(),
+            profile: "assessment".to_string(),
+            entry_stage: "scoping".to_string(),
+            project_scope_id: project_scope.project_scope_id,
+            cli_scope: None,
+        },
+    )
+    .await
+    .expect("create resume-claim operation");
+    sqlx::query(
+        r#"UPDATE operation_state
+              SET state_blob=jsonb_build_object(
+                    'graph_flow',jsonb_build_object(
+                        'state',jsonb_build_object(
+                            'seeded',jsonb_build_object(),
+                            'visited',jsonb_build_array(),
+                            'applied',jsonb_build_object()
+                        ),
+                        'next_node','scoping'
+                    )
+                  )
+            WHERE operation_id=$1"#,
+    )
+    .bind(operation_id)
+    .execute(db.pool())
+    .await
+    .expect("install complete legacy graph checkpoint");
+    sqlx::query("UPDATE tasks SET status='waiting',result=NULL WHERE id=$1")
+        .bind(operation_id)
+        .execute(db.pool())
+        .await
+        .expect("pause exact task before concurrent claim");
+
+    let source = tasks::exact_resumable_runtime_source(db.pool(), operation_id, session_id)
+        .await
+        .expect("select complete runtime source")
+        .expect("one complete runtime source");
+    assert_eq!(source, runtime_memory_tx::RuntimeMemoryRecordSource::Legacy);
+    let first =
+        tasks::claim_exact_resumable_runtime_source(db.pool(), operation_id, session_id, source);
+    let second =
+        tasks::claim_exact_resumable_runtime_source(db.pool(), operation_id, session_id, source);
+    let (first, second) = tokio::join!(first, second);
+    let claims = [
+        first.expect("first exact resume claim"),
+        second.expect("second exact resume claim"),
+    ];
+    assert_eq!(claims.into_iter().filter(|claimed| *claimed).count(), 1);
+    let task = tasks::get(db.pool(), operation_id)
+        .await
+        .expect("load claimed task")
+        .expect("claimed task remains");
+    assert_eq!(task.status, golish_db::models::TaskStatus::Running);
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn raw_cutover_replay_preserves_an_existing_legacy_operation_contract() {
+    let (mut db, _data_dir) = fixture().await;
+    reset_deployment_rollouts_for_fixture(&db).await;
+    let _legacy_session_id = sessions::create(
+        db.pool(),
+        NewSession {
+            title: Some("pre-cutover runtime operation".to_string()),
+            workspace_path: Some("/tmp/runtime-worker-cutover-legacy".to_string()),
+            workspace_label: None,
+            model: None,
+            provider: None,
+            project_path: Some("/tmp/runtime-worker-cutover-legacy".to_string()),
+        },
+    )
+    .await
+    .expect("create pre-cutover session")
+    .id;
+    let legacy_project = project_scopes::register_first_open(
+        db.pool(),
+        "/tmp/runtime-worker-cutover-legacy",
+        "runtime-worker-cutover-legacy-sha",
+    )
+    .await
+    .expect("register pre-cutover project");
+    let legacy_operation_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO operation_state(
+               operation_id,profile,current_stage,runtime_memory_contract,
+               project_scope_id,attack_execution_contract
+           ) VALUES($1,'assessment','scoping','legacy_v1',$2,'legacy')"#,
+    )
+    .bind(legacy_operation_id)
+    .bind(legacy_project.project_scope_id)
+    .execute(db.pool())
+    .await
+    .expect("install an operation frozen before the sampling cutover");
+
+    // GolishDb already recorded 00002 in `_sqlx_migrations`. This raw replay intentionally tests
+    // the SQL against a simulated pre-cutover singleton and must not be mistaken for a pending
+    // migrator run.
+    sqlx::raw_sql(RUNTIME_MEMORY_V2_CUTOVER)
+        .execute(db.pool())
+        .await
+        .expect("replay cutover over an existing legacy operation");
+    let replayed_rollout = runtime_memory_rollout::get(db.pool())
+        .await
+        .expect("read replayed cutover rollout");
+    assert_eq!(replayed_rollout.contract, "dual_write_legacy_read");
+    assert_eq!(replayed_rollout.contract_rank, 1);
+    assert_eq!(replayed_rollout.row_version, 1);
+    let legacy_after_cutover = operation_state::get(db.pool(), legacy_operation_id)
+        .await
+        .expect("read existing operation after cutover")
+        .expect("existing legacy operation remains");
+    assert_eq!(legacy_after_cutover.runtime_memory_contract, "legacy_v1");
+
+    db.stop().await;
 }
 
 struct RuntimeRoots {
@@ -58,6 +365,17 @@ async fn create_sealed_runtime_roots_with_contract(
     db: &GolishDb,
     target_contract: runtime_memory_rollout::RuntimeMemoryContract,
 ) -> RuntimeRoots {
+    create_sealed_runtime_roots_with_contract_and_children(db, target_contract, 0)
+        .await
+        .0
+}
+
+async fn create_sealed_runtime_roots_with_contract_and_children(
+    db: &GolishDb,
+    target_contract: runtime_memory_rollout::RuntimeMemoryContract,
+    child_count: usize,
+) -> (RuntimeRoots, Vec<Uuid>) {
+    reset_deployment_rollouts_for_fixture(db).await;
     let session_id = sessions::create(
         db.pool(),
         NewSession {
@@ -79,29 +397,7 @@ async fn create_sealed_runtime_roots_with_contract(
     )
     .await
     .expect("register project scope");
-    let mut current = runtime_memory_rollout::RuntimeMemoryContract::LegacyV1;
-    let mut row_version = 0;
-    while current != target_contract {
-        let next = match current {
-            runtime_memory_rollout::RuntimeMemoryContract::LegacyV1 => {
-                runtime_memory_rollout::RuntimeMemoryContract::DualWriteLegacyRead
-            }
-            runtime_memory_rollout::RuntimeMemoryContract::DualWriteLegacyRead => {
-                runtime_memory_rollout::RuntimeMemoryContract::DualWriteV2Preferred
-            }
-            runtime_memory_rollout::RuntimeMemoryContract::DualWriteV2Preferred => {
-                runtime_memory_rollout::RuntimeMemoryContract::V2Only
-            }
-            runtime_memory_rollout::RuntimeMemoryContract::V2Only => {
-                panic!("cannot advance beyond v2_only")
-            }
-        };
-        let advanced = runtime_memory_rollout::advance(db.pool(), current, next, row_version)
-            .await
-            .expect("advance runtime contract for fixture");
-        current = next;
-        row_version = advanced.row_version;
-    }
+    set_runtime_rollout_for_fixture(db, target_contract).await;
 
     let operation_id = Uuid::new_v4();
     let stage_execution_id = Uuid::new_v4();
@@ -125,6 +421,7 @@ async fn create_sealed_runtime_roots_with_contract(
     let decision_id = Uuid::new_v4();
     let snapshot_id = Uuid::new_v4();
     let organization_id = Uuid::new_v4();
+    let child_organization_ids = (0..child_count).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
     let mut tx = db.pool().begin().await.expect("begin scope freeze fixture");
     sqlx::query(
         r#"INSERT INTO organizations (id, project_path, name)
@@ -134,6 +431,22 @@ async fn create_sealed_runtime_roots_with_contract(
     .execute(&mut *tx)
     .await
     .expect("insert current organization owner");
+    for (index, child_organization_id) in child_organization_ids.iter().enumerate() {
+        sqlx::query(
+            r#"INSERT INTO organizations (id, project_path, name, parent_id)
+               VALUES ($1, '/tmp/runtime-worker', $2, $3)"#,
+        )
+        .bind(child_organization_id)
+        .bind(format!("Child Org {}", index + 1))
+        .bind(organization_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert current child organization owner");
+    }
+    let decision_rows = std::iter::once(organization_id)
+        .chain(child_organization_ids.iter().copied())
+        .map(|organization_id| serde_json::json!({"organization_id": organization_id}))
+        .collect::<Vec<_>>();
     sqlx::query(
         r#"INSERT INTO operation_scope_decisions (
                id, operation_id, project_scope_id, stage_execution_id,
@@ -145,7 +458,7 @@ async fn create_sealed_runtime_roots_with_contract(
     .bind(project_scope.project_scope_id)
     .bind(stage_execution_id)
     .bind(organization_id)
-    .bind(serde_json::json!([{"organization_id": organization_id}]))
+    .bind(serde_json::to_value(decision_rows).expect("serialize decision rows"))
     .bind("decision-sha")
     .execute(&mut *tx)
     .await
@@ -178,6 +491,25 @@ async fn create_sealed_runtime_roots_with_contract(
     .execute(&mut *tx)
     .await
     .expect("insert frozen root organization");
+    for (index, child_organization_id) in child_organization_ids.iter().enumerate() {
+        sqlx::query(
+            r#"INSERT INTO operation_org_scope_units (
+                   snapshot_id, organization_id, parent_organization_id,
+                   organization_name_at_freeze, role, depth, ordinal,
+                   ownership_percent, decision_row_id, approval_source
+               ) VALUES ($1,$2,$3,$4,'subsidiary',1,$5,100,$6,$7)"#,
+        )
+        .bind(snapshot_id)
+        .bind(child_organization_id)
+        .bind(organization_id)
+        .bind(format!("Child Org {}", index + 1))
+        .bind(i32::try_from(index + 1).expect("child ordinal fits i32"))
+        .bind(format!("child-row-{}", index + 1))
+        .bind(serde_json::json!({"source": "cli_flags"}))
+        .execute(&mut *tx)
+        .await
+        .expect("insert frozen child organization");
+    }
     sqlx::query("UPDATE operation_org_scope_snapshots SET sealed_at = NOW() WHERE id = $1")
         .bind(snapshot_id)
         .execute(&mut *tx)
@@ -185,13 +517,16 @@ async fn create_sealed_runtime_roots_with_contract(
         .expect("seal scope snapshot");
     tx.commit().await.expect("commit sealed scope fixture");
 
-    RuntimeRoots {
-        session_id,
-        operation_id,
-        stage_execution_id,
-        snapshot_id,
-        organization_id,
-    }
+    (
+        RuntimeRoots {
+            session_id,
+            operation_id,
+            stage_execution_id,
+            snapshot_id,
+            organization_id,
+        },
+        child_organization_ids,
+    )
 }
 
 async fn create_claimed_compound_runtime(db: &GolishDb) -> ClaimedCompoundRuntime {
@@ -219,6 +554,7 @@ async fn create_claimed_compound_runtime_with_contract(
             work_item_kind: "stage_unit".to_string(),
             work_item_key: "primary".to_string(),
             agent_path_prefix: "main>stage_run:target_intel".to_string(),
+            organization_ids: None,
         },
     )
     .await
@@ -794,6 +1130,126 @@ async fn unit_worker_chain_checkpoint_and_tool_fence_are_one_typed_state_machine
 
 #[tokio::test]
 #[serial]
+async fn seed_stage_runtime_respects_explicit_organization_subset() {
+    let (mut db, _data_dir) = fixture().await;
+    let (roots, child_organization_ids) = create_sealed_runtime_roots_with_contract_and_children(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::DualWriteLegacyRead,
+        2,
+    )
+    .await;
+    let selected_organization_ids = vec![roots.organization_id, child_organization_ids[1]];
+    let seed_input = runtime_memory_tx::SeedStageRuntimeRow {
+        operation_id: roots.operation_id,
+        stage_execution_id: roots.stage_execution_id,
+        stage_kind: "target_intel".to_string(),
+        unit_generation: 0,
+        specialist: "target_intel".to_string(),
+        worker_generation: 0,
+        work_item_kind: "stage_unit".to_string(),
+        work_item_key: "primary".to_string(),
+        agent_path_prefix: "main>stage_run:target_intel".to_string(),
+        organization_ids: Some(selected_organization_ids.clone()),
+    };
+
+    let seeded = runtime_memory_tx::seed_stage_runtime(db.pool(), &seed_input)
+        .await
+        .expect("seed only explicitly selected frozen organizations");
+    let mut seeded_organization_ids = seeded
+        .iter()
+        .map(|row| row.unit.organization_id)
+        .collect::<Vec<_>>();
+    seeded_organization_ids.sort_unstable();
+    let mut expected_organization_ids = selected_organization_ids.clone();
+    expected_organization_ids.sort_unstable();
+    assert_eq!(seeded_organization_ids, expected_organization_ids);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM stage_run_units WHERE operation_id=$1 AND stage_execution_id=$2"
+        )
+        .bind(roots.operation_id)
+        .bind(roots.stage_execution_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("count subset runtime units"),
+        2
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM stage_worker_runs WHERE operation_id=$1 AND stage_execution_id=$2"
+        )
+        .bind(roots.operation_id)
+        .bind(roots.stage_execution_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("count subset runtime workers"),
+        2
+    );
+
+    let mut duplicate = seed_input.clone();
+    duplicate.organization_ids = Some(vec![roots.organization_id, roots.organization_id]);
+    assert!(matches!(
+        runtime_memory_tx::seed_stage_runtime(db.pool(), &duplicate).await,
+        Err(
+            runtime_memory_tx::RuntimeMemoryStoreError::IdentityMismatch {
+                code: "duplicate_stage_runtime_seed_organization"
+            }
+        )
+    ));
+
+    let mut empty = seed_input.clone();
+    empty.organization_ids = Some(Vec::new());
+    assert!(matches!(
+        runtime_memory_tx::seed_stage_runtime(db.pool(), &empty).await,
+        Err(
+            runtime_memory_tx::RuntimeMemoryStoreError::IdentityMismatch {
+                code: "empty_stage_runtime_seed_organizations"
+            }
+        )
+    ));
+
+    let mut outside_scope = seed_input.clone();
+    outside_scope.organization_ids = Some(vec![Uuid::new_v4()]);
+    assert!(matches!(
+        runtime_memory_tx::seed_stage_runtime(db.pool(), &outside_scope).await,
+        Err(
+            runtime_memory_tx::RuntimeMemoryStoreError::IdentityMismatch {
+                code: "stage_runtime_seed_organization_outside_frozen_scope"
+            }
+        )
+    ));
+
+    let replayed = runtime_memory_tx::seed_stage_runtime(db.pool(), &seed_input)
+        .await
+        .expect("exact subset seed replay is idempotent");
+    assert_eq!(
+        replayed.iter().map(|row| row.unit.id).collect::<Vec<_>>(),
+        seeded.iter().map(|row| row.unit.id).collect::<Vec<_>>()
+    );
+
+    let mut all_organizations = seed_input;
+    all_organizations.organization_ids = None;
+    let seeded_all = runtime_memory_tx::seed_stage_runtime(db.pool(), &all_organizations)
+        .await
+        .expect("None preserves all-frozen-organization seeding");
+    assert_eq!(seeded_all.len(), 3);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM stage_run_units WHERE operation_id=$1 AND stage_execution_id=$2"
+        )
+        .bind(roots.operation_id)
+        .bind(roots.stage_execution_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("count all runtime units after default seed"),
+        3
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn compound_seed_claim_and_checkpoint_keep_v2_and_legacy_mirror_atomic() {
     let (mut db, _data_dir) = fixture().await;
     let roots = create_sealed_runtime_roots(&db).await;
@@ -808,6 +1264,7 @@ async fn compound_seed_claim_and_checkpoint_keep_v2_and_legacy_mirror_atomic() {
         work_item_kind: "stage_unit".to_string(),
         work_item_key: "primary".to_string(),
         agent_path_prefix: "main>stage_run:target_intel".to_string(),
+        organization_ids: None,
     };
     let seeded = runtime_memory_tx::seed_stage_runtime(db.pool(), &seed_input)
         .await
@@ -898,6 +1355,7 @@ async fn compound_seed_claim_and_checkpoint_keep_v2_and_legacy_mirror_atomic() {
             stage_execution_id: roots.stage_execution_id,
             stage_run_unit_id: seeded.unit.id,
             worker_run_id: seeded.worker.id,
+            selected_source: None,
         },
     )
     .await
@@ -911,6 +1369,26 @@ async fn compound_seed_claim_and_checkpoint_keep_v2_and_legacy_mirror_atomic() {
         loaded.worker.message_chain_id,
         Some(claimed.message_chain_id)
     );
+    let samples: Vec<(String, String)> = sqlx::query_as(
+        r#"SELECT mutation_kind,comparison
+             FROM runtime_memory_shadow_samples
+            WHERE worker_run_id=$1
+            ORDER BY sample_seq"#,
+    )
+    .bind(seeded.worker.id)
+    .fetch_all(db.pool())
+    .await
+    .expect("load retained dual-mutation observations");
+    assert_eq!(
+        samples,
+        vec![
+            ("seed".to_string(), "match".to_string()),
+            ("seed".to_string(), "match".to_string()),
+            ("claim_and_bind_chain".to_string(), "match".to_string()),
+            ("checkpoint".to_string(), "match".to_string()),
+        ],
+        "every production dual mirror boundary retains its whole-record comparison"
+    );
 
     db.stop().await;
 }
@@ -921,6 +1399,13 @@ async fn compound_checkpoint_rolls_back_v2_when_legacy_mirror_write_fails() {
     let (mut db, _data_dir) = fixture().await;
     let runtime = create_claimed_compound_runtime(&db).await;
     let fence = fence_for_claimed(&runtime);
+    let samples_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runtime_memory_shadow_samples WHERE worker_run_id=$1",
+    )
+    .bind(runtime.worker_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count samples before immediate failure");
     sqlx::query(
         r#"CREATE FUNCTION reject_runtime_legacy_mirror() RETURNS trigger AS $$
            BEGIN
@@ -950,6 +1435,14 @@ async fn compound_checkpoint_rolls_back_v2_when_legacy_mirror_write_fails() {
         .expect("worker remains");
     assert_eq!(worker.checkpoint, serde_json::json!({"turn": 0}));
     assert_eq!(worker.checkpoint_version, fence.expected_checkpoint_version);
+    let samples_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runtime_memory_shadow_samples WHERE worker_run_id=$1",
+    )
+    .bind(runtime.worker_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count samples after immediate rollback");
+    assert_eq!(samples_after, samples_before);
 
     db.stop().await;
 }
@@ -960,6 +1453,13 @@ async fn compound_checkpoint_rolls_back_both_sources_when_commit_fails() {
     let (mut db, _data_dir) = fixture().await;
     let runtime = create_claimed_compound_runtime(&db).await;
     let fence = fence_for_claimed(&runtime);
+    let samples_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runtime_memory_shadow_samples WHERE worker_run_id=$1",
+    )
+    .bind(runtime.worker_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count samples before deferred failure");
     let before = golish_db::repo::operation_state::get(db.pool(), runtime.roots.operation_id)
         .await
         .expect("load mirror before deferred failure")
@@ -1001,6 +1501,348 @@ async fn compound_checkpoint_rolls_back_both_sources_when_commit_fails() {
         .expect("operation exists")
         .state_blob;
     assert_eq!(after, before, "legacy mirror must roll back at commit too");
+    let samples_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runtime_memory_shadow_samples WHERE worker_run_id=$1",
+    )
+    .bind(runtime.worker_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count samples after deferred rollback");
+    assert_eq!(samples_after, samples_before);
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn startup_reaper_reconciles_committed_dual_sample_and_replay_is_idempotent() {
+    let (mut db, _data_dir) = fixture().await;
+    let runtime = create_claimed_compound_runtime(&db).await;
+
+    sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET lease_acquired_at=NOW()-INTERVAL '2 hours',
+                  lease_expires_at=NOW()-INTERVAL '1 hour',
+                  heartbeat_at=NOW()-INTERVAL '1 hour'
+            WHERE id=$1"#,
+    )
+    .bind(runtime.worker_id)
+    .execute(db.pool())
+    .await
+    .expect("expire claimed worker lease");
+    sqlx::query(
+        r#"UPDATE tasks
+              SET status='running',updated_at=NOW()-INTERVAL '2 hours'
+            WHERE id=$1"#,
+    )
+    .bind(runtime.roots.operation_id)
+    .execute(db.pool())
+    .await
+    .expect("age runtime task for startup reaper");
+
+    // Earlier dual mutations may already have reconciled the deployment row.
+    // Give this response-loss fixture a fresh row version at sampling rank so
+    // only the startup reaper can produce the transition under assertion.
+    let mut rollout_fixture = db.pool().begin().await.expect("begin rollout fixture");
+    sqlx::raw_sql(
+        r#"ALTER TABLE runtime_memory_rollout
+               DISABLE TRIGGER runtime_memory_rollout_forward_only;
+           ALTER TABLE runtime_memory_rollout
+               DISABLE TRIGGER zz_runtime_memory_rollout_attestation_gate;
+           ALTER TABLE runtime_memory_rollout
+               DISABLE TRIGGER zz_runtime_memory_rollout_promotion_receipt;
+           ALTER TABLE runtime_memory_rollout_promotions
+               DISABLE TRIGGER runtime_memory_rollout_promotion_receipt_immutable;
+           DELETE FROM runtime_memory_rollout_promotions WHERE from_rank=1;
+           UPDATE runtime_memory_rollout
+              SET contract='dual_write_legacy_read',contract_rank=1,
+                  row_version=101,updated_at=NOW()
+            WHERE singleton_id=1;
+           ALTER TABLE runtime_memory_rollout_promotions
+               ENABLE TRIGGER runtime_memory_rollout_promotion_receipt_immutable;
+           ALTER TABLE runtime_memory_rollout
+               ENABLE TRIGGER runtime_memory_rollout_forward_only;
+           ALTER TABLE runtime_memory_rollout
+               ENABLE TRIGGER zz_runtime_memory_rollout_attestation_gate;
+           ALTER TABLE runtime_memory_rollout
+               ENABLE TRIGGER zz_runtime_memory_rollout_promotion_receipt;"#,
+    )
+    .execute(&mut *rollout_fixture)
+    .await
+    .expect("install fresh sampling-rank rollout fixture");
+    rollout_fixture
+        .commit()
+        .await
+        .expect("commit rollout fixture");
+
+    let samples_before: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM runtime_memory_shadow_samples
+            WHERE worker_run_id=$1 AND mutation_kind='startup_reaper'"#,
+    )
+    .bind(runtime.worker_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count startup samples before reaping");
+
+    let first = tasks::startup_reap_abandoned(db.pool(), chrono::Duration::zero())
+        .await
+        .expect("commit startup reaper and reconcile deployment rollouts");
+    assert_eq!(first.workers_requeued, 1);
+    assert_eq!(first.workers_recovery_required, 0);
+    assert_eq!(first.runtime_shadow_samples_written, 1);
+    let promoted = runtime_memory_rollout::get(db.pool())
+        .await
+        .expect("read rollout after startup reaper commit");
+    assert_eq!(promoted.contract, "dual_write_v2_preferred");
+    assert_eq!(promoted.contract_rank, 2);
+    assert_eq!(promoted.row_version, 102);
+    let samples_after: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM runtime_memory_shadow_samples
+            WHERE worker_run_id=$1 AND mutation_kind='startup_reaper'"#,
+    )
+    .bind(runtime.worker_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count committed startup samples");
+    assert_eq!(samples_after, samples_before + 1);
+    let receipts_after_first: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM runtime_memory_rollout_promotions
+            WHERE from_row_version=101 AND to_row_version=102"#,
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("count first startup promotion receipt");
+    assert_eq!(receipts_after_first, 1);
+
+    // Simulate the caller losing the first response and replaying startup.
+    let replay = tasks::startup_reap_abandoned(db.pool(), chrono::Duration::zero())
+        .await
+        .expect("replay startup after response loss");
+    assert_eq!(replay.workers_requeued, 0);
+    assert_eq!(replay.workers_recovery_required, 0);
+    assert_eq!(replay.runtime_shadow_samples_written, 0);
+    let replayed_rollout = runtime_memory_rollout::get(db.pool())
+        .await
+        .expect("read rollout after replay");
+    assert_eq!(replayed_rollout, promoted);
+    let receipts_after_replay: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM runtime_memory_rollout_promotions
+            WHERE from_row_version=101 AND to_row_version=102"#,
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("count startup promotion receipt after replay");
+    assert_eq!(receipts_after_replay, 1);
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn v2_only_developer_reset_ignores_caller_legacy_checkpoint_namespaces() {
+    let (mut db, _data_dir) = fixture().await;
+    let runtime = create_claimed_compound_runtime_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+
+    operation_state::advance_stage(
+        db.pool(),
+        runtime.roots.operation_id,
+        "external_attack_surface",
+    )
+    .await
+    .expect("move fixture to the EAS server namespace owner");
+    let eas_epoch = operation_state::get(db.pool(), runtime.roots.operation_id)
+        .await
+        .expect("load EAS epoch")
+        .expect("operation remains");
+    let attempts = operation_state::increment_eas_web_transport_failure(
+        db.pool(),
+        &operation_state::EasWebTransportFailureInput {
+            operation_id: runtime.roots.operation_id,
+            stage_started_at: eas_epoch.stage_started_at,
+            slot_key: "reserved-slot".to_string(),
+            organization_id: runtime.roots.organization_id,
+            target_id: Uuid::new_v4(),
+            origin: "https://example.test".to_string(),
+            technique: "GOLISH-EAS-WEB-FINGERPRINT".to_string(),
+            failure_class: "timeout".to_string(),
+        },
+    )
+    .await
+    .expect("dedicated EAS namespace writer remains allowed");
+    assert_eq!(attempts, Some(1));
+    operation_state::advance_stage(db.pool(), runtime.roots.operation_id, "target_intel")
+        .await
+        .expect("restore relational stage for developer reset");
+
+    let replacement_stage_execution_id = Uuid::new_v4();
+    runtime_memory_tx::supersede_stage_checkpoint(
+        db.pool(),
+        &runtime_memory_tx::SupersedeStageCheckpointRow {
+            operation_id: runtime.roots.operation_id,
+            expected_current_stage: "target_intel".to_string(),
+            selected_stage: "target_intel".to_string(),
+            affected_stage_kinds: vec!["target_intel".to_string()],
+            next_state_blob: serde_json::json!({
+                "caller_only": "must-not-cross-v2-boundary",
+                "graph_flow": {"next_node": "caller-injected"},
+                "profile": "caller-profile",
+                "current_stage": "caller-stage",
+                "current_stage_run_id": Uuid::new_v4(),
+                "queue_titles": ["caller-queue"],
+                "completed_count": 99,
+                "continuity_adoption": {"caller": true},
+                "schema_v": 1,
+                "stage_run_workers": {"target_intel": {"caller": true}},
+                "stage_run_handoffs": {"target_intel": {"caller": true}},
+                "agent_run": {"caller": true}
+            }),
+            replacement_specialist: Some("target_intel".to_string()),
+            replacement_stage_execution_id: Some(replacement_stage_execution_id),
+        },
+    )
+    .await
+    .expect("reset V2-only runtime from relational truth");
+
+    let reset = operation_state::get(db.pool(), runtime.roots.operation_id)
+        .await
+        .expect("load reset operation")
+        .expect("reset operation remains");
+    assert_eq!(
+        reset.state_blob["eas_web_transport_failures"]["reserved-slot"]["attempts"], 1,
+        "server-owned non-checkpoint state must survive the reset"
+    );
+    for forbidden in [
+        "caller_only",
+        "graph_flow",
+        "profile",
+        "current_stage",
+        "current_stage_run_id",
+        "queue_titles",
+        "completed_count",
+        "continuity_adoption",
+        "schema_v",
+        "stage_run_workers",
+        "stage_run_handoffs",
+        "agent_run",
+    ] {
+        assert!(
+            reset.state_blob.get(forbidden).is_none(),
+            "V2-only reset retained forbidden checkpoint namespace {forbidden}: {}",
+            reset.state_blob
+        );
+    }
+    assert_eq!(
+        reset.state_blob["runtime_v2_dev_reset"]["replacement_stage_execution_id"],
+        serde_json::json!(replacement_stage_execution_id),
+        "only the server-authored reset marker may describe the replacement"
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn v2_only_state_blob_rejects_legacy_checkpoint_writes_at_repo_and_raw_sql() {
+    let (mut db, _data_dir) = fixture().await;
+    let runtime = create_claimed_compound_runtime_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let operation_id = runtime.roots.operation_id;
+    let before = operation_state::get(db.pool(), operation_id)
+        .await
+        .expect("load clean V2-only state")
+        .expect("operation remains")
+        .state_blob;
+
+    operation_state::write_state_blob(
+        db.pool(),
+        operation_id,
+        serde_json::json!({
+            "graph_flow": {"next_node": "reporting", "state": {}},
+            "agent_run": {"status": "running"},
+            "stage_run_workers": {"hostile": true}
+        }),
+    )
+    .await
+    .expect("generic repository checkpoint is an idempotent no-op for V2-only");
+    assert_eq!(
+        operation_state::get(db.pool(), operation_id)
+            .await
+            .expect("reload after generic checkpoint")
+            .expect("operation remains")
+            .state_blob,
+        before
+    );
+
+    let raw_error = sqlx::query(
+        r#"UPDATE operation_state
+              SET state_blob=state_blob || jsonb_build_object(
+                    'graph_flow',jsonb_build_object('next_node','reporting'),
+                    'agent_run',jsonb_build_object('status','running')
+                  )
+            WHERE operation_id=$1"#,
+    )
+    .bind(operation_id)
+    .execute(db.pool())
+    .await
+    .expect_err("raw DML cannot recreate a V2-only legacy checkpoint");
+    assert!(
+        raw_error
+            .to_string()
+            .contains("V2_ONLY_LEGACY_CHECKPOINT_FORBIDDEN"),
+        "unexpected raw checkpoint error: {raw_error}"
+    );
+    assert_eq!(
+        operation_state::get(db.pool(), operation_id)
+            .await
+            .expect("reload after rejected raw checkpoint")
+            .expect("operation remains")
+            .state_blob,
+        before
+    );
+
+    let inserted_operation_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO tasks(id,session_id,title,input,status)
+           VALUES($1,$2,'hostile V2 insert','must reject checkpoint','running')"#,
+    )
+    .bind(inserted_operation_id)
+    .bind(runtime.roots.session_id)
+    .execute(db.pool())
+    .await
+    .expect("insert task prerequisite for hostile operation");
+    let insert_error = sqlx::query(
+        r#"INSERT INTO operation_state(
+               operation_id,profile,current_stage,runtime_memory_contract,
+               attack_execution_contract,state_blob
+           ) VALUES(
+               $1,'red_team','verification','v2_only','v2_only',
+               jsonb_build_object(
+                   'graph_flow',jsonb_build_object('next_node','reporting'),
+                   'agent_run',jsonb_build_object('status','running')
+               )
+           )"#,
+    )
+    .bind(inserted_operation_id)
+    .execute(db.pool())
+    .await
+    .expect_err("raw INSERT cannot create a V2-only legacy checkpoint");
+    assert!(
+        insert_error
+            .to_string()
+            .contains("V2_ONLY_LEGACY_CHECKPOINT_FORBIDDEN"),
+        "unexpected raw insert error: {insert_error}"
+    );
 
     db.stop().await;
 }
@@ -1019,6 +1861,7 @@ async fn v2_preferred_selects_one_complete_record_then_whole_legacy_fallback() {
         stage_execution_id: runtime.roots.stage_execution_id,
         stage_run_unit_id: runtime.unit_id,
         worker_run_id: runtime.worker_id,
+        selected_source: None,
     };
 
     let authoritative = runtime_memory_tx::load_worker_checkpoint(db.pool(), &input)
@@ -1030,11 +1873,35 @@ async fn v2_preferred_selects_one_complete_record_then_whole_legacy_fallback() {
     );
     assert_eq!(authoritative.worker.id, runtime.worker_id);
 
-    sqlx::query("DELETE FROM stage_worker_runs WHERE id=$1")
+    let retained_delete = sqlx::query("DELETE FROM stage_worker_runs WHERE id=$1")
         .bind(runtime.worker_id)
         .execute(db.pool())
+        .await;
+    assert!(
+        retained_delete.is_err(),
+        "a rollout admission must normally retain its V2 identity"
+    );
+    // Selector fallback still needs a hostile-corruption fixture. Temporarily
+    // suppress FK enforcement in this disposable embedded database only; the
+    // preceding assertion proves production SQL cannot create this state.
+    let mut corruption = db.pool().begin().await.expect("begin corruption fixture");
+    sqlx::raw_sql("ALTER TABLE stage_worker_runs DISABLE TRIGGER ALL")
+        .execute(&mut *corruption)
+        .await
+        .expect("disable FK triggers in hostile fixture");
+    sqlx::query("DELETE FROM stage_worker_runs WHERE id=$1")
+        .bind(runtime.worker_id)
+        .execute(&mut *corruption)
         .await
         .expect("simulate an entirely missing V2 record");
+    sqlx::raw_sql("ALTER TABLE stage_worker_runs ENABLE TRIGGER ALL")
+        .execute(&mut *corruption)
+        .await
+        .expect("restore FK triggers after hostile fixture");
+    corruption
+        .commit()
+        .await
+        .expect("commit hostile selector fixture");
     let fallback = runtime_memory_tx::load_worker_checkpoint(db.pool(), &input)
         .await
         .expect("whole legacy record is the only permitted fallback");
@@ -1083,6 +1950,7 @@ async fn bound_chain_body_and_worker_checkpoint_commit_or_roll_back_together() {
             message_chain_id: chain_id,
             session_id: runtime.roots.session_id,
             agent: AgentType::Primary,
+            selected_source: None,
         },
     )
     .await
@@ -1158,6 +2026,7 @@ async fn expired_worker_without_active_tool_requeues_and_can_be_reclaimed() {
         stage_execution_id: runtime.roots.stage_execution_id,
         stage_run_unit_id: runtime.unit_id,
         worker_run_id: runtime.worker_id,
+        selected_source: None,
     };
     let (disposition, requeued) = runtime_memory_tx::reap_expired_worker(db.pool(), &input)
         .await
@@ -1266,6 +2135,7 @@ async fn expired_worker_with_active_tool_requires_recovery_and_is_not_reclaimabl
         stage_execution_id: runtime.roots.stage_execution_id,
         stage_run_unit_id: runtime.unit_id,
         worker_run_id: runtime.worker_id,
+        selected_source: None,
     };
     let (disposition, parked) = runtime_memory_tx::reap_expired_worker(db.pool(), &input)
         .await

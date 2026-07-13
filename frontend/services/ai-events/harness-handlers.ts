@@ -17,7 +17,7 @@ import type {
   TechniqueState,
 } from "@/components/Engagement/StageRunOrgRows";
 import type { AiEvent } from "@/lib/ai";
-import type { EventHandler } from "./types";
+import type { EventHandler, EventHandlerContext } from "./types";
 
 const STAGE_RUN_STATUSES: readonly StageRunStatus[] = [
   "passed",
@@ -60,6 +60,31 @@ export function stageRunRequestIdFromAgentRequestId(agentRequestId?: string | nu
 }
 
 /**
+ * Bump an already-open Candidate read model without inventing a review cursor.
+ * Terminal/consolidation traces do not carry `resume_version`, so they may only
+ * reuse the exact operation/wave hint established by the authoritative review
+ * trace. A missed review trace remains a DB/bootstrap concern, not trace truth.
+ */
+function refreshExistingCandidateView(
+  ctx: EventHandlerContext,
+  operationId: string,
+  waveRunId: string,
+  status: string
+): void {
+  const state = ctx.getState();
+  const current = state.sessions[ctx.sessionId]?.candidateReviewHint;
+  if (!current || current.operationId !== operationId || current.waveRunId !== waveRunId) {
+    return;
+  }
+  state.setCandidateReviewHint(ctx.sessionId, {
+    operationId,
+    waveRunId,
+    status,
+    resumeVersion: current.resumeVersion,
+  });
+}
+
+/**
  * Handle the two UI-facing trace families. Neither trace is authoritative:
  * stage rows are progress display and Candidate review traces only trigger a
  * DB reload in the detail panel.
@@ -75,6 +100,19 @@ export const handleHarnessTrace: EventHandler<Extract<AiEvent, { type: "harness_
       status: event.kind === "candidate_review_resumed" ? "resumed" : event.status,
       resumeVersion: event.resume_version,
     });
+    return;
+  }
+  if (event.kind === "candidate_attempt_terminalized") {
+    refreshExistingCandidateView(ctx, event.operation_id, event.wave_run_id, event.status);
+    return;
+  }
+  if (event.kind === "attack_wave_consolidated") {
+    refreshExistingCandidateView(
+      ctx,
+      event.operation_id,
+      event.source_wave_run_id,
+      event.decision_kind
+    );
     return;
   }
   if (

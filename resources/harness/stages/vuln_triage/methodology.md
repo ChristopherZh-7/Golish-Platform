@@ -9,6 +9,12 @@ observation seed here, not yet a retained Candidate or Finding. Candidate V2
 creates neither row until the next stage reasons over the exact final-sealed
 manifest and its final Gate PASS transaction accepts the result.
 
+The exact final-sealed `vuln_triage` handoff may enter the initial Wave only.
+Every follow-on Wave entry must come from an immutable, accepted FactDelta
+consolidation. Never reuse the initial handoff for a later Wave and never
+fabricate a follow-on manifest from prose, process-local memory, or verifier
+output that consolidation has not accepted.
+
 **Recommended sequence (only on live services / endpoints from enumeration):**
 
 1. Load the stage-local worklist first — `stage_worklist_status`. If
@@ -63,4 +69,6 @@ manifest and its final Gate PASS transaction accepts the result.
   cell counts as partial and the gate BLOCKS.
 - Submit `findings=[]` and legacy `candidates=[]`. Formulaic found and
   checked-empty outcomes are both retained observation facts; the exact sealed
-  set becomes the next stage's immutable reasoning manifest.
+  set becomes the initial Wave's immutable reasoning manifest. A later Wave may
+  contain only members selected by the accepted FactDelta consolidation for
+  that Wave entry.

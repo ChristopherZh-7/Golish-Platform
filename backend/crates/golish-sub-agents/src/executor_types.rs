@@ -76,6 +76,9 @@ pub struct BoundWorkerChainContext {
     pub chain_id: uuid::Uuid,
     pub session_id: uuid::Uuid,
     pub agent_type: String,
+    /// Whole-record source chosen once for this resumed operation. Fresh worker
+    /// runs leave it unset and use the operation's frozen rollout contract.
+    pub runtime_memory_source: Option<BoundWorkerRuntimeMemorySource>,
     pub initial_chain: serde_json::Value,
     /// `true` only for a freshly claimed worker whose objective was included in
     /// the atomic initial chain. Resumed workers append the new objective after
@@ -91,6 +94,13 @@ pub struct BoundWorkerChainContext {
     /// Host-owned lifecycle fence for every regular worker tool call. V2
     /// executors fail closed when the binding exists but this hook is absent.
     pub tool_lifecycle: Option<Arc<dyn BoundWorkerToolLifecycle>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundWorkerRuntimeMemorySource {
+    Legacy,
+    V2,
+    LegacyFallback,
 }
 
 impl BoundWorkerChainContext {

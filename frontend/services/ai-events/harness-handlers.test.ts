@@ -9,7 +9,14 @@ import type { EventHandlerContext } from "./types";
 function mockCtx(
   upsert: ReturnType<typeof vi.fn>,
   setCandidateReviewHint: ReturnType<typeof vi.fn> = vi.fn(),
-  setReportingReadModelHint: ReturnType<typeof vi.fn> = vi.fn()
+  setReportingReadModelHint: ReturnType<typeof vi.fn> = vi.fn(),
+  candidateReviewHint?: {
+    operationId: string;
+    waveRunId: string;
+    status: string;
+    resumeVersion: number;
+    refreshVersion: number;
+  }
 ): EventHandlerContext {
   return {
     sessionId: "sess-1",
@@ -17,6 +24,9 @@ function mockCtx(
       upsertStageRunRow: upsert,
       setCandidateReviewHint,
       setReportingReadModelHint,
+      sessions: candidateReviewHint
+        ? { "sess-1": { candidateReviewHint } }
+        : {},
     })) as unknown as EventHandlerContext["getState"],
     flushTextDeltas: vi.fn(),
     flushSessionDeltas: vi.fn(),
@@ -125,6 +135,98 @@ describe("handleHarnessTrace", () => {
       status: "resume_pending",
       resumeVersion: 4,
     });
+  });
+
+  it.each([
+    {
+      name: "a terminal CandidateAttempt",
+      event: {
+        type: "harness_trace",
+        operation_id: "operation-1",
+        stage: "verification",
+        agent_path: "main",
+        kind: "candidate_attempt_terminalized",
+        scope_snapshot_id: "scope-1",
+        wave_run_id: "wave-1",
+        wave_unit_id: "unit-1",
+        organization_id: "org-1",
+        candidate_id: "candidate-1",
+        attempt_id: "attempt-1",
+        finding_id: "finding-1",
+        status: "verified",
+        evidence_count: 3,
+        fact_delta_count: 1,
+        replayed: false,
+      },
+      status: "verified",
+    },
+    {
+      name: "an AttackWave consolidation",
+      event: {
+        type: "harness_trace",
+        operation_id: "operation-1",
+        stage: "verification",
+        agent_path: "main",
+        kind: "attack_wave_consolidated",
+        scope_snapshot_id: "scope-1",
+        consolidation_id: "consolidation-1",
+        source_wave_run_id: "wave-1",
+        target_wave_run_id: "wave-2",
+        decision_kind: "opened_next_wave",
+        accepted_fact_delta_count: 1,
+        rejected_fact_delta_count: 2,
+        residual_risk_count: 0,
+        replayed: true,
+      },
+      status: "opened_next_wave",
+    },
+  ])("uses $name only to refresh an existing DB-backed Candidate view", ({ event, status }) => {
+    const upsert = vi.fn();
+    const setCandidateReviewHint = vi.fn();
+    handleHarnessTrace(
+      event as unknown as HarnessEvent,
+      mockCtx(upsert, setCandidateReviewHint, vi.fn(), {
+        operationId: "operation-1",
+        waveRunId: "wave-1",
+        status: "resumed",
+        resumeVersion: 4,
+        refreshVersion: 7,
+      })
+    );
+
+    expect(upsert).not.toHaveBeenCalled();
+    expect(setCandidateReviewHint).toHaveBeenCalledWith("sess-1", {
+      operationId: "operation-1",
+      waveRunId: "wave-1",
+      status,
+      resumeVersion: 4,
+    });
+  });
+
+  it("does not fabricate a review cursor from a terminal trace", () => {
+    const setCandidateReviewHint = vi.fn();
+    handleHarnessTrace(
+      {
+        type: "harness_trace",
+        operation_id: "operation-1",
+        stage: "verification",
+        agent_path: "main",
+        kind: "candidate_attempt_terminalized",
+        scope_snapshot_id: "scope-1",
+        wave_run_id: "wave-1",
+        wave_unit_id: "unit-1",
+        organization_id: "org-1",
+        candidate_id: "candidate-1",
+        attempt_id: "attempt-1",
+        status: "blocked",
+        evidence_count: 1,
+        fact_delta_count: 0,
+        replayed: false,
+      } as unknown as HarnessEvent,
+      mockCtx(vi.fn(), setCandidateReviewHint)
+    );
+
+    expect(setCandidateReviewHint).not.toHaveBeenCalled();
   });
 
   it.each(["gate_decision", "deliverable_submitted"] as const)(

@@ -107,18 +107,54 @@ pub fn group_subtasks_by_stage(queue: &[PlannedSubtask]) -> Vec<(StageKind, Vec<
 
 /// C-4 · DB-backed [`Checkpointer`] for the Executor-driven flow.
 ///
-/// Persists the [`OperationFlowState`] (+ next node) into
-/// `operation_state.state_blob` under a `"graph_flow"` key, so a crashed/killed
-/// run can resume the metalcraft Executor mid-flow (finer than the legacy
-/// stage-cursor resume). Errors map to [`GraphError::Checkpoint`].
+/// Legacy/dual contracts persist [`OperationFlowState`] (+ next node) into
+/// `operation_state.state_blob` under a `"graph_flow"` key. V2-only operations
+/// never write that legacy authority: save is a no-op and load reconstructs a
+/// fresh flow state at the relational `operation_state.current_stage` cursor.
+/// Errors map to [`GraphError::Checkpoint`].
 pub struct DbFlowCheckpointer {
     repo: Arc<dyn DbRepoProvider>,
     operation_id: Uuid,
+    selected_resume_source: Option<crate::db_traits::RuntimeMemoryRecordSource>,
 }
 
 impl DbFlowCheckpointer {
     pub fn new(repo: Arc<dyn DbRepoProvider>, operation_id: Uuid) -> Self {
-        Self { repo, operation_id }
+        Self {
+            repo,
+            operation_id,
+            selected_resume_source: None,
+        }
+    }
+
+    /// Pin a resume to the complete source already selected by the trusted
+    /// caller. This is intentionally distinct from the operation's rollout
+    /// contract: `DualWriteV2Preferred` may select either V2 or one complete
+    /// legacy fallback, and the checkpointer must not make that decision again.
+    pub fn with_selected_resume_source(
+        mut self,
+        source: crate::db_traits::RuntimeMemoryRecordSource,
+    ) -> Self {
+        self.selected_resume_source = Some(source);
+        self
+    }
+}
+
+fn resume_uses_relational_cursor(
+    contract: crate::runtime_memory::RuntimeMemoryContract,
+    selected: Option<crate::db_traits::RuntimeMemoryRecordSource>,
+) -> GraphResult<bool> {
+    use crate::db_traits::RuntimeMemoryRecordSource as Source;
+    use crate::runtime_memory::RuntimeMemoryContract as Contract;
+
+    match (contract, selected) {
+        (Contract::V2Only, None | Some(Source::V2))
+        | (Contract::DualWriteV2Preferred, Some(Source::V2)) => Ok(true),
+        (Contract::LegacyV1 | Contract::DualWriteLegacyRead, None | Some(Source::Legacy))
+        | (Contract::DualWriteV2Preferred, None | Some(Source::LegacyFallback)) => Ok(false),
+        (contract, Some(source)) => Err(GraphError::Checkpoint(format!(
+            "selected runtime-memory source {source:?} is invalid for frozen contract {contract}"
+        ))),
     }
 }
 
@@ -130,11 +166,22 @@ impl Checkpointer<OperationFlowState> for DbFlowCheckpointer {
         state: &OperationFlowState,
         next_node: &str,
     ) -> GraphResult<()> {
-        let existing = crate::db_shim::operation_state::get(&*self.repo, self.operation_id)
+        let view = crate::db_shim::operation_state::get(&*self.repo, self.operation_id)
             .await
-            .map_err(|e| GraphError::Checkpoint(e.to_string()))?
-            .map(|view| view.state_blob)
-            .unwrap_or_default();
+            .map_err(|e| GraphError::Checkpoint(e.to_string()))?;
+        if let Some(view) = view.as_ref() {
+            if resume_uses_relational_cursor(
+                view.runtime_memory_contract,
+                self.selected_resume_source,
+            )? {
+                return Ok(());
+            }
+        } else if self.selected_resume_source.is_some() {
+            return Err(GraphError::Checkpoint(
+                "selected resume operation_state is missing".to_string(),
+            ));
+        }
+        let existing = view.map(|view| view.state_blob).unwrap_or_default();
         let blob = state_blob_with_graph_flow(existing, state, next_node);
         crate::db_shim::operation_state::write_state_blob(&*self.repo, self.operation_id, blob)
             .await
@@ -149,6 +196,10 @@ impl Checkpointer<OperationFlowState> for DbFlowCheckpointer {
         let Some(view) = view else {
             return Ok(None);
         };
+        if resume_uses_relational_cursor(view.runtime_memory_contract, self.selected_resume_source)?
+        {
+            return Ok(Some((OperationFlowState::default(), view.current_stage)));
+        }
         let Some(gf) = view.state_blob.get("graph_flow") else {
             return Ok(None);
         };
@@ -182,7 +233,9 @@ fn state_blob_with_graph_flow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db_traits::RuntimeMemoryRecordSource as Source;
     use crate::harness::HarnessStageHint;
+    use crate::runtime_memory::RuntimeMemoryContract as Contract;
 
     fn sub(stage: Option<StageKind>) -> PlannedSubtask {
         PlannedSubtask {
@@ -264,5 +317,26 @@ mod tests {
         assert_eq!(execution.operation_id, Uuid::from_u128(0xa02));
         assert_eq!(execution.stage, StageKind::TargetIntel);
         assert_eq!(execution.status, StageExecutionStatus::Started);
+    }
+
+    #[test]
+    fn preferred_resume_obeys_the_selected_whole_record_source() {
+        assert!(
+            resume_uses_relational_cursor(Contract::DualWriteV2Preferred, Some(Source::V2))
+                .expect("complete V2 source")
+        );
+        assert!(!resume_uses_relational_cursor(
+            Contract::DualWriteV2Preferred,
+            Some(Source::LegacyFallback)
+        )
+        .expect("complete legacy fallback"));
+        assert!(resume_uses_relational_cursor(
+            Contract::DualWriteV2Preferred,
+            Some(Source::Legacy)
+        )
+        .is_err());
+        assert!(
+            resume_uses_relational_cursor(Contract::V2Only, Some(Source::LegacyFallback)).is_err()
+        );
     }
 }

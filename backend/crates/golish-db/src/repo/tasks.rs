@@ -366,6 +366,30 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                                              OR NULLIF(BTRIM(unit.specialist),'') IS NULL
                                              OR unit.specialist<>worker.specialist
                                              OR (
+                                                 worker.message_chain_id IS NULL
+                                                 AND worker.status<>'queued'
+                                             )
+                                             OR (
+                                                 worker.message_chain_id IS NOT NULL
+                                                 AND NOT EXISTS (
+                                                     SELECT 1 FROM message_chains bound_chain
+                                                     WHERE bound_chain.id=worker.message_chain_id
+                                                       AND bound_chain.session_id=tasks.session_id
+                                                       AND bound_chain.task_id=tasks.id
+                                                       AND bound_chain.agent=(CASE
+                                                           WHEN worker.specialist='reporter'
+                                                               THEN 'reporter'::agent_type
+                                                           WHEN worker.specialist IN (
+                                                               'recon','prober','enumerator',
+                                                               'vuln_scanner','attack_analyst',
+                                                               'candidate_verifier','pentester'
+                                                           ) THEN 'pentester'::agent_type
+                                                           ELSE NULL
+                                                       END)
+                                                       AND jsonb_typeof(bound_chain.chain)='array'
+                                                 )
+                                             )
+                                             OR (
                                                  unit.status='passed'
                                                  AND worker.status<>'passed'
                                              )
@@ -465,6 +489,108 @@ fn latest_resumable_checkpoint_sql() -> String {
             )
         )"#
     )
+}
+
+/// Select the one complete runtime-memory source for an exact production
+/// resume. Preferred mode tests the complete relational record first and only
+/// then selects the complete graph checkpoint as a legacy fallback; the caller
+/// receives one source token and must pin every resume-time read to it.
+fn exact_resumable_runtime_source_sql() -> String {
+    format!(
+        r#"SELECT CASE
+                 WHEN os.runtime_memory_contract IN ('legacy_v1','dual_write_legacy_read')
+                      AND ({LEGACY_GRAPH_RESUME_SQL})
+                   THEN 'legacy'
+                 WHEN os.runtime_memory_contract='dual_write_v2_preferred'
+                      AND ({V2_RELATIONAL_RECOVERABLE_SQL})
+                   THEN 'v2'
+                 WHEN os.runtime_memory_contract='dual_write_v2_preferred'
+                      AND ({LEGACY_GRAPH_RESUME_SQL})
+                   THEN 'legacy_fallback'
+                 WHEN os.runtime_memory_contract='v2_only'
+                      AND ({V2_RELATIONAL_RECOVERABLE_SQL})
+                   THEN 'v2'
+             END AS source
+             FROM tasks
+             JOIN operation_state os ON os.operation_id=tasks.id
+            WHERE tasks.id=$1 AND tasks.session_id=$2
+              AND tasks.status='waiting' AND tasks.result IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM stage_worker_runs live_worker
+                   WHERE live_worker.operation_id=tasks.id
+                     AND live_worker.lease_token IS NOT NULL
+                     AND live_worker.lease_expires_at>NOW()
+              )"#
+    )
+}
+
+pub async fn exact_resumable_runtime_source(
+    pool: &PgPool,
+    task_id: Uuid,
+    session_id: Uuid,
+) -> Result<Option<super::runtime_memory_tx::RuntimeMemoryRecordSource>> {
+    use super::runtime_memory_tx::RuntimeMemoryRecordSource;
+
+    let source = sqlx::query_scalar::<_, Option<String>>(&exact_resumable_runtime_source_sql())
+        .bind(task_id)
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+    source
+        .map(|source| match source.as_str() {
+            "legacy" => Ok(RuntimeMemoryRecordSource::Legacy),
+            "v2" => Ok(RuntimeMemoryRecordSource::V2),
+            "legacy_fallback" => Ok(RuntimeMemoryRecordSource::LegacyFallback),
+            _ => Err(anyhow::anyhow!("unknown exact resume runtime-memory source {source}").into()),
+        })
+        .transpose()
+}
+
+/// Atomically claim the exact idle task after the caller has decoded the
+/// selected whole-record source. The source is rebuilt inside the UPDATE and
+/// must still equal `expected_source`; two concurrent resume callers can
+/// therefore never both cross the waiting -> running boundary.
+fn claim_exact_resumable_runtime_source_sql() -> String {
+    let selected_source = exact_resumable_runtime_source_sql();
+    format!(
+        r#"WITH exact_source AS (
+               {selected_source}
+           )
+           UPDATE tasks
+              SET status='running', updated_at=NOW()
+             FROM exact_source
+            WHERE tasks.id=$1
+              AND tasks.session_id=$2
+              AND tasks.status='waiting'
+              AND tasks.result IS NULL
+              AND exact_source.source=$3
+           RETURNING exact_source.source"#
+    )
+}
+
+pub async fn claim_exact_resumable_runtime_source(
+    pool: &PgPool,
+    task_id: Uuid,
+    session_id: Uuid,
+    expected_source: super::runtime_memory_tx::RuntimeMemoryRecordSource,
+) -> Result<bool> {
+    use super::runtime_memory_tx::RuntimeMemoryRecordSource;
+
+    let expected_source = match expected_source {
+        RuntimeMemoryRecordSource::Legacy => "legacy",
+        RuntimeMemoryRecordSource::V2 => "v2",
+        RuntimeMemoryRecordSource::LegacyFallback => "legacy_fallback",
+    };
+    let claimed =
+        sqlx::query_scalar::<_, Option<String>>(&claim_exact_resumable_runtime_source_sql())
+            .bind(task_id)
+            .bind(session_id)
+            .bind(expected_source)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+    Ok(claimed.as_deref() == Some(expected_source))
 }
 
 const V2_LIVE_LEASE_SQL: &str = r#"os.runtime_memory_contract IN (
@@ -578,6 +704,7 @@ pub struct StartupTaskReaperStats {
     pub failed: u64,
     pub workers_requeued: u64,
     pub workers_recovery_required: u64,
+    pub runtime_shadow_samples_written: u64,
 }
 
 /// One startup transaction reconciles expired V2 worker leases first, then
@@ -605,22 +732,60 @@ pub async fn startup_reap_abandoned(
         .await?
         .rows_affected();
     tx.commit().await?;
+    if workers.shadow_samples_written > 0 {
+        super::runtime_memory_tx::reconcile_deployment_rollouts_best_effort(
+            pool,
+            "startup_reap_abandoned",
+        )
+        .await;
+    }
     Ok(StartupTaskReaperStats {
         paused,
         failed,
         workers_requeued: workers.requeued,
         workers_recovery_required: workers.recovery_required,
+        runtime_shadow_samples_written: workers.shadow_samples_written,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
+        claim_exact_resumable_runtime_source_sql, exact_resumable_runtime_source_sql,
         fail_abandoned_tasks_sql, latest_resumable_by_session_sql,
         pause_resumable_abandoned_tasks_sql, recoverable_abandoned_checkpoint_sql,
-        ABANDONED_TASK_RESULT, INSERT_TASK_WITH_ID_SQL, LEGACY_RECOVERABLE_CHECKPOINT_SQL,
-        V2_LIVE_LEASE_SQL, V2_RELATIONAL_RECOVERABLE_SQL,
+        ABANDONED_TASK_RESULT, INSERT_TASK_WITH_ID_SQL, LEGACY_GRAPH_RESUME_SQL,
+        LEGACY_RECOVERABLE_CHECKPOINT_SQL, V2_LIVE_LEASE_SQL, V2_RELATIONAL_RECOVERABLE_SQL,
     };
+
+    #[test]
+    fn exact_resume_source_prefers_one_complete_v2_record_before_legacy_fallback() {
+        let sql = exact_resumable_runtime_source_sql();
+        let preferred_v2 = sql
+            .find("THEN 'v2'")
+            .expect("preferred relational source branch");
+        let preferred_legacy = sql
+            .find("THEN 'legacy_fallback'")
+            .expect("preferred legacy fallback branch");
+        assert!(preferred_v2 < preferred_legacy, "sql={sql}");
+        assert!(sql.contains(V2_RELATIONAL_RECOVERABLE_SQL), "sql={sql}");
+        assert!(sql.contains(LEGACY_GRAPH_RESUME_SQL), "sql={sql}");
+        assert!(sql.contains("tasks.id=$1 AND tasks.session_id=$2"));
+        assert!(sql.contains("tasks.status='waiting' AND tasks.result IS NULL"));
+        assert!(sql.contains("live_worker.lease_expires_at>NOW()"));
+    }
+
+    #[test]
+    fn exact_resume_source_claim_is_one_atomic_waiting_to_running_cas() {
+        let sql = claim_exact_resumable_runtime_source_sql();
+        assert!(sql.contains("WITH exact_source AS"), "sql={sql}");
+        assert!(sql.contains("UPDATE tasks"), "sql={sql}");
+        assert!(sql.contains("SET status='running'"), "sql={sql}");
+        assert!(sql.contains("tasks.status='waiting'"), "sql={sql}");
+        assert!(sql.contains("tasks.result IS NULL"), "sql={sql}");
+        assert!(sql.contains("exact_source.source=$3"), "sql={sql}");
+        assert!(sql.contains("RETURNING exact_source.source"), "sql={sql}");
+    }
 
     #[test]
     fn runtime_memory_store_task_insert_accepts_server_preallocated_identity() {

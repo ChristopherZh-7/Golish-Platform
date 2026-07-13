@@ -562,9 +562,9 @@ with the ONE harness stage it belongs to (the full operation DAG is supported).
 - `target_intel` — passive intel (zero-touch, no target contact): provider-backed asset/subdomain/DNS-adjacent/ASN/CT/OSINT survey via recon_map_assets, plus RDAP WHOIS via recon_lookup_whois; no scan-tool fallback. (情报收集)
 - `external_attack_surface` — active recon that DEFINES the attack surface of approved hosts: DNS resolution, port scanning, service/version fingerprinting, HTTP probing, screenshots (host x port x service x live-web). Subdomains inherited from `target_intel` (do not re-enumerate). (资产测绘 / 攻击面 / 端口扫描)
 - `enumeration` — content enumeration on the services mapped by EAS: JS collection + API endpoint extraction, directory/path discovery, parameter discovery. Do NOT re-port-scan (already done in EAS). (目录扫描 / JS-API / 参数发现)
-- `vuln_triage` — FORMULAIC vulnerability scan: batch-run tool+dictionary/template techniques with an objective found/checked-empty/blocked observation. It writes evidence-backed observation seeds only; it can never create Candidate/Finding authority. (公式化漏洞扫描)
-- `attack_candidate` — decide every server-seeded work item as `candidate` or evidence-backed `no_candidate`. The server derives immutable Candidate ids/plans/hashes/risk only after final Gate PASS; this reasoning stage runs no scan tools. (攻击候选合成)
-- `verification` — controlled exploit validation / PoC confirmation of APPROVED candidates, approval-gated; each approved candidate reaches a terminal disposition (verified/refuted/blocked). (真打验证)
+- `vuln_triage` — FORMULAIC vulnerability scan: batch-run tool+dictionary/template techniques with an objective found/checked-empty/blocked observation. It writes evidence-backed observation seeds only; it can never create Candidate/Finding authority. Its initial final-sealed vuln_triage handoff can seed only the initial Candidate Wave. (公式化漏洞扫描)
+- `attack_candidate` — decide every server-seeded work item as `candidate` or evidence-backed `no_candidate`. The initial Wave consumes the initial final-sealed vuln_triage handoff; a follow-on Wave consumes a follow-on accepted FactDelta consolidation. The server derives immutable Candidate ids/plans/hashes/risk only after final Gate PASS, then waits for durable review and resume. This reasoning stage runs no scan tools, and zero-input organization units are terminal without a placeholder worker. (攻击候选合成)
+- `verification` — controlled exploit validation / PoC confirmation after exact Candidate plan approval; each bound candidate reaches a terminal disposition (verified/refuted/blocked). Verifiers may propose FactDelta records but never open a Wave. Durable global consolidation records `opened_next_wave`, `closed_no_delta`, or `exhausted` with residual risk, and follow-on entry has no static graph back-edge. (真打验证)
 - `reporting` — synthesize the final report + attack/kill chain from collected evidence. (报告生成 / 修复建议)
 
 (Red-team stages access_validation / internal_discovery / objective_pathing / objective_simulation / cleanup also exist; tag only when explicitly in scope.)
@@ -1059,6 +1059,28 @@ mod tests {
         )
         .expect("load cleanup spec");
         assert!(stage_methodology(&cleanup).is_empty());
+    }
+
+    #[test]
+    fn generator_prompt_describes_the_durable_candidate_wave_contract() {
+        let prompt = generator_prompt();
+        for required in [
+            "initial final-sealed vuln_triage handoff",
+            "follow-on accepted FactDelta consolidation",
+            "zero-input organization units are terminal",
+            "durable review and resume",
+            "exact Candidate plan approval",
+            "opened_next_wave",
+            "closed_no_delta",
+            "exhausted",
+            "residual risk",
+            "no static graph back-edge",
+        ] {
+            assert!(
+                prompt.contains(required),
+                "missing Candidate V2 prompt contract: {required}"
+            );
+        }
     }
 
     /// scoping 人工确认硬门禁 (设计 2026-06-06 §3.4): charter 的 scoping 段在

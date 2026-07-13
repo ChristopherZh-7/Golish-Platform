@@ -58,10 +58,17 @@ fn exact_candidate_v2_contracts(
         && attack == golish_core::AttackExecutionContract::V2Only
 }
 
+fn candidate_v2_synthesis_contracts(
+    runtime: crate::runtime_memory::RuntimeMemoryContract,
+    attack: golish_core::AttackExecutionContract,
+) -> bool {
+    runtime != crate::runtime_memory::RuntimeMemoryContract::LegacyV1 && attack.writes_v2()
+}
+
 /// Resolve the specialist visible to the depth-0 stage coordinator. Candidate
-/// V2 specialists are additive rollout behavior: Verification has no legacy
-/// specialist, and AttackCandidate retains its configured legacy analyst until
-/// both immutable operation contracts are exactly V2Only.
+/// synthesis becomes relational as soon as runtime memory can write V2 and the
+/// frozen attack contract writes V2. Verification has no legacy specialist and
+/// remains disabled until both immutable contracts are exactly V2Only.
 fn effective_stage_run_specialist(
     stage: crate::harness::StageKind,
     configured: Option<&str>,
@@ -753,8 +760,8 @@ impl TaskOrchestrator {
         }
     }
 
-    /// Candidate V2 execution and exact Verification truth are enabled only
-    /// when both operation-frozen rollout contracts have reached V2Only.
+    /// Exact Verification execution and truth are enabled only when both
+    /// operation-frozen rollout contracts have reached V2Only.
     async fn exact_candidate_v2_operation(&self, operation_id: Uuid) -> Result<bool, String> {
         let runtime = self
             .runtime_repo
@@ -767,6 +774,20 @@ impl TaskOrchestrator {
             .await
             .map_err(|error| format!("attack contract lookup failed: {error}"))?;
         Ok(exact_candidate_v2_contracts(runtime, attack))
+    }
+
+    async fn candidate_v2_synthesis_operation(&self, operation_id: Uuid) -> Result<bool, String> {
+        let runtime = self
+            .runtime_repo
+            .runtime_memory_contract_for_operation(operation_id)
+            .await
+            .map_err(|error| format!("runtime contract lookup failed: {error}"))?;
+        let attack = self
+            .runtime_repo
+            .attack_execution_contract_for_operation(operation_id)
+            .await
+            .map_err(|error| format!("attack contract lookup failed: {error}"))?;
+        Ok(candidate_v2_synthesis_contracts(runtime, attack))
     }
 
     /// Read the operation-frozen Candidate rollout pair for a coordinator seam.
@@ -786,7 +807,16 @@ impl TaskOrchestrator {
         ) {
             return false;
         }
-        match self.exact_candidate_v2_operation(operation_id).await {
+        let enabled = match stage {
+            crate::harness::StageKind::AttackCandidate => {
+                self.candidate_v2_synthesis_operation(operation_id).await
+            }
+            crate::harness::StageKind::Verification => {
+                self.exact_candidate_v2_operation(operation_id).await
+            }
+            _ => return false,
+        };
+        match enabled {
             Ok(enabled) => enabled,
             Err(error) => {
                 tracing::warn!(
@@ -802,6 +832,211 @@ impl TaskOrchestrator {
         }
     }
 
+    async fn resolve_stage_flow_outcome(
+        &mut self,
+        task_id: Uuid,
+        outcome: &HarnessGateOutcome,
+    ) -> (
+        crate::harness::operation_flow::StageFlowOutcome,
+        Option<String>,
+    ) {
+        use crate::harness::operation_flow::StageFlowOutcome;
+
+        let ordinary = || StageFlowOutcome {
+            gate_allowed: outcome.gate_allowed,
+            made_progress: gate_outcome_made_progress(outcome),
+            reopen_wave: false,
+            durable_wave_cursor: false,
+        };
+        if outcome.gated_stage != crate::harness::StageKind::Verification {
+            return (ordinary(), None);
+        }
+
+        let exact_v2 = match self.exact_candidate_v2_operation(task_id).await {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                return (
+                    StageFlowOutcome::blocked(),
+                    Some(format!(
+                        "Verification flow could not resolve persisted Candidate V2 contracts: {error}"
+                    )),
+                );
+            }
+        };
+        if !exact_v2 {
+            let mut flow = ordinary();
+            if outcome.gate_allowed {
+                match crate::harness::chain_wave::decide_chain_wave(
+                    &outcome.spawned_candidates,
+                    &self.chain_wave_seen,
+                    self.chain_wave,
+                    crate::harness::chain_wave::DEFAULT_MAX_WAVES,
+                    crate::harness::chain_wave::DEFAULT_MAX_CHAIN_DEPTH,
+                ) {
+                    crate::harness::chain_wave::WaveDecision::OpenNextWave { next_wave } => {
+                        for candidate in &outcome.spawned_candidates {
+                            self.chain_wave_seen
+                                .insert(crate::harness::chain_wave::candidate_dedup_key(candidate));
+                        }
+                        self.chain_wave = next_wave;
+                        flow.reopen_wave = true;
+                        tracing::info!(
+                            target: "harness::hook",
+                            task_id = %task_id,
+                            wave = next_wave,
+                            new_candidates = outcome.spawned_candidates.len(),
+                            "legacy chain-wave opened next attack_candidate wave"
+                        );
+                    }
+                    crate::harness::chain_wave::WaveDecision::Advance => {}
+                }
+            }
+            return (flow, None);
+        }
+        if !outcome.gate_allowed {
+            return (StageFlowOutcome::blocked(), None);
+        }
+
+        let truth = match self
+            .repo
+            .attack_v2_verification_truth_for_operation(task_id, None)
+            .await
+        {
+            Ok(Some(truth)) => truth,
+            Ok(None) => {
+                return (
+                    StageFlowOutcome::blocked(),
+                    Some("V2Only Verification flow is missing exact DB truth".to_string()),
+                );
+            }
+            Err(error) => {
+                return (
+                    StageFlowOutcome::blocked(),
+                    Some(format!(
+                        "Verification flow could not reload exact DB truth: {error}"
+                    )),
+                );
+            }
+        };
+        if let Err(error) =
+            crate::harness::attack_execution::validate_verification_truth_set(&truth)
+        {
+            return (
+                StageFlowOutcome::blocked(),
+                Some(format!(
+                    "Verification flow rejected inconsistent exact DB truth: {error}"
+                )),
+            );
+        }
+
+        let consolidated = match self
+            .repo
+            .attack_v2_consolidate_wave(crate::db_traits::AttackV2ConsolidateWave {
+                operation_id: task_id,
+                scope_snapshot_id: truth.authority.scope_snapshot_id,
+                source_wave_run_id: truth.authority.wave_run_id,
+            })
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                return (
+                    StageFlowOutcome::blocked(),
+                    Some(format!("Verification Wave consolidation failed: {error}")),
+                );
+            }
+        };
+        if consolidated.operation_id != task_id
+            || consolidated.scope_snapshot_id != truth.authority.scope_snapshot_id
+            || consolidated.source_wave_run_id != truth.authority.wave_run_id
+        {
+            return (
+                StageFlowOutcome::blocked(),
+                Some("Verification Wave consolidation returned mismatched authority".to_string()),
+            );
+        }
+        let exact = crate::harness::operation_flow::exact_verification_flow_outcome(&truth);
+        let (reopen_wave, made_progress) = match consolidated.decision_kind.as_str() {
+            "opened_next_wave"
+                if consolidated.target_wave_run_id.is_some()
+                    && consolidated.accepted_fact_delta_count > 0 =>
+            {
+                (true, true)
+            }
+            "closed_no_delta"
+                if consolidated.target_wave_run_id.is_none()
+                    && consolidated.accepted_fact_delta_count == 0 =>
+            {
+                (false, exact.made_progress)
+            }
+            "exhausted" if consolidated.target_wave_run_id.is_none() => (false, false),
+            _ => {
+                return (
+                    StageFlowOutcome::blocked(),
+                    Some(format!(
+                        "Verification Wave consolidation returned invalid decision '{}'",
+                        consolidated.decision_kind
+                    )),
+                );
+            }
+        };
+        let accepted_fact_delta_count = match u32::try_from(consolidated.accepted_fact_delta_count)
+        {
+            Ok(count) => count,
+            Err(_) => {
+                return (
+                    StageFlowOutcome::blocked(),
+                    Some("Verification Wave consolidation count overflow".to_string()),
+                );
+            }
+        };
+        let rejected_fact_delta_count = match u32::try_from(consolidated.rejected_fact_delta_count)
+        {
+            Ok(count) => count,
+            Err(_) => {
+                return (
+                    StageFlowOutcome::blocked(),
+                    Some("Verification Wave consolidation count overflow".to_string()),
+                );
+            }
+        };
+        let residual_risk_count = match u32::try_from(consolidated.residual_risk_count) {
+            Ok(count) => count,
+            Err(_) => {
+                return (
+                    StageFlowOutcome::blocked(),
+                    Some("Verification Wave consolidation count overflow".to_string()),
+                );
+            }
+        };
+        self.emit(AiEvent::HarnessTrace {
+            operation_id: task_id.to_string(),
+            stage: outcome.gated_stage.as_str().to_string(),
+            agent_path: "main".to_string(),
+            trace: golish_core::events::HarnessTraceKind::AttackWaveConsolidated {
+                scope_snapshot_id: consolidated.scope_snapshot_id.to_string(),
+                consolidation_id: consolidated.consolidation_id.to_string(),
+                source_wave_run_id: consolidated.source_wave_run_id.to_string(),
+                target_wave_run_id: consolidated.target_wave_run_id.map(|id| id.to_string()),
+                decision_kind: consolidated.decision_kind,
+                accepted_fact_delta_count,
+                rejected_fact_delta_count,
+                residual_risk_count,
+                replayed: consolidated.replayed,
+            },
+        });
+
+        (
+            StageFlowOutcome {
+                gate_allowed: exact.gate_allowed,
+                made_progress,
+                reopen_wave,
+                durable_wave_cursor: true,
+            },
+            None,
+        )
+    }
+
     /// Post-gate handling for the Executor-driven stage loop, shared by both gate
     /// sites in [`Self::execute_single_subtask`].
     ///
@@ -810,6 +1045,8 @@ impl TaskOrchestrator {
     /// stage's subtasks) into [`Self::stage_outcome_acc`] for `run_stage_subtasks`
     /// to report to the graph (which owns the actual stage transition).
     async fn consume_gate_outcome(&mut self, task_id: Uuid, outcome: HarnessGateOutcome) {
+        let (flow, post_gate_block_reason) =
+            self.resolve_stage_flow_outcome(task_id, &outcome).await;
         // G · observability: log every stage gate decision at the single chokepoint
         // both gate sites flow through (the loop only accumulates into
         // `stage_outcome_acc`, so without this its PASS/BLOCK decisions would be
@@ -818,7 +1055,7 @@ impl TaskOrchestrator {
             target: "harness::hook",
             task_id = %task_id,
             stage = %outcome.gated_stage.as_str(),
-            gate = if outcome.gate_allowed { "PASS" } else { "BLOCK" },
+            gate = if flow.gate_allowed { "PASS" } else { "BLOCK" },
             findings = outcome.findings_count,
             "gate decision"
         );
@@ -827,32 +1064,29 @@ impl TaskOrchestrator {
         // tool result (BLOCK was previously tracing-only → invisible to any AI
         // reconstructing the run). `agent_path = "main"`: the gate runs in the
         // orchestrator. `operation_id` = task id (the harness operation).
-        let first_blocking_reason = if outcome.gate_allowed {
+        let first_blocking_reason = if flow.gate_allowed {
             None
         } else {
-            outcome
-                .repair_correction
-                .as_deref()
-                .map(|s| s.lines().next().unwrap_or(s).to_string())
+            post_gate_block_reason.or_else(|| {
+                outcome
+                    .repair_correction
+                    .as_deref()
+                    .map(|s| s.lines().next().unwrap_or(s).to_string())
+            })
         };
         self.emit(AiEvent::HarnessTrace {
             operation_id: task_id.to_string(),
             stage: outcome.gated_stage.as_str().to_string(),
             agent_path: "main".to_string(),
             trace: golish_core::events::HarnessTraceKind::GateDecision {
-                gate: if outcome.gate_allowed {
-                    "PASS"
-                } else {
-                    "BLOCK"
-                }
-                .to_string(),
+                gate: if flow.gate_allowed { "PASS" } else { "BLOCK" }.to_string(),
                 findings: outcome.findings_count as u32,
                 fabricated_evidence_refs: outcome.fabricated_evidence_refs.clone(),
                 available_real_ids: outcome.available_real_ids.clone(),
                 first_blocking_reason,
             },
         });
-        if outcome.gate_allowed {
+        if flow.gate_allowed {
             // Engagement-org isolation (设计 2026-06-15-engagement-org-isolation):
             // scoping confirmed the engagement's root org — bind it now + persist
             // to operation_state so every downstream stage's fan-out / in-scope
@@ -883,122 +1117,12 @@ impl TaskOrchestrator {
                 message: outcome.gated_stage.as_str().to_string(),
             });
         }
-        // Wave loop (设计 2026-07-02-attack-stage §3.5): after a `verification`
-        // PASS, ask `decide_chain_wave` whether the candidates this wave surfaced
-        // warrant another attack_candidate wave — bounded by the fuel/depth caps
-        // AND deduped against every hypothesis already tested this run (so an
-        // a→b→c chain advances but a↔b oscillation cannot). This servicer owns
-        // the dedupe set + wave counter (it holds the deliverable candidates +
-        // DB); the graph node re-applies the hard cap as defense-in-depth. Only
-        // `verification` can open a wave; every other stage reports `false`.
-        let (v2_verification_truth, verification_truth_load_failed) =
-            if outcome.gated_stage == crate::harness::StageKind::Verification {
-                match self.exact_candidate_v2_operation(task_id).await {
-                    Ok(true) => match self
-                        .repo
-                        .attack_v2_verification_truth_for_operation(task_id, None)
-                        .await
-                    {
-                        Ok(Some(truth)) => {
-                            match crate::harness::attack_execution::validate_verification_truth_set(
-                                &truth,
-                            ) {
-                                Ok(()) => (Some(truth), false),
-                                Err(error) => {
-                                    tracing::warn!(
-                                        target: "harness::hook",
-                                        operation_id = %task_id,
-                                        error = %error,
-                                        "Verification flow rejected inconsistent exact DB truth"
-                                    );
-                                    (None, true)
-                                }
-                            }
-                        }
-                        Ok(None) => {
-                            tracing::warn!(
-                                target: "harness::hook",
-                                operation_id = %task_id,
-                                "V2Only Verification flow is missing exact DB truth"
-                            );
-                            (None, true)
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                target: "harness::hook",
-                                operation_id = %task_id,
-                                error = %error,
-                                "Verification flow could not reload exact DB truth"
-                            );
-                            (None, true)
-                        }
-                    },
-                    Ok(false) => (None, false),
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "harness::hook",
-                            operation_id = %task_id,
-                            error = %error,
-                            "Verification flow could not resolve persisted Candidate V2 contracts"
-                        );
-                        (None, true)
-                    }
-                }
-            } else {
-                (None, false)
-            };
-        let reopen_wave = if outcome.gate_allowed
-            && outcome.gated_stage == crate::harness::StageKind::Verification
-            && v2_verification_truth.is_none()
-            && !verification_truth_load_failed
-        {
-            match crate::harness::chain_wave::decide_chain_wave(
-                &outcome.spawned_candidates,
-                &self.chain_wave_seen,
-                self.chain_wave,
-                crate::harness::chain_wave::DEFAULT_MAX_WAVES,
-                crate::harness::chain_wave::DEFAULT_MAX_CHAIN_DEPTH,
-            ) {
-                crate::harness::chain_wave::WaveDecision::OpenNextWave { next_wave } => {
-                    for c in &outcome.spawned_candidates {
-                        self.chain_wave_seen
-                            .insert(crate::harness::chain_wave::candidate_dedup_key(c));
-                    }
-                    self.chain_wave = next_wave;
-                    tracing::info!(
-                        target: "harness::hook",
-                        task_id = %task_id,
-                        wave = next_wave,
-                        new_candidates = outcome.spawned_candidates.len(),
-                        "chain-wave: verification opened next attack_candidate wave"
-                    );
-                    true
-                }
-                crate::harness::chain_wave::WaveDecision::Advance => false,
-            }
-        } else {
-            false
-        };
-
-        let flow = if verification_truth_load_failed {
-            crate::harness::operation_flow::StageFlowOutcome::blocked()
-        } else if let Some(truth) = v2_verification_truth.as_ref() {
-            let mut exact = crate::harness::operation_flow::exact_verification_flow_outcome(truth);
-            exact.gate_allowed &= outcome.gate_allowed;
-            exact.made_progress &= outcome.gate_allowed;
-            exact
-        } else {
-            crate::harness::operation_flow::StageFlowOutcome {
-                gate_allowed: outcome.gate_allowed,
-                made_progress: gate_outcome_made_progress(&outcome),
-                reopen_wave,
-            }
-        };
         self.stage_outcome_acc = Some(match self.stage_outcome_acc.take() {
             Some(prev) => crate::harness::operation_flow::StageFlowOutcome {
                 gate_allowed: prev.gate_allowed && flow.gate_allowed,
                 made_progress: prev.made_progress || flow.made_progress,
                 reopen_wave: prev.reopen_wave || flow.reopen_wave,
+                durable_wave_cursor: prev.durable_wave_cursor || flow.durable_wave_cursor,
             },
             None => flow,
         });
@@ -1180,12 +1304,14 @@ impl TaskOrchestrator {
                 ));
             }
         };
-        let checkpointer = std::sync::Arc::new(
-            crate::task_orchestrator::stage_execution::DbFlowCheckpointer::new(
-                self.repo.clone(),
-                task_id,
-            ),
+        let mut checkpointer = crate::task_orchestrator::stage_execution::DbFlowCheckpointer::new(
+            self.repo.clone(),
+            task_id,
         );
+        if let Some(source) = self.resume_runtime_memory_source {
+            checkpointer = checkpointer.with_selected_resume_source(source);
+        }
+        let checkpointer = std::sync::Arc::new(checkpointer);
         let executor_obj =
             crate::harness::graph_engine::Executor::new(graph).with_checkpointer(checkpointer);
         let thread = task_id.to_string();
@@ -1702,6 +1828,8 @@ impl TaskOrchestrator {
     /// outcome 回给 metalcraft 引擎前调用：若这步推进会跨大阶段且需人工批准，
     /// 则发 `waiting_approval` 并**阻塞等用户回复**。`false`（未获批）时调用方把 outcome
     /// 降级为 `blocked`，使引擎在当前 stage Interrupt（暂停返工），不跨大阶段。
+    /// Candidate review 是另一条 DB barrier：只在 runtime/attack contract 都为
+    /// `V2Only` 时读取并阻塞；dual-write 的 V2 mirror 永远不是 live authority。
     async fn two_level_phase_gate(
         &mut self,
         task_id: Uuid,
@@ -1713,7 +1841,23 @@ impl TaskOrchestrator {
         if !outcome.gate_allowed {
             return PhaseGateDecision::Allowed;
         }
-        if from_stage == crate::harness::StageKind::AttackCandidate {
+        let exact_candidate_v2 = if from_stage == crate::harness::StageKind::AttackCandidate {
+            match self.exact_candidate_v2_operation(task_id).await {
+                Ok(enabled) => enabled,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        task_id = %task_id,
+                        error = %error,
+                        "Candidate contract lookup failed; holding phase boundary"
+                    );
+                    return PhaseGateDecision::Held;
+                }
+            }
+        } else {
+            false
+        };
+        if exact_candidate_v2 {
             let barrier = match self
                 .repo
                 .attack_v2_review_barrier_for_operation(task_id)
@@ -4376,6 +4520,28 @@ mod dag_driven_helper_tests {
                 }
             }
         }
+
+        for runtime in [
+            RuntimeMemoryContract::DualWriteLegacyRead,
+            RuntimeMemoryContract::DualWriteV2Preferred,
+            RuntimeMemoryContract::V2Only,
+        ] {
+            for attack in [
+                AttackExecutionContract::DualWriteReadLegacy,
+                AttackExecutionContract::DualWriteReadV2Fallback,
+                AttackExecutionContract::V2Only,
+            ] {
+                assert!(candidate_v2_synthesis_contracts(runtime, attack));
+            }
+        }
+        assert!(!candidate_v2_synthesis_contracts(
+            RuntimeMemoryContract::LegacyV1,
+            AttackExecutionContract::DualWriteReadLegacy,
+        ));
+        assert!(!candidate_v2_synthesis_contracts(
+            RuntimeMemoryContract::V2Only,
+            AttackExecutionContract::Legacy,
+        ));
     }
 
     #[test]

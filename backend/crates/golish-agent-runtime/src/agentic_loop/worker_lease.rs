@@ -172,6 +172,7 @@ mod tests {
             chain_id: Uuid::new_v4(),
             session_id: Uuid::new_v4(),
             agent_type: "recon".to_string(),
+            runtime_memory_source: None,
             initial_chain: serde_json::json!([]),
             initial_prompt_already_checkpointed: false,
             checkpoint_version: Arc::new(AtomicI64::new(2)),

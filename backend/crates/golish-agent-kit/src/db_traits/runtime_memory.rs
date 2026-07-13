@@ -328,6 +328,10 @@ pub struct LoadWorkerCheckpoint {
     pub stage_execution_id: Uuid,
     pub stage_run_unit_id: Uuid,
     pub worker_run_id: Uuid,
+    /// Whole-record source selected once by the trusted resume preflight.
+    /// `None` is reserved for fresh/non-resume callers that still select from
+    /// the frozen rollout contract.
+    pub selected_source: Option<RuntimeMemoryRecordSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,6 +351,9 @@ pub struct SeedStageRuntime {
     pub work_item_kind: String,
     pub work_item_key: String,
     pub agent_path_prefix: String,
+    /// Optional server-owned subset of the sealed organization snapshot.
+    /// `None` seeds every frozen organization.
+    pub organization_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,6 +362,57 @@ pub struct SeededStageRuntime {
     pub worker: RuntimeWorkerView,
     pub organization_name: String,
     pub scope_hash: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttackV2WaveEntryView {
+    VulnTriageHandoff,
+    FactDeltaConsolidation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttackV2WaveUnitStateView {
+    AwaitingManifest,
+    FrozenManifest,
+    TerminalNoInput,
+}
+
+/// SQLx-free, server-owned WaveUnit routing authority. Initial authority has no
+/// WaveUnit row yet (`wave_unit_id=None`); every current authority has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttackV2WaveRuntimeUnitView {
+    pub wave_unit_id: Option<Uuid>,
+    pub organization_id: Uuid,
+    pub ordinal: i32,
+    pub status: String,
+    pub entry: AttackV2WaveEntryView,
+    pub state: AttackV2WaveUnitStateView,
+}
+
+/// Durable operation-wide Candidate Wave cursor. `Terminal` is explicit so a
+/// response-loss replay can never be mistaken for a new generation-zero run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttackV2WaveAuthorityView {
+    Initial {
+        operation_id: Uuid,
+        scope_snapshot_id: Uuid,
+        generation: i32,
+        units: Vec<AttackV2WaveRuntimeUnitView>,
+    },
+    Current {
+        operation_id: Uuid,
+        scope_snapshot_id: Uuid,
+        wave_run_id: Uuid,
+        generation: i32,
+        status: String,
+        units: Vec<AttackV2WaveRuntimeUnitView>,
+    },
+    Terminal {
+        operation_id: Uuid,
+        scope_snapshot_id: Uuid,
+        wave_run_id: Uuid,
+        generation: i32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -445,9 +503,45 @@ pub struct TerminalizeCandidateAttempt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalizedCandidateAttemptView {
+    pub scope_snapshot_id: Uuid,
+    pub wave_run_id: Uuid,
+    pub wave_unit_id: Uuid,
+    pub organization_id: Uuid,
+    pub candidate_id: Uuid,
     pub attempt_id: Uuid,
+    pub status: String,
+    /// Compatibility name retained for existing scheduler logging. It is
+    /// always identical to `status`.
     pub disposition: String,
     pub finding_id: Option<Uuid>,
+    pub evidence_count: u32,
+    pub fact_delta_count: u32,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseAttackV2VerificationUnit {
+    pub operation_id: Uuid,
+    pub scope_snapshot_id: Uuid,
+    pub wave_run_id: Uuid,
+    pub wave_unit_id: Uuid,
+    pub organization_id: Uuid,
+    pub verification_stage_execution_id: Uuid,
+    pub verification_stage_run_unit_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedAttackV2VerificationUnitView {
+    pub wave_unit_id: Uuid,
+    pub row_version: i64,
+    pub verification_closed: bool,
+    pub consolidation_status: String,
+    pub verification_stage_run_unit_id: Uuid,
+    pub verification_stage_run_unit_status: String,
+    pub verification_primary_worker_run_id: Uuid,
+    pub verification_primary_worker_status: String,
+    pub verification_handoff_id: Uuid,
+    pub verification_handoff_payload_sha256: String,
     pub replayed: bool,
 }
 
@@ -485,6 +579,9 @@ pub struct LoadBoundWorkerChain {
     pub message_chain_id: Uuid,
     pub session_id: Uuid,
     pub agent: super::AgentType,
+    /// Pin this worker+chain load to the same whole-record source as the graph
+    /// cursor. Preferred mode must never reselect per worker during resume.
+    pub selected_source: Option<RuntimeMemoryRecordSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -566,7 +663,8 @@ pub struct RuntimeStageHandoffView {
     pub from_stage_kind: String,
     pub stage_execution_id: Uuid,
     pub source_stage_run_unit_id: Uuid,
-    pub deliverable_submission_id: Uuid,
+    pub deliverable_submission_id: Option<Uuid>,
+    pub authority_kind: String,
     pub scope_hash: String,
     pub payload: Value,
     pub payload_sha256: String,
@@ -600,6 +698,10 @@ pub struct CloseWaveGatePass {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Both alternatives are short-lived atomic-close snapshots. Boxing only one
+// flips which variant Clippy considers large, while boxing every DTO field
+// would add allocation and public API churn to this repository boundary.
+#[allow(clippy::large_enum_variant)]
 pub enum ClosedWaveGatePass {
     WaitingBackground {
         unit: RuntimeStageUnitView,
@@ -680,6 +782,17 @@ pub trait RuntimeMemoryRepository: Send + Sync {
         Err(RuntimeMemoryError::Unavailable)
     }
 
+    /// Load the only durable Candidate Wave cursor for an exact V2 operation.
+    /// Missing implementations fail closed; callers must never infer generation
+    /// or runnable organizations from model input or process-local counters.
+    async fn attack_v2_wave_authority_for_operation(
+        &self,
+        operation_id: Uuid,
+    ) -> Result<AttackV2WaveAuthorityView, RuntimeMemoryError> {
+        let _ = operation_id;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
     async fn insert_stage_deliverable_submission(
         &self,
         input: NewStageDeliverableSubmission,
@@ -753,6 +866,16 @@ pub trait RuntimeMemoryRepository: Send + Sync {
         &self,
         input: TerminalizeCandidateAttempt,
     ) -> Result<TerminalizedCandidateAttemptView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    /// Close one exact Verification WaveUnit only after its Candidate claim
+    /// queue drains and durable terminal truth validates.
+    async fn close_attack_v2_verification_unit(
+        &self,
+        input: CloseAttackV2VerificationUnit,
+    ) -> Result<ClosedAttackV2VerificationUnitView, RuntimeMemoryError> {
         let _ = input;
         Err(RuntimeMemoryError::Unavailable)
     }

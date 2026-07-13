@@ -21,8 +21,8 @@
 
 | 符号 | 说明 |
 |---|---|
-| `DbRepoProvider` | legacy/通用仓库操作与 deterministic harness truth seams（含 Candidate/Verification/Reporting） |
-| `RuntimeMemoryRepository` | typed runtime-memory 边界：project scope 注册/rename CAS、Task+operation/stage execution 原子创建与轮转、trusted submission/scope freeze、Unit/Worker seed/claim/prebound-chain/checkpoint/heartbeat/tool fence/terminal mutation；错误保持 `RuntimeMemoryError`，不藏进 `anyhow` |
+| `DbRepoProvider` | legacy/通用仓库操作与 deterministic harness truth seams（含 Candidate review/Verification truth/Wave consolidation/Reporting） |
+| `RuntimeMemoryRepository` | typed runtime-memory 边界：project scope 注册/rename CAS、Task+operation/stage execution 原子创建与轮转、trusted submission/scope freeze、Unit/Worker seed/claim/prebound-chain/checkpoint/heartbeat/tool fence/terminal mutation，以及 Candidate Wave authority、Attempt terminalization、VerificationUnit close；错误保持 `RuntimeMemoryError`，不藏进 `anyhow` |
 | `DbTrackingBackend` | fire-and-forget 记录 + memory 存/搜 |
 | `DbReadinessGate` | PG 启动就绪门 |
 | `TextEmbedder` | 语义记忆文本嵌入 |
@@ -60,7 +60,11 @@
 - `RuntimeMemoryRepository::finalize_unit_pass` 是 post-Scoping 非 wave Unit 的唯一 PASS seam，接收 server-built `FinalizeUnitPass`（Candidate 时携带 hash-bound `candidate_acceptance`）并返回 Unit/Worker/immutable handoff 及 `replayed`；普通 `finish_worker_attempt` 只能提交非 PASS 终态。wave-aware V2 必须走 `close_wave_gate_pass`，把 exact wave completion 与“child wave + WaitingBackground”或 final seal 作为一个事务结果返回。`load_inherited_stage_handoffs` 按 exact operation/org/source-stage 读取 final-sealed handoff，供 `StageSpec.inherits_evidence_from` 下游注入，不允许 latest/global fallback。
 - `DbRepoProvider::attack_v2_seed_candidate_manifest_for_unit` 只在 `attack_candidate` stage entry 使用：从 exact final-sealed `vuln_triage` authority 物化并冻结 manifest；`attack_v2_candidate_manifest_for_unit` 是 submit/final-seal 的 exact read seam。默认实现统一返回 `ATTACK_V2_REPO_UNAVAILABLE`，缺 production repo 时必须在 provider dispatch 前 fail closed，不能把 unavailable 当 empty。
 - `RuntimeMemoryRepository::claim_candidate_attempt` / `heartbeat_candidate_attempt` 是 Candidate verifier 的 compound seam：claim 返回 opaque Attempt ref + exact WorkerRun/message chain，heartbeat 同事务续 WorkerRun+global lane；execution plan/canonical args/budget 不离开 DB authorizer。
+- `RuntimeMemoryRepository::attack_v2_wave_authority_for_operation` 只返回 SQLx-free 的 `AttackV2WaveAuthorityView::{Initial,Current,Terminal}`；Unit 同时携带 typed entry（`VulnTriageHandoff|FactDeltaConsolidation`）与 state（`AwaitingManifest|FrozenManifest|TerminalNoInput`）。缺实现/identity 漂移必须 fail closed；runtime 不得用模型 org、静态 graph wave counter 或 latest row 猜 generation。
+- `SeedStageRuntime.organization_ids` 是 server-owned frozen-scope 子集；Candidate follow-on 用它排除 `TerminalNoInput` org。空/重复/越界子集应由 production repo 拒绝，模型不可传该字段。
+- `RuntimeMemoryRepository::terminalize_candidate_attempt` 返回 immutable lineage ids、terminal status、evidence/FactDelta counts 与 replay flag；`close_attack_v2_verification_unit` 只有在该 Unit 的 Candidate queue 排空且 DB terminal truth 成立后返回 `consolidation_status=ready`。两者都不把 plan、lease 或 exploit payload暴露给 trace/UI。
 - `DbRepoProvider::attack_v2_review_barrier_for_operation` 返回 exact current Wave 的 durable counts/status/resume version；默认实现返回 `ATTACK_V2_REVIEW_REPO_UNAVAILABLE`。kit 只能据此 hold/allow stage routing，不能用 trace、前端状态或进程内 bool 替代 DB authority。
+- `DbRepoProvider::attack_v2_consolidate_wave` 接收仅含 operation/snapshot/source-wave 的 server command；production bridge 必须在短事务提交后才返回 `AttackV2WaveConsolidationView`。返回值只含 immutable ids、`opened_next_wave|closed_no_delta|exhausted`、聚合 counts 与 replay flag；missing 实现统一 fail closed，绝不回退 process-local `chain_wave`。
 - `DbRepoProvider::reporting_build_validated_revision` 是 Reporting stage-entry 的 server-owned build/reuse seam；`reporting_gate_truth` 是 close/submit preview 的 fresh read seam。两者默认返回 `REPORTING_TRUTH_REPO_UNAVAILABLE`，不能把 missing/error 当成空报告 PASS；类型只暴露 narrow `ReportingGateTruth`，不暴露 artifact/finalizer。
 
 ## 测试入口

@@ -51,7 +51,7 @@
   "inherits_evidence_from": [
     {
       "stage_kind": "verification",
-      "evidence_kinds": ["exploit_proof"]
+      "evidence_kinds": ["verified_candidate_attempt", "vuln_finding"]
     }
   ]
 }

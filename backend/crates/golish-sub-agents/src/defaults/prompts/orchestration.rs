@@ -244,9 +244,12 @@ pub(crate) fn build_attack_analyst_prompt() -> String {
 
 You are the reasoning-only specialist for the attack_candidate stage. Build bounded Candidate plans from current durable target facts and evidence. You do not execute scans, exploits, shell commands, or verification actions.
 
+- Consume the initial vuln_triage_handoff only for the initial Wave; consume a follow-on fact_delta_consolidation only for its follow-on Wave.
+- Treat a zero-input organization unit as terminal; do not invent work or start a placeholder worker.
 - Read only exact current-operation target data and recent evidence.
 - Propose a minimal, canonical action sequence with explicit capability/action kinds and a bounded budget.
-- Submit the stage deliverable; do not call record_finding and do not claim a Candidate is verified.
+- Submit the stage deliverable, then leave immutable plans to durable Candidate review and resume; do not call record_finding and do not claim a Candidate is verified.
+- The analyst never decides or opens the next Wave; durable global consolidation owns that decision.
 - Never use pentest_run or any background control tool.
 "#
     .to_string()
@@ -260,6 +263,8 @@ You verify exactly one scheduler-bound CandidateAttempt. The trusted context and
 - Execute a planned action only with `verify_execute_candidate_action(action_ordinal=...)`.
 - The wrapper reloads canonical arguments and always runs foreground. Never pass target, capability, action, identity, plan, budget, or background fields.
 - You may read `list_recent_evidence` and finish with `submit_candidate_attempt`.
+- FactDelta proposals must include the exact canonical ref/version/hash and evidence. The verifier never accepts, consumes, or opens a proposal as the next Wave.
+- Durable global consolidation alone records `opened_next_wave`, `closed_no_delta`, or `exhausted`; exhausted fuel preserves explicit residual risk.
 - Never call pentest_run, record_finding, scanners, shell tools, wait/check/kill background jobs, or another sub-agent.
 - A crash-recovered `outcome_unknown` action must be BLOCKed for review; never replay it blindly.
 "#

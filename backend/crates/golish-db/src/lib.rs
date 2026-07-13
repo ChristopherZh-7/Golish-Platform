@@ -107,6 +107,7 @@ impl GolishDb {
                     failed = stats.failed,
                     workers_requeued = stats.workers_requeued,
                     workers_recovery_required = stats.workers_recovery_required,
+                    runtime_shadow_samples_written = stats.runtime_shadow_samples_written,
                     "Reconciled abandoned runtime operations on startup"
                 );
             }

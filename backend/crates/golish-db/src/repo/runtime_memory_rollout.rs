@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{Executor, PgPool, Postgres};
+use sqlx::{Executor, PgConnection, PgPool, Postgres};
 
 use super::runtime_memory_tx::{RuntimeMemoryStoreError, RuntimeMemoryStoreResult};
 
@@ -31,6 +31,10 @@ const GET_FOR_SHARE_SQL: &str = r#"SELECT singleton_id, contract, contract_rank,
     FROM runtime_memory_rollout
     WHERE singleton_id = 1
     FOR SHARE"#;
+const GET_FOR_UPDATE_SQL: &str = r#"SELECT singleton_id, contract, contract_rank, row_version, updated_at
+    FROM runtime_memory_rollout
+    WHERE singleton_id = 1
+    FOR UPDATE"#;
 const ADVANCE_SQL: &str = r#"UPDATE runtime_memory_rollout
 SET contract = $2,
     contract_rank = $3,
@@ -49,6 +53,27 @@ pub struct RuntimeMemoryRolloutRow {
     pub contract_rank: i16,
     pub row_version: i64,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeMemoryRolloutReconcileOutcome {
+    AlreadyCurrent(RuntimeMemoryRolloutRow),
+    Promoted(RuntimeMemoryRolloutRow),
+    NotReady {
+        contract: String,
+        contract_rank: i16,
+        row_version: i64,
+        reason: String,
+    },
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct RuntimeMemoryCohortGateRow {
+    admission_count: i64,
+    sample_count: i64,
+    ready: bool,
+    reason: String,
+    aggregate_digest: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -119,6 +144,174 @@ where
         .await?
         .ok_or(RuntimeMemoryStoreError::Missing { entity: TABLE_NAME })?;
     Ok(row)
+}
+
+async fn get_for_update(
+    connection: &mut PgConnection,
+) -> RuntimeMemoryStoreResult<RuntimeMemoryRolloutRow> {
+    sqlx::query_as::<_, RuntimeMemoryRolloutRow>(GET_FOR_UPDATE_SQL)
+        .fetch_optional(connection)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing { entity: TABLE_NAME })
+}
+
+/// Serialize both deployment singletons before taking either row lock. The DB
+/// statement triggers use the same advisory key, covering raw SQL callers too.
+pub async fn lock_execution_rollout_pair(
+    connection: &mut PgConnection,
+) -> RuntimeMemoryStoreResult<()> {
+    sqlx::query("SELECT lock_execution_rollout_pair()")
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
+async fn cohort_gate(
+    connection: &mut PgConnection,
+    current: &RuntimeMemoryRolloutRow,
+) -> RuntimeMemoryStoreResult<RuntimeMemoryCohortGateRow> {
+    let cutoff: Option<i64> = sqlx::query_scalar(
+        r#"SELECT MAX(admission_seq)
+             FROM runtime_memory_rollout_admissions
+            WHERE runtime_memory_contract=$1 AND rollout_rank=$2"#,
+    )
+    .bind(&current.contract)
+    .bind(current.contract_rank)
+    .fetch_one(&mut *connection)
+    .await?;
+    let Some(cutoff) = cutoff else {
+        return Ok(RuntimeMemoryCohortGateRow {
+            admission_count: 0,
+            sample_count: 0,
+            ready: false,
+            reason: "runtime_shadow_cohort_empty".to_string(),
+            aggregate_digest: None,
+        });
+    };
+    sqlx::query_as::<_, RuntimeMemoryCohortGateRow>(
+        r#"SELECT admission_count,sample_count,ready,reason,aggregate_digest
+             FROM runtime_memory_rollout_cohort_gate($1,$2,$3)"#,
+    )
+    .bind(&current.contract)
+    .bind(current.contract_rank)
+    .bind(cutoff)
+    .fetch_one(connection)
+    .await
+    .map_err(Into::into)
+}
+
+/// Reconcile at most one adjacent rank from database-owned retained truth.
+/// Not-ready cohorts are expected typed no-ops and commit no mutation.
+pub async fn reconcile(
+    pool: &PgPool,
+) -> RuntimeMemoryStoreResult<RuntimeMemoryRolloutReconcileOutcome> {
+    let mut tx = pool.begin().await?;
+    lock_execution_rollout_pair(&mut tx).await?;
+    let current = get_for_update(&mut tx).await?;
+    let next = match current.contract_rank {
+        0 => RuntimeMemoryContract::DualWriteLegacyRead,
+        1 => RuntimeMemoryContract::DualWriteV2Preferred,
+        2 => RuntimeMemoryContract::V2Only,
+        3 => {
+            tx.commit().await?;
+            return Ok(RuntimeMemoryRolloutReconcileOutcome::AlreadyCurrent(
+                current,
+            ));
+        }
+        _ => {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "runtime_memory_rollout_rank_invalid",
+            });
+        }
+    };
+    if current.contract_rank > 0 {
+        let gate = cohort_gate(&mut tx, &current).await?;
+        if !gate.ready {
+            let outcome = RuntimeMemoryRolloutReconcileOutcome::NotReady {
+                contract: current.contract,
+                contract_rank: current.contract_rank,
+                row_version: current.row_version,
+                reason: gate.reason,
+            };
+            tx.commit().await?;
+            return Ok(outcome);
+        }
+        if gate.admission_count <= 0
+            || gate.sample_count < gate.admission_count
+            || gate.aggregate_digest.as_deref().map(str::len) != Some(64)
+        {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "runtime_memory_rollout_gate_projection_invalid",
+            });
+        }
+    }
+    let advanced = sqlx::query_as::<_, RuntimeMemoryRolloutAdvanceRow>(ADVANCE_SQL)
+        .bind(&current.contract)
+        .bind(next.as_str())
+        .bind(next.rank())
+        .bind(current.row_version)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Conflict {
+            code: "runtime_memory_rollout_reconcile_cas_failed",
+        })?;
+    let row = RuntimeMemoryRolloutRow {
+        singleton_id: SINGLETON_ID,
+        contract: advanced.contract,
+        contract_rank: advanced.contract_rank,
+        row_version: advanced.row_version,
+        updated_at: advanced.updated_at,
+    };
+    tx.commit().await?;
+    Ok(RuntimeMemoryRolloutReconcileOutcome::Promoted(row))
+}
+
+/// Run reconciliation after a durable business transaction. Expected
+/// not-ready state and infrastructure failures are observable but never turn
+/// the already-committed runtime mutation into failure.
+pub async fn reconcile_best_effort(pool: &PgPool, trigger: &'static str) {
+    match reconcile(pool).await {
+        Ok(RuntimeMemoryRolloutReconcileOutcome::Promoted(row)) => {
+            tracing::info!(
+                trigger,
+                contract = %row.contract,
+                rank = row.contract_rank,
+                row_version = row.row_version,
+                "runtime memory rollout promoted"
+            );
+        }
+        Ok(RuntimeMemoryRolloutReconcileOutcome::AlreadyCurrent(row)) => {
+            tracing::debug!(
+                trigger,
+                contract = %row.contract,
+                rank = row.contract_rank,
+                row_version = row.row_version,
+                "runtime memory rollout already current"
+            );
+        }
+        Ok(RuntimeMemoryRolloutReconcileOutcome::NotReady {
+            contract,
+            contract_rank,
+            row_version,
+            reason,
+        }) => {
+            tracing::debug!(
+                trigger,
+                %contract,
+                rank = contract_rank,
+                row_version,
+                %reason,
+                "runtime memory rollout reconciliation is not ready"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                trigger,
+                error = %error,
+                "runtime memory rollout reconciliation failed after the business boundary"
+            );
+        }
+    }
 }
 
 /// Advance the persisted contract by exactly one rank using a row-version CAS.

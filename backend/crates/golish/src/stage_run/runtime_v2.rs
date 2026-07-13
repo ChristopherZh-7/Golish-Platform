@@ -10,10 +10,60 @@ use golish_agent_kit::db_traits::{
 };
 use golish_agent_kit::harness::StageKind;
 use golish_agent_kit::runtime_memory::{RuntimeMemoryContract, RuntimeMemoryWriteStrategy};
-use golish_db::models::Organization;
+use golish_core::AttackExecutionContract;
+use golish_db::models::{AgentType, Organization};
 use uuid::Uuid;
 
 use super::scheduler::{FleetReport, OrgRunOutcome, OrgRunStatus};
+
+#[derive(Debug)]
+struct RelationalResumeIncomplete {
+    detail: String,
+}
+
+impl std::fmt::Display for RelationalResumeIncomplete {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "relational V2 resume source is structurally incomplete: {}",
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for RelationalResumeIncomplete {}
+
+/// A complete relational source exists but another worker still owns a live
+/// lease. This is an availability/busy condition, never a missing-record signal
+/// and therefore never eligible for preferred-mode legacy fallback.
+#[derive(Debug)]
+pub(crate) struct RelationalResumeBusy;
+
+impl std::fmt::Display for RelationalResumeBusy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("relational V2 resume source has a live worker lease")
+    }
+}
+
+impl std::error::Error for RelationalResumeBusy {}
+
+fn relational_resume_incomplete(detail: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(RelationalResumeIncomplete {
+        detail: detail.into(),
+    })
+}
+
+pub(crate) fn relational_resume_error_allows_legacy_fallback(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<RelationalResumeIncomplete>().is_some()
+}
+
+fn decode_relational_message_chain(
+    chain: &serde_json::Value,
+) -> Result<Vec<rig::completion::Message>> {
+    serde_json::from_value::<Vec<rig::completion::Message>>(chain.clone()).map_err(|error| {
+        relational_resume_incomplete(format!("bound message chain cannot be decoded: {error}"))
+    })
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeV2CliReport {
@@ -23,6 +73,15 @@ pub(crate) struct RuntimeV2CliReport {
     pub fleet: FleetReport,
 }
 
+/// Proof marker returned only after one complete relational runtime source has
+/// passed validation. The CLI resolver either selects this whole authority or
+/// validates the whole legacy checkpoint; it never combines fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeV2ResumeAuthority {
+    pub active_stage_execution_id: Uuid,
+    pub organization_id: Uuid,
+}
+
 pub(crate) fn persisted_contract(value: &str) -> Result<RuntimeMemoryContract> {
     RuntimeMemoryContract::try_from(value)
         .map_err(|error| anyhow!("invalid persisted runtime-memory contract: {error}"))
@@ -30,6 +89,63 @@ pub(crate) fn persisted_contract(value: &str) -> Result<RuntimeMemoryContract> {
 
 pub(crate) fn contract_writes_v2(contract: RuntimeMemoryContract) -> bool {
     contract.policy().write != RuntimeMemoryWriteStrategy::LegacyOnly
+}
+
+fn effective_resume_specialist(
+    stage: StageKind,
+    configured: Option<&str>,
+    runtime_contract: RuntimeMemoryContract,
+    attack_contract: AttackExecutionContract,
+) -> Option<String> {
+    let configured = configured
+        .map(str::trim)
+        .filter(|specialist| !specialist.is_empty())
+        .map(ToOwned::to_owned);
+    let candidate_v2_enabled = match stage {
+        StageKind::AttackCandidate => {
+            contract_writes_v2(runtime_contract) && attack_contract.writes_v2()
+        }
+        StageKind::Verification => {
+            runtime_contract == RuntimeMemoryContract::V2Only
+                && attack_contract.executes_v2_verifier()
+        }
+        _ => false,
+    };
+    match stage {
+        StageKind::Verification if candidate_v2_enabled => Some("candidate_verifier".to_string()),
+        StageKind::AttackCandidate if candidate_v2_enabled => Some("attack_analyst".to_string()),
+        _ => configured,
+    }
+}
+
+/// A stage specialist is the durable scheduler role, while message chains use
+/// the coarser DB agent enum. Keep this mapping identical to the worker claim
+/// path; comparing the two strings directly rejects every valid specialist
+/// chain (for example `enumerator` is persisted as `agent = pentester`).
+pub(crate) fn resume_worker_chain_agent(specialist: &str) -> Option<AgentType> {
+    match specialist.trim() {
+        "reporter" => Some(AgentType::Reporter),
+        "recon" | "prober" | "enumerator" | "vuln_scanner" | "attack_analyst"
+        | "candidate_verifier" | "pentester" => Some(AgentType::Pentester),
+        _ => None,
+    }
+}
+
+pub(crate) const fn persisted_agent_name(agent: AgentType) -> &'static str {
+    match agent {
+        AgentType::Primary => "primary",
+        AgentType::Pentester => "pentester",
+        AgentType::Coder => "coder",
+        AgentType::Searcher => "searcher",
+        AgentType::Memorist => "memorist",
+        AgentType::Reporter => "reporter",
+        AgentType::Adviser => "adviser",
+        AgentType::Reflector => "reflector",
+        AgentType::Enricher => "enricher",
+        AgentType::Installer => "installer",
+        AgentType::Summarizer => "summarizer",
+        AgentType::Assistant => "assistant",
+    }
 }
 
 /// Read the contract frozen on the CLI session's one operation. The deployment
@@ -339,6 +455,343 @@ pub(crate) async fn load_cli_report(
     })
 }
 
+/// Validate the exact relational resume authority for one selected operation.
+/// This is deliberately stricter than merely finding a Unit row: execution,
+/// frozen scope, every Unit/Worker identity, bound message chain and active
+/// tool fence must form one complete source.
+pub(crate) async fn load_relational_resume_authority(
+    pool: &sqlx::PgPool,
+    session_id: Uuid,
+    operation: &golish_db::repo::operation_state::OperationStateRow,
+    stage: StageKind,
+) -> Result<RuntimeV2ResumeAuthority> {
+    let runtime_contract = persisted_contract(&operation.runtime_memory_contract)?;
+    if operation.project_scope_id.is_none() {
+        return Err(relational_resume_incomplete(
+            "frozen project scope is missing",
+        ));
+    }
+    anyhow::ensure!(
+        operation.superseded_by.is_none(),
+        "relational V2 resume operation is superseded"
+    );
+    let executions = golish_db::repo::stage_runs::list_for_operation(pool, operation.operation_id)
+        .await
+        .context("load relational V2 stage executions")?;
+    let active = executions
+        .iter()
+        .filter(|execution| execution.status == "started")
+        .collect::<Vec<_>>();
+    let execution = match active.as_slice() {
+        [execution] => *execution,
+        [] => {
+            return Err(relational_resume_incomplete(
+                "active stage execution is missing",
+            ))
+        }
+        _ => {
+            return Err(anyhow!(
+                "relational V2 resume requires one active execution, found {}",
+                active.len()
+            ))
+        }
+    };
+    anyhow::ensure!(
+        execution.operation_id == operation.operation_id
+            && execution.stage_kind == operation.current_stage
+            && execution.stage_kind == stage.as_str(),
+        "relational V2 active execution does not match the operation cursor"
+    );
+    let units = golish_db::repo::stage_run_units::list_for_execution(
+        pool,
+        operation.operation_id,
+        execution.id,
+    )
+    .await
+    .context("load relational V2 stage units")?;
+    let workers = golish_db::repo::stage_worker_runs::list_for_execution(
+        pool,
+        operation.operation_id,
+        execution.id,
+    )
+    .await
+    .context("load relational V2 workers")?;
+    let scope =
+        golish_db::repo::operation_org_scope::load_for_operation(pool, operation.operation_id)
+            .await
+            .context("load relational V2 frozen scope")?;
+
+    if stage == StageKind::Scoping {
+        anyhow::ensure!(
+            scope.is_none() && units.is_empty() && workers.is_empty(),
+            "relational V2 scoping resume is not the exact pre-freeze shape"
+        );
+        let organization_id = operation.engagement_org_id.ok_or_else(|| {
+            anyhow!("relational V2 scoping resume has no persisted engagement organization")
+        })?;
+        let decision = classify_runtime_v2_resume(&RuntimeV2ResumeSnapshot {
+            operation_id: operation.operation_id,
+            active_stage_execution_id: execution.id,
+            active_stage_execution_count: active.len(),
+            operation_superseded: false,
+            current_stage_is_scoping: true,
+            scope_sealed: false,
+            scope_unit_count: 0,
+            unit: None,
+            worker: None,
+            now: Utc::now(),
+        });
+        anyhow::ensure!(
+            decision == RuntimeV2ResumeDecision::ResumeScoping,
+            "relational V2 scoping authority rejected: {decision:?}"
+        );
+        return Ok(RuntimeV2ResumeAuthority {
+            active_stage_execution_id: execution.id,
+            organization_id,
+        });
+    }
+
+    let scope = scope
+        .ok_or_else(|| relational_resume_incomplete("frozen organization scope is missing"))?;
+    anyhow::ensure!(
+        scope.snapshot.sealed_at.is_some()
+            && Some(scope.snapshot.project_scope_id) == operation.project_scope_id
+            && operation.engagement_org_id == Some(scope.snapshot.root_organization_id)
+            && !scope.units.is_empty(),
+        "relational V2 frozen scope does not match operation authority"
+    );
+    let configured_specialist = golish_agent_kit::harness::load_embedded_stage_spec(stage)
+        .context("load stage spec for relational V2 resume")?
+        .specialist
+        .filter(|value| !value.trim().is_empty());
+    let attack_contract = match stage {
+        StageKind::AttackCandidate | StageKind::Verification => {
+            golish_db::repo::operation_state::get_attack_execution_contract(
+                pool,
+                operation.operation_id,
+            )
+            .await
+            .context("load frozen attack contract for relational V2 resume")?
+            .ok_or_else(|| anyhow!("relational V2 frozen attack contract is missing"))?
+        }
+        _ => AttackExecutionContract::Legacy,
+    };
+    let specialist = effective_resume_specialist(
+        stage,
+        configured_specialist.as_deref(),
+        runtime_contract,
+        attack_contract,
+    );
+    let expected_unit_count = if specialist.is_some() {
+        scope.units.len()
+    } else {
+        1
+    };
+    if units.len() < expected_unit_count {
+        return Err(relational_resume_incomplete(format!(
+            "stage Unit rows are missing: expected {expected_unit_count}, found {}",
+            units.len()
+        )));
+    }
+    anyhow::ensure!(
+        units.len() == expected_unit_count,
+        "relational V2 stage Unit cardinality exceeds frozen scope"
+    );
+    let chains = golish_db::repo::message_chains::list_by_session(pool, session_id)
+        .await
+        .context("load relational V2 message chains")?;
+    let now = Utc::now();
+
+    for unit in &units {
+        let scope_member = scope
+            .units
+            .iter()
+            .find(|member| member.organization_id == unit.organization_id)
+            .ok_or_else(|| anyhow!("relational V2 Unit is outside the frozen scope"))?;
+        anyhow::ensure!(
+            unit.operation_id == operation.operation_id
+                && unit.stage_execution_id == execution.id
+                && unit.scope_snapshot_id == scope.snapshot.id
+                && unit.stage_kind == stage.as_str(),
+            "relational V2 Unit identity crossed execution/snapshot/stage"
+        );
+        let unit_status = RuntimeStageUnitStatus::try_parse(&unit.status)
+            .ok_or_else(|| relational_resume_incomplete("stage Unit status cannot be decoded"))?;
+        let unit_workers = workers
+            .iter()
+            .filter(|worker| worker.stage_run_unit_id == unit.id)
+            .collect::<Vec<_>>();
+        let worker_snapshot = match specialist.as_deref() {
+            Some(expected_specialist) => {
+                anyhow::ensure!(
+                    unit.specialist.as_deref() == Some(expected_specialist),
+                    "relational V2 Unit specialist identity drifted"
+                );
+                if unit_workers.is_empty() {
+                    return Err(relational_resume_incomplete(format!(
+                        "Worker row is missing for Unit {}",
+                        unit.id
+                    )));
+                }
+                anyhow::ensure!(
+                    unit_workers.len() == 1,
+                    "relational V2 Unit has multiple Worker owners"
+                );
+                let worker = unit_workers[0];
+                anyhow::ensure!(
+                    worker.operation_id == operation.operation_id
+                        && worker.stage_execution_id == execution.id
+                        && worker.organization_id == unit.organization_id
+                        && worker.specialist == expected_specialist,
+                    "relational V2 Worker identity crossed Unit/operation"
+                );
+                let worker_status =
+                    RuntimeWorkerStatus::try_parse(&worker.status).ok_or_else(|| {
+                        relational_resume_incomplete("Worker status cannot be decoded")
+                    })?;
+                match worker.message_chain_id {
+                    Some(chain_id) => {
+                        let expected_chain_agent = resume_worker_chain_agent(expected_specialist)
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "relational V2 specialist '{expected_specialist}' has no durable chain agent"
+                                )
+                            })?;
+                        let chain = match chains.iter().find(|chain| chain.id == chain_id) {
+                            Some(chain) => chain,
+                            None => {
+                                let exists_outside_session =
+                                    golish_db::repo::message_chains::exists_by_id(pool, chain_id)
+                                        .await
+                                        .context(
+                                            "classify relational V2 message-chain ownership",
+                                        )?;
+                                if exists_outside_session {
+                                    return Err(anyhow!(
+                                        "relational V2 message chain crossed session identity"
+                                    ));
+                                }
+                                return Err(relational_resume_incomplete(
+                                    "bound message chain row is missing",
+                                ));
+                            }
+                        };
+                        anyhow::ensure!(
+                            chain.session_id == session_id
+                                && chain.task_id == Some(operation.operation_id)
+                                && chain.agent == expected_chain_agent,
+                            "relational V2 message chain crossed session/task/agent scope"
+                        );
+                        let chain_body = chain.chain.as_ref().ok_or_else(|| {
+                            relational_resume_incomplete("bound message chain body is missing")
+                        })?;
+                        decode_relational_message_chain(chain_body)?;
+                    }
+                    None => anyhow::ensure!(
+                        worker_status == RuntimeWorkerStatus::Queued,
+                        "relational V2 non-queued Worker has no bound message chain"
+                    ),
+                }
+                if let Some(active_tool_call_id) = worker.active_tool_call_id {
+                    let exact_active_tool =
+                        golish_db::repo::tool_calls::has_exact_active_worker_fence(
+                            pool,
+                            active_tool_call_id,
+                            worker.id,
+                            worker.operation_id,
+                            worker.stage_execution_id,
+                            worker.stage_run_unit_id,
+                            worker.organization_id,
+                            worker.attempt_epoch,
+                            worker.lease_token,
+                        )
+                        .await
+                        .context("validate relational V2 active tool fence")?;
+                    anyhow::ensure!(
+                        exact_active_tool,
+                        "relational V2 active tool fence is stale or cross-owned"
+                    );
+                }
+                Some(ResumeWorkerSnapshot {
+                    id: worker.id,
+                    operation_id: worker.operation_id,
+                    stage_execution_id: worker.stage_execution_id,
+                    stage_run_unit_id: worker.stage_run_unit_id,
+                    organization_id: worker.organization_id,
+                    status: worker_status,
+                    lease_expires_at: worker.lease_expires_at,
+                    active_tool_call_id: worker.active_tool_call_id,
+                })
+            }
+            None => {
+                anyhow::ensure!(
+                    unit.organization_id == scope.snapshot.root_organization_id
+                        && scope_member.role == "root"
+                        && unit.specialist.is_none()
+                        && unit_workers.is_empty()
+                        && workers.is_empty(),
+                    "relational V2 root-only Unit shape is invalid"
+                );
+                None
+            }
+        };
+        let decision = classify_runtime_v2_resume(&RuntimeV2ResumeSnapshot {
+            operation_id: operation.operation_id,
+            active_stage_execution_id: execution.id,
+            active_stage_execution_count: active.len(),
+            operation_superseded: false,
+            current_stage_is_scoping: false,
+            scope_sealed: true,
+            scope_unit_count: scope.units.len(),
+            unit: Some(ResumeUnitSnapshot {
+                id: unit.id,
+                operation_id: unit.operation_id,
+                stage_execution_id: unit.stage_execution_id,
+                organization_id: unit.organization_id,
+                is_root: unit.organization_id == scope.snapshot.root_organization_id,
+                specialist: unit.specialist.clone(),
+                status: unit_status,
+            }),
+            worker: worker_snapshot,
+            now,
+        });
+        match decision {
+            RuntimeV2ResumeDecision::WaitForLease => {
+                return Err(anyhow::Error::new(RelationalResumeBusy));
+            }
+            RuntimeV2ResumeDecision::Reject(
+                RuntimeV2ResumeReject::SupersededOperation
+                | RuntimeV2ResumeReject::ActiveExecutionCardinality
+                | RuntimeV2ResumeReject::CrossOperationIdentity,
+            ) => {
+                anyhow::bail!("relational V2 runtime identity is invalid: {decision:?}");
+            }
+            RuntimeV2ResumeDecision::Reject(_) => {
+                return Err(relational_resume_incomplete(format!(
+                    "runtime state cannot be decoded: {decision:?}"
+                )));
+            }
+            _ => {}
+        }
+    }
+    let expected_worker_count = if specialist.is_some() { units.len() } else { 0 };
+    if workers.len() < expected_worker_count {
+        return Err(relational_resume_incomplete(format!(
+            "Worker rows are missing: expected {expected_worker_count}, found {}",
+            workers.len()
+        )));
+    }
+    anyhow::ensure!(
+        workers.len() == expected_worker_count,
+        "relational V2 Worker cardinality exceeds frozen Unit set"
+    );
+
+    Ok(RuntimeV2ResumeAuthority {
+        active_stage_execution_id: execution.id,
+        organization_id: scope.snapshot.root_organization_id,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResumeUnitSnapshot {
     pub id: Uuid,
@@ -507,6 +960,27 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn preferred_legacy_fallback_requires_a_typed_structural_gap() {
+        let incomplete = relational_resume_incomplete("missing Worker row");
+        assert!(relational_resume_error_allows_legacy_fallback(&incomplete));
+        assert!(!relational_resume_error_allows_legacy_fallback(
+            &anyhow::Error::new(RelationalResumeBusy)
+        ));
+        assert!(!relational_resume_error_allows_legacy_fallback(
+            &anyhow::anyhow!("cross-operation identity")
+        ));
+    }
+
+    #[test]
+    fn relational_message_chain_requires_real_rig_message_decode() {
+        assert!(decode_relational_message_chain(&serde_json::json!([
+            {"not_a_rig_message": true}
+        ]))
+        .is_err());
+        assert!(decode_relational_message_chain(&serde_json::json!([])).is_ok());
+    }
+
     fn organization(
         id: Uuid,
         name: &str,
@@ -584,6 +1058,54 @@ mod tests {
         ] {
             assert!(contract_writes_v2(contract), "contract={contract}");
         }
+    }
+
+    #[test]
+    fn relational_resume_uses_effective_candidate_specialist_and_chain_agent_class() {
+        use golish_core::AttackExecutionContract;
+        use golish_db::models::AgentType;
+
+        assert_eq!(
+            effective_resume_specialist(
+                StageKind::AttackCandidate,
+                Some("analyst"),
+                RuntimeMemoryContract::V2Only,
+                AttackExecutionContract::V2Only,
+            )
+            .as_deref(),
+            Some("attack_analyst")
+        );
+        assert_eq!(
+            effective_resume_specialist(
+                StageKind::Verification,
+                None,
+                RuntimeMemoryContract::V2Only,
+                AttackExecutionContract::V2Only,
+            )
+            .as_deref(),
+            Some("candidate_verifier")
+        );
+        assert_eq!(
+            effective_resume_specialist(
+                StageKind::Verification,
+                None,
+                RuntimeMemoryContract::DualWriteV2Preferred,
+                AttackExecutionContract::DualWriteReadV2Fallback,
+            ),
+            None
+        );
+        assert_eq!(
+            resume_worker_chain_agent("attack_analyst"),
+            Some(AgentType::Pentester)
+        );
+        assert_eq!(
+            resume_worker_chain_agent("candidate_verifier"),
+            Some(AgentType::Pentester)
+        );
+        assert_eq!(
+            resume_worker_chain_agent("reporter"),
+            Some(AgentType::Reporter)
+        );
     }
 
     fn base() -> RuntimeV2ResumeSnapshot {

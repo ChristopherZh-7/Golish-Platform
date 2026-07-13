@@ -25,10 +25,10 @@ use crate::repo::stage_handoffs::StageHandoffRow;
 use crate::repo::stage_run_units::StageRunUnitRow;
 use crate::repo::stage_worker_runs::StageWorkerRunRow;
 use crate::repo::{
-    attack_candidates, attack_execution_rollout, canonical_fact_refs, message_chains,
-    operation_org_scope, operation_scope_decisions, operation_state, project_scopes,
-    runtime_memory_rollout, stage_asset_waves, stage_episodes, stage_handoffs, stage_run_units,
-    stage_runs, stage_worker_runs, tasks,
+    attack_candidates, attack_execution_rollout, attack_execution_shadow, canonical_fact_refs,
+    message_chains, operation_org_scope, operation_scope_decisions, operation_state,
+    project_scopes, runtime_memory_rollout, runtime_memory_shadow, stage_asset_waves,
+    stage_episodes, stage_handoffs, stage_run_units, stage_runs, stage_worker_runs, tasks,
 };
 
 const MEMORY_EPISODE_STAGE_KINDS: [&str; 4] = [
@@ -169,8 +169,9 @@ pub struct FinalizedScopingScopeRow {
 }
 
 /// Server-side recipe for seeding one exact stage execution from its sealed
-/// organization snapshot. Organization identities are intentionally absent:
-/// the transaction reads them from `operation_org_scope_units`.
+/// organization snapshot. Optional organization identities are an authority
+/// filter only: the transaction still resolves and validates every identity
+/// against `operation_org_scope_units`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeedStageRuntimeRow {
     pub operation_id: Uuid,
@@ -182,6 +183,9 @@ pub struct SeedStageRuntimeRow {
     pub work_item_kind: String,
     pub work_item_key: String,
     pub agent_path_prefix: String,
+    /// Optional server-authorized subset of the sealed organization snapshot.
+    /// `None` preserves the legacy all-frozen-organizations fan-out.
+    pub organization_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Clone)]
@@ -262,6 +266,7 @@ pub struct LoadWorkerCheckpointRow {
     pub stage_execution_id: Uuid,
     pub stage_run_unit_id: Uuid,
     pub worker_run_id: Uuid,
+    pub selected_source: Option<RuntimeMemoryRecordSource>,
 }
 
 #[derive(Debug, Clone)]
@@ -287,6 +292,7 @@ pub struct LoadBoundWorkerChainRow {
     pub message_chain_id: Uuid,
     pub session_id: Uuid,
     pub agent: AgentType,
+    pub selected_source: Option<RuntimeMemoryRecordSource>,
 }
 
 #[derive(Debug, Clone)]
@@ -521,6 +527,17 @@ async fn freeze_cli_scope_with_connection(
         .map_err(map_scope_freeze_error)
 }
 
+pub(crate) async fn reconcile_deployment_rollouts_best_effort(
+    pool: &sqlx::PgPool,
+    trigger: &'static str,
+) {
+    // Runtime is the dependency and therefore always reconciles first. Attack
+    // may then consume the new compatible runtime default in its own
+    // transaction; neither best-effort attempt is coupled to business truth.
+    runtime_memory_rollout::reconcile_best_effort(pool, trigger).await;
+    attack_execution_rollout::reconcile_attack_execution_rollout_best_effort(pool, trigger).await;
+}
+
 /// Atomically create the task, operation, and initial stage-execution roots for
 /// a new runtime operation.
 /// The contract is read from the persisted singleton under `FOR SHARE` and the
@@ -530,7 +547,12 @@ pub async fn create_runtime_operation(
     pool: &sqlx::PgPool,
     input: &CreateRuntimeOperationRow,
 ) -> RuntimeMemoryStoreResult<CreatedRuntimeOperationRow> {
+    // Reconcile in its own transaction before freezing either deployment
+    // contract. A not-ready cohort is a typed no-op; an infrastructure failure
+    // is logged but does not make operation creation unavailable.
+    reconcile_deployment_rollouts_best_effort(pool, "create_runtime_operation").await;
     let mut tx = pool.begin().await?;
+    runtime_memory_rollout::lock_execution_rollout_pair(&mut tx).await?;
     let rollout = runtime_memory_rollout::get_for_share(&mut *tx).await?;
     let attack_rollout = attack_execution_rollout::get_for_share(&mut tx).await?;
     let attack_contract = match attack_rollout.contract.as_str() {
@@ -794,7 +816,12 @@ pub async fn supersede_stage_checkpoint(
     let contract = frozen_runtime_contract(&locked_operation)?;
     let mut stats = SupersededStageCheckpointStats::default();
     let mut active_execution_ids = Vec::new();
-    let mut next_state_blob = input.next_state_blob.clone();
+    let mut next_state_blob = if contract == runtime_memory_rollout::RuntimeMemoryContract::V2Only {
+        v2_only_reset_state_blob(&locked_operation.state_blob)
+    } else {
+        input.next_state_blob.clone()
+    };
+    let mut dual_mutated_worker_ids = Vec::new();
 
     if let Some(replacement_stage_execution_id) = input.replacement_stage_execution_id {
         let active =
@@ -820,7 +847,7 @@ pub async fn supersede_stage_checkpoint(
         }
 
         if contract_writes_v2(contract) {
-            stats.workers_superseded = sqlx::query(
+            let superseded_workers = sqlx::query_as::<_, StageWorkerRunRow>(
                 r#"UPDATE stage_worker_runs worker
                       SET status='superseded',
                           lease_token=NULL, lease_owner=NULL,
@@ -836,14 +863,33 @@ pub async fn supersede_stage_checkpoint(
                                 AND unit.operation_id=$1
                                 AND unit.stage_kind=ANY($3)
                           )
-                      )"#,
+                      )
+                    RETURNING worker.*"#,
             )
             .bind(input.operation_id)
             .bind(&active_execution_ids)
             .bind(&affected)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+            .fetch_all(&mut *tx)
+            .await?;
+            stats.workers_superseded = superseded_workers.len() as u64;
+            if contract_writes_legacy_mirror(contract) {
+                for worker in &superseded_workers {
+                    let unit =
+                        stage_run_units::get_with_executor(&mut *tx, worker.stage_run_unit_id)
+                            .await?
+                            .ok_or(RuntimeMemoryStoreError::Missing {
+                                entity: stage_run_units::TABLE_NAME,
+                            })?;
+                    let organization_name = frozen_organization_name(&mut tx, &unit).await?;
+                    apply_legacy_worker_mirror(
+                        &mut next_state_blob,
+                        &unit.stage_kind,
+                        &organization_name,
+                        worker,
+                    );
+                    dual_mutated_worker_ids.push(worker.id);
+                }
+            }
             stats.units_superseded = sqlx::query(
                 r#"UPDATE stage_run_units
                       SET status='superseded', row_version=row_version+1,
@@ -960,6 +1006,7 @@ pub async fn supersede_stage_checkpoint(
                                     &scope_unit.organization_name_at_freeze,
                                     &worker,
                                 );
+                                dual_mutated_worker_ids.push(worker.id);
                             }
                         }
                     }
@@ -1025,6 +1072,10 @@ pub async fn supersede_stage_checkpoint(
             code: "operation_stage_cursor_changed",
         });
     }
+    for worker_run_id in &dual_mutated_worker_ids {
+        runtime_memory_shadow::persist_worker_sample(&mut tx, *worker_run_id, "developer_reset")
+            .await?;
+    }
 
     if let Some(replacement_stage_execution_id) = input.replacement_stage_execution_id {
         let active =
@@ -1040,6 +1091,9 @@ pub async fn supersede_stage_checkpoint(
         }
     }
     tx.commit().await?;
+    if !dual_mutated_worker_ids.is_empty() {
+        reconcile_deployment_rollouts_best_effort(pool, "supersede_stage_checkpoint").await;
+    }
     Ok(stats)
 }
 
@@ -1483,6 +1537,50 @@ fn contract_writes_legacy_checkpoint(
     )
 }
 
+const LEGACY_RUNTIME_CHECKPOINT_NAMESPACES: [&str; 11] = [
+    "graph_flow",
+    "profile",
+    "current_stage",
+    "current_stage_run_id",
+    "queue_titles",
+    "completed_count",
+    "continuity_adoption",
+    "schema_v",
+    "stage_run_workers",
+    "stage_run_handoffs",
+    "agent_run",
+];
+
+/// A V2-only reset is reconstructed from relational state. The caller's legacy
+/// checkpoint payload is never an input; only already-persisted sibling state
+/// survives, with every legacy runtime namespace removed before the server
+/// writes its own reset marker.
+fn v2_only_reset_state_blob(current_state_blob: &serde_json::Value) -> serde_json::Value {
+    let mut next_state_blob = current_state_blob.clone();
+    let root = ensure_json_object(&mut next_state_blob);
+    for namespace in LEGACY_RUNTIME_CHECKPOINT_NAMESPACES {
+        root.remove(namespace);
+    }
+    next_state_blob
+}
+
+async fn frozen_attack_execution_contract(
+    connection: &mut sqlx::PgConnection,
+    operation_id: Uuid,
+) -> RuntimeMemoryStoreResult<String> {
+    let contract: Option<String> = sqlx::query_scalar(
+        "SELECT attack_execution_contract
+           FROM operation_state
+          WHERE operation_id=$1 AND superseded_by IS NULL",
+    )
+    .bind(operation_id)
+    .fetch_optional(connection)
+    .await?;
+    contract.ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "operation_state",
+    })
+}
+
 async fn validate_runtime_stage_execution(
     connection: &mut sqlx::PgConnection,
     operation: &OperationStateRow,
@@ -1687,12 +1785,29 @@ fn validate_seed_input(input: &SeedStageRuntimeRow) -> RuntimeMemoryStoreResult<
             code: "invalid_stage_runtime_seed",
         });
     }
+    if let Some(organization_ids) = &input.organization_ids {
+        if organization_ids.is_empty() {
+            return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                code: "empty_stage_runtime_seed_organizations",
+            });
+        }
+        let unique_organization_ids = organization_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        if unique_organization_ids.len() != organization_ids.len() {
+            return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                code: "duplicate_stage_runtime_seed_organization",
+            });
+        }
+    }
     Ok(())
 }
 
-/// Seed exactly one Unit and logical primary Worker for every organization in
-/// the immutable operation snapshot. Replays return the same rows after exact
-/// identity validation; they never derive scope from caller/model arguments.
+/// Seed exactly one Unit and logical primary Worker for either every frozen
+/// organization or an explicit server-authorized subset. Replays return the
+/// same rows after exact identity validation; scope is always resolved from
+/// the immutable operation snapshot rather than caller/model material.
 pub async fn seed_stage_runtime(
     pool: &sqlx::PgPool,
     input: &SeedStageRuntimeRow,
@@ -1736,6 +1851,33 @@ pub async fn seed_stage_runtime(
             code: "operation_scope_not_sealed",
         });
     }
+    let selected_organization_ids = input.organization_ids.as_ref().map(|organization_ids| {
+        organization_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+    });
+    if selected_organization_ids.as_ref().is_some_and(|selected| {
+        selected.iter().any(|organization_id| {
+            !scope
+                .units
+                .iter()
+                .any(|scope_unit| scope_unit.organization_id == *organization_id)
+        })
+    }) {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_runtime_seed_organization_outside_frozen_scope",
+        });
+    }
+    let selected_scope_units = scope
+        .units
+        .iter()
+        .filter(|scope_unit| {
+            selected_organization_ids
+                .as_ref()
+                .is_none_or(|selected| selected.contains(&scope_unit.organization_id))
+        })
+        .collect::<Vec<_>>();
 
     let existing_units = crate::repo::stage_run_units::list_for_execution_with_executor(
         &mut *tx,
@@ -1755,8 +1897,8 @@ pub async fn seed_stage_runtime(
     }
 
     let mut legacy_blob = operation.state_blob.clone();
-    let mut seeded = Vec::with_capacity(scope.units.len());
-    for scope_unit in &scope.units {
+    let mut seeded = Vec::with_capacity(selected_scope_units.len());
+    for scope_unit in selected_scope_units {
         let unit = match existing_units
             .iter()
             .find(|existing| existing.organization_id == scope_unit.organization_id)
@@ -1861,8 +2003,14 @@ pub async fn seed_stage_runtime(
             &legacy_blob,
         )
         .await?;
+        for row in &seeded {
+            runtime_memory_shadow::persist_worker_sample(&mut tx, row.worker.id, "seed").await?;
+        }
     }
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "seed_stage_runtime").await;
+    }
     Ok(seeded)
 }
 
@@ -2079,8 +2227,13 @@ pub async fn claim_worker_and_bind_chain(
             &legacy_blob,
         )
         .await?;
+        runtime_memory_shadow::persist_worker_sample(&mut tx, worker.id, "claim_and_bind_chain")
+            .await?;
     }
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "claim_worker_and_bind_chain").await;
+    }
     Ok(ClaimedWorkerAndChainRow {
         unit,
         worker,
@@ -2133,6 +2286,7 @@ async fn mirror_worker_if_required(
     contract: runtime_memory_rollout::RuntimeMemoryContract,
     unit: &StageRunUnitRow,
     worker: &StageWorkerRunRow,
+    mutation_kind: &str,
 ) -> RuntimeMemoryStoreResult<()> {
     if contract_writes_legacy_mirror(contract) {
         let organization_name = frozen_organization_name(connection, unit).await?;
@@ -2150,6 +2304,7 @@ async fn mirror_worker_if_required(
             &legacy_blob,
         )
         .await?;
+        runtime_memory_shadow::persist_worker_sample(connection, worker.id, mutation_kind).await?;
     }
     Ok(())
 }
@@ -2162,8 +2317,11 @@ pub async fn checkpoint_worker(
     let mut tx = pool.begin().await?;
     let (operation, contract, unit) = lock_operation_and_unit_for_fence(&mut tx, fence).await?;
     let worker = stage_worker_runs::checkpoint_cas(&mut *tx, fence, checkpoint).await?;
-    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker).await?;
+    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker, "checkpoint").await?;
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "checkpoint_worker").await;
+    }
     Ok(worker)
 }
 
@@ -2222,8 +2380,19 @@ pub async fn checkpoint_bound_worker_chain(
     }
     let worker =
         stage_worker_runs::checkpoint_cas(&mut *tx, &input.fence, &input.checkpoint).await?;
-    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker).await?;
+    mirror_worker_if_required(
+        &mut tx,
+        &operation,
+        contract,
+        &unit,
+        &worker,
+        "checkpoint_bound_chain",
+    )
+    .await?;
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "checkpoint_bound_worker_chain").await;
+    }
     Ok(worker)
 }
 
@@ -2235,8 +2404,11 @@ pub async fn heartbeat_worker(
     let mut tx = pool.begin().await?;
     let (operation, contract, unit) = lock_operation_and_unit_for_fence(&mut tx, fence).await?;
     let worker = stage_worker_runs::heartbeat_cas(&mut *tx, fence, extend_seconds).await?;
-    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker).await?;
+    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker, "heartbeat").await?;
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "heartbeat_worker").await;
+    }
     Ok(worker)
 }
 
@@ -2248,8 +2420,11 @@ pub async fn begin_worker_tool(
     let mut tx = pool.begin().await?;
     let (operation, contract, unit) = lock_operation_and_unit_for_fence(&mut tx, fence).await?;
     let worker = stage_worker_runs::begin_tool_cas(&mut *tx, fence, tool_call_record_id).await?;
-    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker).await?;
+    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker, "tool_begin").await?;
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "begin_worker_tool").await;
+    }
     Ok(worker)
 }
 
@@ -2261,8 +2436,11 @@ pub async fn finish_worker_tool(
     let mut tx = pool.begin().await?;
     let (operation, contract, unit) = lock_operation_and_unit_for_fence(&mut tx, fence).await?;
     let worker = stage_worker_runs::finish_tool_cas(&mut *tx, fence, tool_call_record_id).await?;
-    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker).await?;
+    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker, "tool_finish").await?;
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "finish_worker_tool").await;
+    }
     Ok(worker)
 }
 
@@ -2328,8 +2506,19 @@ pub async fn finish_worker_attempt(
         None,
     )
     .await?;
-    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker).await?;
+    mirror_worker_if_required(
+        &mut tx,
+        &operation,
+        contract,
+        &unit,
+        &worker,
+        "attempt_finish",
+    )
+    .await?;
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "finish_worker_attempt").await;
+    }
     Ok(FinishedWorkerAttemptRow { unit, worker })
 }
 
@@ -2361,8 +2550,19 @@ pub async fn pause_worker_for_continuation(
         None,
     )
     .await?;
-    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker).await?;
+    mirror_worker_if_required(
+        &mut tx,
+        &operation,
+        contract,
+        &unit,
+        &worker,
+        "continuation_pause",
+    )
+    .await?;
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "pause_worker_for_continuation").await;
+    }
     Ok(FinishedWorkerAttemptRow { unit, worker })
 }
 
@@ -3240,6 +3440,7 @@ async fn finalize_unit_pass_in_transaction(
             code: "runtime_v2_not_enabled",
         });
     }
+    let attack_contract = frozen_attack_execution_contract(tx, input.fence.operation_id).await?;
     let locked_unit = load_runtime_unit_for_update(
         tx,
         input.fence.operation_id,
@@ -3271,8 +3472,13 @@ async fn finalize_unit_pass_in_transaction(
             &replayed.canonical_fact_refs,
         )
         .await?;
-        if let Some(command) = candidate_acceptance {
-            attack_candidates::accept_gate_passed_candidate_batch_with_connection(tx, command)
+        if let Some(command) = candidate_acceptance.as_ref() {
+            attack_candidates::accept_gate_passed_candidate_batch_with_connection(
+                tx,
+                command.clone(),
+            )
+            .await?;
+            attack_execution_shadow::persist_candidate_legacy_mirror(tx, &attack_contract, command)
                 .await?;
         }
         close_final_seal_memory_episode(
@@ -3472,8 +3678,13 @@ async fn finalize_unit_pass_in_transaction(
         },
     )
     .await?;
-    if let Some(command) = candidate_acceptance {
-        attack_candidates::accept_gate_passed_candidate_batch_with_connection(tx, command).await?;
+    let mut next_state_blob = operation.state_blob.clone();
+    let mut state_blob_changed = false;
+    if let Some(command) = candidate_acceptance.as_ref() {
+        attack_candidates::accept_gate_passed_candidate_batch_with_connection(tx, command.clone())
+            .await?;
+        attack_execution_shadow::persist_candidate_legacy_mirror(tx, &attack_contract, command)
+            .await?;
     }
     sqlx::query(
         r#"INSERT INTO org_stage_completions
@@ -3492,21 +3703,24 @@ async fn finalize_unit_pass_in_transaction(
     .await?;
     if contract_writes_legacy_mirror(contract) {
         let organization_name = frozen_organization_name(tx, &unit).await?;
-        let mut legacy_blob = operation.state_blob.clone();
         apply_legacy_final_seal_mirror(
-            &mut legacy_blob,
+            &mut next_state_blob,
             &unit,
             &worker,
             &handoff,
             &organization_name,
         );
+        state_blob_changed = true;
+    }
+    if state_blob_changed {
         write_locked_legacy_state_blob(
             tx,
             input.fence.operation_id,
             &operation.runtime_memory_contract,
-            &legacy_blob,
+            &next_state_blob,
         )
         .await?;
+        runtime_memory_shadow::persist_worker_sample(tx, worker.id, "final_seal").await?;
     }
     close_final_seal_memory_episode(tx, &operation, &unit, &worker, &handoff).await?;
     Ok(FinalizedUnitPassRow {
@@ -3518,6 +3732,16 @@ async fn finalize_unit_pass_in_transaction(
     })
 }
 
+/// Application bridge seam for composing Candidate whole-record shadow
+/// selection with the final seal under one transaction. Domain callers still
+/// use [`finalize_unit_pass`]; only the concrete DB bridge owns this executor.
+pub async fn finalize_unit_pass_with_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    input: &FinalizeUnitPassRow,
+) -> RuntimeMemoryStoreResult<FinalizedUnitPassRow> {
+    finalize_unit_pass_in_transaction(tx, input).await
+}
+
 /// The only compound runtime-memory path that may turn a post-Scoping Unit and
 /// Worker into PASS and publish evidence for downstream stages.
 pub async fn finalize_unit_pass(
@@ -3525,8 +3749,9 @@ pub async fn finalize_unit_pass(
     input: &FinalizeUnitPassRow,
 ) -> RuntimeMemoryStoreResult<FinalizedUnitPassRow> {
     let mut tx = pool.begin().await?;
-    let finalized = finalize_unit_pass_in_transaction(&mut tx, input).await?;
+    let finalized = finalize_unit_pass_with_transaction(&mut tx, input).await?;
     tx.commit().await?;
+    reconcile_deployment_rollouts_best_effort(pool, "finalize_unit_pass").await;
     Ok(finalized)
 }
 
@@ -3791,8 +4016,19 @@ pub async fn close_wave_gate_pass(
             &input.continuation_pass_watermark,
         )
         .await?;
-        mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker).await?;
+        mirror_worker_if_required(
+            &mut tx,
+            &operation,
+            contract,
+            &unit,
+            &worker,
+            "wave_continuation",
+        )
+        .await?;
         tx.commit().await?;
+        if contract_writes_legacy_mirror(contract) {
+            reconcile_deployment_rollouts_best_effort(pool, "close_wave_gate_pass").await;
+        }
         return Ok(ClosedWaveGatePassRow::WaitingBackground {
             unit,
             worker,
@@ -3802,6 +4038,9 @@ pub async fn close_wave_gate_pass(
 
     let finalized = finalize_unit_pass_in_transaction(&mut tx, &input.final_seal).await?;
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) || input.final_seal.candidate_acceptance.is_some() {
+        reconcile_deployment_rollouts_best_effort(pool, "close_wave_gate_pass").await;
+    }
     Ok(ClosedWaveGatePassRow::Finalized(finalized))
 }
 
@@ -3809,6 +4048,7 @@ pub async fn close_wave_gate_pass(
 pub(crate) struct StartupWorkerReaperStats {
     pub requeued: u64,
     pub recovery_required: u64,
+    pub shadow_samples_written: u64,
 }
 
 /// Reconcile expired V2 WorkerRuns while the startup task reaper owns one
@@ -3985,6 +4225,18 @@ pub(crate) async fn reap_expired_workers_on_startup(
                 &legacy_blob,
             )
             .await?;
+            for worker in recovery_required.iter().chain(&requeued) {
+                runtime_memory_shadow::persist_worker_sample(
+                    connection,
+                    worker.id,
+                    "startup_reaper",
+                )
+                .await?;
+            }
+            stats.shadow_samples_written += u64::try_from(recovery_required.len() + requeued.len())
+                .map_err(|_| RuntimeMemoryStoreError::Conflict {
+                    code: "startup_reaper_sample_count_overflow",
+                })?;
         }
     }
     Ok(stats)
@@ -4029,8 +4281,19 @@ pub async fn reap_expired_worker(
     let (disposition, worker) =
         stage_worker_runs::reap_expired_with_connection(&mut tx, input.worker_run_id).await?;
     validate_loaded_worker_identity(&worker, input, &unit)?;
-    mirror_worker_if_required(&mut tx, &operation, contract, &unit, &worker).await?;
+    mirror_worker_if_required(
+        &mut tx,
+        &operation,
+        contract,
+        &unit,
+        &worker,
+        "expired_worker_reap",
+    )
+    .await?;
     tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "reap_expired_worker").await;
+    }
     Ok((disposition, worker))
 }
 
@@ -4095,6 +4358,41 @@ async fn select_worker_checkpoint_locked(
     input: &LoadWorkerCheckpointRow,
 ) -> RuntimeMemoryStoreResult<LoadedWorkerCheckpointRow> {
     let v2 = stage_worker_runs::get_with_executor(connection, input.worker_run_id).await?;
+    if let Some(selected) = input.selected_source {
+        return match (contract, selected) {
+            (
+                runtime_memory_rollout::RuntimeMemoryContract::DualWriteV2Preferred
+                | runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+                RuntimeMemoryRecordSource::V2,
+            ) => {
+                let worker = v2.ok_or(RuntimeMemoryStoreError::Missing {
+                    entity: "stage_worker_runs",
+                })?;
+                validate_loaded_worker_identity(&worker, input, unit)?;
+                Ok(LoadedWorkerCheckpointRow {
+                    source: RuntimeMemoryRecordSource::V2,
+                    worker,
+                })
+            }
+            (
+                runtime_memory_rollout::RuntimeMemoryContract::DualWriteV2Preferred,
+                RuntimeMemoryRecordSource::LegacyFallback,
+            ) => Ok(LoadedWorkerCheckpointRow {
+                source: RuntimeMemoryRecordSource::LegacyFallback,
+                worker: legacy_worker_from_blob(operation, unit, input)?,
+            }),
+            (
+                runtime_memory_rollout::RuntimeMemoryContract::DualWriteLegacyRead,
+                RuntimeMemoryRecordSource::Legacy,
+            ) => Ok(LoadedWorkerCheckpointRow {
+                source: RuntimeMemoryRecordSource::Legacy,
+                worker: legacy_worker_from_blob(operation, unit, input)?,
+            }),
+            _ => Err(RuntimeMemoryStoreError::Conflict {
+                code: "selected_runtime_memory_source_contract_mismatch",
+            }),
+        };
+    }
     match contract {
         runtime_memory_rollout::RuntimeMemoryContract::LegacyV1 => {
             Err(RuntimeMemoryStoreError::Conflict {
@@ -4215,6 +4513,7 @@ pub async fn load_bound_worker_chain(
         stage_execution_id: input.stage_execution_id,
         stage_run_unit_id: input.stage_run_unit_id,
         worker_run_id: input.worker_run_id,
+        selected_source: input.selected_source,
     };
     let loaded =
         select_worker_checkpoint_locked(&mut tx, &operation, contract, &unit, &checkpoint_input)
@@ -4352,6 +4651,80 @@ mod tests {
         (db, data_dir)
     }
 
+    /// Full migrations leave both deployment defaults at rank-one sampling.
+    /// These rollout-transition unit tests deliberately exercise the legacy
+    /// predecessor, so their private database simulates a pre-cutover pair
+    /// without weakening the production pair/promotion triggers.
+    async fn reset_deployment_rollouts_to_legacy_for_test(db: &GolishDb) {
+        let mut tx = db
+            .pool()
+            .begin()
+            .await
+            .expect("begin rollout reset fixture");
+        sqlx::raw_sql(
+            r#"SET LOCAL session_replication_role = 'replica';
+               UPDATE runtime_memory_rollout
+                  SET contract='legacy_v1', contract_rank=0, row_version=0,
+                      updated_at=NOW()
+                WHERE singleton_id=1;
+               UPDATE attack_execution_rollout
+                  SET contract='legacy', rank=0, row_version=0, updated_at=NOW()
+                WHERE singleton=TRUE;
+               SET LOCAL session_replication_role = 'origin';"#,
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("reset deployment rollouts for predecessor-state unit fixture");
+        tx.commit().await.expect("commit rollout reset fixture");
+    }
+
+    /// Position a private test database at a deployment state whose promotion
+    /// semantics are covered by the dedicated retained-cohort suites.
+    async fn set_deployment_rollouts_to_v2_only_for_test(db: &GolishDb) {
+        let mut tx = db
+            .pool()
+            .begin()
+            .await
+            .expect("begin V2-only rollout fixture");
+        sqlx::raw_sql(
+            r#"SET LOCAL session_replication_role = 'replica';
+               UPDATE runtime_memory_rollout
+                  SET contract='v2_only', contract_rank=3, row_version=3,
+                      updated_at=NOW()
+                WHERE singleton_id=1;
+               UPDATE attack_execution_rollout
+                  SET contract='v2_only', rank=3, row_version=3, updated_at=NOW()
+                WHERE singleton=TRUE;
+               SET LOCAL session_replication_role = 'origin';"#,
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("position deployment rollouts at V2-only");
+        tx.commit().await.expect("commit V2-only rollout fixture");
+    }
+
+    async fn set_runtime_rollout_to_v2_preferred_for_test(db: &GolishDb) {
+        let mut tx = db
+            .pool()
+            .begin()
+            .await
+            .expect("begin V2-preferred rollout fixture");
+        sqlx::raw_sql(
+            r#"SET LOCAL session_replication_role = 'replica';
+               UPDATE runtime_memory_rollout
+                  SET contract='dual_write_v2_preferred', contract_rank=2,
+                      row_version=2, updated_at=NOW()
+                WHERE singleton_id=1;
+               SET LOCAL session_replication_role = 'origin';"#,
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("position runtime rollout at V2-preferred");
+        tx.commit()
+            .await
+            .expect("commit V2-preferred rollout fixture");
+    }
+
     async fn create_session(db: &GolishDb) -> Uuid {
         sessions::create(
             db.pool(),
@@ -4412,10 +4785,49 @@ mod tests {
         assert!(LOCK_WORKER_SQL.contains("stage_run_unit_id = $2"));
     }
 
+    #[test]
+    fn v2_only_reset_removes_every_legacy_checkpoint_namespace() {
+        let reset = v2_only_reset_state_blob(&serde_json::json!({
+            "eas_web_transport_failures": {"slot": {"attempts": 2}},
+            "graph_flow": {},
+            "profile": "assessment",
+            "current_stage": "target_intel",
+            "current_stage_run_id": Uuid::new_v4(),
+            "queue_titles": ["legacy"],
+            "completed_count": 1,
+            "continuity_adoption": {"legacy": true},
+            "schema_v": 1,
+            "stage_run_workers": {"legacy": true},
+            "stage_run_handoffs": {"legacy": true},
+            "agent_run": {"legacy": true}
+        }));
+
+        assert_eq!(reset["eas_web_transport_failures"]["slot"]["attempts"], 2);
+        for forbidden in [
+            "graph_flow",
+            "profile",
+            "current_stage",
+            "current_stage_run_id",
+            "queue_titles",
+            "completed_count",
+            "continuity_adoption",
+            "schema_v",
+            "stage_run_workers",
+            "stage_run_handoffs",
+            "agent_run",
+        ] {
+            assert!(
+                reset.get(forbidden).is_none(),
+                "V2-only reset retained {forbidden}: {reset}"
+            );
+        }
+    }
+
     #[tokio::test]
     #[serial]
     async fn runtime_memory_store_create_operation_freezes_rollout_and_project_scope() {
         let (mut db, _data_dir) = fixture("freeze").await;
+        reset_deployment_rollouts_to_legacy_for_test(&db).await;
         let session_id = create_session(&db).await;
         let scope = project_scopes::register_first_open(db.pool(), "/tmp/ws-a", "sha-ws-a")
             .await
@@ -4474,14 +4886,7 @@ mod tests {
         assert_eq!(initial_stage_runs[0].status, "started");
         assert_eq!(initial_stage_runs[0].id, initial_stage_execution_id);
 
-        runtime_memory_rollout::advance(
-            db.pool(),
-            runtime_memory_rollout::RuntimeMemoryContract::DualWriteLegacyRead,
-            runtime_memory_rollout::RuntimeMemoryContract::DualWriteV2Preferred,
-            1,
-        )
-        .await
-        .expect("advance global rollout again");
+        set_runtime_rollout_to_v2_preferred_for_test(&db).await;
         let frozen = operation_state::get(db.pool(), operation_id)
             .await
             .expect("read operation")
@@ -4496,36 +4901,13 @@ mod tests {
     #[serial]
     async fn cli_descendants_share_one_operation_and_snapshot() {
         let (mut db, _data_dir) = fixture("cli-one-operation").await;
+        set_deployment_rollouts_to_v2_only_for_test(&db).await;
         let session_id = create_session(&db).await;
         let project_path = "/tmp/runtime-v2-cli-one-operation";
         let project_scope =
             project_scopes::register_first_open(db.pool(), project_path, "cli-scope-sha")
                 .await
                 .expect("register CLI project scope");
-        let rollout = runtime_memory_rollout::advance(
-            db.pool(),
-            runtime_memory_rollout::RuntimeMemoryContract::LegacyV1,
-            runtime_memory_rollout::RuntimeMemoryContract::DualWriteLegacyRead,
-            0,
-        )
-        .await
-        .expect("enable V2-writing rollout");
-        let rollout = runtime_memory_rollout::advance(
-            db.pool(),
-            runtime_memory_rollout::RuntimeMemoryContract::DualWriteLegacyRead,
-            runtime_memory_rollout::RuntimeMemoryContract::DualWriteV2Preferred,
-            rollout.row_version,
-        )
-        .await
-        .expect("enable V2-preferred rollout");
-        runtime_memory_rollout::advance(
-            db.pool(),
-            runtime_memory_rollout::RuntimeMemoryContract::DualWriteV2Preferred,
-            runtime_memory_rollout::RuntimeMemoryContract::V2Only,
-            rollout.row_version,
-        )
-        .await
-        .expect("enable V2-only rollout");
         let root = organizations::create(db.pool(), project_path, "Root", None, "", "")
             .await
             .expect("create root");
@@ -4559,7 +4941,7 @@ mod tests {
             };
         let operation_id = Uuid::new_v4();
         let stage_execution_id = Uuid::new_v4();
-        create_runtime_operation(
+        let created = create_runtime_operation(
             db.pool(),
             &CreateRuntimeOperationRow {
                 operation_id,
@@ -4591,6 +4973,14 @@ mod tests {
         )
         .await
         .expect("create operation and freeze CLI snapshot atomically");
+        assert_eq!(created.operation.runtime_memory_contract, "v2_only");
+        assert_eq!(
+            operation_state::get_attack_execution_contract(db.pool(), operation_id)
+                .await
+                .expect("read frozen attack execution contract")
+                .map(|contract| contract.as_str()),
+            Some("v2_only")
+        );
         let seeded = seed_stage_runtime(
             db.pool(),
             &SeedStageRuntimeRow {
@@ -4598,11 +4988,12 @@ mod tests {
                 stage_execution_id,
                 stage_kind: "target_intel".to_string(),
                 unit_generation: 1,
-                specialist: "intel_analyst".to_string(),
+                specialist: "recon".to_string(),
                 worker_generation: 1,
                 work_item_kind: "organization".to_string(),
                 work_item_key: "target_intel".to_string(),
                 agent_path_prefix: "main>stage_run:target_intel".to_string(),
+                organization_ids: None,
             },
         )
         .await
@@ -4625,41 +5016,60 @@ mod tests {
                 && runtime.unit.scope_snapshot_id == snapshot.snapshot.id
         }));
 
-        let no_tool_lease = Uuid::new_v4();
-        let active_tool_lease = Uuid::new_v4();
-        for (worker, lease) in [
-            (&seeded[0].worker, no_tool_lease),
-            (&seeded[1].worker, active_tool_lease),
-        ] {
+        let mut claimed = Vec::with_capacity(seeded.len());
+        for (index, runtime) in seeded.iter().enumerate() {
+            claimed.push(
+                claim_worker_and_bind_chain(
+                    db.pool(),
+                    &ClaimWorkerAndBindChainRow {
+                        operation_id,
+                        stage_execution_id,
+                        stage_run_unit_id: runtime.unit.id,
+                        worker_run_id: runtime.worker.id,
+                        expected_unit_status: stage_run_units::StageRunUnitStatus::Queued,
+                        expected_unit_row_version: runtime.unit.row_version,
+                        expected_worker_status: stage_worker_runs::StageWorkerRunStatus::Queued,
+                        expected_attempt_epoch: runtime.worker.attempt_epoch,
+                        session_id,
+                        subtask_id: None,
+                        agent: AgentType::Pentester,
+                        model: None,
+                        provider: None,
+                        parent_chain_id: None,
+                        lease_owner: format!("runtime-{index}"),
+                        lease_seconds: 3_600,
+                        initial_chain: serde_json::json!([]),
+                        initial_checkpoint: serde_json::json!({"turn": 0}),
+                    },
+                )
+                .await
+                .expect("claim worker and bind exact chain"),
+            );
+        }
+        for worker in [&claimed[0].worker, &claimed[1].worker] {
             sqlx::query(
                 r#"UPDATE stage_worker_runs
-                      SET status='running', lease_token=$2, lease_owner='dead-runtime',
+                      SET lease_owner='dead-runtime',
                           lease_acquired_at=NOW()-INTERVAL '2 hours',
                           lease_expires_at=NOW()-INTERVAL '1 hour',
                           heartbeat_at=NOW()-INTERVAL '1 hour',
-                          attempt_epoch=1, started_at=NOW()-INTERVAL '2 hours'
-                    WHERE id=$1"#,
+                          started_at=NOW()-INTERVAL '2 hours'
+                    WHERE id=$1 AND lease_token=$2"#,
             )
             .bind(worker.id)
-            .bind(lease)
+            .bind(worker.lease_token.expect("claimed lease token"))
             .execute(db.pool())
             .await
-            .expect("seed expired worker lease");
+            .expect("age claimed worker lease");
         }
-        let live_lease = Uuid::new_v4();
-        sqlx::query(
-            r#"UPDATE stage_worker_runs
-                  SET status='running', lease_token=$2, lease_owner='live-runtime',
-                      lease_acquired_at=NOW(),
-                      lease_expires_at=NOW()+INTERVAL '1 hour',
-                      heartbeat_at=NOW(), attempt_epoch=1, started_at=NOW()
-                WHERE id=$1"#,
-        )
-        .bind(seeded[2].worker.id)
-        .bind(live_lease)
-        .execute(db.pool())
-        .await
-        .expect("seed live worker lease");
+        let active_tool_lease = claimed[1]
+            .worker
+            .lease_token
+            .expect("active-tool worker lease token");
+        let live_lease = claimed[2]
+            .worker
+            .lease_token
+            .expect("live worker lease token");
         let active_tool_id = crate::repo::tool_calls::record_tracked_start(
             db.pool(),
             "startup-reaper-active-tool",
@@ -4674,7 +5084,7 @@ mod tests {
                 stage_run_unit_id: Some(seeded[1].unit.id),
                 worker_run_id: Some(seeded[1].worker.id),
                 organization_id: Some(seeded[1].unit.organization_id),
-                attempt_epoch: Some(1),
+                attempt_epoch: Some(claimed[1].worker.attempt_epoch),
                 lease_token: Some(active_tool_lease),
             }),
         )
@@ -4792,7 +5202,7 @@ mod tests {
                 next_state_blob: serde_json::json!({
                     "graph_flow": {"next_node": "target_intel", "state": {}}
                 }),
-                replacement_specialist: Some("intel_analyst".to_string()),
+                replacement_specialist: Some("recon".to_string()),
                 replacement_stage_execution_id: Some(replacement_stage_execution_id),
             },
         )
@@ -4961,15 +5371,9 @@ mod tests {
             .expect("register project scope");
         let operation_id = Uuid::new_v4();
         let initial_stage_execution_id = Uuid::new_v4();
-        operation_state::insert(
-            db.pool(),
-            operation_id,
-            "preexisting",
-            "scoping",
-            "legacy_v1",
-        )
-        .await
-        .expect("seed duplicate operation identity");
+        operation_state::insert(db.pool(), operation_id, "preexisting", "scoping", "v2_only")
+            .await
+            .expect("seed duplicate operation identity");
 
         let result = create_runtime_operation(
             db.pool(),
@@ -5011,6 +5415,7 @@ mod tests {
     #[serial]
     async fn runtime_memory_store_stage_transition_is_atomic_and_has_one_active_execution() {
         let (mut db, _data_dir) = fixture("stage-transition").await;
+        set_deployment_rollouts_to_v2_only_for_test(&db).await;
         let (operation_id, initial_stage_execution_id) =
             create_operation_at(&db, "stage-transition", "scoping").await;
         let next_stage_execution_id = Uuid::new_v4();
@@ -5038,14 +5443,19 @@ mod tests {
         );
         assert_eq!(transitioned.current_stage_execution.status, "started");
         assert_eq!(transitioned.operation.current_stage, "target_intel");
-        assert_eq!(
-            transitioned.operation.state_blob["current_stage"],
-            "target_intel"
-        );
-        assert_eq!(
-            transitioned.operation.state_blob["current_stage_run_id"],
-            next_stage_execution_id.to_string(),
-            "legacy resume mirror must rotate in the same transaction"
+        assert_eq!(transitioned.operation.runtime_memory_contract, "v2_only");
+        assert!(
+            transitioned
+                .operation
+                .state_blob
+                .get("current_stage")
+                .is_none()
+                && transitioned
+                    .operation
+                    .state_blob
+                    .get("current_stage_run_id")
+                    .is_none(),
+            "V2-only transition must not recreate legacy checkpoint fields"
         );
         assert_eq!(
             transitioned.operation.stage_started_at,
@@ -5130,7 +5540,7 @@ mod tests {
             occupied_operation_id,
             "legacy",
             "scoping",
-            "legacy_v1",
+            "v2_only",
         )
         .await
         .expect("insert operation owning occupied stage identity");
@@ -5274,6 +5684,7 @@ mod tests {
     #[serial]
     async fn runtime_memory_store_rollout_rejects_skip_downgrade_and_stale_version() {
         let (mut db, _data_dir) = fixture("rollout").await;
+        reset_deployment_rollouts_to_legacy_for_test(&db).await;
         let skip = runtime_memory_rollout::advance(
             db.pool(),
             runtime_memory_rollout::RuntimeMemoryContract::LegacyV1,

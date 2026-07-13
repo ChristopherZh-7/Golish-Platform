@@ -44,7 +44,7 @@
 
 - **读写 base 必须 lockstep**：写侧（`golish-agent-app` session init）与读侧（本模块）用同一解析顺序——home-only 默认会漏掉从真实 workspace 启动的 run（"没日志"症状根因）。
 - **lazy 读时计算**：不在 run 期写，故不阻塞 agent loop；`HarnessTrace` 决策经正常事件路径落 `transcript.json`。
-- `HarnessTraceKind` 新增分支时同步更新 `summarize_event`，否则 `render_timeline` / `decision_records_json` 无法给 AI 或人展示可读摘要；`StageRefinerDecision` 渲染为 `refiner <repair_kind> actions=<n> gaps=<n> hash=<hash>`，`RuntimeSupervisorDecision` 渲染为 `runtime_supervisor <mode> <tool>x<count> <strategy_kind> actions=<n> injected=<bool> hash=<hash>`。
+- `HarnessTraceKind` 新增分支时同步更新 `summarize_event`，否则 `render_timeline` / `decision_records_json` 无法给 AI 或人展示可读摘要；`StageRefinerDecision` 渲染为 `refiner <repair_kind> actions=<n> gaps=<n> hash=<hash>`，`RuntimeSupervisorDecision` 渲染为 `runtime_supervisor <mode> <tool>x<count> <strategy_kind> actions=<n> injected=<bool> hash=<hash>`。Candidate pipeline 只渲染 `candidate_attempt <id> <status> evidence=<n> deltas=<n> replayed=<bool>` 与 `attack_wave <source> -> <target|-> <decision> accepted/rejected/residuals/replayed`，不展开 plan/evidence/lease payload。
 - 容忍 legacy 整文件 JSON 数组 + 跳过不可解析行（截断标记/半写尾行），不整体失败。
 
 ## 测试入口

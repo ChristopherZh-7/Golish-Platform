@@ -10,6 +10,7 @@ pub const ATTACK_REVIEW_SCOPE_MISMATCH: &str = "ATTACK_REVIEW_SCOPE_MISMATCH";
 pub const ATTACK_APPROVAL_EXPIRED: &str = "ATTACK_APPROVAL_EXPIRED";
 pub const ATTACK_REVIEW_ALREADY_CLOSED: &str = "ATTACK_REVIEW_ALREADY_CLOSED";
 pub const ATTACK_RESUME_NOT_READY: &str = "ATTACK_RESUME_NOT_READY";
+pub const ATTACK_ATTEMPT_FUEL_EXHAUSTED: &str = "ATTACK_ATTEMPT_FUEL_EXHAUSTED";
 pub const DEFAULT_REVIEW_DISPATCH_STALE_SECONDS: i64 = 300;
 
 #[derive(Debug, Clone, sqlx::FromRow, PartialEq)]
@@ -137,6 +138,7 @@ struct ReviewAuthority {
     project_path_at_freeze: String,
     runtime_memory_contract: String,
     attack_execution_contract: String,
+    max_attempts_total: i32,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -180,6 +182,19 @@ fn review_error(code: &'static str, message: impl Into<String>) -> crate::DbErro
     crate::DbError::Other(anyhow::anyhow!(format!("{code}: {}", message.into())))
 }
 
+fn review_reservation_batch_fits(
+    current: i64,
+    fresh_approvals: usize,
+    retryable_backlog: i64,
+    cap: i32,
+) -> bool {
+    i64::try_from(fresh_approvals)
+        .ok()
+        .and_then(|fresh| current.checked_add(fresh))
+        .and_then(|projected| projected.checked_add(retryable_backlog))
+        .is_some_and(|projected| projected <= i64::from(cap))
+}
+
 pub fn stable_review_error_code(error: &crate::DbError) -> Option<&'static str> {
     let message = error.to_string();
     [
@@ -188,6 +203,7 @@ pub fn stable_review_error_code(error: &crate::DbError) -> Option<&'static str> 
         ATTACK_APPROVAL_EXPIRED,
         ATTACK_REVIEW_ALREADY_CLOSED,
         ATTACK_RESUME_NOT_READY,
+        ATTACK_ATTEMPT_FUEL_EXHAUSTED,
     ]
     .into_iter()
     .find(|code| message.starts_with(code))
@@ -198,6 +214,18 @@ async fn lock_authority(
     operation_id: Uuid,
     wave_run_id: Uuid,
 ) -> crate::Result<ReviewAuthority> {
+    let operation_lock: Option<Uuid> = sqlx::query_scalar(
+        "SELECT operation_id FROM operation_state WHERE operation_id=$1 FOR UPDATE",
+    )
+    .bind(operation_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if operation_lock.is_none() {
+        return Err(review_error(
+            ATTACK_REVIEW_SCOPE_MISMATCH,
+            "operation authority did not match",
+        ));
+    }
     let authority = sqlx::query_as::<_, ReviewAuthority>(
         r#"SELECT operation.operation_id,
                   operation.project_scope_id,
@@ -206,7 +234,8 @@ async fn lock_authority(
                   operation.profile,
                   snapshot.project_path_at_freeze,
                   operation.runtime_memory_contract,
-                  operation.attack_execution_contract
+                  operation.attack_execution_contract,
+                  wave.max_attempts_total
              FROM attack_wave_runs wave
              JOIN operation_state operation
                ON operation.operation_id=wave.operation_id
@@ -565,7 +594,9 @@ async fn refresh_barrier(
             .fetch_one(&mut **tx)
             .await?;
     }
-    let wave_status = if fully_reviewed {
+    let wave_status = if counts.review_ready_unit_count != counts.wave_unit_count {
+        "open"
+    } else if fully_reviewed {
         "verification"
     } else {
         "review"
@@ -655,6 +686,52 @@ pub async fn review_wave_candidates(
         return Err(review_error(
             ATTACK_REVIEW_SCOPE_MISMATCH,
             "review decisions must exactly cover the current proposed Candidate snapshot",
+        ));
+    }
+    let fresh_approval_count = if proposed_ids.is_empty() {
+        0
+    } else {
+        command
+            .decisions
+            .iter()
+            .filter(|decision| decision.approve)
+            .count()
+    };
+    let (effective_attempt_fuel, retryable_backlog): (i64, i64) = sqlx::query_as(
+        r#"SELECT
+               (SELECT COUNT(*) FROM candidate_attempts
+                 WHERE operation_id=$1)
+               +
+               (SELECT COUNT(*) FROM attack_candidates AS candidate
+                 WHERE candidate.operation_uuid=$1
+                   AND candidate.disposition='approved'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM candidate_attempts AS attempt
+                        WHERE attempt.candidate_id=candidate.candidate_id
+                   )),
+               (SELECT COUNT(*) FROM attack_candidates AS candidate
+                 WHERE candidate.operation_uuid=$1
+                   AND candidate.disposition='approved'
+                   AND (
+                       SELECT latest.status
+                         FROM candidate_attempts AS latest
+                        WHERE latest.candidate_id=candidate.candidate_id
+                        ORDER BY latest.ordinal DESC
+                        LIMIT 1
+                   )='retryable_failed')"#,
+    )
+    .bind(authority.operation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !review_reservation_batch_fits(
+        effective_attempt_fuel,
+        fresh_approval_count,
+        retryable_backlog,
+        authority.max_attempts_total,
+    ) {
+        return Err(review_error(
+            ATTACK_ATTEMPT_FUEL_EXHAUSTED,
+            "review batch cannot reserve every approved Candidate first Attempt",
         ));
     }
     let operator_id: Uuid = sqlx::query_scalar(
@@ -1096,4 +1173,18 @@ pub async fn reap_stale_candidate_review_dispatches(
     .execute(pool)
     .await?;
     Ok(result.rows_affected())
+}
+
+#[cfg(test)]
+mod fuel_tests {
+    use super::review_reservation_batch_fits;
+
+    #[test]
+    fn review_approval_batch_reserves_every_first_attempt_atomically() {
+        assert!(review_reservation_batch_fits(1, 1, 1, 3));
+        assert!(!review_reservation_batch_fits(1, 2, 1, 3));
+        assert!(review_reservation_batch_fits(3, 0, 0, 3));
+        assert!(!review_reservation_batch_fits(2, 0, 2, 3));
+        assert!(!review_reservation_batch_fits(i64::MAX, 1, 0, i32::MAX));
+    }
 }

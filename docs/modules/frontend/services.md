@@ -31,7 +31,7 @@
 |---|---|
 | `ai-events/registry.ts` | 处理器注册表 + dispatch |
 | `ai-events/{core,context,tool,task,workflow,sub-agent,misc}-handlers.ts` | 按类别的事件处理器 |
-| `ai-events/harness-handlers.ts` | harness_trace → store；`stage_run_org_progress` 解析所属 requestId，Candidate/Reporting trace 只写 refresh hint |
+| `ai-events/harness-handlers.ts` | harness_trace → store；`stage_run_org_progress` 解析所属 requestId，Candidate review/Attempt terminal/Wave consolidation与 Reporting trace只写 refresh hint |
 | `ai-events/session-sequence.ts` | 按 seq 有序处理 |
 | `terminal-events.ts` | 终端事件服务 |
 
@@ -42,7 +42,7 @@
 ## 注意事项 / 坑
 
 - **wire 契约对齐**：handler 处理的事件类型对应后端 `golish-core::events::AiEvent`（ts-rs 生成）；后端加事件变体要在此加 handler。
-- `candidate_review_required/resumed` 不是审批 authority；handler 只能更新 `Session.candidateReviewHint`，组件随后重读 DB API。
+- `candidate_review_required/resumed`、`candidate_attempt_terminalized`、`attack_wave_consolidated` 都不是审批/Attempt/Wave authority；handler 只能更新已存在的 `Session.candidateReviewHint`，组件随后重读 DB API。terminal trace 用自己的 `wave_run_id`，consolidation trace 用 `source_wave_run_id` 做 exact match；operation/wave 不匹配或 hint 尚不存在时不得创建假 cursor，匹配时也必须保留现有 `resumeVersion`。
 - Reporting 的 `gate_decision` / `deliverable_submitted` 也不是报告 authority；仅当 outer `stage=reporting` 时更新 `Session.reportingReadModelHint`，报告内容、CAS 与 finalization 一律由 scoped IPC/DB 重验。
 - `session-sequence` 依赖后端 envelope 的 seq 保证有序——别绕过它直接处理乱序事件。
 - `tool_result.result.status === "backgrounded"` 要走 live/non-terminal 路由：登记 `backgroundJobs`，timeline / streaming block 标 `backgrounded`，等 `tool_background_completed` 再按 `job_id` 翻终态；聊天气泡侧同样按 requestId/jobId 回填，避免 success=true 的 backgrounded 工具显示绿勾。

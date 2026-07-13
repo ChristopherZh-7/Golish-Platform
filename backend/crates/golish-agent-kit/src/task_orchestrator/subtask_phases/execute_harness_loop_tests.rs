@@ -16,6 +16,8 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::db_traits::*;
+use crate::harness::graph_engine::{Checkpointer, Executor, RunOutcome};
+use crate::harness::operation_flow::{build_operation_flow_graph, OperationFlowState};
 use crate::harness::StageKind;
 use crate::task_orchestrator::{
     AgentExecutor, AgentResult, ExecutionContext, PlannedSubtask, TaskOrchestrator,
@@ -40,10 +42,17 @@ struct MemRepo {
     /// In-memory `tasks` table for the P1 `fail_task_if_active` tests.
     tasks: Mutex<HashMap<Uuid, TaskView>>,
     submissions: Mutex<HashMap<Uuid, PersistedStageDeliverableSubmission>>,
+    attack_execution_contract: Mutex<golish_core::AttackExecutionContract>,
     candidate_review_barrier: Mutex<Option<AttackV2ReviewBarrierView>>,
+    candidate_review_reads: AtomicUsize,
+    verification_truth: Mutex<Option<crate::harness::attack_execution::VerificationTruthSet>>,
+    wave_consolidation: Mutex<Option<AttackV2WaveConsolidationView>>,
+    wave_consolidation_calls: AtomicUsize,
+    fail_wave_consolidation: AtomicBool,
     reporting_truth: Mutex<Option<crate::harness::ReportingGateTruth>>,
     reporting_build_calls: AtomicUsize,
     reporting_gate_reads: AtomicUsize,
+    state_blob_write_count: AtomicUsize,
 }
 
 struct ExhaustedStageRunExecutor {
@@ -170,10 +179,17 @@ impl MemRepo {
             wiki_search_calls: AtomicUsize::new(0),
             tasks: Mutex::new(HashMap::new()),
             submissions: Mutex::new(HashMap::new()),
+            attack_execution_contract: Mutex::new(golish_core::AttackExecutionContract::Legacy),
             candidate_review_barrier: Mutex::new(None),
+            candidate_review_reads: AtomicUsize::new(0),
+            verification_truth: Mutex::new(None),
+            wave_consolidation: Mutex::new(None),
+            wave_consolidation_calls: AtomicUsize::new(0),
+            fail_wave_consolidation: AtomicBool::new(false),
             reporting_truth: Mutex::new(None),
             reporting_build_calls: AtomicUsize::new(0),
             reporting_gate_reads: AtomicUsize::new(0),
+            state_blob_write_count: AtomicUsize::new(0),
         })
     }
 
@@ -204,6 +220,51 @@ impl MemRepo {
 
     fn set_candidate_review_barrier(&self, barrier: AttackV2ReviewBarrierView) {
         *self.candidate_review_barrier.lock().unwrap() = Some(barrier);
+    }
+
+    fn enable_exact_candidate_v2(&self, operation_id: Uuid) {
+        self.op_state
+            .lock()
+            .unwrap()
+            .get_mut(&operation_id)
+            .expect("fixture operation")
+            .runtime_memory_contract = crate::runtime_memory::RuntimeMemoryContract::V2Only;
+        *self.attack_execution_contract.lock().unwrap() =
+            golish_core::AttackExecutionContract::V2Only;
+    }
+
+    fn set_state_blob(&self, operation_id: Uuid, state_blob: serde_json::Value) {
+        self.op_state
+            .lock()
+            .unwrap()
+            .get_mut(&operation_id)
+            .expect("fixture operation")
+            .state_blob = state_blob;
+    }
+
+    fn state_blob(&self, operation_id: Uuid) -> serde_json::Value {
+        self.op_state
+            .lock()
+            .unwrap()
+            .get(&operation_id)
+            .expect("fixture operation")
+            .state_blob
+            .clone()
+    }
+
+    fn set_verification_truth(
+        &self,
+        truth: crate::harness::attack_execution::VerificationTruthSet,
+    ) {
+        *self.verification_truth.lock().unwrap() = Some(truth);
+    }
+
+    fn set_wave_consolidation(&self, result: AttackV2WaveConsolidationView) {
+        *self.wave_consolidation.lock().unwrap() = Some(result);
+    }
+
+    fn fail_next_wave_consolidation(&self) {
+        self.fail_wave_consolidation.store(true, Ordering::SeqCst);
     }
 
     fn set_reporting_truth(&self, truth: crate::harness::ReportingGateTruth) {
@@ -253,7 +314,7 @@ impl RuntimeMemoryRepository for MemRepo {
         &self,
         _operation_id: Uuid,
     ) -> Result<golish_core::AttackExecutionContract, RuntimeMemoryError> {
-        Ok(golish_core::AttackExecutionContract::Legacy)
+        Ok(*self.attack_execution_contract.lock().unwrap())
     }
 
     async fn project_scope_register_first_open(
@@ -479,17 +540,59 @@ impl DbRepoProvider for MemRepo {
         }
         Ok(())
     }
+    async fn operation_state_write_state_blob(
+        &self,
+        operation_id: Uuid,
+        state_blob: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        self.state_blob_write_count.fetch_add(1, Ordering::SeqCst);
+        self.set_state_blob(operation_id, state_blob);
+        Ok(())
+    }
 
     async fn attack_v2_review_barrier_for_operation(
         &self,
         operation_id: Uuid,
     ) -> anyhow::Result<AttackV2ReviewBarrierView> {
+        self.candidate_review_reads.fetch_add(1, Ordering::SeqCst);
         self.candidate_review_barrier
             .lock()
             .unwrap()
             .clone()
             .filter(|barrier| barrier.operation_id == operation_id)
             .ok_or_else(|| anyhow::anyhow!("ATTACK_V2_REVIEW_REPO_UNAVAILABLE"))
+    }
+
+    async fn attack_v2_verification_truth_for_operation(
+        &self,
+        operation_id: Uuid,
+        _organization_id: Option<Uuid>,
+    ) -> anyhow::Result<Option<crate::harness::attack_execution::VerificationTruthSet>> {
+        Ok(self
+            .verification_truth
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|truth| truth.authority.operation_id == operation_id))
+    }
+
+    async fn attack_v2_consolidate_wave(
+        &self,
+        input: AttackV2ConsolidateWave,
+    ) -> anyhow::Result<AttackV2WaveConsolidationView> {
+        self.wave_consolidation_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_wave_consolidation.swap(false, Ordering::SeqCst) {
+            anyhow::bail!("injected consolidation failure");
+        }
+        self.wave_consolidation
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|result| {
+                result.scope_snapshot_id == input.scope_snapshot_id
+                    && result.source_wave_run_id == input.source_wave_run_id
+            })
+            .ok_or_else(|| anyhow::anyhow!("ATTACK_V2_CONSOLIDATION_UNAVAILABLE"))
     }
 
     async fn reporting_build_validated_revision(
@@ -896,6 +999,118 @@ fn candidate_for_test(hypothesis: &str) -> crate::harness::AttackCandidate {
     .expect("candidate parses")
 }
 
+fn exact_verification_truth(
+    operation_id: Uuid,
+) -> crate::harness::attack_execution::VerificationTruthSet {
+    use crate::harness::attack_execution::{
+        VerificationTruthAuthority, VerificationTruthSet, VerificationTruthSnapshot,
+        VerificationUnitAuthority,
+    };
+
+    let scope_snapshot_id = Uuid::new_v4();
+    let wave_run_id = Uuid::new_v4();
+    let wave_unit_id = Uuid::new_v4();
+    let organization_id = Uuid::new_v4();
+    VerificationTruthSet {
+        authority: VerificationTruthAuthority {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id,
+            expected_units: vec![VerificationUnitAuthority {
+                wave_unit_id,
+                organization_id,
+            }],
+        },
+        snapshots: vec![VerificationTruthSnapshot {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id,
+            wave_unit_id,
+            organization_id,
+            review_closed: true,
+            pending_work_items: 0,
+            approved_ever: 0,
+            attempts: Vec::new(),
+            residual_risks: Vec::new(),
+        }],
+    }
+}
+
+fn exact_verification_truth_with_attempts(
+    operation_id: Uuid,
+    attempts: Vec<crate::harness::attack_execution::AttemptTerminalTruth>,
+) -> crate::harness::attack_execution::VerificationTruthSet {
+    let mut truth = exact_verification_truth(operation_id);
+    truth.snapshots[0].approved_ever =
+        u32::try_from(attempts.len()).expect("fixture attempt count fits u32");
+    truth.snapshots[0].attempts = attempts;
+    truth
+}
+
+fn verified_attempt() -> crate::harness::attack_execution::AttemptTerminalTruth {
+    crate::harness::attack_execution::AttemptTerminalTruth {
+        candidate_id: Uuid::new_v4(),
+        attempt_id: Uuid::new_v4(),
+        candidate_plan_hash: "verified-plan".to_string(),
+        status: "verified".to_string(),
+        proof_evidence_ids: vec![901],
+        refutation_evidence_ids: Vec::new(),
+        blocker_evidence_ids: Vec::new(),
+        blocker_reason_code: None,
+        finding_id: Some(Uuid::new_v4()),
+        finding_lineage_exact: true,
+    }
+}
+
+fn refuted_attempt() -> crate::harness::attack_execution::AttemptTerminalTruth {
+    crate::harness::attack_execution::AttemptTerminalTruth {
+        candidate_id: Uuid::new_v4(),
+        attempt_id: Uuid::new_v4(),
+        candidate_plan_hash: "refuted-plan".to_string(),
+        status: "refuted".to_string(),
+        proof_evidence_ids: Vec::new(),
+        refutation_evidence_ids: vec![902],
+        blocker_evidence_ids: Vec::new(),
+        blocker_reason_code: None,
+        finding_id: None,
+        finding_lineage_exact: false,
+    }
+}
+
+fn blocked_attempt() -> crate::harness::attack_execution::AttemptTerminalTruth {
+    crate::harness::attack_execution::AttemptTerminalTruth {
+        candidate_id: Uuid::new_v4(),
+        attempt_id: Uuid::new_v4(),
+        candidate_plan_hash: "blocked-plan".to_string(),
+        status: "blocked".to_string(),
+        proof_evidence_ids: Vec::new(),
+        refutation_evidence_ids: Vec::new(),
+        blocker_evidence_ids: Vec::new(),
+        blocker_reason_code: Some("scope_blocked".to_string()),
+        finding_id: None,
+        finding_lineage_exact: false,
+    }
+}
+
+fn consolidation_for(
+    truth: &crate::harness::attack_execution::VerificationTruthSet,
+    decision_kind: &str,
+    target_wave_run_id: Option<Uuid>,
+) -> AttackV2WaveConsolidationView {
+    AttackV2WaveConsolidationView {
+        operation_id: truth.authority.operation_id,
+        scope_snapshot_id: truth.authority.scope_snapshot_id,
+        consolidation_id: Uuid::new_v4(),
+        source_wave_run_id: truth.authority.wave_run_id,
+        target_wave_run_id,
+        decision_kind: decision_kind.to_string(),
+        accepted_fact_delta_count: usize::from(target_wave_run_id.is_some()),
+        rejected_fact_delta_count: 0,
+        residual_risk_count: 0,
+        replayed: false,
+    }
+}
+
 fn drain(rx: &mut mpsc::UnboundedReceiver<AiEvent>) -> Vec<AiEvent> {
     let mut out = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -1253,6 +1468,197 @@ async fn non_verification_pass_never_opens_wave() {
     assert!(!orch.stage_outcome_acc.expect("acc set").reopen_wave);
 }
 
+#[tokio::test]
+async fn exact_v2_verification_uses_durable_opened_next_wave_decision() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "verification");
+    repo.enable_exact_candidate_v2(operation_id);
+    let truth = exact_verification_truth(operation_id);
+    let target_wave_run_id = Uuid::new_v4();
+    repo.set_verification_truth(truth.clone());
+    repo.set_wave_consolidation(consolidation_for(
+        &truth,
+        "opened_next_wave",
+        Some(target_wave_run_id),
+    ));
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(operation_id, pass(StageKind::Verification))
+        .await;
+
+    let flow = orchestrator.stage_outcome_acc.expect("flow outcome");
+    assert!(flow.gate_allowed);
+    assert!(flow.made_progress);
+    assert!(flow.reopen_wave);
+    assert!(flow.durable_wave_cursor);
+    assert_eq!(repo.wave_consolidation_calls.load(Ordering::SeqCst), 1);
+    assert!(drain(&mut rx).iter().any(|event| matches!(
+        event,
+        AiEvent::HarnessTrace {
+            trace: golish_core::events::HarnessTraceKind::AttackWaveConsolidated {
+                source_wave_run_id,
+                target_wave_run_id: emitted_target,
+                decision_kind,
+                ..
+            },
+            ..
+        } if source_wave_run_id == &truth.authority.wave_run_id.to_string()
+            && emitted_target.as_deref() == Some(target_wave_run_id.to_string().as_str())
+            && decision_kind == "opened_next_wave"
+    )));
+}
+
+#[tokio::test]
+async fn exact_v2_verification_closed_no_delta_does_not_reopen() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "verification");
+    repo.enable_exact_candidate_v2(operation_id);
+    let truth = exact_verification_truth(operation_id);
+    repo.set_verification_truth(truth.clone());
+    repo.set_wave_consolidation(consolidation_for(&truth, "closed_no_delta", None));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(operation_id, pass(StageKind::Verification))
+        .await;
+
+    let flow = orchestrator.stage_outcome_acc.expect("flow outcome");
+    assert!(flow.gate_allowed);
+    assert!(
+        !flow.made_progress,
+        "checked-empty Verification must take the normal Reporting branch"
+    );
+    assert!(!flow.reopen_wave);
+    assert!(flow.durable_wave_cursor);
+    assert_eq!(repo.wave_consolidation_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn exact_v2_closed_no_delta_routes_to_access_validation_only_for_verified_finding_truth() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "verification");
+    repo.enable_exact_candidate_v2(operation_id);
+    let truth = exact_verification_truth_with_attempts(operation_id, vec![verified_attempt()]);
+    repo.set_verification_truth(truth.clone());
+    repo.set_wave_consolidation(consolidation_for(&truth, "closed_no_delta", None));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo, Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(operation_id, pass(StageKind::Verification))
+        .await;
+
+    let flow = orchestrator.stage_outcome_acc.expect("flow outcome");
+    assert!(flow.gate_allowed);
+    assert!(
+        flow.made_progress,
+        "verified Finding truth takes the main branch"
+    );
+    assert!(!flow.reopen_wave);
+}
+
+#[tokio::test]
+async fn exact_v2_closed_no_delta_routes_all_refuted_and_blocked_truth_to_reporting() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "verification");
+    repo.enable_exact_candidate_v2(operation_id);
+    let truth = exact_verification_truth_with_attempts(
+        operation_id,
+        vec![refuted_attempt(), blocked_attempt()],
+    );
+    repo.set_verification_truth(truth.clone());
+    repo.set_wave_consolidation(consolidation_for(&truth, "closed_no_delta", None));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo, Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(operation_id, pass(StageKind::Verification))
+        .await;
+
+    let flow = orchestrator.stage_outcome_acc.expect("flow outcome");
+    assert!(flow.gate_allowed);
+    assert!(
+        !flow.made_progress,
+        "terminal non-findings must not be promoted into access validation"
+    );
+    assert!(!flow.reopen_wave);
+}
+
+#[tokio::test]
+async fn exact_v2_exhausted_always_routes_to_reporting_even_with_verified_truth_and_residuals() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "verification");
+    repo.enable_exact_candidate_v2(operation_id);
+    let truth = exact_verification_truth_with_attempts(operation_id, vec![verified_attempt()]);
+    repo.set_verification_truth(truth.clone());
+    let mut consolidation = consolidation_for(&truth, "exhausted", None);
+    consolidation.accepted_fact_delta_count = 2;
+    consolidation.residual_risk_count = 3;
+    repo.set_wave_consolidation(consolidation);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo, Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(operation_id, pass(StageKind::Verification))
+        .await;
+
+    let flow = orchestrator.stage_outcome_acc.expect("flow outcome");
+    assert!(flow.gate_allowed);
+    assert!(
+        !flow.made_progress,
+        "fuel exhaustion is terminal and must take the normal Reporting branch"
+    );
+    assert!(!flow.reopen_wave);
+    assert!(flow.durable_wave_cursor);
+}
+
+#[tokio::test]
+async fn exact_v2_verification_consolidation_failure_blocks() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "verification");
+    repo.enable_exact_candidate_v2(operation_id);
+    let truth = exact_verification_truth(operation_id);
+    repo.set_verification_truth(truth);
+    repo.fail_next_wave_consolidation();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(operation_id, pass(StageKind::Verification))
+        .await;
+
+    assert_eq!(
+        orchestrator.stage_outcome_acc,
+        Some(crate::harness::operation_flow::StageFlowOutcome::blocked())
+    );
+    assert_eq!(repo.wave_consolidation_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn legacy_verification_never_calls_durable_consolidation() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "verification");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    let mut outcome = pass(StageKind::Verification);
+    outcome.spawned_candidates = vec![candidate_for_test("legacy hypothesis")];
+
+    orchestrator
+        .consume_gate_outcome(operation_id, outcome)
+        .await;
+
+    assert!(
+        orchestrator
+            .stage_outcome_acc
+            .expect("flow outcome")
+            .reopen_wave
+    );
+    assert_eq!(repo.wave_consolidation_calls.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn info_stage_evidence_counts_as_progress_without_findings() {
     let outcome = pass_without_findings(StageKind::ExternalAttackSurface, vec![9592, 9591]);
@@ -1599,6 +2005,7 @@ async fn review_barrier_holds_attack_candidate_until_the_exact_db_wave_is_resume
     let operation_id = Uuid::new_v4();
     let wave_run_id = Uuid::new_v4();
     let repo = MemRepo::seed(operation_id, "red_team", "attack_candidate");
+    repo.enable_exact_candidate_v2(operation_id);
     let barrier = AttackV2ReviewBarrierView {
         operation_id,
         wave_run_id,
@@ -1657,6 +2064,129 @@ async fn review_barrier_holds_attack_candidate_until_the_exact_db_wave_is_resume
         )
         .await;
     assert!(matches!(allowed, super::PhaseGateDecision::Allowed));
+    assert_eq!(
+        repo.candidate_review_reads.load(Ordering::SeqCst),
+        2,
+        "exact V2Only must reload the durable barrier on both hold and resume"
+    );
+}
+
+#[tokio::test]
+async fn legacy_attack_candidate_never_reads_the_v2_review_barrier() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "attack_candidate");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    let graph = crate::harness::base_operation_graph().unwrap();
+    let profile = crate::harness::load_embedded_profile("red_team")
+        .unwrap()
+        .unwrap();
+    let dag = graph.project(&profile.allowed_stage_set());
+
+    let decision = orchestrator
+        .two_level_phase_gate(
+            operation_id,
+            StageKind::AttackCandidate,
+            &StageFlowOutcome::pass_with_progress(),
+            &dag,
+            Some(&profile),
+        )
+        .await;
+
+    assert!(matches!(decision, super::PhaseGateDecision::Allowed));
+    assert_eq!(repo.candidate_review_reads.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn dual_write_attack_candidate_synthesizes_v2_but_never_reads_the_blocking_review_barrier() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "attack_candidate");
+    repo.op_state
+        .lock()
+        .unwrap()
+        .get_mut(&operation_id)
+        .unwrap()
+        .runtime_memory_contract =
+        crate::runtime_memory::RuntimeMemoryContract::DualWriteV2Preferred;
+    *repo.attack_execution_contract.lock().unwrap() =
+        golish_core::AttackExecutionContract::DualWriteReadV2Fallback;
+    repo.set_candidate_review_barrier(AttackV2ReviewBarrierView {
+        operation_id,
+        wave_run_id: Uuid::new_v4(),
+        status: "open".to_string(),
+        resume_version: 1,
+        wave_unit_count: 1,
+        review_closed_unit_count: 0,
+        candidate_count: 1,
+        proposed_candidate_count: 1,
+        dispatch_is_stale: false,
+    });
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    let graph = crate::harness::base_operation_graph().unwrap();
+    let profile = crate::harness::load_embedded_profile("red_team")
+        .unwrap()
+        .unwrap();
+    let dag = graph.project(&profile.allowed_stage_set());
+
+    assert!(
+        orchestrator
+            .candidate_v2_specialist_for_operation(
+                operation_id,
+                StageKind::AttackCandidate,
+                "dual_write_test",
+            )
+            .await,
+        "dual-write must retain relational Candidate synthesis/mirror"
+    );
+    let decision = orchestrator
+        .two_level_phase_gate(
+            operation_id,
+            StageKind::AttackCandidate,
+            &StageFlowOutcome::pass_with_progress(),
+            &dag,
+            Some(&profile),
+        )
+        .await;
+
+    assert!(matches!(decision, super::PhaseGateDecision::Allowed));
+    assert_eq!(
+        repo.candidate_review_reads.load(Ordering::SeqCst),
+        0,
+        "shadow data must not become a blocking authority before double V2Only cutover"
+    );
+}
+
+#[tokio::test]
+async fn dual_write_verification_never_enables_the_v2_verifier_specialist() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "verification");
+    repo.op_state
+        .lock()
+        .unwrap()
+        .get_mut(&operation_id)
+        .unwrap()
+        .runtime_memory_contract =
+        crate::runtime_memory::RuntimeMemoryContract::DualWriteV2Preferred;
+    *repo.attack_execution_contract.lock().unwrap() =
+        golish_core::AttackExecutionContract::DualWriteReadV2Fallback;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let orchestrator = TaskOrchestrator::new(repo.clone(), repo, Uuid::new_v4(), tx);
+
+    assert!(
+        !orchestrator
+            .candidate_v2_specialist_for_operation(
+                operation_id,
+                StageKind::Verification,
+                "dual_write_test",
+            )
+            .await,
+        "dual-write Verification must remain shadow-only and never dispatch candidate_verifier"
+    );
 }
 
 /// Interactive (coordinator) path: declining the crossing and then supplying a
@@ -1918,4 +2448,122 @@ async fn attack_v2_repo_defaults_fail_closed_instead_of_returning_empty_manifest
         .await
         .expect_err("server-only stage entry must fail closed without a repository");
     assert_eq!(entry_error.to_string(), "ATTACK_V2_REPO_UNAVAILABLE");
+}
+
+#[tokio::test]
+async fn v2_only_flow_checkpointer_ignores_legacy_blob_and_never_saves_it() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "assessment", "enumeration");
+    repo.enable_exact_candidate_v2(operation_id);
+    repo.set_state_blob(
+        operation_id,
+        serde_json::json!({
+            "eas_web_transport_failures": {"server-slot": {"attempts": 2}},
+            "graph_flow": {
+                "next_node": "reporting",
+                "state": {"visited": ["scoping"], "seeded": {}, "applied": {}}
+            },
+            "agent_run": {"status": "running"},
+            "stage_run_workers": {"legacy": true}
+        }),
+    );
+    let checkpointer = crate::task_orchestrator::stage_execution::DbFlowCheckpointer::new(
+        repo.clone(),
+        operation_id,
+    );
+
+    let mut attempted = OperationFlowState::default();
+    attempted.visited.push(StageKind::Scoping);
+    checkpointer
+        .save("ignored-thread-id", &attempted, "reporting")
+        .await
+        .expect("V2-only save is an idempotent no-op");
+    assert_eq!(repo.state_blob_write_count.load(Ordering::SeqCst), 0);
+
+    let (loaded, next_node) = checkpointer
+        .load("ignored-thread-id")
+        .await
+        .expect("load V2-only relational checkpoint")
+        .expect("a live relational cursor is resumable");
+    assert_eq!(next_node, "enumeration");
+    assert!(loaded.seeded.is_empty());
+    assert!(loaded.visited.is_empty());
+    assert!(loaded.applied.is_empty());
+    assert_eq!(loaded.wave, 0);
+    assert!(!loaded.reopen_wave);
+}
+
+#[tokio::test]
+async fn normal_executor_resumes_v2_only_from_relational_stage_without_legacy_blob() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "assessment", "enumeration");
+    repo.enable_exact_candidate_v2(operation_id);
+    repo.set_state_blob(
+        operation_id,
+        serde_json::json!({
+            "eas_web_transport_failures": {"server-slot": {"attempts": 1}}
+        }),
+    );
+    let original_blob = repo.state_blob(operation_id);
+    let checkpointer = Arc::new(
+        crate::task_orchestrator::stage_execution::DbFlowCheckpointer::new(
+            repo.clone(),
+            operation_id,
+        ),
+    );
+    let profile = crate::harness::load_embedded_profile("assessment")
+        .expect("load assessment profile")
+        .expect("assessment profile exists");
+    let dag = crate::harness::operation_graph::base_operation_graph()
+        .expect("load operation graph")
+        .project(&profile.allowed_stage_set());
+    let executor = Executor::new(build_operation_flow_graph(&dag).expect("compile graph"))
+        .with_checkpointer(checkpointer);
+
+    let outcome = executor
+        .resume(&operation_id.to_string(), None)
+        .await
+        .expect("normal Executor resumes from relational V2 cursor");
+    let RunOutcome::Completed(state) = outcome else {
+        panic!("relational V2 resume did not complete: {outcome:?}");
+    };
+    assert_eq!(state.visited.first(), Some(&StageKind::Enumeration));
+    assert_eq!(repo.state_blob_write_count.load(Ordering::SeqCst), 0);
+    assert_eq!(repo.state_blob(operation_id), original_blob);
+    for forbidden in ["graph_flow", "agent_run", "stage_run_workers"] {
+        assert!(repo.state_blob(operation_id).get(forbidden).is_none());
+    }
+}
+
+#[tokio::test]
+async fn legacy_flow_checkpointer_keeps_existing_save_and_load_semantics() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "assessment", "target_intel");
+    repo.set_state_blob(
+        operation_id,
+        serde_json::json!({"eas_web_transport_failures": {"server-slot": {"attempts": 3}}}),
+    );
+    let checkpointer = crate::task_orchestrator::stage_execution::DbFlowCheckpointer::new(
+        repo.clone(),
+        operation_id,
+    );
+    let mut state = OperationFlowState::default();
+    state.visited.push(StageKind::Scoping);
+
+    checkpointer
+        .save("legacy-thread", &state, "target_intel")
+        .await
+        .expect("legacy checkpoint saves");
+    assert_eq!(repo.state_blob_write_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        repo.state_blob(operation_id)["eas_web_transport_failures"]["server-slot"]["attempts"],
+        3
+    );
+    let (loaded, next_node) = checkpointer
+        .load("legacy-thread")
+        .await
+        .expect("legacy checkpoint loads")
+        .expect("legacy graph checkpoint exists");
+    assert_eq!(next_node, "target_intel");
+    assert_eq!(loaded.visited, vec![StageKind::Scoping]);
 }

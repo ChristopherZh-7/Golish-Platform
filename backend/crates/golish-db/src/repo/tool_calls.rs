@@ -38,6 +38,39 @@ pub struct RuntimeToolIdentity {
     pub lease_token: Option<Uuid>,
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn has_exact_active_worker_fence(
+    pool: &PgPool,
+    id: Uuid,
+    worker_run_id: Uuid,
+    operation_id: Uuid,
+    stage_execution_id: Uuid,
+    stage_run_unit_id: Uuid,
+    organization_id: Uuid,
+    attempt_epoch: i64,
+    lease_token: Option<Uuid>,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM tool_calls
+                WHERE id=$1 AND worker_run_id=$2 AND operation_id=$3
+                  AND stage_execution_id=$4 AND stage_run_unit_id=$5
+                  AND organization_id=$6 AND attempt_epoch=$7
+                  AND lease_token=$8 AND status IN ('received','running')
+           )"#,
+    )
+    .bind(id)
+    .bind(worker_run_id)
+    .bind(operation_id)
+    .bind(stage_execution_id)
+    .bind(stage_run_unit_id)
+    .bind(organization_id)
+    .bind(attempt_epoch)
+    .bind(lease_token)
+    .fetch_one(pool)
+    .await?)
+}
+
 /// One terminal Scoping control-plane call bound to the exact operation and
 /// StageExecution. The ordered lifecycle is the only input accepted by the V2
 /// scope-decision derivation; session/time-window rows are legacy gate hints.

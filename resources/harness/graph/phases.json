@@ -1,6 +1,6 @@
 {
   "$schema": "../../../docs/design/2026-06-03-two-level-phase-stage-model.md#5",
-  "$comment": "Two-level phase grouping over the 12 StageKinds. The vuln phase completes only after Verification exact DB truth passes; V2 deliverable findings/summary and process-local chain-wave state cannot complete it. entry_approval is checked when crossing INTO a phase.",
+  "$comment": "Two-level phase grouping over the 12 StageKinds. Static entry_approval remains for legacy operations. The exact double-V2Only Candidate flow ignores generic phase/static exploit approval and recognizes only exact Candidate plan approval plus durable review resume. The vuln phase completes only after Verification exact DB truth and durable consolidation; V2 deliverable prose, spawned candidates, and process-local chain-wave state cannot complete it. opened_next_wave is a durable runtime cursor override with no static back-edge in operation_graph.json; closed_no_delta and exhausted take the normal DAG, with exhausted carrying reportable residual risk.",
 
   "phases": [
     { "id": "prep",         "stages": ["scoping", "target_intel"] },

@@ -478,6 +478,42 @@ mod tests {
     }
 
     #[test]
+    fn verification_inheritance_uses_closed_typed_handoff_kinds() {
+        let reporting = crate::harness::resources::load_embedded_stage_spec(StageKind::Reporting)
+            .expect("load reporting spec");
+        let reporting_verification = reporting
+            .inherits_evidence_from
+            .iter()
+            .find(|inherit| inherit.stage_kind == StageKind::Verification)
+            .expect("reporting inherits Verification");
+        assert_eq!(
+            reporting_verification.evidence_kinds,
+            vec![
+                "candidate_attempt_terminal".to_string(),
+                "verified_candidate_attempt".to_string(),
+                "attack_fact_delta_proposal".to_string(),
+                "attack_no_candidate_decision".to_string(),
+                "vuln_finding".to_string(),
+            ]
+        );
+        let access =
+            crate::harness::resources::load_embedded_stage_spec(StageKind::AccessValidation)
+                .expect("load access_validation spec");
+        let access_verification = access
+            .inherits_evidence_from
+            .iter()
+            .find(|inherit| inherit.stage_kind == StageKind::Verification)
+            .expect("access_validation inherits Verification");
+        assert_eq!(
+            access_verification.evidence_kinds,
+            vec![
+                "verified_candidate_attempt".to_string(),
+                "vuln_finding".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn target_intel_keeps_subdomain_coverage_but_blocks_cli_subdomain_tools() {
         let s = load_stage_spec_from_json(TARGET_INTEL_JSON).expect("parse");
         // SUBDOMAIN 仍由 target_intel 覆盖，但 2026-06-23 provider-source
@@ -1020,5 +1056,136 @@ mod tests {
                 "static {kind:?} policy must preserve persisted legacy compatibility"
             );
         }
+    }
+
+    #[test]
+    fn candidate_v2_stage_resources_define_the_durable_wave_contract() {
+        let vuln_triage = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../resources/harness/stages/vuln_triage/spec.json"
+        ));
+        let attack_candidate = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../resources/harness/stages/attack_candidate/spec.json"
+        ));
+        let verification = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../resources/harness/stages/verification/spec.json"
+        ));
+        let phases = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../resources/harness/graph/phases.json"
+        ));
+        let vuln_triage_methodology = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../resources/harness/stages/vuln_triage/methodology.md"
+        ));
+        let attack_candidate_methodology = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../resources/harness/stages/attack_candidate/methodology.md"
+        ));
+        let verification_methodology = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../resources/harness/stages/verification/methodology.md"
+        ));
+
+        for required in [
+            "initial Wave only",
+            "follow-on Wave entry",
+            "FactDelta consolidation",
+        ] {
+            assert!(
+                vuln_triage.contains(required),
+                "missing vuln_triage contract: {required}"
+            );
+        }
+        for required in [
+            "vuln_triage_handoff",
+            "fact_delta_consolidation",
+            "zero-input",
+            "durable review",
+        ] {
+            assert!(
+                attack_candidate.contains(required),
+                "missing attack_candidate contract: {required}"
+            );
+        }
+        for required in [
+            "exact Candidate plan approval",
+            "FactDelta proposal",
+            "opened_next_wave",
+            "closed_no_delta",
+            "exhausted",
+            "residual risk",
+        ] {
+            assert!(
+                verification.contains(required),
+                "missing Verification contract: {required}"
+            );
+        }
+        for required in [
+            "V2Only",
+            "exact Candidate plan approval",
+            "no static back-edge",
+        ] {
+            assert!(
+                phases.contains(required),
+                "missing phase contract: {required}"
+            );
+        }
+        for required in [
+            "initial Wave only",
+            "follow-on Wave entry",
+            "accepted FactDelta",
+        ] {
+            assert!(
+                vuln_triage_methodology.contains(required),
+                "missing vuln_triage methodology contract: {required}"
+            );
+        }
+        for required in [
+            "vuln_triage_handoff",
+            "fact_delta_consolidation",
+            "zero-input organization",
+            "durable Candidate review",
+            "opened_next_wave",
+            "closed_no_delta",
+            "exhausted",
+            "residual risk",
+        ] {
+            assert!(
+                attack_candidate_methodology.contains(required),
+                "missing attack_candidate methodology contract: {required}"
+            );
+        }
+        for required in [
+            "exact Candidate plan approval",
+            "FactDelta proposals",
+            "opened_next_wave",
+            "closed_no_delta",
+            "exhausted",
+            "residual risk",
+            "static operation-graph back-edge",
+        ] {
+            assert!(
+                verification_methodology.contains(required),
+                "missing Verification methodology contract: {required}"
+            );
+        }
+
+        let graph: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../resources/harness/graph/operation_graph.json"
+        )))
+        .expect("operation graph parses");
+        let has_static_wave_back_edge = graph["edges"].as_array().is_some_and(|edges| {
+            edges
+                .iter()
+                .any(|edge| edge["from"] == "verification" && edge["to"] == "attack_candidate")
+        });
+        assert!(
+            !has_static_wave_back_edge,
+            "durable Candidate waves must not add a static operation-graph back-edge"
+        );
     }
 }

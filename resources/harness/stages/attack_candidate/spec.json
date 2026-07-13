@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../docs/design/2026-07-02-attack-stage-formulaic-candidate-exploit.md#3.3",
-  "$comment": "Candidate V2: decide the exact server-frozen vuln_triage observation manifest. Model wire carries only CandidateDecisionDraft; server derives identity, immutable plan/hash/risk and accepts rows only in final PASS transaction.",
+  "$comment": "Candidate V2 Wave entry is a sealed union: the initial Wave uses entry_kind=vuln_triage_handoff; a follow-on Wave uses entry_kind=fact_delta_consolidation and never fabricates a vuln_triage handoff. Every nonterminal org decides its exact frozen manifest. A zero-input org in any Wave is already terminal and receives no fake empty manifest or reasoning worker. Final Gate PASS lets the server derive immutable Candidate identity/plan/hash/risk, then enters durable review and durable resume before Verification.",
 
   "id": "attack_candidate",
   "kind": "attack_candidate",
@@ -36,6 +36,7 @@
   "min_invocations": {},
   "max_other_skips": 3,
 
+  "$comment_human_approval": "This reasoning stage has no generic exploit approval. Under exact V2Only, durable review binds approve/reject to the exact immutable Candidate plan and DB-backed resume is the only authority that releases Verification.",
   "human_approval": { "required_before": [] },
 
   "agent_continuity": "single_session",

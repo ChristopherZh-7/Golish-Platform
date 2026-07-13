@@ -52,7 +52,13 @@
     },
     {
       "stage_kind": "verification",
-      "evidence_kinds": ["poc", "exploit_verified", "attack_path"]
+      "evidence_kinds": [
+        "candidate_attempt_terminal",
+        "verified_candidate_attempt",
+        "attack_fact_delta_proposal",
+        "attack_no_candidate_decision",
+        "vuln_finding"
+      ]
     }
   ]
 }

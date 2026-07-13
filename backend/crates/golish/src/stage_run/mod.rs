@@ -68,6 +68,9 @@ const REPAIR_GRAPH_FLOW_SQL: &str = r#"UPDATE operation_state
          AND current_stage = $2
          AND state_blob = $3
          AND superseded_by IS NULL
+         AND runtime_memory_contract IN (
+             'legacy_v1','dual_write_legacy_read','dual_write_v2_preferred'
+         )
          AND state_blob -> 'graph_flow' IS NULL"#;
 
 const REPAIR_REAPED_TASK_SQL: &str = r#"UPDATE tasks
@@ -86,6 +89,48 @@ const REPAIR_REAPED_TASK_SQL: &str = r#"UPDATE tasks
                AND os.engagement_org_id IS NOT DISTINCT FROM $7
                AND os.superseded_by IS NULL
                AND os.state_blob = $8
+         )"#;
+
+const CLAIM_EXACT_RESUME_TASK_SQL: &str = r#"UPDATE tasks AS task
+       SET status = 'running', updated_at = NOW()
+       WHERE task.id = $1
+         AND task.session_id = $2
+         AND task.status = 'waiting'
+         AND task.result IS NULL
+         AND task.updated_at = $3
+         AND EXISTS (
+             SELECT 1 FROM operation_state AS operation
+              WHERE operation.operation_id = task.id
+                AND operation.runtime_memory_contract = $4
+                AND operation.profile = $5
+                AND operation.current_stage = $6
+                AND operation.engagement_org_id IS NOT DISTINCT FROM $7
+                AND operation.superseded_by IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM stage_worker_runs AS live_worker
+                     WHERE live_worker.operation_id = operation.operation_id
+                       AND live_worker.lease_token IS NOT NULL
+                       AND live_worker.lease_expires_at > NOW()
+                )
+                AND (
+                    (
+                        $8::uuid IS NOT NULL
+                        AND EXISTS (
+                            SELECT 1 FROM stage_runs AS execution
+                             WHERE execution.id = $8
+                               AND execution.operation_id = operation.operation_id
+                               AND execution.stage_kind = operation.current_stage
+                               AND execution.status = 'started'
+                               AND (
+                                   SELECT COUNT(*) FROM stage_runs AS active_execution
+                                    WHERE active_execution.operation_id = operation.operation_id
+                                      AND active_execution.status = 'started'
+                               ) = 1
+                        )
+                    )
+                    OR
+                    ($8::uuid IS NULL AND operation.state_blob = $9)
+                )
          )"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,11 +229,43 @@ struct ResumeCandidate {
     operation_id: uuid::Uuid,
     profile: String,
     current_stage: String,
+    runtime_memory_contract: String,
     engagement_org_id: Option<uuid::Uuid>,
     superseded_by: Option<uuid::Uuid>,
     state_blob: serde_json::Value,
     worker_chains: Vec<ResumeWorkerOwnership>,
+    relational_v2: Option<runtime_v2::RuntimeV2ResumeAuthority>,
     expectations: ResumeExpectations,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeAuthorityKind {
+    LegacyCheckpoint,
+    RelationalV2,
+}
+
+fn selected_resume_record_source(
+    authority: ResumeAuthorityKind,
+    contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract,
+) -> Result<golish_agent_kit::db_traits::RuntimeMemoryRecordSource> {
+    use golish_agent_kit::db_traits::RuntimeMemoryRecordSource as Source;
+    use golish_agent_kit::runtime_memory::RuntimeMemoryContract as Contract;
+
+    match (authority, contract) {
+        (
+            ResumeAuthorityKind::LegacyCheckpoint,
+            Contract::LegacyV1 | Contract::DualWriteLegacyRead,
+        ) => Ok(Source::Legacy),
+        (ResumeAuthorityKind::LegacyCheckpoint, Contract::DualWriteV2Preferred) => {
+            Ok(Source::LegacyFallback)
+        }
+        (ResumeAuthorityKind::RelationalV2, Contract::DualWriteV2Preferred | Contract::V2Only) => {
+            Ok(Source::V2)
+        }
+        _ => anyhow::bail!(
+            "resume refused: selected runtime-memory authority is invalid for frozen contract"
+        ),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -198,6 +275,9 @@ struct ValidatedResumeTarget {
     provider: Option<String>,
     model: Option<String>,
     operation_id: uuid::Uuid,
+    runtime_memory_contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract,
+    authority: ResumeAuthorityKind,
+    relational_stage_execution_id: Option<uuid::Uuid>,
     task_updated_at: chrono::DateTime<chrono::Utc>,
     profile: String,
     stage: StageKind,
@@ -259,7 +339,11 @@ fn stage_worker_refs_from_blob(
     Ok(refs)
 }
 
-fn validate_expected_identity(candidate: &ResumeCandidate, stage: StageKind) -> Result<()> {
+fn validate_expected_identity(
+    candidate: &ResumeCandidate,
+    stage: StageKind,
+    organization_id: uuid::Uuid,
+) -> Result<()> {
     let expected = &candidate.expectations;
     if let Some(id) = expected.session_id {
         anyhow::ensure!(
@@ -284,9 +368,8 @@ fn validate_expected_identity(candidate: &ResumeCandidate, stage: StageKind) -> 
     }
     if let Some(id) = expected.organization_id {
         anyhow::ensure!(
-            Some(id) == candidate.engagement_org_id,
-            "resume refused: expected organization {id}, found {:?}",
-            candidate.engagement_org_id
+            id == organization_id,
+            "resume refused: expected organization {id}, found {organization_id}",
         );
     }
     if let Some(expected_stage) = expected.stage {
@@ -320,9 +403,6 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
         candidate.superseded_by.is_none(),
         "resume refused: operation was superseded"
     );
-    let organization_id = candidate
-        .engagement_org_id
-        .ok_or_else(|| anyhow!("resume refused: operation has no engagement organization"))?;
     let stage = StageKind::try_parse(&candidate.current_stage).ok_or_else(|| {
         anyhow!(
             "resume refused: unknown current stage {}",
@@ -331,7 +411,42 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
     })?;
     resolve_slice(&candidate.profile, Some(stage), stage)
         .context("resume refused: current stage is not allowed by the persisted profile")?;
-    validate_expected_identity(candidate, stage)?;
+    let runtime_memory_contract =
+        runtime_v2::persisted_contract(&candidate.runtime_memory_contract)
+            .context("resume refused: invalid frozen runtime-memory contract")?;
+    use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
+    let authority = match runtime_memory_contract {
+        RuntimeMemoryContract::LegacyV1 | RuntimeMemoryContract::DualWriteLegacyRead => {
+            ResumeAuthorityKind::LegacyCheckpoint
+        }
+        RuntimeMemoryContract::DualWriteV2Preferred if candidate.relational_v2.is_some() => {
+            ResumeAuthorityKind::RelationalV2
+        }
+        RuntimeMemoryContract::DualWriteV2Preferred => ResumeAuthorityKind::LegacyCheckpoint,
+        RuntimeMemoryContract::V2Only if candidate.relational_v2.is_some() => {
+            ResumeAuthorityKind::RelationalV2
+        }
+        RuntimeMemoryContract::V2Only => anyhow::bail!(
+            "resume refused: V2-only operation has no complete relational runtime authority"
+        ),
+    };
+    let organization_id = match authority {
+        ResumeAuthorityKind::LegacyCheckpoint => candidate
+            .engagement_org_id
+            .ok_or_else(|| anyhow!("resume refused: operation has no engagement organization"))?,
+        ResumeAuthorityKind::RelationalV2 => {
+            let relational = candidate
+                .relational_v2
+                .as_ref()
+                .expect("relational authority selected only when present");
+            anyhow::ensure!(
+                candidate.engagement_org_id == Some(relational.organization_id),
+                "resume refused: relational scope root does not equal operation engagement organization"
+            );
+            relational.organization_id
+        }
+    };
+    validate_expected_identity(candidate, stage, organization_id)?;
 
     let needs_task_repair = match candidate.task_status {
         golish_db::models::TaskStatus::Waiting => false,
@@ -344,7 +459,9 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
                 candidate.expectations.has_complete_identity(),
                 "resume refused: orphan running recovery requires all expected identities"
             );
-            false
+            anyhow::bail!(
+                "resume refused: exact task is still running; startup reaper and --repair-reaped-task must return it to waiting before durable resume claim"
+            )
         }
         golish_db::models::TaskStatus::Failed => {
             anyhow::ensure!(
@@ -364,84 +481,96 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
         ),
     };
 
-    let mapped_workers = stage_worker_refs_from_blob(&candidate.state_blob, stage)?;
-    anyhow::ensure!(
-        mapped_workers.len() == candidate.worker_chains.len(),
-        "resume refused: exact worker ownership rows are incomplete"
-    );
-    for mapped in &mapped_workers {
-        let ownership = candidate
-            .worker_chains
-            .iter()
-            .find(|owned| {
-                owned.chain_id == mapped.chain_id && owned.specialist == mapped.specialist
-            })
-            .ok_or_else(|| {
-                anyhow!(
-                    "resume refused: exact chain {} has no ownership row",
-                    mapped.chain_id
-                )
-            })?;
+    let needs_graph_repair = if authority == ResumeAuthorityKind::RelationalV2 {
+        false
+    } else {
+        let mapped_workers = stage_worker_refs_from_blob(&candidate.state_blob, stage)?;
         anyhow::ensure!(
-            ownership.stored_session_id == Some(candidate.session_id)
-                && ownership
-                    .stored_task_id
-                    .is_none_or(|task_id| task_id == candidate.task_id)
-                && ownership.stored_agent.as_deref() == Some(mapped.specialist.as_str())
-                && ownership.has_persisted_chain,
-            "resume refused: exact chain {} is outside the selected session/task/agent scope",
-            mapped.chain_id
+            mapped_workers.len() == candidate.worker_chains.len(),
+            "resume refused: exact worker ownership rows are incomplete"
         );
-    }
-
-    let needs_graph_repair = match candidate.state_blob.get("graph_flow") {
-        Some(graph_flow) => {
-            let graph_state = graph_flow
-                .get("state")
-                .cloned()
-                .ok_or_else(|| anyhow!("resume refused: graph_flow state is missing"))?;
-            serde_json::from_value::<
-                golish_agent_kit::harness::operation_flow::OperationFlowState,
-            >(graph_state)
-            .context("resume refused: graph_flow state is malformed")?;
-            let next_node = graph_flow
-                .get("next_node")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
+        for mapped in &mapped_workers {
+            let expected_agent = runtime_v2::resume_worker_chain_agent(&mapped.specialist)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "resume refused: specialist {} has no durable message-chain agent class",
+                        mapped.specialist
+                    )
+                })?;
+            let expected_agent_name = runtime_v2::persisted_agent_name(expected_agent);
+            let ownership = candidate
+                .worker_chains
+                .iter()
+                .find(|owned| {
+                    owned.chain_id == mapped.chain_id && owned.specialist == mapped.specialist
+                })
+                .ok_or_else(|| {
+                    anyhow!(
+                        "resume refused: exact chain {} has no ownership row",
+                        mapped.chain_id
+                    )
+                })?;
             anyhow::ensure!(
+                ownership.stored_session_id == Some(candidate.session_id)
+                    && ownership
+                        .stored_task_id
+                        .is_none_or(|task_id| task_id == candidate.task_id)
+                    && ownership.stored_agent.as_deref() == Some(expected_agent_name)
+                    && ownership.has_persisted_chain,
+                "resume refused: exact chain {} is outside the selected session/task/agent scope",
+                mapped.chain_id
+            );
+        }
+
+        match candidate.state_blob.get("graph_flow") {
+            Some(graph_flow) => {
+                let graph_state = graph_flow
+                    .get("state")
+                    .cloned()
+                    .ok_or_else(|| anyhow!("resume refused: graph_flow state is missing"))?;
+                serde_json::from_value::<
+                    golish_agent_kit::harness::operation_flow::OperationFlowState,
+                >(graph_state)
+                .context("resume refused: graph_flow state is malformed")?;
+                let next_node = graph_flow
+                    .get("next_node")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                anyhow::ensure!(
                 next_node == candidate.current_stage,
                 "resume refused: graph checkpoint next_node {next_node:?} does not equal current stage {}",
                 candidate.current_stage
             );
-            false
-        }
-        None => {
-            anyhow::ensure!(
+                false
+            }
+            None => {
+                anyhow::ensure!(
                 candidate.expectations.repair_missing_graph_flow
                     && candidate.expectations.has_complete_identity(),
                 "resume refused: graph_flow checkpoint is missing; explicit repair and all expected identities are required"
             );
-            let flat = serde_json::from_value::<
-                golish_agent_kit::task_orchestrator::harness_resume::HarnessResumeState,
-            >(candidate.state_blob.clone())
-            .context("resume refused: flat harness checkpoint is malformed")?;
-            anyhow::ensure!(
-                flat.profile == candidate.profile,
-                "resume refused: flat checkpoint profile does not match operation_state"
-            );
-            anyhow::ensure!(
-                flat.current_stage == candidate.current_stage,
-                "resume refused: flat checkpoint current_stage does not match operation_state"
-            );
-            anyhow::ensure!(
-                flat.current_stage_run_id.is_some_and(|id| !id.is_nil()),
-                "resume refused: flat checkpoint has no valid current_stage_run_id"
-            );
-            anyhow::ensure!(
+                let flat = serde_json::from_value::<
+                    golish_agent_kit::task_orchestrator::harness_resume::HarnessResumeState,
+                >(candidate.state_blob.clone())
+                .context("resume refused: flat harness checkpoint is malformed")?;
+                anyhow::ensure!(
+                    flat.profile == candidate.profile,
+                    "resume refused: flat checkpoint profile does not match operation_state"
+                );
+                anyhow::ensure!(
+                    flat.current_stage == candidate.current_stage,
+                    "resume refused: flat checkpoint current_stage does not match operation_state"
+                );
+                anyhow::ensure!(
+                    flat.current_stage_run_id.is_some_and(|id| !id.is_nil()),
+                    "resume refused: flat checkpoint has no valid current_stage_run_id"
+                );
+                anyhow::ensure!(
                 flat.completed_count == 0,
                 "resume refused: missing graph_flow is only repairable before the first graph node completes"
             );
-            true
+                true
+            }
         }
     };
 
@@ -451,6 +580,12 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
         provider: candidate.provider.clone(),
         model: candidate.model.clone(),
         operation_id: candidate.operation_id,
+        runtime_memory_contract,
+        authority,
+        relational_stage_execution_id: candidate
+            .relational_v2
+            .as_ref()
+            .map(|authority| authority.active_stage_execution_id),
         task_updated_at: candidate.task_updated_at,
         profile: candidate.profile.clone(),
         stage,
@@ -633,32 +768,79 @@ async fn resolve_stage_run_resume_target(
             operation.current_stage
         )
     })?;
-    let mapped_workers = stage_worker_refs_from_blob(&operation.state_blob, stage)?;
-    let mut worker_chains = Vec::with_capacity(mapped_workers.len());
-    for worker in mapped_workers {
-        let row: Option<(uuid::Uuid, Option<uuid::Uuid>, String, bool)> =
-            sqlx::query_as(EXACT_RESUME_CHAIN_SQL)
-                .bind(worker.chain_id)
-                .bind(session.id)
-                .bind(task.id)
-                .bind(&worker.specialist)
-                .fetch_optional(pool)
+    let contract = runtime_v2::persisted_contract(&operation.runtime_memory_contract)?;
+    use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
+    let relational_v2 = match contract {
+        RuntimeMemoryContract::DualWriteV2Preferred => {
+            match runtime_v2::load_relational_resume_authority(pool, session.id, &operation, stage)
                 .await
-                .with_context(|| {
-                    format!("validate exact worker chain {} ownership", worker.chain_id)
+            {
+                Ok(authority) => Some(authority),
+                Err(error)
+                    if runtime_v2::relational_resume_error_allows_legacy_fallback(&error) =>
+                {
+                    tracing::debug!(
+                        operation_id = %operation.operation_id,
+                        error = %error,
+                        "relational V2 resume record is structurally incomplete; selecting whole legacy fallback"
+                    );
+                    None
+                }
+                Err(error) => {
+                    return Err(error).context(
+                        "resume refused: relational V2 authority is busy or failed identity/storage validation",
+                    )
+                }
+            }
+        }
+        RuntimeMemoryContract::V2Only => Some(
+            runtime_v2::load_relational_resume_authority(pool, session.id, &operation, stage)
+                .await
+                .context("resume refused: incomplete V2-only relational runtime authority")?,
+        ),
+        RuntimeMemoryContract::LegacyV1 | RuntimeMemoryContract::DualWriteLegacyRead => None,
+    };
+    let select_legacy = matches!(
+        contract,
+        RuntimeMemoryContract::LegacyV1 | RuntimeMemoryContract::DualWriteLegacyRead
+    ) || (contract == RuntimeMemoryContract::DualWriteV2Preferred
+        && relational_v2.is_none());
+    let mut worker_chains = Vec::new();
+    if select_legacy {
+        let mapped_workers = stage_worker_refs_from_blob(&operation.state_blob, stage)?;
+        worker_chains.reserve(mapped_workers.len());
+        for worker in mapped_workers {
+            let expected_agent = runtime_v2::resume_worker_chain_agent(&worker.specialist)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "resume refused: specialist {} has no durable message-chain agent class",
+                        worker.specialist
+                    )
                 })?;
-        let (stored_session_id, stored_task_id, stored_agent, has_persisted_chain) = row
-            .map_or((None, None, None, false), |(sid, tid, agent, has_chain)| {
-                (Some(sid), tid, Some(agent), has_chain)
+            let row: Option<(uuid::Uuid, Option<uuid::Uuid>, String, bool)> =
+                sqlx::query_as(EXACT_RESUME_CHAIN_SQL)
+                    .bind(worker.chain_id)
+                    .bind(session.id)
+                    .bind(task.id)
+                    .bind(expected_agent)
+                    .fetch_optional(pool)
+                    .await
+                    .with_context(|| {
+                        format!("validate exact worker chain {} ownership", worker.chain_id)
+                    })?;
+            let (stored_session_id, stored_task_id, stored_agent, has_persisted_chain) = row
+                .map_or((None, None, None, false), |(sid, tid, agent, has_chain)| {
+                    (Some(sid), tid, Some(agent), has_chain)
+                });
+            worker_chains.push(ResumeWorkerOwnership {
+                chain_id: worker.chain_id,
+                specialist: worker.specialist,
+                stored_session_id,
+                stored_task_id,
+                stored_agent,
+                has_persisted_chain,
             });
-        worker_chains.push(ResumeWorkerOwnership {
-            chain_id: worker.chain_id,
-            specialist: worker.specialist,
-            stored_session_id,
-            stored_task_id,
-            stored_agent,
-            has_persisted_chain,
-        });
+        }
     }
 
     validate_resume_candidate(&ResumeCandidate {
@@ -674,10 +856,12 @@ async fn resolve_stage_run_resume_target(
         operation_id: operation.operation_id,
         profile: operation.profile,
         current_stage: operation.current_stage,
+        runtime_memory_contract: operation.runtime_memory_contract,
         engagement_org_id: operation.engagement_org_id,
         superseded_by: operation.superseded_by,
         state_blob: operation.state_blob,
         worker_chains,
+        relational_v2,
         expectations: expectations.clone(),
     })
 }
@@ -746,6 +930,12 @@ async fn repair_missing_graph_flow(
         target.needs_graph_repair,
         "graph-flow repair requested for an operation that already has a checkpoint"
     );
+    anyhow::ensure!(
+        target.authority == ResumeAuthorityKind::LegacyCheckpoint
+            && target.runtime_memory_contract
+                != golish_agent_kit::runtime_memory::RuntimeMemoryContract::V2Only,
+        "graph-flow repair is forbidden for relational V2 resume authority"
+    );
     let repaired = synthesize_graph_flow_checkpoint(target.state_blob.clone(), target.stage)?;
     let graph_flow = repaired
         .get("graph_flow")
@@ -789,6 +979,46 @@ async fn repair_reaped_task(
     anyhow::ensure!(
         result.rows_affected() == 1,
         "resume refused: reaped task changed before exact repair claim completed"
+    );
+    Ok(())
+}
+
+/// Atomically claim the exact waiting task after all process-local setup has
+/// succeeded. Relational resumes fence the selected active execution and never
+/// consult the legacy blob; legacy resumes fence the complete validated blob.
+/// Both reject any still-live V2 worker lease.
+async fn claim_exact_resume_task(
+    claim: &mut StageRunResumeClaim,
+    target: &ValidatedResumeTarget,
+) -> Result<()> {
+    anyhow::ensure!(
+        !target.needs_graph_repair && !target.needs_task_repair,
+        "resume refused: exact task cannot be claimed before repairs complete"
+    );
+    let relational_execution_id = match target.authority {
+        ResumeAuthorityKind::RelationalV2 => {
+            Some(target.relational_stage_execution_id.ok_or_else(|| {
+                anyhow!("resume refused: relational execution identity is missing")
+            })?)
+        }
+        ResumeAuthorityKind::LegacyCheckpoint => None,
+    };
+    let result = sqlx::query(CLAIM_EXACT_RESUME_TASK_SQL)
+        .bind(target.operation_id)
+        .bind(target.session_id)
+        .bind(target.task_updated_at)
+        .bind(target.runtime_memory_contract.as_str())
+        .bind(&target.profile)
+        .bind(target.stage.as_str())
+        .bind(target.organization_id)
+        .bind(relational_execution_id)
+        .bind(&target.state_blob)
+        .execute(claim.connection_mut()?)
+        .await
+        .context("durably claim exact stage-run resume task")?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "resume refused: exact task/source claim changed or task is not waiting; reap/repair any orphan first"
     );
     Ok(())
 }
@@ -1489,6 +1719,10 @@ async fn run_resume(mut args: Args) -> Result<()> {
                 && target.organization_id == initial.organization_id
                 && target.profile == initial.profile
                 && target.stage == initial.stage
+                && target.runtime_memory_contract == initial.runtime_memory_contract
+                && target.authority == initial.authority
+                && target.relational_stage_execution_id
+                    == initial.relational_stage_execution_id
                 && target.provider == initial.provider
                 && target.model == initial.model,
             "resume refused: persisted session/operation identity changed while acquiring the claim"
@@ -1591,8 +1825,15 @@ async fn run_resume(mut args: Args) -> Result<()> {
         );
 
         let continuation = args.execute.as_deref().unwrap_or("继续");
-        let result =
-            orchestrate_resume(&bridge, &db_pool, &workspace, &target, continuation).await;
+        let result = orchestrate_resume(
+            &bridge,
+            &db_pool,
+            &workspace,
+            &mut claim,
+            &target,
+            continuation,
+        )
+        .await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         let _ = golish_events::op_trace::write_trace_artifacts(
             &transcripts_dir,
@@ -1783,6 +2024,7 @@ async fn orchestrate_resume(
     bridge: &Arc<AgentBridge>,
     db_pool: &Arc<sqlx::PgPool>,
     workspace: &std::path::Path,
+    claim: &mut StageRunResumeClaim,
     target: &ValidatedResumeTarget,
     continuation: &str,
 ) -> Result<String> {
@@ -1830,6 +2072,16 @@ async fn orchestrate_resume(
     orchestrator.set_stage_allowlist(Some(HashSet::from([target.stage])));
     orchestrator.set_harness_org_id(Some(target.organization_id));
     orchestrator.set_force_stage_run_on_resume_once(true);
+    let resume_source =
+        selected_resume_record_source(target.authority, target.runtime_memory_contract)?;
+    orchestrator.set_resume_runtime_memory_source(resume_source);
+    bridge.set_resume_runtime_memory_source(resume_source).await;
+
+    // Perform the durable waiting->running claim only after bridge/provider/
+    // project-scope setup has succeeded, immediately before the orchestrator can
+    // load its selected checkpoint source.
+    claim_exact_resume_task(claim, target).await?;
+    orchestrator.set_resume_task_preclaimed(true);
 
     let result = orchestrator
         .resume(target.operation_id, continuation, &executor)
@@ -2672,6 +2924,7 @@ mod tests {
             operation_id: TASK_ID,
             profile: "pentest".to_string(),
             current_stage: "enumeration".to_string(),
+            runtime_memory_contract: "legacy_v1".to_string(),
             engagement_org_id: Some(ORG_ID),
             superseded_by: None,
             state_blob: serde_json::json!({
@@ -2700,9 +2953,10 @@ mod tests {
                 specialist: "enumerator".to_string(),
                 stored_session_id: Some(SESSION_ID),
                 stored_task_id: None,
-                stored_agent: Some("enumerator".to_string()),
+                stored_agent: Some("pentester".to_string()),
                 has_persisted_chain: true,
             }],
+            relational_v2: None,
             expectations: ResumeExpectations::default(),
         }
     }
@@ -2717,6 +2971,92 @@ mod tests {
         assert_eq!(validated.organization_id, ORG_ID);
         assert_eq!(validated.stage, StageKind::Enumeration);
         assert!(!validated.needs_graph_repair);
+    }
+
+    #[test]
+    fn v2_only_resume_uses_relational_authority_with_server_only_state_blob() {
+        let mut candidate = valid_resume_candidate();
+        candidate.runtime_memory_contract = "v2_only".to_string();
+        candidate.state_blob = serde_json::json!({
+            "eas_web_transport_failures": {"server-slot": {"attempts": 2}}
+        });
+        candidate.worker_chains.clear();
+        candidate.relational_v2 = Some(runtime_v2::RuntimeV2ResumeAuthority {
+            active_stage_execution_id: uuid::Uuid::new_v4(),
+            organization_id: ORG_ID,
+        });
+
+        let validated = validate_resume_candidate(&candidate)
+            .expect("V2-only resume selects complete relational authority");
+        assert_eq!(validated.stage, StageKind::Enumeration);
+        assert!(!validated.needs_graph_repair);
+    }
+
+    #[test]
+    fn v2_preferred_selects_whole_relational_authority_before_legacy_blob() {
+        let mut candidate = valid_resume_candidate();
+        candidate.runtime_memory_contract = "dual_write_v2_preferred".to_string();
+        candidate.state_blob = serde_json::json!({"graph_flow": {"malformed": true}});
+        candidate.worker_chains.clear();
+        candidate.relational_v2 = Some(runtime_v2::RuntimeV2ResumeAuthority {
+            active_stage_execution_id: uuid::Uuid::new_v4(),
+            organization_id: ORG_ID,
+        });
+
+        validate_resume_candidate(&candidate)
+            .expect("complete relational V2 must be selected without reading legacy fields");
+
+        candidate.relational_v2 = None;
+        let error = validate_resume_candidate(&candidate)
+            .expect_err("preferred fallback must validate the complete legacy checkpoint");
+        assert!(error.to_string().contains("stage_run worker map"));
+    }
+
+    #[test]
+    fn legacy_resume_compares_specialist_chain_to_persisted_agent_class() {
+        let mut candidate = valid_resume_candidate();
+        candidate.worker_chains[0].stored_agent = Some("pentester".to_string());
+
+        validate_resume_candidate(&candidate).expect(
+            "the enumerator specialist is durably persisted as the coarser pentester agent class",
+        );
+    }
+
+    #[test]
+    fn v2_preferred_does_not_fallback_while_relational_worker_has_live_lease() {
+        let error = anyhow::Error::new(runtime_v2::RelationalResumeBusy);
+        assert!(
+            !runtime_v2::relational_resume_error_allows_legacy_fallback(&error),
+            "a complete relational source owned by a live worker must fail closed",
+        );
+    }
+
+    #[test]
+    fn selected_resume_authority_maps_to_one_complete_runtime_record() {
+        use golish_agent_kit::db_traits::RuntimeMemoryRecordSource as Source;
+        use golish_agent_kit::runtime_memory::RuntimeMemoryContract as Contract;
+
+        assert_eq!(
+            selected_resume_record_source(
+                ResumeAuthorityKind::RelationalV2,
+                Contract::DualWriteV2Preferred,
+            )
+            .expect("preferred V2 authority"),
+            Source::V2
+        );
+        assert_eq!(
+            selected_resume_record_source(
+                ResumeAuthorityKind::LegacyCheckpoint,
+                Contract::DualWriteV2Preferred,
+            )
+            .expect("preferred legacy fallback"),
+            Source::LegacyFallback
+        );
+        assert!(selected_resume_record_source(
+            ResumeAuthorityKind::LegacyCheckpoint,
+            Contract::V2Only,
+        )
+        .is_err());
     }
 
     #[test]
@@ -2768,7 +3108,9 @@ mod tests {
         assert!(error.to_string().contains("expected identities"));
 
         candidate.expectations.stage = Some(StageKind::Enumeration);
-        validate_resume_candidate(&candidate).expect("fully asserted orphan may resume");
+        let error = validate_resume_candidate(&candidate)
+            .expect_err("asserted orphan still needs a durable waiting-state claim");
+        assert!(error.to_string().contains("startup reaper"));
     }
 
     #[test]
@@ -2911,10 +3253,47 @@ mod tests {
         assert!(REPAIR_GRAPH_FLOW_SQL.contains("jsonb_set"));
         assert!(REPAIR_GRAPH_FLOW_SQL.contains("state_blob -> 'graph_flow' IS NULL"));
         assert!(REPAIR_GRAPH_FLOW_SQL.contains("superseded_by IS NULL"));
+        assert!(REPAIR_GRAPH_FLOW_SQL.contains("runtime_memory_contract IN"));
+        assert!(REPAIR_GRAPH_FLOW_SQL.contains("'dual_write_v2_preferred'"));
+        assert!(!REPAIR_GRAPH_FLOW_SQL.contains("'v2_only'"));
         assert!(REPAIR_REAPED_TASK_SQL.contains("status = 'failed'"));
         assert!(REPAIR_REAPED_TASK_SQL.contains("result = $3"));
         assert!(REPAIR_REAPED_TASK_SQL.contains("updated_at = $4"));
         assert!(REPAIR_REAPED_TASK_SQL.contains("os.state_blob = $8"));
+        for required in [
+            "task.status = 'waiting'",
+            "task.updated_at = $3",
+            "operation.runtime_memory_contract = $4",
+            "operation.profile = $5",
+            "operation.current_stage = $6",
+            "operation.engagement_org_id IS NOT DISTINCT FROM $7",
+            "operation.superseded_by IS NULL",
+            "execution.id = $8",
+            "active_execution.status = 'started'",
+            "live_worker.lease_expires_at > NOW()",
+            "$8::uuid IS NULL AND operation.state_blob = $9",
+        ] {
+            assert!(
+                CLAIM_EXACT_RESUME_TASK_SQL.contains(required),
+                "durable resume claim is missing {required:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn durable_resume_claim_runs_immediately_before_orchestrator_resume() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split_once("async fn orchestrate_resume(")
+            .expect("orchestrate_resume definition")
+            .1;
+        let claim = body
+            .find("claim_exact_resume_task(claim, target).await?")
+            .expect("durable task claim");
+        let resume = body
+            .find(".resume(target.operation_id, continuation, &executor)")
+            .expect("orchestrator resume call");
+        assert!(claim < resume, "durable task claim must precede resume");
     }
 
     #[test]

@@ -104,6 +104,13 @@ pub struct TaskOrchestrator {
     /// request consumes this flag; if that stage is a DB-root-bound specialist
     /// stage, its first primary-agent turn is locked to `stage_run`.
     pub(super) force_stage_run_on_resume_once: bool,
+    /// Complete runtime-memory source selected by a trusted resume preflight.
+    /// `DualWriteV2Preferred` cannot infer this from its frozen contract alone.
+    pub(super) resume_runtime_memory_source: Option<crate::db_traits::RuntimeMemoryRecordSource>,
+    /// The trusted caller already changed the exact durable task from waiting to
+    /// running with an ownership/source CAS. Consumed by the next `resume()` so
+    /// the generic path cannot issue a second, unfenced status update.
+    pub(super) resume_task_preclaimed: bool,
     /// Wave loop (设计 2026-07-02-attack-stage §3.5): current chain-wave counter
     /// for this run. Advanced by `consume_gate_outcome` when a `verification` PASS
     /// opens a new attack_candidate wave; fed to `decide_chain_wave` as the fuel/
@@ -146,6 +153,8 @@ impl TaskOrchestrator {
             stage_allowlist: None,
             continuity_adoption: None,
             force_stage_run_on_resume_once: false,
+            resume_runtime_memory_source: None,
+            resume_task_preclaimed: false,
             chain_wave: 0,
             chain_wave_seen: std::collections::HashSet::new(),
             cli_runtime_scope: None,
@@ -226,6 +235,22 @@ impl TaskOrchestrator {
     /// continuation prompts, not for "继续，但是..." steering text.
     pub fn set_force_stage_run_on_resume_once(&mut self, enabled: bool) {
         self.force_stage_run_on_resume_once = enabled;
+    }
+
+    /// Pin the next resume to the whole runtime-memory record selected by a
+    /// trusted preflight. In particular, V2-preferred callers must pass either
+    /// `V2` or `LegacyFallback`; the graph checkpointer will not reselect fields.
+    pub fn set_resume_runtime_memory_source(
+        &mut self,
+        source: crate::db_traits::RuntimeMemoryRecordSource,
+    ) {
+        self.resume_runtime_memory_source = Some(source);
+    }
+
+    /// Mark the next resume as already durably claimed by its caller. This flag
+    /// is one-shot and must only be set after a waiting->running CAS succeeds.
+    pub fn set_resume_task_preclaimed(&mut self, preclaimed: bool) {
+        self.resume_task_preclaimed = preclaimed;
     }
 
     /// Run a full Task mode execution.
@@ -328,6 +353,7 @@ impl TaskOrchestrator {
         let initial_stage_execution_id = created.initial_stage_execution_id;
         let initial_operation_profile = created.operation.profile.clone();
         let initial_operation_stage = created.operation.current_stage.clone();
+        let initial_runtime_memory_contract = created.operation.runtime_memory_contract;
         let task = created.task;
 
         tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
@@ -434,23 +460,32 @@ impl TaskOrchestrator {
         // identity; opening a second random `stage_run` would immediately make
         // the operation ambiguous. Checkpoint failures are fatal because a run
         // that cannot durably resume must not begin stage work.
-        let initial_checkpoint = async {
-            let rs = crate::task_orchestrator::harness_resume::HarnessResumeState {
-                profile: initial_operation_profile,
-                current_stage: initial_operation_stage,
-                current_stage_run_id: Some(initial_stage_execution_id),
-                queue_titles: queue.iter().map(|p| p.title.clone()).collect(),
-                completed_count: 0,
-                continuity_adoption: self.continuity_adoption.clone(),
-                schema_v: 1,
-            };
-            let checkpoint = serde_json::to_value(&rs)
-                .context("Failed to serialize initial harness checkpoint")?;
-            crate::db_shim::operation_state::write_state_blob(&*self.repo, task.id, checkpoint)
+        let initial_checkpoint =
+            if should_persist_initial_harness_checkpoint(initial_runtime_memory_contract) {
+                async {
+                    let rs = crate::task_orchestrator::harness_resume::HarnessResumeState {
+                        profile: initial_operation_profile,
+                        current_stage: initial_operation_stage,
+                        current_stage_run_id: Some(initial_stage_execution_id),
+                        queue_titles: queue.iter().map(|p| p.title.clone()).collect(),
+                        completed_count: 0,
+                        continuity_adoption: self.continuity_adoption.clone(),
+                        schema_v: 1,
+                    };
+                    let checkpoint = serde_json::to_value(&rs)
+                        .context("Failed to serialize initial harness checkpoint")?;
+                    crate::db_shim::operation_state::write_state_blob(
+                        &*self.repo,
+                        task.id,
+                        checkpoint,
+                    )
+                    .await
+                    .context("Failed to persist initial harness checkpoint")
+                }
                 .await
-                .context("Failed to persist initial harness checkpoint")
-        }
-        .await;
+            } else {
+                Ok(())
+            };
         if let Err(error) = initial_checkpoint {
             self.fail_task_if_active(task.id, &error).await;
             return Err(error);
@@ -505,12 +540,20 @@ impl TaskOrchestrator {
     ) -> Result<String> {
         // Re-activate the row: an abandoned op is `running` (zombie) or `waiting`
         // (paused); a resumed run is `running` again until it completes/pauses.
-        if let Err(e) = tasks::update_status(&*self.repo, task_id, TaskStatus::Running).await {
-            tracing::warn!(
+        if consume_resume_task_status_claim(&mut self.resume_task_preclaimed) {
+            if let Err(e) = tasks::update_status(&*self.repo, task_id, TaskStatus::Running).await {
+                tracing::warn!(
+                    target: "harness::hook",
+                    task_id = %task_id,
+                    error = %e,
+                    "resume: failed to set task running (continuing)"
+                );
+            }
+        } else {
+            tracing::debug!(
                 target: "harness::hook",
                 task_id = %task_id,
-                error = %e,
-                "resume: failed to set task running (continuing)"
+                "resume: exact task status was preclaimed by trusted caller"
             );
         }
 
@@ -615,6 +658,10 @@ impl TaskOrchestrator {
     }
 }
 
+fn consume_resume_task_status_claim(preclaimed: &mut bool) -> bool {
+    !std::mem::take(preclaimed)
+}
+
 /// Process-global monotonic version source for `PlanUpdated` events.
 ///
 /// Returns a strictly increasing value on each call (starting at 1, never 0 —
@@ -628,9 +675,21 @@ pub(super) fn next_plan_version() -> u32 {
     PLAN_VERSION.fetch_add(1, Ordering::Relaxed)
 }
 
+/// V2-only operations reconstruct resume state from relational execution rows;
+/// writing the flat `HarnessResumeState` would recreate a forbidden second
+/// authority. Compatibility contracts retain their existing checkpoint path.
+fn should_persist_initial_harness_checkpoint(
+    contract: crate::runtime_memory::RuntimeMemoryContract,
+) -> bool {
+    contract != crate::runtime_memory::RuntimeMemoryContract::V2Only
+}
+
 #[cfg(test)]
 mod plan_version_tests {
-    use super::next_plan_version;
+    use super::{
+        consume_resume_task_status_claim, next_plan_version,
+        should_persist_initial_harness_checkpoint,
+    };
 
     /// Regression (P0 · plan version collision): `next_plan_version` must hand
     /// back strictly increasing, non-zero values so a step's InProgress and
@@ -651,5 +710,29 @@ mod plan_version_tests {
         );
         assert!(v2 > v1, "v2 ({v2}) must be strictly greater than v1 ({v1})");
         assert!(v3 > v2, "v3 ({v3}) must be strictly greater than v2 ({v2})");
+    }
+
+    #[test]
+    fn initial_harness_checkpoint_is_never_written_for_v2_only() {
+        use crate::runtime_memory::RuntimeMemoryContract::{
+            DualWriteLegacyRead, DualWriteV2Preferred, LegacyV1, V2Only,
+        };
+
+        assert!(should_persist_initial_harness_checkpoint(LegacyV1));
+        assert!(should_persist_initial_harness_checkpoint(
+            DualWriteLegacyRead
+        ));
+        assert!(should_persist_initial_harness_checkpoint(
+            DualWriteV2Preferred
+        ));
+        assert!(!should_persist_initial_harness_checkpoint(V2Only));
+    }
+
+    #[test]
+    fn trusted_resume_preclaim_skips_exactly_one_generic_status_update() {
+        let mut preclaimed = true;
+        assert!(!consume_resume_task_status_claim(&mut preclaimed));
+        assert!(!preclaimed, "the trusted preclaim must be consumed");
+        assert!(consume_resume_task_status_claim(&mut preclaimed));
     }
 }

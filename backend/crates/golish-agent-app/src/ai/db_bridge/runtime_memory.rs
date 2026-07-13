@@ -5,20 +5,26 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use golish_agent_kit::db_traits::{
-    CandidateHeartbeatView, CheckpointBoundWorkerChain, CheckpointWorker, ClaimCandidateAttempt,
-    ClaimWorkerAndBindChain, ClaimedCandidateAttemptView, ClaimedWorkerView, CloseWaveGatePass,
-    ClosedWaveGatePass, CreateRuntimeOperation, CreatedRuntimeOperation, FinalizeScopingScope,
-    FinalizeUnitPass, FinalizedScopingScope, FinalizedUnitPass, FinishWorkerAttempt,
-    FinishedWorkerAttempt, FrozenOrganizationScopeUnit, HeartbeatCandidateAttempt,
-    LoadBoundWorkerChain, LoadInheritedStageHandoffs, LoadWorkerCheckpoint, LoadedBoundWorkerChain,
-    LoadedWorkerCheckpoint, NewStageDeliverableSubmission, OperationStateView,
-    PauseWorkerForContinuation, PersistedStageDeliverableSubmission, ProjectScopeRegistration,
-    ReapedRuntimeWorker, RuntimeExpiredWorkerDisposition, RuntimeMemoryError,
-    RuntimeMemoryRecordSource, RuntimeMemoryRepository, RuntimeStageHandoffView,
-    RuntimeStageUnitStatus, RuntimeStageUnitView, RuntimeWorkerFence, RuntimeWorkerStatus,
-    RuntimeWorkerView, SeedStageRuntime, SeededStageRuntime, SubmitCandidateAttempt,
-    SubmittedCandidateAttemptView, TaskView, TerminalizeCandidateAttempt,
-    TerminalizedCandidateAttemptView, WorkerToolMutation,
+    AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveRuntimeUnitView,
+    AttackV2WaveUnitStateView, CandidateHeartbeatView, CheckpointBoundWorkerChain,
+    CheckpointWorker, ClaimCandidateAttempt, ClaimWorkerAndBindChain, ClaimedCandidateAttemptView,
+    ClaimedWorkerView, CloseAttackV2VerificationUnit, CloseWaveGatePass,
+    ClosedAttackV2VerificationUnitView, ClosedWaveGatePass, CreateRuntimeOperation,
+    CreatedRuntimeOperation, FinalizeScopingScope, FinalizeUnitPass, FinalizedScopingScope,
+    FinalizedUnitPass, FinishWorkerAttempt, FinishedWorkerAttempt, FrozenOrganizationScopeUnit,
+    HeartbeatCandidateAttempt, LoadBoundWorkerChain, LoadInheritedStageHandoffs,
+    LoadWorkerCheckpoint, LoadedBoundWorkerChain, LoadedWorkerCheckpoint,
+    NewStageDeliverableSubmission, OperationStateView, PauseWorkerForContinuation,
+    PersistedStageDeliverableSubmission, ProjectScopeRegistration, ReapedRuntimeWorker,
+    RuntimeExpiredWorkerDisposition, RuntimeMemoryError, RuntimeMemoryRecordSource,
+    RuntimeMemoryRepository, RuntimeStageHandoffView, RuntimeStageUnitStatus, RuntimeStageUnitView,
+    RuntimeWorkerFence, RuntimeWorkerStatus, RuntimeWorkerView, SeedStageRuntime,
+    SeededStageRuntime, SubmitCandidateAttempt, SubmittedCandidateAttemptView, TaskView,
+    TerminalizeCandidateAttempt, TerminalizedCandidateAttemptView, WorkerToolMutation,
+};
+use golish_agent_kit::harness::attack_execution::{
+    select_attack_read, AttackDecisionSemantic, AttackDecisionSemanticKind, AttackReadSelection,
+    AttackReadSource, AttackReviewCounts, AttackShadowComparison, CompleteAttackRead, V2AttackRead,
 };
 use golish_agent_kit::harness::{CanonicalFactKey, CanonicalFactRef, StageKind};
 use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
@@ -76,6 +82,80 @@ fn runtime_memory_error_from_db(error: RuntimeMemoryStoreError) -> RuntimeMemory
         RuntimeMemoryStoreError::Repository(error) => {
             RuntimeMemoryError::Storage(error.to_string())
         }
+    }
+}
+
+fn attack_wave_entry_from_db(
+    entry: &golish_db::repo::attack_waves::AttackWaveEntry,
+) -> AttackV2WaveEntryView {
+    match entry {
+        golish_db::repo::attack_waves::AttackWaveEntry::VulnTriageHandoff { .. } => {
+            AttackV2WaveEntryView::VulnTriageHandoff
+        }
+        golish_db::repo::attack_waves::AttackWaveEntry::FactDeltaConsolidation { .. } => {
+            AttackV2WaveEntryView::FactDeltaConsolidation
+        }
+    }
+}
+
+fn attack_wave_authority_from_db(
+    authority: golish_db::repo::attack_waves::AttackWaveAuthority,
+) -> AttackV2WaveAuthorityView {
+    use golish_db::repo::attack_waves::{AttackWaveAuthority, CurrentAttackWaveUnitState};
+
+    match authority {
+        AttackWaveAuthority::Initial(initial) => AttackV2WaveAuthorityView::Initial {
+            operation_id: initial.operation_id,
+            scope_snapshot_id: initial.scope_snapshot_id,
+            generation: initial.generation,
+            units: initial
+                .units
+                .into_iter()
+                .map(|unit| AttackV2WaveRuntimeUnitView {
+                    wave_unit_id: None,
+                    organization_id: unit.organization_id,
+                    ordinal: unit.ordinal,
+                    status: "initial".to_string(),
+                    entry: attack_wave_entry_from_db(&unit.entry),
+                    state: AttackV2WaveUnitStateView::AwaitingManifest,
+                })
+                .collect(),
+        },
+        AttackWaveAuthority::Current(current) => AttackV2WaveAuthorityView::Current {
+            operation_id: current.wave.operation_id,
+            scope_snapshot_id: current.wave.scope_snapshot_id,
+            wave_run_id: current.wave.id,
+            generation: current.wave.generation,
+            status: current.wave.status,
+            units: current
+                .units
+                .into_iter()
+                .map(|authority| AttackV2WaveRuntimeUnitView {
+                    wave_unit_id: Some(authority.unit.id),
+                    organization_id: authority.unit.organization_id,
+                    ordinal: authority.unit.ordinal,
+                    status: authority.unit.status.clone(),
+                    entry: attack_wave_entry_from_db(&authority.unit.entry),
+                    state: match authority.state {
+                        CurrentAttackWaveUnitState::AwaitingManifest => {
+                            AttackV2WaveUnitStateView::AwaitingManifest
+                        }
+                        CurrentAttackWaveUnitState::Runnable { .. } => {
+                            AttackV2WaveUnitStateView::FrozenManifest
+                        }
+                        CurrentAttackWaveUnitState::TerminalNoInput => {
+                            AttackV2WaveUnitStateView::TerminalNoInput
+                        }
+                    },
+                })
+                .collect(),
+        },
+        AttackWaveAuthority::Terminal(terminal) => AttackV2WaveAuthorityView::Terminal {
+            operation_id: terminal.last_wave.operation_id,
+            scope_snapshot_id: terminal.last_wave.scope_snapshot_id,
+            wave_run_id: terminal.last_wave.id,
+            generation: terminal.last_wave.generation,
+        },
     }
 }
 
@@ -427,7 +507,33 @@ fn stage_handoff_from_db(
         from_stage_kind: row.from_stage_kind,
         stage_execution_id: row.stage_execution_id,
         source_stage_run_unit_id: row.source_stage_run_unit_id,
+        deliverable_submission_id: Some(row.deliverable_submission_id),
+        authority_kind: "deliverable_final_seal".to_string(),
+        scope_hash: row.scope_hash,
+        payload: row.payload,
+        payload_sha256: row.payload_sha256,
+        evidence_ids: row.evidence_ids,
+        coverage_watermark: row.coverage_watermark,
+        unit_gate_decision_hash: row.unit_gate_decision_hash,
+        aggregate_pass_token_hash: row.aggregate_pass_token_hash,
+        gate_passed_at: row.gate_passed_at,
+        schema_version: row.schema_version,
+    }
+}
+
+fn final_sealed_stage_handoff_from_db(
+    row: golish_db::repo::stage_handoffs::FinalSealedStageHandoffRow,
+) -> RuntimeStageHandoffView {
+    RuntimeStageHandoffView {
+        id: row.id,
+        operation_id: row.operation_id,
+        organization_id: row.organization_id,
+        scope_snapshot_id: row.scope_snapshot_id,
+        from_stage_kind: row.from_stage_kind,
+        stage_execution_id: row.stage_execution_id,
+        source_stage_run_unit_id: row.source_stage_run_unit_id,
         deliverable_submission_id: row.deliverable_submission_id,
+        authority_kind: row.authority_kind,
         scope_hash: row.scope_hash,
         payload: row.payload,
         payload_sha256: row.payload_sha256,
@@ -485,6 +591,94 @@ fn finalized_unit_pass_from_db(
     })
 }
 
+fn attack_shadow_complete_from_db(
+    record: &golish_db::repo::attack_execution_shadow::AttackShadowCompleteReadRow,
+) -> Result<CompleteAttackRead, RuntimeMemoryError> {
+    let decisions = record
+        .decisions
+        .iter()
+        .map(|decision| {
+            let kind = match decision.kind.as_str() {
+                "candidate" => AttackDecisionSemanticKind::Candidate,
+                "no_candidate" => AttackDecisionSemanticKind::NoCandidate,
+                _ => {
+                    return Err(RuntimeMemoryError::Storage(
+                        "ATTACK_READ_DECISION_INVALID: unknown persisted decision kind".into(),
+                    ));
+                }
+            };
+            AttackDecisionSemantic::try_new(
+                decision.work_item_key.clone(),
+                kind,
+                decision.semantic_hash.clone(),
+            )
+            .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    CompleteAttackRead::try_new(
+        decisions,
+        AttackReviewCounts::new(
+            record.review_counts.wave_unit_count,
+            record.review_counts.review_closed_unit_count,
+            record.review_counts.candidate_decision_count,
+            record.review_counts.no_candidate_decision_count,
+        ),
+    )
+    .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))
+}
+
+fn select_attack_shadow_sample(
+    sample: &golish_db::repo::attack_execution_shadow::AttackExecutionShadowSampleRow,
+) -> Result<AttackReadSelection, RuntimeMemoryError> {
+    let contract = match sample.contract.as_str() {
+        "legacy" => golish_core::AttackExecutionContract::Legacy,
+        "dual_write_read_legacy" => golish_core::AttackExecutionContract::DualWriteReadLegacy,
+        "dual_write_read_v2_fallback" => {
+            golish_core::AttackExecutionContract::DualWriteReadV2Fallback
+        }
+        "v2_only" => golish_core::AttackExecutionContract::V2Only,
+        _ => {
+            return Err(RuntimeMemoryError::Storage(
+                "unknown persisted attack execution contract".into(),
+            ));
+        }
+    };
+    let legacy = sample
+        .legacy_record
+        .as_ref()
+        .map(attack_shadow_complete_from_db)
+        .transpose()?;
+    let v2 = match &sample.v2_record {
+        golish_db::repo::attack_execution_shadow::AttackShadowV2ReadRow::Complete(record) => {
+            V2AttackRead::Complete(attack_shadow_complete_from_db(record)?)
+        }
+        golish_db::repo::attack_execution_shadow::AttackShadowV2ReadRow::Missing => {
+            V2AttackRead::Missing
+        }
+        golish_db::repo::attack_execution_shadow::AttackShadowV2ReadRow::Incomplete => {
+            V2AttackRead::Incomplete
+        }
+    };
+    select_attack_read(contract, legacy, v2)
+        .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))
+}
+
+fn shadow_comparison_str(comparison: AttackShadowComparison) -> &'static str {
+    match comparison {
+        AttackShadowComparison::Match => "match",
+        AttackShadowComparison::Mismatch => "mismatch",
+        AttackShadowComparison::V2Missing => "v2_missing",
+    }
+}
+
+fn attack_read_source_str(source: AttackReadSource) -> &'static str {
+    match source {
+        AttackReadSource::Legacy => "legacy",
+        AttackReadSource::V2 => "v2",
+        AttackReadSource::LegacyFallback => "legacy_fallback",
+    }
+}
+
 fn runtime_record_source_from_db(
     source: golish_db::repo::runtime_memory_tx::RuntimeMemoryRecordSource,
 ) -> RuntimeMemoryRecordSource {
@@ -493,6 +687,17 @@ fn runtime_record_source_from_db(
         Db::Legacy => RuntimeMemoryRecordSource::Legacy,
         Db::V2 => RuntimeMemoryRecordSource::V2,
         Db::LegacyFallback => RuntimeMemoryRecordSource::LegacyFallback,
+    }
+}
+
+fn runtime_record_source_to_db(
+    source: RuntimeMemoryRecordSource,
+) -> golish_db::repo::runtime_memory_tx::RuntimeMemoryRecordSource {
+    use golish_db::repo::runtime_memory_tx::RuntimeMemoryRecordSource as Db;
+    match source {
+        RuntimeMemoryRecordSource::Legacy => Db::Legacy,
+        RuntimeMemoryRecordSource::V2 => Db::V2,
+        RuntimeMemoryRecordSource::LegacyFallback => Db::LegacyFallback,
     }
 }
 
@@ -732,6 +937,16 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
             })
     }
 
+    async fn attack_v2_wave_authority_for_operation(
+        &self,
+        operation_id: Uuid,
+    ) -> Result<AttackV2WaveAuthorityView, RuntimeMemoryError> {
+        golish_db::repo::attack_waves::load_current_authority(&self.pool, operation_id)
+            .await
+            .map(attack_wave_authority_from_db)
+            .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))
+    }
+
     async fn insert_stage_deliverable_submission(
         &self,
         input: NewStageDeliverableSubmission,
@@ -812,6 +1027,7 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
                 work_item_kind: input.work_item_kind,
                 work_item_key: input.work_item_key,
                 agent_path_prefix: input.agent_path_prefix,
+                organization_ids: input.organization_ids,
             },
         )
         .await
@@ -874,20 +1090,23 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
                  JOIN attack_wave_runs wave
                    ON wave.operation_id=unit.operation_id
                   AND wave.scope_snapshot_id=unit.scope_snapshot_id
-                  AND wave.status IN ('open','review','verification')
+                  AND wave.generation=unit.generation
+                  AND wave.status='verification'
+                  AND wave.terminal_at IS NULL
                  JOIN attack_wave_units wave_unit
                    ON wave_unit.wave_run_id=wave.id
                   AND wave_unit.operation_id=wave.operation_id
                   AND wave_unit.scope_snapshot_id=wave.scope_snapshot_id
                   AND wave_unit.organization_id=unit.organization_id
+                  AND wave_unit.status='verification'
                   AND wave_unit.review_closed
                   AND NOT wave_unit.verification_closed
+                  AND wave_unit.consolidation_status='pending'
                   AND wave_unit.terminal_at IS NULL
                 WHERE unit.id=$1 AND unit.operation_id=$2
                   AND unit.stage_execution_id=$3 AND unit.organization_id=$4
                   AND unit.stage_kind='verification'
                   AND unit.specialist='candidate_verifier'
-                ORDER BY wave.generation DESC
                 LIMIT 1"#,
         )
         .bind(input.verification_stage_run_unit_id)
@@ -1202,10 +1421,59 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
             .await
             .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
         Ok(TerminalizedCandidateAttemptView {
+            scope_snapshot_id: terminal.scope_snapshot_id,
+            wave_run_id: terminal.wave_run_id,
+            wave_unit_id: terminal.wave_unit_id,
+            organization_id: terminal.organization_id,
+            candidate_id: terminal.candidate_id,
             attempt_id: terminal.attempt_id,
+            status: terminal.status,
             disposition: terminal.disposition,
             finding_id: terminal.finding_id,
+            evidence_count: terminal.evidence_count,
+            fact_delta_count: terminal.fact_delta_count,
             replayed: terminal.replayed,
+        })
+    }
+
+    async fn close_attack_v2_verification_unit(
+        &self,
+        input: CloseAttackV2VerificationUnit,
+    ) -> Result<ClosedAttackV2VerificationUnitView, RuntimeMemoryError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        let closed = golish_db::repo::verification_truth::close_verification_unit(
+            &mut tx,
+            golish_db::repo::verification_truth::CloseVerificationUnit {
+                operation_id: input.operation_id,
+                scope_snapshot_id: input.scope_snapshot_id,
+                wave_run_id: input.wave_run_id,
+                wave_unit_id: input.wave_unit_id,
+                organization_id: input.organization_id,
+                verification_stage_execution_id: input.verification_stage_execution_id,
+                verification_stage_run_unit_id: input.verification_stage_run_unit_id,
+            },
+        )
+        .await
+        .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        Ok(ClosedAttackV2VerificationUnitView {
+            wave_unit_id: closed.wave_unit_id,
+            row_version: closed.row_version,
+            verification_closed: closed.verification_closed,
+            consolidation_status: closed.consolidation_status,
+            verification_stage_run_unit_id: closed.verification_stage_run_unit_id,
+            verification_stage_run_unit_status: closed.verification_stage_run_unit_status,
+            verification_primary_worker_run_id: closed.verification_primary_worker_run_id,
+            verification_primary_worker_status: closed.verification_primary_worker_status,
+            verification_handoff_id: closed.verification_handoff_id,
+            verification_handoff_payload_sha256: closed.verification_handoff_payload_sha256,
+            replayed: closed.replayed,
         })
     }
 
@@ -1220,6 +1488,7 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
                 stage_execution_id: input.stage_execution_id,
                 stage_run_unit_id: input.stage_run_unit_id,
                 worker_run_id: input.worker_run_id,
+                selected_source: input.selected_source.map(runtime_record_source_to_db),
             },
         )
         .await
@@ -1276,6 +1545,7 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
                 message_chain_id: input.message_chain_id,
                 session_id: input.session_id,
                 agent: convert_agent_type_back(input.agent),
+                selected_source: input.selected_source.map(runtime_record_source_to_db),
             },
         )
         .await
@@ -1298,6 +1568,7 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
                 stage_execution_id: input.stage_execution_id,
                 stage_run_unit_id: input.stage_run_unit_id,
                 worker_run_id: input.worker_run_id,
+                selected_source: input.selected_source.map(runtime_record_source_to_db),
             },
         )
         .await
@@ -1408,12 +1679,91 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
         &self,
         input: FinalizeUnitPass,
     ) -> Result<FinalizedUnitPass, RuntimeMemoryError> {
-        let finalized = golish_db::repo::runtime_memory_tx::finalize_unit_pass(
-            &self.pool,
-            &finalize_unit_pass_to_db(input)?,
+        let candidate_final_seal = input.candidate_acceptance.is_some();
+        let operation_id = input.fence.operation_id;
+        let stage_run_unit_id = input.fence.stage_run_unit_id;
+        let db_input = finalize_unit_pass_to_db(input)?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        let finalized = golish_db::repo::runtime_memory_tx::finalize_unit_pass_with_transaction(
+            &mut tx, &db_input,
         )
         .await
         .map_err(runtime_memory_error_from_db)?;
+        let shadow_trace = if candidate_final_seal {
+            let sample =
+                golish_db::repo::attack_execution_shadow::load_unit_sample_with_connection(
+                    &mut tx,
+                    operation_id,
+                    stage_run_unit_id,
+                )
+                .await
+                .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?
+                .ok_or(RuntimeMemoryError::Missing {
+                    entity: "attack_execution_shadow_read",
+                })?;
+            let selected = select_attack_shadow_sample(&sample)?;
+            if let Some(comparison) = selected.shadow_comparison() {
+                golish_db::repo::attack_execution_shadow::record_unit_selection_with_connection(
+                    &mut tx,
+                    operation_id,
+                    stage_run_unit_id,
+                    shadow_comparison_str(comparison),
+                    attack_read_source_str(selected.source()),
+                )
+                .await
+                .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+            }
+            Some((
+                sample.contract,
+                attack_read_source_str(selected.source()),
+                selected
+                    .shadow_comparison()
+                    .map(shadow_comparison_str)
+                    .unwrap_or("not_applicable"),
+                selected.executes_v2_verifier(),
+            ))
+        } else {
+            None
+        };
+        tx.commit()
+            .await
+            .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        // Runtime is the deployment dependency and must reconcile first for
+        // every committed final seal. Both attempts own separate best-effort
+        // transactions and cannot roll the business mutation back.
+        let reconcile_trigger = if candidate_final_seal {
+            "candidate_final_seal_db_bridge"
+        } else {
+            "final_seal_db_bridge"
+        };
+        golish_db::repo::runtime_memory_rollout::reconcile_best_effort(
+            &self.pool,
+            reconcile_trigger,
+        )
+        .await;
+        if candidate_final_seal {
+            golish_db::repo::attack_execution_rollout::reconcile_attack_execution_rollout_best_effort(
+                &self.pool,
+                reconcile_trigger,
+            )
+            .await;
+        }
+        if let Some((contract, source, comparison, executes_v2_verifier)) = shadow_trace {
+            tracing::info!(
+                target: "harness::attack_shadow",
+                %operation_id,
+                %stage_run_unit_id,
+                %contract,
+                source,
+                comparison,
+                executes_v2_verifier,
+                "selected one complete Candidate attack read"
+            );
+        }
         finalized_unit_pass_from_db(finalized)
     }
 
@@ -1459,7 +1809,11 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
             &input.source_stage_kinds,
         )
         .await
-        .map(|rows| rows.into_iter().map(stage_handoff_from_db).collect())
+        .map(|rows| {
+            rows.into_iter()
+                .map(final_sealed_stage_handoff_from_db)
+                .collect()
+        })
         .map_err(runtime_memory_error_from_db)
     }
 }
@@ -1470,6 +1824,29 @@ mod tests {
 
     use super::*;
     use golish_agent_kit::db_traits::TaskStatus;
+    use golish_agent_kit::harness::attack_execution::{AttackReadSource, AttackShadowComparison};
+
+    #[test]
+    fn final_seal_post_commit_seam_reconciles_runtime_before_attack() {
+        let source = include_str!("runtime_memory.rs");
+        let finalize_start = source
+            .find("async fn finalize_unit_pass(")
+            .expect("finalize_unit_pass implementation exists");
+        let close_wave_offset = source[finalize_start..]
+            .find("async fn close_wave_gate_pass(")
+            .expect("close_wave_gate_pass follows final seal");
+        let finalize_body = &source[finalize_start..finalize_start + close_wave_offset];
+        let runtime_reconcile = finalize_body
+            .find("runtime_memory_rollout::reconcile_best_effort")
+            .expect("runtime rollout reconciles after the final-seal commit");
+        let attack_reconcile = finalize_body
+            .find("attack_execution_rollout::reconcile_attack_execution_rollout_best_effort")
+            .expect("attack rollout reconciles after a Candidate final seal");
+        assert!(
+            runtime_reconcile < attack_reconcile,
+            "runtime is the dependency and must reconcile before attack"
+        );
+    }
 
     fn db_task(id: Uuid) -> golish_db::models::Task {
         golish_db::models::Task {
@@ -1503,6 +1880,94 @@ mod tests {
             superseded_by: None,
             engagement_org_id: None,
         }
+    }
+
+    fn shadow_complete_record(
+    ) -> golish_db::repo::attack_execution_shadow::AttackShadowCompleteReadRow {
+        golish_db::repo::attack_execution_shadow::AttackShadowCompleteReadRow {
+            decisions: vec![
+                golish_db::repo::attack_execution_shadow::AttackShadowDecisionRow {
+                    work_item_key: "target:1".to_string(),
+                    kind: "candidate".to_string(),
+                    semantic_hash: "a".repeat(64),
+                },
+            ],
+            review_counts: golish_db::repo::attack_execution_shadow::AttackShadowReviewCountsRow {
+                wave_unit_count: 1,
+                review_closed_unit_count: 0,
+                candidate_decision_count: 1,
+                no_candidate_decision_count: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn production_shadow_adapter_uses_kit_whole_record_selector() {
+        let record = shadow_complete_record();
+        let sample = golish_db::repo::attack_execution_shadow::AttackExecutionShadowSampleRow {
+            operation_id: Uuid::new_v4(),
+            stage_run_unit_id: Uuid::new_v4(),
+            organization_id: Some(Uuid::new_v4()),
+            contract: "dual_write_read_legacy".to_string(),
+            legacy_record: Some(record.clone()),
+            v2_record: golish_db::repo::attack_execution_shadow::AttackShadowV2ReadRow::Complete(
+                record,
+            ),
+            comparison: None,
+            selected_source: None,
+            selected_record_hash: None,
+        };
+        let selected = select_attack_shadow_sample(&sample).expect("select whole legacy record");
+        assert_eq!(selected.source(), AttackReadSource::Legacy);
+        assert_eq!(
+            selected.shadow_comparison(),
+            Some(AttackShadowComparison::Match)
+        );
+        assert!(!selected.executes_v2_verifier());
+    }
+
+    #[test]
+    fn production_shadow_adapter_keeps_v2_only_missing_fail_closed() {
+        let sample = golish_db::repo::attack_execution_shadow::AttackExecutionShadowSampleRow {
+            operation_id: Uuid::new_v4(),
+            stage_run_unit_id: Uuid::new_v4(),
+            organization_id: None,
+            contract: "v2_only".to_string(),
+            legacy_record: None,
+            v2_record: golish_db::repo::attack_execution_shadow::AttackShadowV2ReadRow::Missing,
+            comparison: None,
+            selected_source: None,
+            selected_record_hash: None,
+        };
+        let error = select_attack_shadow_sample(&sample)
+            .expect_err("v2_only must not fall back when V2 is missing");
+        assert!(matches!(
+            error,
+            RuntimeMemoryError::Storage(message)
+                if message.contains("ATTACK_V2_READ_REQUIRED")
+        ));
+
+        let fallback_sample =
+            golish_db::repo::attack_execution_shadow::AttackExecutionShadowSampleRow {
+                operation_id: Uuid::new_v4(),
+                stage_run_unit_id: Uuid::new_v4(),
+                organization_id: Some(Uuid::new_v4()),
+                contract: "dual_write_read_v2_fallback".to_string(),
+                legacy_record: Some(shadow_complete_record()),
+                v2_record:
+                    golish_db::repo::attack_execution_shadow::AttackShadowV2ReadRow::Incomplete,
+                comparison: None,
+                selected_source: None,
+                selected_record_hash: None,
+            };
+        let fallback = select_attack_shadow_sample(&fallback_sample)
+            .expect("dual V2-preferred mode falls back as one whole record");
+        assert_eq!(fallback.source(), AttackReadSource::LegacyFallback);
+        assert_eq!(
+            fallback.shadow_comparison(),
+            Some(AttackShadowComparison::V2Missing)
+        );
+        assert!(!fallback.executes_v2_verifier());
     }
 
     #[test]

@@ -11,7 +11,7 @@
 
   "allowed_tool_types": ["vuln_run_formulaic_sweep"],
 
-  "$comment_formulaic": "Candidate V2 boundary: vuln_triage is the FORMULAIC OBSERVATION stage. It writes terminal technique_outcomes plus evidence only; it never writes Candidate or Finding rows. The exact final-sealed outcome manifest is consumed by attack_candidate, which reasons and lets the server derive immutable Candidate plans at final PASS.",
+  "$comment_formulaic": "Candidate V2 boundary: vuln_triage is the FORMULAIC OBSERVATION stage. It writes terminal technique_outcomes plus evidence only; it never writes Candidate or Finding rows. Its exact final-sealed handoff may enter the initial Wave only. A follow-on Wave entry must come from an immutable accepted FactDelta consolidation and must never reuse or fabricate a vuln_triage handoff.",
   "specialist": "vuln_scanner",
   "runtime_memory": {
     "schema_version": 2,
@@ -89,6 +89,7 @@
 
   "max_other_skips": 2,
 
+  "$comment_human_approval": "These static approval classes remain for legacy operations. In the exact double-V2Only Candidate flow they are not Candidate or exploit authority: only an approval bound to the exact immutable Candidate plan authorizes Verification.",
   "human_approval": {
     "required_before": ["active_scan", "exploit_validation"]
   },

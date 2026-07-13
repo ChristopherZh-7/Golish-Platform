@@ -43,7 +43,7 @@
 ## 注意事项 / 坑
 
 - `should_transcript` 故意剔除 `TextDelta`/`Reasoning`/`ToolOutputChunk`/`SubAgent*` 等高频/内部事件——加新流式事件时考虑是否该加进过滤。
-- `summarizer.rs` 对 `HarnessTraceKind` 做可读摘要；新增 trace kind 要同步 match 分支。`StageRefinerDecision` 和 `RuntimeSupervisorDecision` 都会进入 summarizer 输入；RuntimeSupervisor 可在 soft/hard 模式改变 agent 下一步策略，但不决定 gate。
+- `summarizer.rs` 对 `HarnessTraceKind` 做可读摘要；新增 trace kind 要同步 match 分支。`StageRefinerDecision` 和 `RuntimeSupervisorDecision` 都会进入 summarizer 输入；RuntimeSupervisor 可在 soft/hard 模式改变 agent 下一步策略，但不决定 gate。Candidate Attempt terminal / Wave consolidation 摘要只保留 id、状态/decision、聚合 counts 与 replay，测试显式拒绝 `payload|lease|plan|exploit` 泄漏。
 - 读取容忍 legacy 整文件 JSON 数组 + JSONL 两种格式，且跳过坏行（不整体失败）。
 - 与 `op_trace` 共用同一 transcript 目录与格式；改路径/格式要两边同步。
 

@@ -2,7 +2,10 @@
 //! work-items and read their immutable manifest, but has no direct Candidate or
 //! Finding write method.
 
-use golish_agent_kit::db_traits::AttackV2ReviewBarrierView;
+use golish_agent_kit::db_traits::{
+    AttackV2ConsolidateWave, AttackV2ReviewBarrierView, AttackV2WaveConsolidationView,
+    RuntimeMemoryRepository,
+};
 use golish_agent_kit::harness::attack_execution::{
     CandidateManifestSnapshot, CandidateManifestWorkItem, SeedCandidateManifest,
 };
@@ -41,20 +44,46 @@ fn manifest_from_db(
 }
 
 impl GolishDbRepoProvider {
+    pub(super) async fn attack_v2_consolidate_wave_impl(
+        &self,
+        input: AttackV2ConsolidateWave,
+    ) -> anyhow::Result<AttackV2WaveConsolidationView> {
+        let mut tx = self.pool.begin().await?;
+        let result = golish_db::repo::attack_wave_consolidations::consolidate_attack_wave(
+            &mut tx,
+            golish_db::repo::attack_wave_consolidations::ConsolidateAttackWave {
+                operation_id: input.operation_id,
+                scope_snapshot_id: input.scope_snapshot_id,
+                source_wave_run_id: input.source_wave_run_id,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(AttackV2WaveConsolidationView {
+            operation_id: input.operation_id,
+            scope_snapshot_id: input.scope_snapshot_id,
+            consolidation_id: result.consolidation_id,
+            source_wave_run_id: input.source_wave_run_id,
+            target_wave_run_id: result.target_wave_run_id,
+            decision_kind: result.decision_kind,
+            accepted_fact_delta_count: result.accepted_fact_delta_ids.len(),
+            rejected_fact_delta_count: result.rejected_fact_delta_ids.len(),
+            residual_risk_count: result.residual_risk_ids.len(),
+            replayed: result.replayed,
+        })
+    }
+
     pub(super) async fn attack_v2_verification_truth_for_operation_impl(
         &self,
         operation_id: uuid::Uuid,
         organization_id: Option<uuid::Uuid>,
     ) -> anyhow::Result<Option<golish_agent_kit::harness::attack_execution::VerificationTruthSet>>
     {
-        let contract: String = sqlx::query_scalar(
-            "SELECT attack_execution_contract FROM operation_state WHERE operation_id=$1",
-        )
-        .bind(operation_id)
-        .fetch_optional(&*self.pool)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Verification operation is missing"))?;
-        if contract != "v2_only" {
+        let contract = self
+            .attack_execution_contract_for_operation(operation_id)
+            .await
+            .map_err(anyhow::Error::new)?;
+        if !contract.executes_v2_verifier() {
             return Ok(None);
         }
         let truth = golish_db::repo::verification_truth::load_for_operation(

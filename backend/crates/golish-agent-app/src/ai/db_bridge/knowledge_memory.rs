@@ -274,7 +274,7 @@ impl PgKnowledgeMemory {
             if assertions.is_empty() {
                 let reason = match assertion_promotion_policy(event.event_name) {
                     AssertionPromotionPolicy::RequiresProducerAssertion => {
-                        "memory_fact_delta_accepted_transition_unimplemented"
+                        "memory_fact_delta_producer_assertion_missing"
                     }
                     AssertionPromotionPolicy::ProducerPreclosedInvalidation => {
                         "memory_invalidation_source_assertion_missing"
@@ -1745,7 +1745,7 @@ mod static_composition_tests {
         assert_eq!(
             assertion_promotion_policy(KnowledgeEventNameV1::FactDeltaAccepted),
             AssertionPromotionPolicy::RequiresProducerAssertion,
-            "Task 10/00012 must add the accepted transition and producer assertion; the projector cannot invent it"
+            "the accepted-delta producer must atomically persist the assertion; the projector cannot invent it"
         );
         assert!(!routes_for(KnowledgeEventNameV1::SourceScopeInvalidated).is_empty());
         assert_eq!(
@@ -1888,7 +1888,7 @@ mod static_composition_tests {
     }
 
     #[test]
-    fn candidate_fact_delta_evidence_fails_closed_until_typed_roles_exist() {
+    fn candidate_terminal_does_not_infer_fact_delta_evidence_roles() {
         let attempt_id = Uuid::from_u128(0x7140);
         let payload: CandidateTerminalPayload = serde_json::from_value(serde_json::json!({
             "attempt_id": attempt_id,
@@ -1909,9 +1909,9 @@ mod static_composition_tests {
             "fact_delta_count": 1,
         }))
         .expect("strict Candidate payload with FactDelta evidence");
-        let error = payload
-            .projection_decision(attempt_id)
-            .expect_err("FactDelta evidence roles remain untyped until Task 10/00012");
+        let error = payload.projection_decision(attempt_id).expect_err(
+            "Candidate terminal evidence cannot stand in for accepted FactDelta authority",
+        );
         assert!(error
             .to_string()
             .contains("memory_candidate_terminal_fact_delta_evidence_untyped"));

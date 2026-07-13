@@ -22,12 +22,16 @@ Rules:
 
 Exit code: 0 clean / 1 violations / 2 setup error.
 Use `--emit-allowlist` to print copy-pasteable baseline entries.
+Use `--baseline-ref <git-ref>` to fail only on exact violations that are new
+relative to that ref, while evaluating both trees with THIS script's rules.
 """
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Protocol
 
 # repo (table group) -> owning service. Mirrors design doc §5 five-service map.
 # NOTE: starting assignment, reviewable. The first --emit-allowlist run will
@@ -81,6 +85,9 @@ REPO_OWNER: dict[str, str] = {
     "vector_store_logs": "agent",
     "search_logs": "agent",
     "runtime_memory_rollout": "agent",
+    # Owns the runtime rollout admission/sample/promotion-receipt tables; the
+    # admission and receipt writers themselves remain DB-trigger internal.
+    "runtime_memory_shadow": "agent",
     "project_scopes": "agent",
     "operation_scope_decisions": "agent",
     "operation_org_scope": "agent",
@@ -105,7 +112,9 @@ REPO_OWNER: dict[str, str] = {
     "attack_candidates": "agent",
     "attack_execution_lanes": "agent",
     "attack_execution_rollout": "agent",
+    "attack_execution_shadow": "agent",
     "attack_fact_deltas": "agent",
+    "attack_wave_consolidations": "agent",
     "attack_waves": "agent",
     "candidate_attempts": "agent",
     "verification_truth": "agent",
@@ -307,6 +316,7 @@ FINDING_INSERT_RE = re.compile(
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "backend" / "crates" / "golish" / "src"
 REPO_MOD = ROOT / "backend" / "crates" / "golish-db" / "src" / "repo" / "mod.rs"
+REPO_MOD_REL = "backend/crates/golish-db/src/repo/mod.rs"
 
 # Command-layer source roots to scan (crate name, fixed_domain).
 # The god-crate `golish` uses per-path DOMAIN_RULES (fixed_domain=None); each
@@ -356,27 +366,123 @@ def is_test_file(rel: str) -> bool:
     return rel.endswith("_tests.rs") or rel.endswith("tests.rs") or "/tests/" in rel
 
 
+class SnapshotError(RuntimeError):
+    """The requested source snapshot cannot be read deterministically."""
+
+
+class SourceSnapshot(Protocol):
+    def read_text(self, relative: str) -> str | None: ...
+
+    def iter_paths(self, prefix: str, suffixes: frozenset[str]) -> list[str]: ...
+
+
+class WorktreeSnapshot:
+    """Read files exactly as they exist in the current worktree, including untracked files."""
+
+    def __init__(self, root: Path = ROOT) -> None:
+        self.root = root
+
+    def read_text(self, relative: str) -> str | None:
+        path = self.root / relative
+        if not path.is_file():
+            return None
+        return path.read_text()
+
+    def iter_paths(self, prefix: str, suffixes: frozenset[str]) -> list[str]:
+        base = self.root / prefix
+        if not base.is_dir():
+            return []
+        return [
+            path.relative_to(self.root).as_posix()
+            for path in sorted(base.rglob("*"))
+            if path.is_file() and path.suffix in suffixes
+        ]
+
+
+class GitRefSnapshot:
+    """Read an immutable git tree without checking it out or mutating the worktree."""
+
+    def __init__(self, root: Path, ref: str) -> None:
+        if not ref or ref.startswith("-"):
+            raise SnapshotError("--baseline-ref requires a non-option git ref")
+        self.root = root
+        self.requested_ref = ref
+        self.commit = self._git("rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", self.commit):
+            raise SnapshotError(f"git ref `{ref}` did not resolve to a commit")
+
+    def _git(self, *args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(self.root), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
+            raise SnapshotError(detail)
+        return result.stdout
+
+    def read_text(self, relative: str) -> str | None:
+        result = subprocess.run(
+            ["git", "-C", str(self.root), "show", f"{self.commit}:{relative}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout
+
+    def iter_paths(self, prefix: str, suffixes: frozenset[str]) -> list[str]:
+        output = self._git(
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            self.commit,
+            "--",
+            prefix,
+        )
+        return sorted(
+            path
+            for path in output.split("\0")
+            if path and PurePosixPath(path).suffix in suffixes
+        )
+
+
+def _required_text(snapshot: SourceSnapshot, relative: str) -> str:
+    text = snapshot.read_text(relative)
+    if text is None:
+        raise SnapshotError(f"required path not found in snapshot: {relative}")
+    return text
+
+
+def declared_repos_from_snapshot(snapshot: SourceSnapshot) -> set[str]:
+    return set(PUB_MOD_RE.findall(_required_text(snapshot, REPO_MOD_REL)))
+
+
 def declared_repos() -> set[str]:
-    return set(PUB_MOD_RE.findall(REPO_MOD.read_text()))
+    return declared_repos_from_snapshot(WorktreeSnapshot())
 
 
-def scan() -> tuple[list[str], list[str], set[tuple[str, str]], set[str]]:
+def scan_snapshot(
+    snapshot: SourceSnapshot,
+) -> tuple[list[str], list[str], set[tuple[str, str]], set[str]]:
     own_viol: list[str] = []
     raw_viol: list[str] = []
     emit_own: set[tuple[str, str]] = set()
     emit_raw: set[str] = set()
     for crate, fixed_dom in SOURCE_ROOTS:
-        src = ROOT / "backend" / "crates" / crate / "src"
-        if not src.is_dir():
-            continue
-        for path in sorted(src.rglob("*.rs")):
-            rel = str(path.relative_to(src))
+        prefix = f"backend/crates/{crate}/src"
+        for path in snapshot.iter_paths(prefix, frozenset({".rs"})):
+            rel = PurePosixPath(path).relative_to(prefix).as_posix()
             if is_test_file(rel):
                 continue
             # God-crate keeps its golish/src-relative key; app crates are
             # crate-prefixed so allowlist keys stay unambiguous across crates.
             key = rel if crate == "golish" else f"{crate}/{rel}"
-            text = path.read_text()
+            text = _required_text(snapshot, path)
             dom = fixed_dom if fixed_dom is not None else domain_of(rel)
             for m in REPO_USE_RE.finditer(text):
                 repo = m.group(1)
@@ -399,32 +505,120 @@ def scan() -> tuple[list[str], list[str], set[tuple[str, str]], set[str]]:
     return own_viol, raw_viol, emit_own, emit_raw
 
 
-def scan_finding_insertions(root: Path = ROOT) -> list[str]:
+def scan() -> tuple[list[str], list[str], set[tuple[str, str]], set[str]]:
+    return scan_snapshot(WorktreeSnapshot())
+
+
+def scan_finding_insertions_snapshot(snapshot: SourceSnapshot) -> list[str]:
     violations: list[str] = []
-    crates = root / "backend" / "crates"
-    for path in sorted(crates.rglob("*")):
-        if not path.is_file() or path.suffix not in {".rs", ".sql"}:
-            continue
-        rel = path.relative_to(root).as_posix()
-        parts = set(path.relative_to(crates).parts)
+    prefix = "backend/crates"
+    for rel in snapshot.iter_paths(prefix, frozenset({".rs", ".sql"})):
+        path = PurePosixPath(rel)
+        parts = set(path.relative_to(prefix).parts)
         if parts.intersection({"migrations", "tests", "fixtures"}):
             continue
         if rel in FINDING_INSERT_ALLOWED:
             continue
-        if FINDING_INSERT_RE.search(path.read_text()):
+        if FINDING_INSERT_RE.search(_required_text(snapshot, rel)):
             violations.append(
                 f"{rel}: raw INSERT INTO findings bypasses the guarded Finding repository"
             )
     return violations
 
 
-def main() -> int:
-    if not SRC.is_dir() or not REPO_MOD.is_file():
-        print(f"[repo-ownership] ERROR: paths not found ({SRC} / {REPO_MOD})", file=sys.stderr)
+def scan_finding_insertions(root: Path = ROOT) -> list[str]:
+    return scan_finding_insertions_snapshot(WorktreeSnapshot(root))
+
+
+Violation = tuple[str, str]
+
+
+def collect_violations(snapshot: SourceSnapshot) -> set[Violation]:
+    """Return the deduplicated exact violation set under the current rules."""
+
+    own, raw, _, _ = scan_snapshot(snapshot)
+    for repo in sorted(
+        declared_repos_from_snapshot(snapshot) - set(REPO_OWNER) - SHARED_REPOS
+    ):
+        own.append(
+            f"golish-db repo `{repo}` unregistered — add to REPO_OWNER or SHARED_REPOS"
+        )
+    finding_writes = scan_finding_insertions_snapshot(snapshot)
+    return {
+        *(("ownership", violation) for violation in own),
+        *(("raw-sql", violation) for violation in raw),
+        *(("finding-write", violation) for violation in finding_writes),
+    }
+
+
+def compare_violation_sets(
+    current: set[Violation], baseline: set[Violation]
+) -> tuple[set[Violation], set[Violation]]:
+    """Return (added, removed); only `added` is gate-failing."""
+
+    return current - baseline, baseline - current
+
+
+def _parse_mode(argv: list[str]) -> tuple[str, str | None]:
+    if not argv:
+        return "full", None
+    if argv == ["--finding-writes-only"]:
+        return "finding-writes-only", None
+    if argv == ["--emit-allowlist"]:
+        return "emit-allowlist", None
+    if len(argv) == 2 and argv[0] == "--baseline-ref":
+        return "baseline-ref", argv[1]
+    raise SnapshotError(
+        "usage: check_repo_ownership.py [--emit-allowlist | "
+        "--finding-writes-only | --baseline-ref <git-ref>]"
+    )
+
+
+def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
+    try:
+        mode, baseline_ref = _parse_mode(list(sys.argv[1:] if argv is None else argv))
+        src = root / "backend" / "crates" / "golish" / "src"
+        repo_mod = root / REPO_MOD_REL
+        if not src.is_dir() or not repo_mod.is_file():
+            raise SnapshotError(f"paths not found ({src} / {repo_mod})")
+        worktree = WorktreeSnapshot(root)
+
+        if mode == "baseline-ref":
+            assert baseline_ref is not None
+            current = collect_violations(worktree)
+            baseline_snapshot = GitRefSnapshot(root, baseline_ref)
+            baseline = collect_violations(baseline_snapshot)
+            added, removed = compare_violation_sets(current, baseline)
+            if added:
+                print(
+                    f"[repo-ownership] FAIL {len(added)} new exact violation(s) "
+                    f"vs {baseline_ref} (current={len(current)}, "
+                    f"baseline={len(baseline)}, removed={len(removed)}):",
+                    file=sys.stderr,
+                )
+                for category, violation in sorted(added):
+                    print(f"  - [{category}] {violation}", file=sys.stderr)
+                return 1
+            print(
+                f"[repo-ownership] OK no new exact violations vs {baseline_ref} "
+                f"(current={len(current)}, baseline={len(baseline)}, "
+                f"removed={len(removed)}; historical violations not asserted clean)"
+            )
+            return 0
+
+        finding_writes = scan_finding_insertions_snapshot(worktree)
+        own, raw, emit_own, emit_raw = scan_snapshot(worktree)
+        for repo in sorted(
+            declared_repos_from_snapshot(worktree) - set(REPO_OWNER) - SHARED_REPOS
+        ):
+            own.append(
+                f"golish-db repo `{repo}` unregistered — add to REPO_OWNER or SHARED_REPOS"
+            )
+    except SnapshotError as exc:
+        print(f"[repo-ownership] ERROR: {exc}", file=sys.stderr)
         return 2
 
-    finding_writes = scan_finding_insertions()
-    if "--finding-writes-only" in sys.argv:
+    if mode == "finding-writes-only":
         if not finding_writes:
             print("[repo-ownership] OK Finding write authority clean")
             return 0
@@ -436,11 +630,7 @@ def main() -> int:
             print(f"  - {violation}", file=sys.stderr)
         return 1
 
-    own, raw, emit_own, emit_raw = scan()
-    for r in sorted(declared_repos() - set(REPO_OWNER) - SHARED_REPOS):
-        own.append(f"golish-db repo `{r}` unregistered — add to REPO_OWNER or SHARED_REPOS")
-
-    if "--emit-allowlist" in sys.argv:
+    if mode == "emit-allowlist":
         print("# --- paste into ALLOWLIST ---")
         for rel, repo in sorted(emit_own):
             print(f'        ("{rel}", "{repo}"),')

@@ -23,6 +23,33 @@ pub struct AttackV2ReviewBarrierView {
     pub dispatch_is_stale: bool,
 }
 
+/// Server-owned command for closing one exact V2 Verification wave. The
+/// operation/snapshot/wave triple comes from validated persisted Verification
+/// truth, never from a model deliverable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttackV2ConsolidateWave {
+    pub operation_id: Uuid,
+    pub scope_snapshot_id: Uuid,
+    pub source_wave_run_id: Uuid,
+}
+
+/// Durable result returned only after the app bridge commits the Wave
+/// consolidation transaction. Counts are safe observability metadata; no
+/// candidate hypothesis, exploit material, or evidence body crosses this seam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttackV2WaveConsolidationView {
+    pub operation_id: Uuid,
+    pub scope_snapshot_id: Uuid,
+    pub consolidation_id: Uuid,
+    pub source_wave_run_id: Uuid,
+    pub target_wave_run_id: Option<Uuid>,
+    pub decision_kind: String,
+    pub accepted_fact_delta_count: usize,
+    pub rejected_fact_delta_count: usize,
+    pub residual_risk_count: usize,
+    pub replayed: bool,
+}
+
 /// Real, persisted red_team scoping actions observed for a session (read from
 /// `tool_calls`). The scoping gate uses this to verify the model actually
 /// performed the unit-candidate review flow instead of merely asserting a
@@ -1240,6 +1267,18 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<Option<crate::harness::attack_execution::VerificationTruthSet>> {
         let _ = (operation_id, organization_id);
         anyhow::bail!("ATTACK_V2_VERIFICATION_TRUTH_UNAVAILABLE")
+    }
+
+    /// Close the exact current Verification Wave and, when policy/fuel allows,
+    /// atomically open its follow-on Wave. The implementation must commit the
+    /// short DB transaction before returning this view. Missing implementations
+    /// fail closed so V2 can never fall back to the process-local wave cursor.
+    async fn attack_v2_consolidate_wave(
+        &self,
+        input: AttackV2ConsolidateWave,
+    ) -> anyhow::Result<AttackV2WaveConsolidationView> {
+        let _ = input;
+        anyhow::bail!("ATTACK_V2_CONSOLIDATION_UNAVAILABLE")
     }
 
     /// Reporting stage-entry seam. The concrete repository builds or reuses a

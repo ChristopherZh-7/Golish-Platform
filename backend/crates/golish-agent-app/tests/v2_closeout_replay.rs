@@ -227,6 +227,21 @@ fn sha256_json(value: &serde_json::Value) -> String {
         .collect()
 }
 
+fn target_identity_hash(target_type: &str, target_value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(target_type.as_bytes());
+    hasher.update([0]);
+    hasher.update(target_value.as_bytes());
+    let digest = hasher.finalize();
+    format!(
+        "sha256:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
 #[derive(Clone, Copy)]
 struct StageSeal {
     stage_execution_id: Uuid,
@@ -423,6 +438,7 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
     let scope_snapshot_id = Uuid::new_v4();
     let organization_id = Uuid::new_v4();
     let target_id = Uuid::new_v4();
+    let target_identity_hash = target_identity_hash("url", "https://closeout.example.test/login");
     sqlx::query(
         "INSERT INTO sessions(id,title,status,project_path) \
          VALUES($1,'V2 closeout contract','running',$2)",
@@ -451,6 +467,39 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
     .execute(pool)
     .await
     .expect("insert project scope");
+    // This integration test exercises the post-cutover closeout path, not the
+    // rollout promotion algorithm (covered by attack_rollout_cohort_migrations).
+    // Position both deployment singletons at an already-promoted V2-only
+    // snapshot before freezing the operation contract.
+    let mut rollout_tx = pool.begin().await.expect("begin V2 rollout fixture");
+    sqlx::query("SET LOCAL session_replication_role = 'replica'")
+        .execute(&mut *rollout_tx)
+        .await
+        .expect("isolate rollout promotion fixture");
+    sqlx::query(
+        r#"UPDATE runtime_memory_rollout
+              SET contract='v2_only',contract_rank=3,row_version=3,updated_at=NOW()
+            WHERE singleton_id=1"#,
+    )
+    .execute(&mut *rollout_tx)
+    .await
+    .expect("position runtime rollout at V2-only");
+    sqlx::query(
+        r#"UPDATE attack_execution_rollout
+              SET contract='v2_only',rank=3,row_version=3,updated_at=NOW()
+            WHERE singleton=TRUE"#,
+    )
+    .execute(&mut *rollout_tx)
+    .await
+    .expect("position attack rollout at V2-only");
+    sqlx::query("SET LOCAL session_replication_role = 'origin'")
+        .execute(&mut *rollout_tx)
+        .await
+        .expect("restore rollout trigger authority");
+    rollout_tx
+        .commit()
+        .await
+        .expect("commit V2 rollout fixture");
     sqlx::query(
         r#"INSERT INTO operation_state(
                operation_id,profile,current_stage,runtime_memory_contract,
@@ -561,25 +610,20 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
         vec![entry_evidence_id],
     )
     .await;
-    let decision = insert_passed_stage(
-        pool,
-        session_id,
-        operation_id,
-        scope_snapshot_id,
-        organization_id,
-        "attack_candidate",
-        "attack_analyst",
-        Vec::new(),
-    )
-    .await;
-
-    let wave_run_id = Uuid::new_v4();
+    let wave_run_id = Uuid::new_v5(
+        &Uuid::NAMESPACE_OID,
+        format!("{operation_id}:candidate-wave:0").as_bytes(),
+    );
     let wave_unit_id = Uuid::new_v4();
     sqlx::query(
         r#"INSERT INTO attack_wave_runs(
                id,operation_id,scope_snapshot_id,generation,status,policy_snapshot,
                policy_hash,max_waves,max_candidates_total,max_chain_depth,max_attempts_total
-           ) VALUES($1,$2,$3,0,'open',$4,'sha256:policy',3,100,3,200)"#,
+           ) VALUES(
+               $1,$2,$3,0,'open',$4,
+               'sha256:66e50329b4bb217eb060bcccb38f78f4b0eafc163471bebd6554d271d1a6b326',
+               3,100,3,200
+           )"#,
     )
     .bind(wave_run_id)
     .bind(operation_id)
@@ -607,6 +651,20 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
     .await
     .expect("insert wave unit");
 
+    // Keep the real Wave-before-Candidate ordering even though a V2-only
+    // operation no longer participates in the dual-read admission cohort.
+    let decision = insert_passed_stage(
+        pool,
+        session_id,
+        operation_id,
+        scope_snapshot_id,
+        organization_id,
+        "attack_candidate",
+        "attack_analyst",
+        Vec::new(),
+    )
+    .await;
+
     let seed_id = Uuid::new_v4();
     let work_item_id = Uuid::new_v4();
     let candidate_id = Uuid::new_v4();
@@ -616,7 +674,7 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
                target_live_id,target_type_at_time,target_value_at_time,
                target_identity_hash,technique,observation,observation_hash
            ) VALUES($1,$2,$3,$4,$5,$6,'url','https://closeout.example.test/login',
-                    repeat('7',64),'WSTG-INPV-05',$7,'sha256:observation')"#,
+                    $7,'WSTG-INPV-05',$8,'sha256:observation')"#,
     )
     .bind(seed_id)
     .bind(wave_unit_id)
@@ -624,6 +682,7 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
     .bind(scope_snapshot_id)
     .bind(organization_id)
     .bind(target_id)
+    .bind(&target_identity_hash)
     .bind(json!({"parameter":"username"}))
     .execute(pool)
     .await
@@ -634,7 +693,7 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
                target_live_id,target_type_at_time,target_value_at_time,
                target_identity_hash,work_item_key
            ) VALUES($1,$2,$3,$4,$5,$6,$7,'url','https://closeout.example.test/login',
-                    repeat('7',64),$8)"#,
+                    $8,$9)"#,
     )
     .bind(work_item_id)
     .bind(seed_id)
@@ -643,6 +702,7 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
     .bind(scope_snapshot_id)
     .bind(organization_id)
     .bind(target_id)
+    .bind(&target_identity_hash)
     .bind(format!("seed:{seed_id}:v1:sha256:observation"))
     .execute(pool)
     .await
@@ -651,7 +711,7 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
         "schema_version": "candidate-plan-v1",
         "classifier_version": "candidate-classifier-v1",
         "candidate_id": candidate_id,
-        "target_identity_hash": "7".repeat(64),
+        "target_identity_hash": target_identity_hash.clone(),
         "foreground_only": true,
         "actions": [{
             "ordinal": 0,
@@ -663,6 +723,12 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
         }],
         "budget": {"max_actions":1,"max_requests":8,"max_runtime_ms":120000}
     });
+    let candidate_plan_hash: String =
+        sqlx::query_scalar("SELECT 'sha256:' || attack_fact_delta_sha256_jsonb($1::jsonb)")
+            .bind(&execution_plan)
+            .fetch_one(pool)
+            .await
+            .expect("derive canonical Candidate plan hash");
     let mut candidate_tx = pool.begin().await.expect("begin candidate acceptance");
     sqlx::query(
         r#"INSERT INTO attack_candidates(
@@ -678,7 +744,7 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
                     'sha256:closeout-hypothesis','WSTG-INPV-05','evidence grounded','[]',
                     'bounded verifier','high',0,'approved',$4,$5,$6,$7,$8,$9,$10,$11,
                     'attack_candidate',$12,'url','https://closeout.example.test/login',
-                    repeat('7',64),$13,'sha256:candidate-plan','exploit')"#,
+                    $13,$14,$15,'exploit')"#,
     )
     .bind(candidate_id)
     .bind(operation_id.to_string())
@@ -692,7 +758,9 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
     .bind(decision.stage_run_unit_id)
     .bind(decision.submission_id)
     .bind(target_id)
+    .bind(&target_identity_hash)
     .bind(&execution_plan)
+    .bind(&candidate_plan_hash)
     .execute(&mut *candidate_tx)
     .await
     .expect("insert approved candidate");
@@ -723,8 +791,8 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
                allowed_capability_ids,allowed_action_kinds,budget,expires_at,
                decision_version,status,decided_by
            ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'url','https://closeout.example.test/login',
-                    repeat('7',64),'sha256:candidate-plan',$9,$10,$11,$12,$13,
-                    NOW()+INTERVAL '1 hour',1,'approved',$14)"#,
+                    $9,$10,$11,$12,$13,$14,$15,
+                    NOW()+INTERVAL '1 hour',1,'approved',$16)"#,
     )
     .bind(approval_id)
     .bind(candidate_id)
@@ -734,11 +802,13 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
     .bind(wave_unit_id)
     .bind(organization_id)
     .bind(target_id)
+    .bind(&target_identity_hash)
+    .bind(&candidate_plan_hash)
     .bind(work_item_id)
-    .bind(json!({"schema_version":"candidate-plan-v1"}))
+    .bind(&execution_plan)
     .bind(vec!["verify.sql_injection"])
     .bind(vec!["bounded_sql_injection_probe"])
-    .bind(json!({"max_actions":1,"max_requests":8}))
+    .bind(execution_plan["budget"].clone())
     .bind(principal.id)
     .execute(pool)
     .await
@@ -844,7 +914,7 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
             candidate_id,
             approval_id,
             attempt_id: claimed.attempt.id,
-            candidate_plan_hash: "sha256:candidate-plan".to_string(),
+            candidate_plan_hash: candidate_plan_hash.clone(),
             worker_run_id: claimed.worker.id,
             stage_execution_id: verification_stage_execution_id,
             stage_run_unit_id: verification_stage_run_unit_id,
@@ -874,7 +944,7 @@ async fn seed_submitted_candidate(pool: &PgPool, project_path: &str) -> Candidat
         candidate_id,
         approval_id,
         attempt_id: claimed.attempt.id,
-        candidate_plan_hash: "sha256:candidate-plan".to_string(),
+        candidate_plan_hash,
         expected_result_hash: submitted.attempt.result_hash.expect("result hash"),
         proof_evidence_ids: vec![proof_evidence_id],
         worker_run_id: claimed.worker.id,
@@ -1357,14 +1427,16 @@ async fn candidate_to_report_closeout_is_replay_safe() {
         .await
         .expect("stop Candidate replay projector supervisor");
 
-    let target_snapshot: (String, String, String) = sqlx::query_as(
-        r#"SELECT target_type_at_time,target_value_at_time,target_identity_hash
-             FROM candidate_attempts WHERE id=$1"#,
+    let target_snapshot = footholds::load_access_validation_source(
+        db.pool(),
+        scope.operation_id,
+        scope.scope_snapshot_id,
+        scope.organization_id,
+        "candidate_attempt",
+        scope.attempt_id,
     )
-    .bind(scope.attempt_id)
-    .fetch_one(db.pool())
     .await
-    .expect("load immutable verified Candidate target snapshot");
+    .expect("load trusted Candidate target snapshot for Post-Exploit");
     let foothold_id = Uuid::new_v4();
     let validate_foothold = footholds::ValidateFoothold {
         id: foothold_id,
@@ -1375,9 +1447,9 @@ async fn candidate_to_report_closeout_is_replay_safe() {
         validation_unit_kind: "candidate_attempt".to_string(),
         validation_unit_id: scope.attempt_id,
         target_live_id: Some(scope.target_id),
-        target_type_at_time: target_snapshot.0,
-        target_value_at_time: target_snapshot.1,
-        target_identity_hash: target_snapshot.2,
+        target_type_at_time: target_snapshot.target_type_at_time,
+        target_value_at_time: target_snapshot.target_value_at_time,
+        target_identity_hash: target_snapshot.target_identity_hash,
         vault_credential_ref: None,
         evidence: vec![(scope.proof_evidence_id, "validation".to_string())],
     };

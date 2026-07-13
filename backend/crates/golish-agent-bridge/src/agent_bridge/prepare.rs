@@ -392,6 +392,7 @@ impl AgentBridge {
             sidecar_state: self.services.sidecar_state.as_ref(),
             chain_persistence: self.services.chain_persistence.clone(),
             runtime_memory: self.services.runtime_memory.clone(),
+            resume_runtime_memory_source: *self.resume_runtime_memory_source.read().await,
             knowledge_context: self.services.knowledge_context.clone(),
             plan_manager: &self.plan_manager,
             api_request_stats: &self.api_request_stats,

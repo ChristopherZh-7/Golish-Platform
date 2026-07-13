@@ -277,6 +277,11 @@ pub struct AgentBridge {
     pub(crate) harness_active_stage_run_unit_id: Arc<RwLock<Option<uuid::Uuid>>>,
     /// Trusted specialist worker fencing tuple for the active subtask.
     pub(crate) harness_active_worker_lease: Arc<RwLock<Option<golish_core::WorkerLeaseContext>>>,
+    /// Request-local whole-record runtime source selected before resume. Unlike
+    /// per-subtask identity this survives between stage turns and is cleared only
+    /// when the top-level request owner releases its state.
+    pub(crate) resume_runtime_memory_source:
+        Arc<RwLock<Option<golish_agent_kit::db_traits::RuntimeMemoryRecordSource>>>,
     /// Circuit breaker shared by every Primary loop/reflector pass in one
     /// top-level Task request. `BridgeAgentExecutor` resets it only after the
     /// universal request owner upgrades into Task execution; `stage_run` closes
@@ -364,6 +369,7 @@ impl AgentBridge {
         );
 
         self.clear_active_subtask_context().await;
+        *self.resume_runtime_memory_source.write().await = None;
         *self.harness_last_deliverable.write().await = None;
         *self.harness_captured_submission.write().await = None;
         *self.pending_plan_request.write().await = None;

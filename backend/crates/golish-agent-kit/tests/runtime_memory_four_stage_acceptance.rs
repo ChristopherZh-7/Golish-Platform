@@ -7,9 +7,9 @@ use golish_agent_kit::harness::{
 };
 use golish_db::models::{AgentType, NewSession};
 use golish_db::repo::{
-    canonical_fact_refs, operation_org_scope, organizations, project_scopes,
-    runtime_memory_rollout, runtime_memory_tx, sessions, stage_deliverable_submissions,
-    stage_handoffs, stage_run_units, stage_worker_runs, tool_calls,
+    attack_execution_rollout, canonical_fact_refs, operation_org_scope, operation_state,
+    organizations, project_scopes, runtime_memory_rollout, runtime_memory_tx, sessions,
+    stage_deliverable_submissions, stage_handoffs, stage_run_units, stage_worker_runs, tool_calls,
 };
 use golish_db::{DbConfig, GolishDb};
 use sha2::{Digest, Sha256};
@@ -44,24 +44,25 @@ async fn fixture() -> (GolishDb, tempfile::TempDir) {
     (db, data_dir)
 }
 
-async fn advance_runtime_to_v2_only(db: &GolishDb) {
-    use runtime_memory_rollout::RuntimeMemoryContract;
+async fn assert_deployment_rollouts_enable_dual_write_sampling(db: &GolishDb) {
+    let runtime = runtime_memory_rollout::get(db.pool())
+        .await
+        .expect("read runtime-memory deployment rollout");
+    assert_eq!(runtime.contract, "dual_write_legacy_read");
+    assert_eq!(runtime.contract_rank, 1);
+    assert_eq!(runtime.row_version, 1);
 
-    let mut current = RuntimeMemoryContract::LegacyV1;
-    let mut row_version = 0;
-    for next in [
-        RuntimeMemoryContract::DualWriteLegacyRead,
-        RuntimeMemoryContract::DualWriteV2Preferred,
-        RuntimeMemoryContract::V2Only,
-    ] {
-        let row = runtime_memory_rollout::advance(db.pool(), current, next, row_version)
-            .await
-            .unwrap_or_else(|error| {
-                panic!("advance runtime rollout {current:?} -> {next:?}: {error}")
-            });
-        current = next;
-        row_version = row.row_version;
-    }
+    let mut connection = db
+        .pool()
+        .acquire()
+        .await
+        .expect("acquire attack rollout connection");
+    let attack = attack_execution_rollout::get_for_share(&mut connection)
+        .await
+        .expect("read attack-execution deployment rollout");
+    assert_eq!(attack.contract, "dual_write_read_legacy");
+    assert_eq!(attack.rank, 1);
+    assert_eq!(attack.row_version, 1);
 }
 
 struct StageFixture {
@@ -139,6 +140,22 @@ async fn create_stage_fixture(db: &GolishDb, stage: StageKind) -> StageFixture {
     .unwrap_or_else(|error| panic!("{} create child org: {error}", stage.as_str()));
     let operation_id = Uuid::new_v4();
     let stage_execution_id = Uuid::new_v4();
+    let expected_runtime_contract = runtime_memory_rollout::get(db.pool())
+        .await
+        .unwrap_or_else(|error| panic!("{} read runtime rollout: {error}", stage.as_str()))
+        .contract;
+    let expected_attack_contract = {
+        let mut connection = db.pool().acquire().await.unwrap_or_else(|error| {
+            panic!(
+                "{} acquire attack rollout connection: {error}",
+                stage.as_str()
+            )
+        });
+        attack_execution_rollout::get_for_share(&mut connection)
+            .await
+            .unwrap_or_else(|error| panic!("{} read attack rollout: {error}", stage.as_str()))
+            .contract
+    };
     let created = runtime_memory_tx::create_runtime_operation(
         db.pool(),
         &runtime_memory_tx::CreateRuntimeOperationRow {
@@ -179,7 +196,19 @@ async fn create_stage_fixture(db: &GolishDb, stage: StageKind) -> StageFixture {
     )
     .await
     .unwrap_or_else(|error| panic!("{} create frozen operation: {error}", stage.as_str()));
-    assert_eq!(created.operation.runtime_memory_contract, "v2_only");
+    assert_eq!(
+        created.operation.runtime_memory_contract,
+        expected_runtime_contract
+    );
+    assert_eq!(
+        operation_state::get_attack_execution_contract(db.pool(), operation_id)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{} read frozen attack contract: {error}", stage.as_str())
+            })
+            .map(|contract| contract.as_str()),
+        Some(expected_attack_contract.as_str())
+    );
     assert_eq!(created.operation.current_stage, stage.as_str());
 
     let frozen = operation_org_scope::load_for_operation(db.pool(), operation_id)
@@ -446,6 +475,7 @@ async fn exercise_stage(db: &GolishDb, stage: StageKind) {
         work_item_kind: "organization".to_string(),
         work_item_key: stage.as_str().to_string(),
         agent_path_prefix: format!("main>stage_run:{}", stage.as_str()),
+        organization_ids: None,
     };
     let seeded = runtime_memory_tx::seed_stage_runtime(db.pool(), &seed_input)
         .await
@@ -612,6 +642,7 @@ async fn exercise_stage(db: &GolishDb, stage: StageKind) {
             stage_execution_id: fixture.stage_execution_id,
             stage_run_unit_id: incomplete.unit.id,
             worker_run_id: incomplete.worker.id,
+            selected_source: None,
         },
     )
     .await
@@ -671,7 +702,7 @@ async fn exercise_stage(db: &GolishDb, stage: StageKind) {
 #[tokio::test]
 async fn four_embedded_v2_stages_accept_frozen_fanout_fencing_seal_and_restart() {
     let (mut db, _data_dir) = fixture().await;
-    advance_runtime_to_v2_only(&db).await;
+    assert_deployment_rollouts_enable_dual_write_sampling(&db).await;
 
     let mut exercised = Vec::new();
     for stage in FOUR_V2_STAGES {

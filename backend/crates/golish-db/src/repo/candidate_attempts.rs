@@ -213,6 +213,61 @@ struct ClaimCandidateRow {
     allowed_capability_ids: Vec<String>,
     allowed_action_kinds: Vec<String>,
     budget: serde_json::Value,
+    has_attempt: bool,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ReleaseAttemptAuthorityRow {
+    candidate_id: Uuid,
+    approval_id: Uuid,
+    candidate_plan_hash: String,
+    target_live_id: Option<Uuid>,
+    target_type_at_time: String,
+    target_value_at_time: String,
+    target_identity_hash: String,
+    policy_hash: String,
+    generation: i32,
+    max_attempts_total: i32,
+    candidate_disposition: String,
+    attempt_status: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct FuelReleaseReplayRow {
+    candidate_id: Uuid,
+    approval_id: Uuid,
+    candidate_plan_hash: String,
+    target_type_at_time: String,
+    target_value_at_time: String,
+    target_identity_hash: String,
+    result_json: serde_json::Value,
+    result_hash: String,
+    row_version: i64,
+    terminal_at: DateTime<Utc>,
+    residual_id: Uuid,
+    residual_operation_id: Uuid,
+    residual_scope_snapshot_id: Uuid,
+    residual_wave_run_id: Uuid,
+    residual_wave_unit_id: Uuid,
+    residual_organization_id: Uuid,
+    residual_target_live_id: Option<Uuid>,
+    residual_target_type_at_time: Option<String>,
+    residual_target_value_at_time: Option<String>,
+    residual_target_identity_hash: Option<String>,
+    residual_reason_code: String,
+    residual_reason_detail: String,
+    residual_policy_hash: String,
+    residual_wave_count: i32,
+    residual_candidate_count: i32,
+    residual_chain_depth: i32,
+    residual_attempt_count: i32,
+    residual_created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct FuelTerminalUpdate {
+    row_version: i64,
+    terminal_at: DateTime<Utc>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -246,6 +301,8 @@ const ATTEMPT_COLUMNS: &str = "id,candidate_id,approval_id,operation_id,scope_sn
     wave_run_id,wave_unit_id,organization_id,target_live_id,target_type_at_time,\
     target_value_at_time,target_identity_hash,candidate_plan_hash,ordinal,status,\
     stage_worker_run_id,result_json,result_hash,row_version,created_at,updated_at,terminal_at";
+const FUEL_RESIDUAL_REASON_DETAIL: &str =
+    "Candidate retry was suppressed because frozen Attempt fuel was exhausted";
 
 pub(super) async fn validate_terminal_action_journal(
     tx: &mut Transaction<'_, Postgres>,
@@ -342,6 +399,40 @@ fn conflict(message: &str) -> crate::DbError {
     crate::DbError::Other(anyhow::anyhow!(message.to_string()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttemptFuelAction {
+    ReuseExisting,
+    ConvertReservation,
+    ConsumeRetry,
+    Exhausted,
+}
+
+fn attempt_fuel_action(
+    effective_fuel: i64,
+    max_attempts_total: i32,
+    has_attempt: bool,
+    has_existing_attempt: bool,
+) -> AttemptFuelAction {
+    if has_existing_attempt {
+        AttemptFuelAction::ReuseExisting
+    } else if !has_attempt {
+        AttemptFuelAction::ConvertReservation
+    } else if effective_fuel < i64::from(max_attempts_total) {
+        AttemptFuelAction::ConsumeRetry
+    } else {
+        AttemptFuelAction::Exhausted
+    }
+}
+
+fn release_must_terminalize_for_fuel(
+    effective_fuel: i64,
+    retryable_backlog: i64,
+    max_attempts_total: i32,
+) -> bool {
+    let free_slots = i64::from(max_attempts_total).saturating_sub(effective_fuel);
+    free_slots <= 0 || retryable_backlog >= free_slots
+}
+
 fn runtime_error(error: super::runtime_memory_tx::RuntimeMemoryStoreError) -> crate::DbError {
     crate::DbError::Other(anyhow::Error::new(error))
 }
@@ -369,6 +460,122 @@ fn canonical_result_hash(value: &serde_json::Value) -> crate::Result<String> {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     Ok(format!("sha256:{digest}"))
+}
+
+fn fuel_residual_id(attempt_id: Uuid) -> Uuid {
+    Uuid::new_v5(&attempt_id, b"max_attempts_total:residual")
+}
+
+fn release_fence_hash(release: &CandidateExecutionRelease) -> crate::Result<String> {
+    canonical_result_hash(&serde_json::json!({
+        "attempt_epoch": release.attempt_epoch,
+        "attempt_id": release.attempt_id,
+        "checkpoint_version": release.expected_checkpoint_version,
+        "lease_owner": release.lease_owner,
+        "lease_token": release.lease_token,
+        "operation_id": release.operation_id,
+        "organization_id": release.organization_id,
+        "scope_snapshot_id": release.scope_snapshot_id,
+        "stage_execution_id": release.stage_execution_id,
+        "stage_run_unit_id": release.stage_run_unit_id,
+        "wave_run_id": release.wave_run_id,
+        "wave_unit_id": release.wave_unit_id,
+        "worker_run_id": release.worker_run_id,
+    }))
+}
+
+fn fuel_residual_replay_is_exact(
+    replay: &FuelReleaseReplayRow,
+    release: &CandidateExecutionRelease,
+    authority: &ReleaseAttemptAuthorityRow,
+    residual_id: Uuid,
+) -> bool {
+    let current_residual = serde_json::json!({
+        "attempt_count": replay.residual_attempt_count,
+        "candidate_count": replay.residual_candidate_count,
+        "chain_depth": replay.residual_chain_depth,
+        "created_at": replay.residual_created_at,
+        "id": replay.residual_id,
+        "operation_id": replay.residual_operation_id,
+        "organization_id": replay.residual_organization_id,
+        "policy_hash": replay.residual_policy_hash,
+        "reason_code": replay.residual_reason_code,
+        "reason_detail": replay.residual_reason_detail,
+        "scope_snapshot_id": replay.residual_scope_snapshot_id,
+        "target_identity_hash": replay.residual_target_identity_hash,
+        "target_live_id": replay.residual_target_live_id,
+        "target_type_at_time": replay.residual_target_type_at_time,
+        "target_value_at_time": replay.residual_target_value_at_time,
+        "wave_count": replay.residual_wave_count,
+        "wave_run_id": replay.residual_wave_run_id,
+        "wave_unit_id": replay.residual_wave_unit_id,
+    });
+    let Some(mut persisted_residual) = replay.result_json.get("residual").cloned() else {
+        return false;
+    };
+    if !persisted_residual.is_object() {
+        return false;
+    }
+    // `targets(id)` is ON DELETE SET NULL throughout the retained attack
+    // ledger. The frozen type/value/hash remain exact, while a deleted live
+    // pointer is normalized before comparing the persisted terminal snapshot.
+    if replay.residual_target_live_id.is_none() {
+        persisted_residual["target_live_id"] = serde_json::Value::Null;
+    }
+    replay.residual_id == residual_id
+        && replay.residual_operation_id == release.operation_id
+        && replay.residual_scope_snapshot_id == release.scope_snapshot_id
+        && replay.residual_wave_run_id == release.wave_run_id
+        && replay.residual_wave_unit_id == release.wave_unit_id
+        && replay.residual_organization_id == release.organization_id
+        && replay.residual_target_live_id == authority.target_live_id
+        && replay.residual_target_type_at_time.as_deref()
+            == Some(authority.target_type_at_time.as_str())
+        && replay.residual_target_value_at_time.as_deref()
+            == Some(authority.target_value_at_time.as_str())
+        && replay.residual_target_identity_hash.as_deref()
+            == Some(authority.target_identity_hash.as_str())
+        && replay.residual_reason_code == "max_attempts_total"
+        && replay.residual_reason_detail == FUEL_RESIDUAL_REASON_DETAIL
+        && replay.residual_policy_hash == authority.policy_hash
+        && replay.residual_chain_depth == authority.generation
+        && persisted_residual == current_residual
+}
+
+async fn append_fuel_terminal_event(
+    tx: &mut Transaction<'_, Postgres>,
+    release: &CandidateExecutionRelease,
+    authority: &ReleaseAttemptAuthorityRow,
+    result_hash: String,
+    row_version: i64,
+    terminal_at: DateTime<Utc>,
+    evidence_ids: Vec<i64>,
+) -> crate::Result<()> {
+    let project_scope_id: Uuid =
+        sqlx::query_scalar("SELECT project_scope_id FROM operation_state WHERE operation_id=$1")
+            .bind(release.operation_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    super::finding_lineage::append_fuel_exhausted_candidate_terminal_event(
+        tx,
+        &super::finding_lineage::FuelExhaustedCandidateTerminalEvent {
+            project_scope_id,
+            operation_id: release.operation_id,
+            organization_id: release.organization_id,
+            attempt_id: release.attempt_id,
+            candidate_id: authority.candidate_id,
+            approval_id: authority.approval_id,
+            candidate_plan_hash: authority.candidate_plan_hash.clone(),
+            result_hash,
+            target_type_at_time: authority.target_type_at_time.clone(),
+            target_value_at_time: authority.target_value_at_time.clone(),
+            target_identity_hash: authority.target_identity_hash.clone(),
+            source_version: row_version,
+            occurred_at: terminal_at,
+            blocker_evidence_ids: evidence_ids,
+        },
+    )
+    .await
 }
 
 async fn lock_v2_operation(
@@ -494,6 +701,150 @@ async fn recover_expired_candidate_lane(
     Ok(true)
 }
 
+/// Return the exact already-committed claim after a caller loses the response.
+/// The global lane is the replay key: a different lease owner or any scoped
+/// identity drift remains a normal busy-lane miss and never consumes fuel.
+async fn replay_active_candidate_claim(
+    tx: &mut Transaction<'_, Postgres>,
+    query: &CandidateClaimQuery,
+    lane: &attack_execution_lanes::AttackExecutionLaneRow,
+) -> crate::Result<Option<ClaimedCandidateAttempt>> {
+    let (Some(worker_run_id), Some(lease_token), Some(lease_expires_at)) = (
+        lane.stage_worker_run_id,
+        lane.lease_token,
+        lane.lease_expires_at,
+    ) else {
+        return Ok(None);
+    };
+    if lane.lease_owner.as_deref() != Some(query.lease_owner.as_str())
+        || lease_expires_at <= Utc::now()
+    {
+        return Ok(None);
+    }
+
+    let Some(worker) = stage_worker_runs::get_with_executor(&mut **tx, worker_run_id)
+        .await
+        .map_err(runtime_error)?
+    else {
+        return Ok(None);
+    };
+    if worker.operation_id != query.operation_id
+        || worker.stage_execution_id != query.verification_stage_execution_id
+        || worker.stage_run_unit_id != query.verification_stage_run_unit_id
+        || worker.organization_id != query.organization_id
+        || worker.specialist != "candidate_verifier"
+        || worker.work_item_kind != "candidate_attempt"
+        || worker.status != "running"
+        || worker.lease_token != Some(lease_token)
+        || worker.lease_owner.as_deref() != Some(query.lease_owner.as_str())
+        || worker.lease_expires_at != Some(lease_expires_at)
+        || worker.message_chain_id.is_none()
+    {
+        return Ok(None);
+    }
+
+    let attempt_sql = format!(
+        "SELECT {ATTEMPT_COLUMNS} FROM candidate_attempts
+         WHERE stage_worker_run_id=$1 AND operation_id=$2 AND scope_snapshot_id=$3
+           AND wave_run_id=$4 AND wave_unit_id=$5 AND organization_id=$6
+           AND status='running' FOR UPDATE"
+    );
+    let Some(attempt) = sqlx::query_as::<_, CandidateAttemptRow>(&attempt_sql)
+        .bind(worker_run_id)
+        .bind(query.operation_id)
+        .bind(query.scope_snapshot_id)
+        .bind(query.wave_run_id)
+        .bind(query.wave_unit_id)
+        .bind(query.organization_id)
+        .fetch_optional(&mut **tx)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if worker.work_item_key != attempt.id.to_string()
+        || worker.worker_generation != attempt.ordinal
+        || attempt.stage_worker_run_id != Some(worker_run_id)
+    {
+        return Ok(None);
+    }
+
+    let candidate = sqlx::query_as::<_, ClaimCandidateRow>(
+        r#"SELECT candidate.candidate_id,approval.id AS approval_id,
+                  candidate.target_live_id,candidate.target_type_at_time,
+                  candidate.target_value_at_time,candidate.target_identity_hash,
+                  candidate.candidate_plan_hash,approval.execution_plan,
+                  approval.allowed_capability_ids,approval.allowed_action_kinds,
+                  approval.budget,TRUE AS has_attempt
+             FROM attack_candidates AS candidate
+             JOIN attack_candidate_approvals AS approval
+               ON approval.id=$2 AND approval.candidate_id=candidate.candidate_id
+              AND approval.operation_id=candidate.operation_uuid
+              AND approval.scope_snapshot_id=candidate.scope_snapshot_id
+              AND approval.wave_run_id=candidate.wave_run_id
+              AND approval.wave_unit_id=candidate.wave_unit_id
+              AND approval.organization_id=candidate.organization_id
+              AND approval.source_work_item_id=candidate.source_work_item_id
+              AND approval.target_live_id IS NOT DISTINCT FROM candidate.target_live_id
+              AND approval.target_type_at_time=candidate.target_type_at_time
+              AND approval.target_value_at_time=candidate.target_value_at_time
+              AND approval.target_identity_hash=candidate.target_identity_hash
+              AND approval.candidate_plan_hash=candidate.candidate_plan_hash
+            WHERE candidate.candidate_id=$1 AND candidate.operation_uuid=$3
+              AND candidate.scope_snapshot_id=$4 AND candidate.wave_run_id=$5
+              AND candidate.wave_unit_id=$6 AND candidate.organization_id=$7
+              AND candidate.target_live_id IS NOT DISTINCT FROM $8
+              AND candidate.target_type_at_time=$9
+              AND candidate.target_value_at_time=$10
+              AND candidate.target_identity_hash=$11
+              AND candidate.candidate_plan_hash=$12
+              AND candidate.disposition='approved'
+              AND approval.status='approved' AND approval.expires_at>NOW()
+            FOR UPDATE OF candidate,approval"#,
+    )
+    .bind(attempt.candidate_id)
+    .bind(attempt.approval_id)
+    .bind(attempt.operation_id)
+    .bind(attempt.scope_snapshot_id)
+    .bind(attempt.wave_run_id)
+    .bind(attempt.wave_unit_id)
+    .bind(attempt.organization_id)
+    .bind(attempt.target_live_id)
+    .bind(&attempt.target_type_at_time)
+    .bind(&attempt.target_value_at_time)
+    .bind(&attempt.target_identity_hash)
+    .bind(&attempt.candidate_plan_hash)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(candidate) = candidate else {
+        return Ok(None);
+    };
+
+    let chain_is_exact: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1
+                 FROM message_chains AS chain
+                 JOIN tasks AS task ON task.id=$2 AND task.session_id=chain.session_id
+                WHERE chain.id=$1 AND chain.task_id=$2 AND chain.agent='pentester'
+           )"#,
+    )
+    .bind(worker.message_chain_id)
+    .bind(query.operation_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !chain_is_exact {
+        return Ok(None);
+    }
+
+    Ok(Some(ClaimedCandidateAttempt {
+        attempt,
+        worker,
+        execution_plan: candidate.execution_plan,
+        allowed_capability_ids: candidate.allowed_capability_ids,
+        allowed_action_kinds: candidate.allowed_action_kinds,
+        budget: candidate.budget,
+    }))
+}
+
 /// Claim one exact approved Candidate and bind its Attempt to a P1 WorkerRun
 /// and the global exploit lane with one server-generated lease token.
 pub async fn claim_next_candidate_attempt(
@@ -515,6 +866,17 @@ pub async fn claim_next_candidate_attempt(
     )
     .await?;
     let lane = attack_execution_lanes::lock_global(&mut tx).await?;
+    if lane
+        .lease_expires_at
+        .is_some_and(|expires_at| expires_at > Utc::now())
+    {
+        if let Some(replayed) = replay_active_candidate_claim(&mut tx, &query, &lane).await? {
+            tx.commit().await?;
+            return Ok(Some(replayed));
+        }
+        tx.rollback().await?;
+        return Ok(None);
+    }
     if !recover_expired_candidate_lane(&mut tx, &lane).await? {
         tx.rollback().await?;
         return Ok(None);
@@ -546,7 +908,11 @@ pub async fn claim_next_candidate_attempt(
                   candidate.target_live_id,candidate.target_type_at_time,
                   candidate.target_value_at_time,candidate.target_identity_hash,
                   candidate.candidate_plan_hash,approval.execution_plan,
-                  approval.allowed_capability_ids,approval.allowed_action_kinds,approval.budget
+                  approval.allowed_capability_ids,approval.allowed_action_kinds,approval.budget,
+                  EXISTS(
+                      SELECT 1 FROM candidate_attempts AS history
+                       WHERE history.candidate_id=candidate.candidate_id
+                  ) AS has_attempt
              FROM attack_candidates candidate
              JOIN attack_candidate_approvals approval
                ON approval.candidate_id=candidate.candidate_id
@@ -570,7 +936,11 @@ pub async fn claim_next_candidate_attempt(
                          active.status='submitted'
                          OR (active.status='running' AND active_worker.status<>'queued')
                        ))
-            ORDER BY CASE candidate.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+            ORDER BY CASE WHEN EXISTS(
+                         SELECT 1 FROM candidate_attempts AS history
+                          WHERE history.candidate_id=candidate.candidate_id
+                     ) THEN 1 ELSE 0 END,
+                     CASE candidate.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
                      candidate.created_at,candidate.candidate_id
             FOR UPDATE OF candidate,approval SKIP LOCKED
             LIMIT 1"#,
@@ -603,6 +973,38 @@ pub async fn claim_next_candidate_attempt(
         .bind(query.organization_id)
         .fetch_optional(&mut *tx)
         .await?;
+    let (effective_attempt_fuel, max_attempts_total): (i64, i32) = sqlx::query_as(
+        r#"SELECT
+               (SELECT COUNT(*) FROM candidate_attempts
+                 WHERE operation_id=$1)
+               +
+               (SELECT COUNT(*) FROM attack_candidates AS reserved
+                 WHERE reserved.operation_uuid=$1
+                   AND reserved.disposition='approved'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM candidate_attempts AS history
+                        WHERE history.candidate_id=reserved.candidate_id
+                   )),
+               wave.max_attempts_total
+             FROM attack_wave_runs AS wave
+            WHERE wave.id=$2 AND wave.operation_id=$1
+              AND wave.scope_snapshot_id=$3"#,
+    )
+    .bind(query.operation_id)
+    .bind(query.wave_run_id)
+    .bind(query.scope_snapshot_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if attempt_fuel_action(
+        effective_attempt_fuel,
+        max_attempts_total,
+        candidate.has_attempt,
+        existing.is_some(),
+    ) == AttemptFuelAction::Exhausted
+    {
+        tx.rollback().await?;
+        return Ok(None);
+    }
     let mut attempt = if let Some(existing) = existing {
         if existing.approval_id != candidate.approval_id
             || existing.candidate_plan_hash != candidate.candidate_plan_hash
@@ -895,6 +1297,9 @@ pub async fn begin_candidate_action(
               AND candidate.wave_run_id=attempt.wave_run_id
               AND candidate.wave_unit_id=attempt.wave_unit_id
               AND candidate.organization_id=attempt.organization_id
+              AND candidate.target_live_id IS NOT DISTINCT FROM attempt.target_live_id
+              AND candidate.target_type_at_time=attempt.target_type_at_time
+              AND candidate.target_value_at_time=attempt.target_value_at_time
               AND candidate.target_identity_hash=attempt.target_identity_hash
               AND candidate.candidate_plan_hash=attempt.candidate_plan_hash
              JOIN attack_candidate_approvals approval
@@ -905,6 +1310,9 @@ pub async fn begin_candidate_action(
               AND approval.wave_run_id=attempt.wave_run_id
               AND approval.wave_unit_id=attempt.wave_unit_id
               AND approval.organization_id=attempt.organization_id
+              AND approval.target_live_id IS NOT DISTINCT FROM attempt.target_live_id
+              AND approval.target_type_at_time=attempt.target_type_at_time
+              AND approval.target_value_at_time=attempt.target_value_at_time
               AND approval.target_identity_hash=attempt.target_identity_hash
               AND approval.candidate_plan_hash=attempt.candidate_plan_hash
              JOIN operation_state operation
@@ -918,6 +1326,13 @@ pub async fn begin_candidate_action(
               AND snapshot.operation_id=attempt.operation_id
               AND snapshot.project_scope_id=operation.project_scope_id
               AND snapshot.sealed_at IS NOT NULL
+             JOIN targets target
+               ON target.id=attempt.target_live_id
+              AND target.organization_id=attempt.organization_id
+              AND target.scope='in'
+              AND target.project_path=snapshot.project_path_at_freeze
+              AND LOWER(target.target_type::TEXT)=LOWER(attempt.target_type_at_time)
+              AND target.value=attempt.target_value_at_time
              JOIN operation_org_scope_units scope_unit
                ON scope_unit.snapshot_id=attempt.scope_snapshot_id
               AND scope_unit.organization_id=attempt.organization_id
@@ -947,7 +1362,7 @@ pub async fn begin_candidate_action(
               AND attempt.candidate_plan_hash=$11 AND attempt.status='running'
               AND candidate.disposition='approved'
               AND approval.status='approved' AND approval.expires_at>NOW()
-            FOR UPDATE OF attempt,candidate,approval,worker,unit,lane,operation,project"#,
+            FOR UPDATE OF attempt,candidate,approval,worker,unit,lane,operation,project,target"#,
     )
     .bind(command.operation_id)
     .bind(command.stage_execution_id)
@@ -1254,18 +1669,33 @@ pub async fn release_candidate_execution(
         release.organization_id,
     )
     .await?;
-    let lane = attack_execution_lanes::lock_global(&mut tx).await?;
-    if lane.stage_worker_run_id != Some(release.worker_run_id)
-        || lane.lease_token != Some(release.lease_token)
-        || lane.lease_owner.as_deref() != Some(release.lease_owner.as_str())
-    {
-        return Err(conflict("Candidate lane release fence lost"));
-    }
-    let attempt_exists: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM candidate_attempts
-         WHERE id=$1 AND operation_id=$2 AND scope_snapshot_id=$3 AND wave_run_id=$4
-           AND wave_unit_id=$5 AND organization_id=$6 AND stage_worker_run_id=$7
-           AND status='running' FOR UPDATE",
+    let release_fence_hash = release_fence_hash(&release)?;
+    let residual_id = fuel_residual_id(release.attempt_id);
+    let authority = sqlx::query_as::<_, ReleaseAttemptAuthorityRow>(
+        r#"SELECT attempt.candidate_id,attempt.approval_id,
+                  attempt.candidate_plan_hash,attempt.target_live_id,
+                  attempt.target_type_at_time,attempt.target_value_at_time,
+                  attempt.target_identity_hash,wave.policy_hash,wave.generation,
+                  wave.max_attempts_total,candidate.disposition AS candidate_disposition,
+                  attempt.status AS attempt_status
+             FROM candidate_attempts AS attempt
+             JOIN attack_candidates AS candidate
+               ON candidate.candidate_id=attempt.candidate_id
+              AND candidate.operation_uuid=attempt.operation_id
+              AND candidate.scope_snapshot_id=attempt.scope_snapshot_id
+              AND candidate.wave_run_id=attempt.wave_run_id
+              AND candidate.wave_unit_id=attempt.wave_unit_id
+              AND candidate.organization_id=attempt.organization_id
+              AND candidate.candidate_plan_hash=attempt.candidate_plan_hash
+             JOIN attack_wave_runs AS wave
+               ON wave.id=attempt.wave_run_id
+              AND wave.operation_id=attempt.operation_id
+              AND wave.scope_snapshot_id=attempt.scope_snapshot_id
+            WHERE attempt.id=$1 AND attempt.operation_id=$2
+              AND attempt.scope_snapshot_id=$3 AND attempt.wave_run_id=$4
+              AND attempt.wave_unit_id=$5 AND attempt.organization_id=$6
+              AND attempt.stage_worker_run_id=$7
+            FOR UPDATE OF attempt,candidate,wave"#,
     )
     .bind(release.attempt_id)
     .bind(release.operation_id)
@@ -1275,9 +1705,184 @@ pub async fn release_candidate_execution(
     .bind(release.organization_id)
     .bind(release.worker_run_id)
     .fetch_optional(&mut *tx)
-    .await?;
-    if attempt_exists.is_none() {
+    .await?
+    .ok_or_else(|| conflict("Candidate Attempt release identity mismatch"))?;
+
+    if authority.attempt_status == "blocked" && authority.candidate_disposition == "blocked" {
+        let replay = sqlx::query_as::<_, FuelReleaseReplayRow>(
+            r#"SELECT candidate.candidate_id,attempt.approval_id,
+                      attempt.candidate_plan_hash,attempt.target_type_at_time,
+                      attempt.target_value_at_time,attempt.target_identity_hash,
+                      attempt.result_json,attempt.result_hash,attempt.row_version,
+                      attempt.terminal_at,
+                      residual.id AS residual_id,
+                      residual.operation_id AS residual_operation_id,
+                      residual.scope_snapshot_id AS residual_scope_snapshot_id,
+                      residual.wave_run_id AS residual_wave_run_id,
+                      residual.wave_unit_id AS residual_wave_unit_id,
+                      residual.organization_id AS residual_organization_id,
+                      residual.target_live_id AS residual_target_live_id,
+                      residual.target_type_at_time AS residual_target_type_at_time,
+                      residual.target_value_at_time AS residual_target_value_at_time,
+                      residual.target_identity_hash AS residual_target_identity_hash,
+                      residual.reason_code AS residual_reason_code,
+                      residual.reason_detail AS residual_reason_detail,
+                      residual.policy_hash AS residual_policy_hash,
+                      residual.wave_count AS residual_wave_count,
+                      residual.candidate_count AS residual_candidate_count,
+                      residual.chain_depth AS residual_chain_depth,
+                      residual.attempt_count AS residual_attempt_count,
+                      residual.created_at AS residual_created_at
+                 FROM candidate_attempts AS attempt
+                 JOIN attack_candidates AS candidate
+                   ON candidate.candidate_id=attempt.candidate_id
+                  AND candidate.terminal_attempt_id=attempt.id
+                  AND candidate.disposition='blocked'
+                  AND candidate.terminal_finding_id IS NULL
+                 JOIN stage_worker_runs AS worker
+                   ON worker.id=attempt.stage_worker_run_id
+                  AND worker.status='failed' AND worker.terminal_at IS NOT NULL
+                  AND worker.lease_token IS NULL AND worker.lease_owner IS NULL
+                 JOIN attack_residual_risks AS residual
+                   ON residual.id=$8 AND residual.operation_id=attempt.operation_id
+                  AND residual.scope_snapshot_id=attempt.scope_snapshot_id
+                  AND residual.wave_run_id=attempt.wave_run_id
+                  AND residual.wave_unit_id=attempt.wave_unit_id
+                  AND residual.organization_id=attempt.organization_id
+                  AND residual.reason_code='max_attempts_total'
+                WHERE attempt.id=$1 AND attempt.operation_id=$2
+                  AND attempt.scope_snapshot_id=$3 AND attempt.wave_run_id=$4
+                  AND attempt.wave_unit_id=$5 AND attempt.organization_id=$6
+                  AND attempt.stage_worker_run_id=$7 AND attempt.status='blocked'
+                  AND attempt.result_json IS NOT NULL AND attempt.result_hash IS NOT NULL
+                  AND attempt.terminal_at IS NOT NULL
+                FOR UPDATE OF attempt,candidate,worker,residual"#,
+        )
+        .bind(release.attempt_id)
+        .bind(release.operation_id)
+        .bind(release.scope_snapshot_id)
+        .bind(release.wave_run_id)
+        .bind(release.wave_unit_id)
+        .bind(release.organization_id)
+        .bind(release.worker_run_id)
+        .bind(residual_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| conflict("partial fuel-exhausted Candidate release replay"))?;
+        let blocker_evidence: Vec<i64> = sqlx::query_scalar(
+            "SELECT evidence_id FROM candidate_attempt_evidence
+             WHERE attempt_id=$1 AND role='blocker' ORDER BY evidence_id",
+        )
+        .bind(release.attempt_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let residual_evidence: Vec<i64> = sqlx::query_scalar(
+            "SELECT evidence_id FROM attack_residual_risk_evidence
+             WHERE residual_risk_id=$1 AND role='residual' ORDER BY evidence_id",
+        )
+        .bind(residual_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        if replay.candidate_id != authority.candidate_id
+            || replay.approval_id != authority.approval_id
+            || replay.candidate_plan_hash != authority.candidate_plan_hash
+            || replay.target_type_at_time != authority.target_type_at_time
+            || replay.target_value_at_time != authority.target_value_at_time
+            || replay.target_identity_hash != authority.target_identity_hash
+            || replay
+                .result_json
+                .get("release_fence_hash")
+                .and_then(serde_json::Value::as_str)
+                != Some(release_fence_hash.as_str())
+            || canonical_result_hash(&replay.result_json)? != replay.result_hash
+            || !fuel_residual_replay_is_exact(&replay, &release, &authority, residual_id)
+            || blocker_evidence.is_empty()
+            || blocker_evidence != residual_evidence
+        {
+            return Err(conflict("fuel-exhausted Candidate release replay drift"));
+        }
+        append_fuel_terminal_event(
+            &mut tx,
+            &release,
+            &authority,
+            replay.result_hash,
+            replay.row_version,
+            replay.terminal_at,
+            blocker_evidence,
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(ReleaseOutcome { requeued: false });
+    }
+    if authority.attempt_status != "running" || authority.candidate_disposition != "approved" {
         return Err(conflict("Candidate Attempt release identity mismatch"));
+    }
+
+    let (effective_attempt_fuel, retryable_backlog): (i64, i64) = sqlx::query_as(
+        r#"SELECT
+               (SELECT COUNT(*) FROM candidate_attempts WHERE operation_id=$1)
+               +
+               (SELECT COUNT(*) FROM attack_candidates AS reserved
+                 WHERE reserved.operation_uuid=$1 AND reserved.disposition='approved'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM candidate_attempts AS history
+                        WHERE history.candidate_id=reserved.candidate_id
+                   )),
+               (SELECT COUNT(*) FROM attack_candidates AS retryable
+                 WHERE retryable.operation_uuid=$1
+                   AND retryable.disposition='approved'
+                   AND retryable.candidate_id<>$2
+                   AND (
+                       SELECT latest.status
+                         FROM candidate_attempts AS latest
+                        WHERE latest.candidate_id=retryable.candidate_id
+                        ORDER BY latest.ordinal DESC
+                        LIMIT 1
+                   )='retryable_failed')"#,
+    )
+    .bind(release.operation_id)
+    .bind(authority.candidate_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let fuel_exhausted = release_must_terminalize_for_fuel(
+        effective_attempt_fuel,
+        retryable_backlog,
+        authority.max_attempts_total,
+    );
+    let blocker_evidence = if fuel_exhausted {
+        let evidence_ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT evidence_id FROM attack_candidate_evidence
+             WHERE candidate_id=$1 AND role='support' ORDER BY evidence_id",
+        )
+        .bind(authority.candidate_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        if evidence_ids.is_empty() {
+            return Err(conflict(
+                "fuel-exhausted Candidate release requires support evidence",
+            ));
+        }
+        for evidence_id in &evidence_ids {
+            sqlx::query(
+                "INSERT INTO candidate_attempt_evidence(attempt_id,evidence_id,role)
+                 VALUES($1,$2,'blocker') ON CONFLICT DO NOTHING",
+            )
+            .bind(release.attempt_id)
+            .bind(evidence_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        evidence_ids
+    } else {
+        Vec::new()
+    };
+
+    let lane = attack_execution_lanes::lock_global(&mut tx).await?;
+    if lane.stage_worker_run_id != Some(release.worker_run_id)
+        || lane.lease_token != Some(release.lease_token)
+        || lane.lease_owner.as_deref() != Some(release.lease_owner.as_str())
+    {
+        return Err(conflict("Candidate lane release fence lost"));
     }
     attack_execution_lanes::release_global(
         &mut tx,
@@ -1291,14 +1896,17 @@ pub async fn release_candidate_execution(
          SET status='failed',lease_token=NULL,lease_owner=NULL,lease_acquired_at=NULL,
              lease_expires_at=NULL,heartbeat_at=NULL,terminal_at=NOW(),updated_at=NOW()
          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
-           AND stage_run_unit_id=$4 AND lease_token=$5 AND attempt_epoch=$6
-           AND checkpoint_version=$7 AND status='running' AND active_tool_call_id IS NULL",
+           AND stage_run_unit_id=$4 AND organization_id=$5 AND lease_token=$6
+           AND lease_owner=$7 AND lease_expires_at>NOW() AND attempt_epoch=$8
+           AND checkpoint_version=$9 AND status='running' AND active_tool_call_id IS NULL",
     )
     .bind(release.worker_run_id)
     .bind(release.operation_id)
     .bind(release.stage_execution_id)
     .bind(release.stage_run_unit_id)
+    .bind(release.organization_id)
     .bind(release.lease_token)
+    .bind(&release.lease_owner)
     .bind(release.attempt_epoch)
     .bind(release.expected_checkpoint_version)
     .execute(&mut *tx)
@@ -1306,27 +1914,176 @@ pub async fn release_candidate_execution(
     if released_worker.rows_affected() != 1 {
         return Err(conflict("Candidate WorkerRun release CAS lost"));
     }
-    let result_json = serde_json::json!({
-        "disposition": "retryable_failed",
-        "reason_code": "worker_released_for_retry",
-        "schema_version": 1,
-    });
+    let residual_snapshot = if fuel_exhausted {
+        let (wave_count, candidate_count, attempt_count, created_at): (
+            i64,
+            i64,
+            i64,
+            DateTime<Utc>,
+        ) = sqlx::query_as(
+            r#"SELECT
+                   (SELECT COUNT(*) FROM attack_wave_runs WHERE operation_id=$1),
+                   (SELECT COUNT(*) FROM attack_candidates WHERE operation_uuid=$1),
+                   (SELECT COUNT(*) FROM candidate_attempts WHERE operation_id=$1),
+                   NOW()"#,
+        )
+        .bind(release.operation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        Some((
+            i32::try_from(wave_count).map_err(|_| conflict("attack Wave fuel counter overflow"))?,
+            i32::try_from(candidate_count)
+                .map_err(|_| conflict("attack Candidate fuel counter overflow"))?,
+            i32::try_from(attempt_count)
+                .map_err(|_| conflict("attack Attempt fuel counter overflow"))?,
+            created_at,
+        ))
+    } else {
+        None
+    };
+    let result_json = if fuel_exhausted {
+        let (wave_count, candidate_count, attempt_count, created_at) =
+            residual_snapshot
+                .as_ref()
+                .ok_or_else(|| conflict("missing fuel residual snapshot"))?;
+        serde_json::json!({
+            "blocker_evidence_ids": blocker_evidence,
+            "blocker_reason_code": "max_attempts_total",
+            "disposition": "blocked",
+            "release_fence_hash": release_fence_hash,
+            "residual": {
+                "attempt_count": attempt_count,
+                "candidate_count": candidate_count,
+                "chain_depth": authority.generation,
+                "created_at": created_at,
+                "id": residual_id,
+                "operation_id": release.operation_id,
+                "organization_id": release.organization_id,
+                "policy_hash": authority.policy_hash,
+                "reason_code": "max_attempts_total",
+                "reason_detail": FUEL_RESIDUAL_REASON_DETAIL,
+                "scope_snapshot_id": release.scope_snapshot_id,
+                "target_identity_hash": authority.target_identity_hash,
+                "target_live_id": authority.target_live_id,
+                "target_type_at_time": authority.target_type_at_time,
+                "target_value_at_time": authority.target_value_at_time,
+                "wave_count": wave_count,
+                "wave_run_id": release.wave_run_id,
+                "wave_unit_id": release.wave_unit_id,
+            },
+            "schema_version": 1,
+        })
+    } else {
+        serde_json::json!({
+            "disposition": "retryable_failed",
+            "release_fence_hash": release_fence_hash,
+            "reason_code": "worker_released_for_retry",
+            "schema_version": 1,
+        })
+    };
     let result_hash = canonical_result_hash(&result_json)?;
-    let released_attempt = sqlx::query(
-        "UPDATE candidate_attempts
-         SET status='retryable_failed',result_json=$3,result_hash=$4,terminal_at=NOW(),
-             row_version=row_version+1,updated_at=NOW()
-         WHERE id=$1 AND status='running' AND stage_worker_run_id=$2
-           AND result_json IS NULL AND result_hash IS NULL AND terminal_at IS NULL",
-    )
-    .bind(release.attempt_id)
-    .bind(release.worker_run_id)
-    .bind(&result_json)
-    .bind(&result_hash)
-    .execute(&mut *tx)
-    .await?;
-    if released_attempt.rows_affected() != 1 {
-        return Err(conflict("Candidate Attempt release CAS lost"));
+    if fuel_exhausted {
+        let terminal = sqlx::query_as::<_, FuelTerminalUpdate>(
+            "UPDATE candidate_attempts
+             SET status='blocked',result_json=$3,result_hash=$4,terminal_at=NOW(),
+                 row_version=row_version+1,updated_at=NOW()
+             WHERE id=$1 AND status='running' AND stage_worker_run_id=$2
+               AND result_json IS NULL AND result_hash IS NULL AND terminal_at IS NULL
+             RETURNING row_version,terminal_at",
+        )
+        .bind(release.attempt_id)
+        .bind(release.worker_run_id)
+        .bind(&result_json)
+        .bind(&result_hash)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| conflict("Candidate Attempt fuel terminalization CAS lost"))?;
+        let candidate_updated = sqlx::query(
+            "UPDATE attack_candidates
+             SET disposition='blocked',terminal_attempt_id=$2,terminal_finding_id=NULL,
+                 row_version=row_version+1,updated_at=NOW()
+             WHERE candidate_id=$1 AND operation_uuid=$3 AND disposition='approved'
+               AND terminal_attempt_id IS NULL AND terminal_finding_id IS NULL",
+        )
+        .bind(authority.candidate_id)
+        .bind(release.attempt_id)
+        .bind(release.operation_id)
+        .execute(&mut *tx)
+        .await?;
+        if candidate_updated.rows_affected() != 1 {
+            return Err(conflict("Candidate fuel terminalization CAS lost"));
+        }
+        let (wave_count, candidate_count, attempt_count, created_at) =
+            residual_snapshot
+                .as_ref()
+                .ok_or_else(|| conflict("missing fuel residual snapshot"))?;
+        sqlx::query(
+            r#"INSERT INTO attack_residual_risks(
+                   id,operation_id,scope_snapshot_id,wave_run_id,wave_unit_id,
+                   organization_id,target_live_id,target_type_at_time,
+                   target_value_at_time,target_identity_hash,reason_code,
+                   reason_detail,policy_hash,wave_count,candidate_count,
+                   chain_depth,attempt_count,created_at,updated_at
+               ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'max_attempts_total',
+                        $11,$12,$13,$14,$15,$16,$17,$17)"#,
+        )
+        .bind(residual_id)
+        .bind(release.operation_id)
+        .bind(release.scope_snapshot_id)
+        .bind(release.wave_run_id)
+        .bind(release.wave_unit_id)
+        .bind(release.organization_id)
+        .bind(authority.target_live_id)
+        .bind(&authority.target_type_at_time)
+        .bind(&authority.target_value_at_time)
+        .bind(&authority.target_identity_hash)
+        .bind(FUEL_RESIDUAL_REASON_DETAIL)
+        .bind(&authority.policy_hash)
+        .bind(wave_count)
+        .bind(candidate_count)
+        .bind(authority.generation)
+        .bind(attempt_count)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await?;
+        for evidence_id in &blocker_evidence {
+            sqlx::query(
+                "INSERT INTO attack_residual_risk_evidence(
+                     residual_risk_id,evidence_id,role
+                 ) VALUES($1,$2,'residual')",
+            )
+            .bind(residual_id)
+            .bind(evidence_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        append_fuel_terminal_event(
+            &mut tx,
+            &release,
+            &authority,
+            result_hash,
+            terminal.row_version,
+            terminal.terminal_at,
+            blocker_evidence,
+        )
+        .await?;
+    } else {
+        let released_attempt = sqlx::query(
+            "UPDATE candidate_attempts
+             SET status='retryable_failed',result_json=$3,result_hash=$4,terminal_at=NOW(),
+                 row_version=row_version+1,updated_at=NOW()
+             WHERE id=$1 AND status='running' AND stage_worker_run_id=$2
+               AND result_json IS NULL AND result_hash IS NULL AND terminal_at IS NULL",
+        )
+        .bind(release.attempt_id)
+        .bind(release.worker_run_id)
+        .bind(&result_json)
+        .bind(&result_hash)
+        .execute(&mut *tx)
+        .await?;
+        if released_attempt.rows_affected() != 1 {
+            return Err(conflict("Candidate Attempt release CAS lost"));
+        }
     }
     tx.commit().await?;
     Ok(ReleaseOutcome { requeued: false })
@@ -1497,4 +2254,38 @@ pub async fn record_attempt_submission(
         attempt,
         replayed: false,
     })
+}
+
+#[cfg(test)]
+mod fuel_tests {
+    use super::{attempt_fuel_action, release_must_terminalize_for_fuel, AttemptFuelAction};
+
+    #[test]
+    fn claim_converts_reservations_before_consuming_retry_fuel() {
+        assert_eq!(
+            attempt_fuel_action(5, 5, false, false),
+            AttemptFuelAction::ConvertReservation
+        );
+        assert_eq!(
+            attempt_fuel_action(4, 5, true, false),
+            AttemptFuelAction::ConsumeRetry
+        );
+        assert_eq!(
+            attempt_fuel_action(5, 5, true, false),
+            AttemptFuelAction::Exhausted
+        );
+        assert_eq!(
+            attempt_fuel_action(5, 5, true, true),
+            AttemptFuelAction::ReuseExisting
+        );
+    }
+
+    #[test]
+    fn release_preserves_one_free_slot_per_retryable_candidate() {
+        assert!(!release_must_terminalize_for_fuel(4, 0, 5));
+        assert!(release_must_terminalize_for_fuel(4, 1, 5));
+        assert!(!release_must_terminalize_for_fuel(3, 1, 5));
+        assert!(release_must_terminalize_for_fuel(5, 0, 5));
+        assert!(release_must_terminalize_for_fuel(6, 0, 5));
+    }
 }

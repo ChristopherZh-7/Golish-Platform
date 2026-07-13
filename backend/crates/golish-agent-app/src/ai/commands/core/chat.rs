@@ -402,6 +402,22 @@ async fn execute_task_mode_with_continuity(
                 &current_project_scope,
             )
             .await?;
+            let resume_source = super::operation_resume::select_exact_resume_runtime_source(
+                state.db_pool.as_ref(),
+                task.id,
+                uuid_session_id,
+            )
+            .await?;
+            super::operation_resume::claim_exact_resume_runtime_source(
+                state.db_pool.as_ref(),
+                task.id,
+                uuid_session_id,
+                resume_source,
+            )
+            .await?;
+            orchestrator.set_resume_runtime_memory_source(resume_source);
+            orchestrator.set_resume_task_preclaimed(true);
+            bridge.set_resume_runtime_memory_source(resume_source).await;
             orchestrator.resume(task.id, task_input, &executor).await
         }
         None => {

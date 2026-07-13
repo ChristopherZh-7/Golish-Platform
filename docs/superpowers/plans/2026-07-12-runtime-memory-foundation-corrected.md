@@ -1,5 +1,7 @@
 # Golish 运行期记忆底座修正版实现计划
 
+> **Rollout 补充说明（2026-07-13）：** 本计划的 foundation schema、runtime state machine 与恢复链路仍然有效；仅推进 deployment default / cutover 的 rollout 步骤由 `docs/superpowers/plans/2026-07-13-runtime-memory-shadow-attestation.md` 的 retained whole-record cohort 方案取代，不作废其余基础实现。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。
 
 **目标：** 为每个 operation 冻结不可漂移的组织范围，并把 stage execution、per-org Gate unit、worker lease/checkpoint、可信 deliverable submission 与 PASS handoff 从共享 JSON 迁移到有约束、可恢复、可审计的 PostgreSQL 记录。

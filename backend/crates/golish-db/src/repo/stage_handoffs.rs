@@ -45,6 +45,206 @@ pub struct StageHandoffRow {
     pub schema_version: i32,
 }
 
+/// Server-authored final seal for Candidate V2 Verification. It deliberately
+/// has no deliverable submission: exact terminal Candidate truth and the
+/// durable WaveUnit are its authority.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationStageHandoffRow {
+    pub id: Uuid,
+    pub operation_id: Uuid,
+    pub scope_snapshot_id: Uuid,
+    pub wave_run_id: Uuid,
+    pub wave_unit_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub source_stage_run_unit_id: Uuid,
+    pub primary_worker_run_id: Uuid,
+    pub wave_generation: i32,
+    pub wave_unit_row_version_after_close: i64,
+    pub from_stage_kind: String,
+    pub authority_kind: String,
+    pub payload: Value,
+    pub payload_sha256: String,
+    pub evidence_ids: Vec<i64>,
+    pub coverage_watermark: Value,
+    pub verification_truth_hash: String,
+    pub gate_passed_at: DateTime<Utc>,
+    pub schema_version: i32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NewVerificationStageHandoffRow {
+    pub id: Uuid,
+    pub operation_id: Uuid,
+    pub scope_snapshot_id: Uuid,
+    pub wave_run_id: Uuid,
+    pub wave_unit_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub source_stage_run_unit_id: Uuid,
+    pub primary_worker_run_id: Uuid,
+    pub wave_generation: i32,
+    pub wave_unit_row_version_after_close: i64,
+    pub payload: Value,
+    pub payload_sha256: String,
+    pub evidence_ids: Vec<i64>,
+    pub coverage_watermark: Value,
+    pub verification_truth_hash: String,
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn json_evidence_ids(value: Option<&Value>) -> Option<Vec<i64>> {
+    value?
+        .as_array()?
+        .iter()
+        .map(Value::as_i64)
+        .collect::<Option<Vec<_>>>()
+}
+
+fn evidence_ids_are_canonical(evidence_ids: &[i64]) -> bool {
+    evidence_ids.iter().all(|evidence_id| *evidence_id > 0)
+        && evidence_ids.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn verification_claim_order_key(claim: &Value) -> Option<(u8, Uuid, u8)> {
+    let kind = claim.get("kind")?.as_str()?;
+    let (group, identity_pointer, kind_order) = match kind {
+        "candidate_attempt_terminal" => (0, "/payload/candidate_id", 0),
+        "verified_candidate_attempt" => (0, "/payload/candidate_id", 1),
+        "attack_no_candidate_decision" => (1, "/payload/work_item_id", 0),
+        "attack_fact_delta_proposal" => (2, "/payload/fact_delta_id", 0),
+        _ => return None,
+    };
+    let identity = Uuid::parse_str(claim.pointer(identity_pointer)?.as_str()?).ok()?;
+    Some((group, identity, kind_order))
+}
+
+fn verification_handoff_input_is_valid(input: &NewVerificationStageHandoffRow) -> bool {
+    let evidence_ids = &input.evidence_ids;
+    if !evidence_ids_are_canonical(evidence_ids)
+        || input.id != Uuid::new_v5(&input.wave_unit_id, b"verification-stage-handoff:v1")
+        || input.wave_generation < 0
+        || input.wave_unit_row_version_after_close <= 0
+        || !is_sha256_hex(&input.payload_sha256)
+        || !is_sha256_hex(&input.verification_truth_hash)
+        || super::operation_scope_decisions::sha256_json(&input.payload) != input.payload_sha256
+        || input.payload.get("schema_version").and_then(Value::as_i64) != Some(1)
+        || input
+            .payload
+            .get("verification_truth_hash")
+            .and_then(Value::as_str)
+            != Some(input.verification_truth_hash.as_str())
+        || input.payload.get("coverage_watermark") != Some(&input.coverage_watermark)
+        || json_evidence_ids(input.payload.get("evidence_ids")) != Some(evidence_ids.clone())
+    {
+        return false;
+    }
+    let Some(typed_claims) = input.payload.get("typed_claims").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(canonical_refs) = input
+        .payload
+        .get("canonical_fact_refs")
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    let Some(claim_order) = typed_claims
+        .iter()
+        .map(verification_claim_order_key)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    if !claim_order.windows(2).all(|pair| pair[0] < pair[1]) {
+        return false;
+    }
+    let mut projected_evidence_ids = std::collections::BTreeSet::new();
+    for claim in typed_claims {
+        let Some(kind) = claim.get("kind").and_then(Value::as_str) else {
+            return false;
+        };
+        if !matches!(
+            kind,
+            "candidate_attempt_terminal"
+                | "verified_candidate_attempt"
+                | "attack_fact_delta_proposal"
+                | "attack_no_candidate_decision"
+        ) {
+            return false;
+        }
+        let Some(claim_evidence_ids) = json_evidence_ids(claim.pointer("/payload/evidence_ids"))
+        else {
+            return false;
+        };
+        if !evidence_ids_are_canonical(&claim_evidence_ids) {
+            return false;
+        }
+        projected_evidence_ids.extend(claim_evidence_ids);
+    }
+    let mut previous_finding_id = None;
+    for canonical_ref in canonical_refs {
+        if canonical_ref.pointer("/key/kind").and_then(Value::as_str) != Some("finding")
+            || canonical_ref.get("source_table").and_then(Value::as_str) != Some("findings")
+            || !canonical_ref
+                .get("content_sha256")
+                .and_then(Value::as_str)
+                .is_some_and(is_sha256_hex)
+        {
+            return false;
+        }
+        let Some(finding_id) = canonical_ref
+            .pointer("/key/finding_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+        else {
+            return false;
+        };
+        if previous_finding_id.is_some_and(|previous| previous >= finding_id) {
+            return false;
+        }
+        previous_finding_id = Some(finding_id);
+        let Some(ref_evidence_ids) = json_evidence_ids(canonical_ref.get("evidence_ids")) else {
+            return false;
+        };
+        if !evidence_ids_are_canonical(&ref_evidence_ids) {
+            return false;
+        }
+        projected_evidence_ids.extend(ref_evidence_ids);
+    }
+    projected_evidence_ids.into_iter().collect::<Vec<_>>() == *evidence_ids
+}
+
+/// Common downstream projection for ordinary deliverable final seals and the
+/// server-authored Verification Wave close exception.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FinalSealedStageHandoffRow {
+    pub id: Uuid,
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub scope_snapshot_id: Uuid,
+    pub from_stage_kind: String,
+    pub stage_execution_id: Uuid,
+    pub source_stage_run_unit_id: Uuid,
+    pub deliverable_submission_id: Option<Uuid>,
+    pub authority_kind: String,
+    pub scope_hash: String,
+    pub payload: Value,
+    pub payload_sha256: String,
+    pub evidence_ids: Vec<i64>,
+    pub coverage_watermark: Value,
+    pub unit_gate_decision_hash: String,
+    pub aggregate_pass_token_hash: Option<String>,
+    pub gate_passed_at: DateTime<Utc>,
+    pub schema_version: i32,
+}
+
 const COLUMNS: &str = r#"id, operation_id, organization_id, scope_snapshot_id,
     from_stage_kind, stage_execution_id, source_stage_run_unit_id,
     deliverable_submission_id, scope_hash, payload, payload_sha256,
@@ -114,6 +314,66 @@ where
         .await?)
 }
 
+pub(crate) async fn insert_verification_with_executor<'e, E>(
+    executor: E,
+    input: &NewVerificationStageHandoffRow,
+) -> RuntimeMemoryStoreResult<VerificationStageHandoffRow>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    if !verification_handoff_input_is_valid(input) {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "invalid_verification_stage_handoff",
+        });
+    }
+    sqlx::query_as::<_, VerificationStageHandoffRow>(
+        r#"INSERT INTO verification_stage_handoffs(
+               id,operation_id,scope_snapshot_id,wave_run_id,wave_unit_id,
+               organization_id,stage_execution_id,source_stage_run_unit_id,
+               primary_worker_run_id,wave_generation,
+               wave_unit_row_version_after_close,payload,payload_sha256,
+               evidence_ids,coverage_watermark,verification_truth_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+           RETURNING *"#,
+    )
+    .bind(input.id)
+    .bind(input.operation_id)
+    .bind(input.scope_snapshot_id)
+    .bind(input.wave_run_id)
+    .bind(input.wave_unit_id)
+    .bind(input.organization_id)
+    .bind(input.stage_execution_id)
+    .bind(input.source_stage_run_unit_id)
+    .bind(input.primary_worker_run_id)
+    .bind(input.wave_generation)
+    .bind(input.wave_unit_row_version_after_close)
+    .bind(&input.payload)
+    .bind(&input.payload_sha256)
+    .bind(&input.evidence_ids)
+    .bind(&input.coverage_watermark)
+    .bind(&input.verification_truth_hash)
+    .fetch_one(executor)
+    .await
+    .map_err(Into::into)
+}
+
+pub(crate) async fn get_verification_with_executor<'e, E>(
+    executor: E,
+    source_stage_run_unit_id: Uuid,
+) -> RuntimeMemoryStoreResult<Option<VerificationStageHandoffRow>>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    sqlx::query_as::<_, VerificationStageHandoffRow>(
+        "SELECT * FROM verification_stage_handoffs
+         WHERE source_stage_run_unit_id=$1 FOR SHARE",
+    )
+    .bind(source_stage_run_unit_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(Into::into)
+}
+
 /// Read one newest immutable, non-invalidated final seal per inherited source
 /// stage. The join back to passed Unit and Worker rows prevents a detached or
 /// partially written projection from becoming downstream evidence.
@@ -122,36 +382,83 @@ pub async fn list_latest_final_sealed_for_sources(
     operation_id: Uuid,
     organization_id: Uuid,
     source_stage_kinds: &[String],
-) -> RuntimeMemoryStoreResult<Vec<StageHandoffRow>> {
+) -> RuntimeMemoryStoreResult<Vec<FinalSealedStageHandoffRow>> {
     if source_stage_kinds.is_empty() {
         return Ok(Vec::new());
     }
-    let sql = r#"SELECT DISTINCT ON (handoff.from_stage_kind) handoff.*
-             FROM stage_handoffs AS handoff
-             JOIN stage_run_units AS unit
-               ON unit.id=handoff.source_stage_run_unit_id
-              AND unit.operation_id=handoff.operation_id
-              AND unit.stage_execution_id=handoff.stage_execution_id
-              AND unit.organization_id=handoff.organization_id
-              AND unit.status='passed'
-             JOIN stage_deliverable_submissions AS submission
-               ON submission.id=handoff.deliverable_submission_id
-              AND submission.stage_run_unit_id=unit.id
-             LEFT JOIN stage_worker_runs AS worker
-               ON worker.id=submission.worker_run_id
-              AND worker.operation_id=handoff.operation_id
-              AND worker.stage_execution_id=handoff.stage_execution_id
-              AND worker.stage_run_unit_id=unit.id
-              AND worker.organization_id=handoff.organization_id
-            WHERE handoff.operation_id=$1 AND handoff.organization_id=$2
-              AND handoff.from_stage_kind=ANY($3)
-              AND handoff.invalidated_at IS NULL
-              AND (
-                    (submission.worker_run_id IS NULL AND handoff.from_stage_kind='scoping')
-                    OR worker.status='passed'
-                  )
-            ORDER BY handoff.from_stage_kind, handoff.gate_passed_at DESC, handoff.id DESC"#;
-    Ok(sqlx::query_as::<_, StageHandoffRow>(sql)
+    let sql = r#"WITH final_seals AS (
+                    SELECT handoff.id,handoff.operation_id,handoff.organization_id,
+                           handoff.scope_snapshot_id,handoff.from_stage_kind,
+                           handoff.stage_execution_id,handoff.source_stage_run_unit_id,
+                           handoff.deliverable_submission_id,
+                           'deliverable_final_seal'::TEXT AS authority_kind,
+                           handoff.scope_hash,handoff.payload,handoff.payload_sha256,
+                           handoff.evidence_ids,handoff.coverage_watermark,
+                           handoff.unit_gate_decision_hash,
+                           handoff.aggregate_pass_token_hash,handoff.gate_passed_at,
+                           handoff.schema_version
+                      FROM stage_handoffs AS handoff
+                      JOIN stage_run_units AS unit
+                        ON unit.id=handoff.source_stage_run_unit_id
+                       AND unit.operation_id=handoff.operation_id
+                       AND unit.stage_execution_id=handoff.stage_execution_id
+                       AND unit.organization_id=handoff.organization_id
+                       AND unit.status='passed'
+                      JOIN stage_deliverable_submissions AS submission
+                        ON submission.id=handoff.deliverable_submission_id
+                       AND submission.stage_run_unit_id=unit.id
+                      LEFT JOIN stage_worker_runs AS worker
+                        ON worker.id=submission.worker_run_id
+                       AND worker.operation_id=handoff.operation_id
+                       AND worker.stage_execution_id=handoff.stage_execution_id
+                       AND worker.stage_run_unit_id=unit.id
+                       AND worker.organization_id=handoff.organization_id
+                     WHERE handoff.operation_id=$1 AND handoff.organization_id=$2
+                       AND handoff.from_stage_kind=ANY($3)
+                       AND handoff.invalidated_at IS NULL
+                       AND (
+                             (submission.worker_run_id IS NULL
+                              AND handoff.from_stage_kind='scoping')
+                             OR worker.status='passed'
+                           )
+                    UNION ALL
+                    SELECT handoff.id,handoff.operation_id,handoff.organization_id,
+                           handoff.scope_snapshot_id,handoff.from_stage_kind,
+                           handoff.stage_execution_id,handoff.source_stage_run_unit_id,
+                           NULL::UUID AS deliverable_submission_id,handoff.authority_kind,
+                           snapshot.scope_hash,handoff.payload,handoff.payload_sha256,
+                           handoff.evidence_ids,handoff.coverage_watermark,
+                           handoff.verification_truth_hash AS unit_gate_decision_hash,
+                           NULL::TEXT AS aggregate_pass_token_hash,handoff.gate_passed_at,
+                           handoff.schema_version
+                      FROM verification_stage_handoffs AS handoff
+                      JOIN operation_org_scope_snapshots AS snapshot
+                        ON snapshot.id=handoff.scope_snapshot_id
+                       AND snapshot.operation_id=handoff.operation_id
+                       AND snapshot.sealed_at IS NOT NULL
+                      JOIN stage_run_units AS unit
+                        ON unit.id=handoff.source_stage_run_unit_id
+                       AND unit.operation_id=handoff.operation_id
+                       AND unit.stage_execution_id=handoff.stage_execution_id
+                       AND unit.organization_id=handoff.organization_id
+                       AND unit.stage_kind='verification'
+                       AND unit.status='passed'
+                       AND unit.terminal_at IS NOT NULL
+                      JOIN stage_worker_runs AS worker
+                        ON worker.id=handoff.primary_worker_run_id
+                       AND worker.operation_id=handoff.operation_id
+                       AND worker.stage_execution_id=handoff.stage_execution_id
+                       AND worker.stage_run_unit_id=unit.id
+                       AND worker.organization_id=handoff.organization_id
+                       AND worker.status='passed'
+                       AND worker.terminal_at IS NOT NULL
+                     WHERE handoff.operation_id=$1 AND handoff.organization_id=$2
+                       AND handoff.from_stage_kind=ANY($3)
+                )
+                SELECT DISTINCT ON (from_stage_kind) *
+                  FROM final_seals
+                 ORDER BY from_stage_kind,gate_passed_at DESC,id DESC"#;
+    Ok(sqlx::query_as::<_, FinalSealedStageHandoffRow>(sql)
         .bind(operation_id)
         .bind(organization_id)
         .bind(source_stage_kinds)
