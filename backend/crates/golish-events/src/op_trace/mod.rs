@@ -374,6 +374,19 @@ fn summarize_event(event: &AiEvent) -> String {
             } => format!(
                 "refiner {repair_kind} actions={action_count} gaps={gap_count} hash={directive_hash}"
             ),
+            K::CandidateReviewRequired {
+                wave_run_id,
+                status,
+                candidate_count,
+                proposed_candidate_count,
+                ..
+            } => format!(
+                "candidate_review {wave_run_id} {status} candidates={candidate_count} proposed={proposed_candidate_count}"
+            ),
+            K::CandidateReviewResumed {
+                wave_run_id,
+                resume_version,
+            } => format!("candidate_review {wave_run_id} resumed v{resume_version}"),
             K::StageRunOrgProgress {
                 org_name,
                 status,

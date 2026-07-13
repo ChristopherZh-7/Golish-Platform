@@ -1,53 +1,47 @@
-**Goal:** really attack the APPROVED candidates from `attack_candidate` and drive
-each to a terminal disposition. This is the exploitation stage — controlled,
-sandboxed, non-destructive PoC confirmation. The gate
-(`candidate_disposition_complete`) requires every `approved` candidate to reach
-one of `verified` / `refuted` / `blocked`; a `verified` one must carry
-`poc`/`exploit_verified` evidence (finding_verification also enforces strong
-evidence on high+ findings).
+**Goal:** drive every ever-approved exact Candidate in the current frozen
+WaveUnit to one persisted terminal Attempt: `verified`, `refuted`, or `blocked`.
+This remains controlled, foreground-only, bounded verification. Completion is
+decided from exact database truth, never from this stage's prose or deliverable.
 
 **Inputs you consume:**
 
-- The candidate list from `attack_candidate` — work only the ones the human
-  `approved` at the `exploit_validation` gate (proposed/rejected are not yours to
-  run).
+- The scheduler binds one opaque CandidateAttempt at a time. Do not select or
+  submit Candidate, approval, Attempt, plan hash, operation, scope, or org IDs.
 - Inherited evidence (vuln_triage findings, enumeration endpoints/params) and the
   RAG prior knowledge already injected into this charter.
 
 **Recommended sequence (per approved candidate):**
 
-1. Reproduce the hypothesis with the smallest safe PoC. Prefer read-only /
-   non-destructive proofs (e.g. read another tenant's record for IDOR, reflect a
-   benign marker for XSS, resolve an internal host for SSRF) — never destructive
-   payloads.
-2. Set the disposition honestly:
-   - `verified` — the PoC proves impact. Attach `poc` / `exploit_verified`
-     evidence and mint a `HarnessFinding` with real `evidence_refs`. Set
-     `parent_finding_id` on any follow-on candidate so the a→b→c attack chain is
-     captured.
-   - `refuted` — you proved it is a false positive. Cite the evidence that
-     disproves it (I8: refuted is a checked terminal state, NOT a skip).
-   - `blocked` — a WAF / auth / authorization boundary stopped you. Record a note
-     explaining the blocker (also a terminal state).
-3. Chain forward. If a verified finding opens a NEW surface (a→b), propose the
-   follow-on as a fresh candidate with `parent_finding_id`; the chain-wave
-   controller decides whether to open another wave (bounded by dedupe + fuel +
-   depth) or converge to reporting.
+1. Execute only approved action ordinals through
+   `verify_execute_candidate_action`; canonical arguments and budget are
+   reloaded under the WorkerRun/lane fence.
+2. Inspect exact recent evidence and call `submit_candidate_attempt` once:
+   - Its `disposition` field is the CandidateAttempt terminal decision and must
+     be exactly `verified`, `refuted`, or `blocked`; it is not a Finding report
+     and `StageDeliverable.findings` has no authority in V2.
+   - `verified` requires proof evidence and a complete Finding draft. Only the
+     terminalizer may create the Finding and immutable lineage.
+   - `refuted` requires refutation evidence and creates no Finding.
+   - `blocked` requires blocker evidence or a stable snake-case reason code and
+     creates no Finding.
+3. FactDelta drafts must name an exact canonical ref/version/hash and evidence.
+   Task 10 alone decides whether persisted deltas open another wave.
 
 **Efficiency red lines:**
 
 - Sandbox + non-destructive + reproducible: no destructive actions, no
   data-changing payloads. A PoC must be replayable.
-- Do NOT re-run the formulaic scan here — that was `vuln_triage`. This stage is
-  targeted exploitation of the approved hypotheses.
-- Every `verified` needs strong evidence (poc/exploit_verified); do not mark a
-  candidate verified on a hunch — the gate blocks unevidenced verified.
+- Do not call `record_finding`, a formulaic scanner, generic `pentest_run`, raw
+  shell, background controls, or another sub-agent.
+- The V2 Gate ignores `StageDeliverable.findings`, summaries, memory/KG,
+  spawned candidates, and process-local chain-wave state.
 
 **Coverage + stop condition:**
 
-- Every `approved` candidate must reach `verified` / `refuted` / `blocked` before
-  submit — the `candidate_disposition_complete` gate blocks any still-`approved`
-  candidate and any `verified` one missing evidence.
-- `verified` candidates become findings (high+ findings carry poc/exploit_verified
-  per `finding_verification`); reporting rebuilds the kill chain from the
-  candidate lineage + findings.
+- PASS requires a non-empty set of operation/scope/wave/unit/org exact DB
+  snapshots with closed review, zero pending manifest work, and one valid
+  terminal Attempt per ever-approved Candidate.
+- A zero-approved WaveUnit passes only when it exists, review is closed, and
+  every frozen work item is an evidence-backed `no_candidate` decision.
+- Missing, foreign, malformed, or failed DB reads BLOCK; there is no deliverable
+  fallback. Reporting reads terminal Candidate/Finding lineage from storage.

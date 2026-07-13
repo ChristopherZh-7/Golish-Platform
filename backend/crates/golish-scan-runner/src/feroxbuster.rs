@@ -303,30 +303,43 @@ async fn store_sensitive_finding_guarded(
     url: &str,
     status: i32,
 ) -> crate::ScanRunnerResult<()> {
+    let operation_id =
+        golish_core::current_agent_tool_context().and_then(|context| context.operation_id);
+    let requested_context = if operation_id.is_some() {
+        golish_pentest_domain::FindingWriteContext::HarnessLegacy
+    } else {
+        golish_pentest_domain::FindingWriteContext::LegacyNonHarness
+    };
+    let write_context =
+        golish_db::repo::findings::authorize_legacy_write(pool, requested_context, operation_id)
+            .await?;
     let mut tx = pool.begin().await?;
     golish_db::repo::scoped::lock_target_write_guard(&mut tx, &authorization.guard).await?;
-    sqlx::query_scalar::<_, Uuid>(
-        r#"INSERT INTO findings (id, target, target_id, title, severity, description, tool, source, project_path)
-           VALUES ($1, $2, $3, $4, $5, $6, 'feroxbuster', 'feroxbuster', $7)
-           ON CONFLICT (id) DO UPDATE SET
-               title = EXCLUDED.title,
-               severity = EXCLUDED.severity,
-               description = EXCLUDED.description,
-               target_id = EXCLUDED.target_id
-           WHERE findings.project_path IS NOT DISTINCT FROM EXCLUDED.project_path
-           RETURNING id"#,
+    golish_db::repo::findings::insert_legacy_with_executor(
+        &mut *tx,
+        write_context,
+        &golish_db::repo::findings::LegacyFindingWrite {
+            id: finding_id,
+            title: format!("Sensitive file/directory: {}", extract_path(url)),
+            severity: classify_sensitive_severity(url).to_ascii_lowercase(),
+            cvss: None,
+            url: url.to_string(),
+            target: url.to_string(),
+            target_id: Some(authorization.guard.target_id),
+            description: format!(
+                "Directory enumeration discovered a potentially sensitive resource at {} (HTTP {})",
+                url, status
+            ),
+            steps: String::new(),
+            remediation: String::new(),
+            evidence: serde_json::json!([]),
+            tool: "feroxbuster".to_string(),
+            template: String::new(),
+            refs: serde_json::json!([]),
+            source: "feroxbuster".to_string(),
+            project_path: Some(authorization.guard.project_path.clone()),
+        },
     )
-    .bind(finding_id)
-    .bind(url)
-    .bind(authorization.guard.target_id)
-    .bind(format!("Sensitive file/directory: {}", extract_path(url)))
-    .bind(classify_sensitive_severity(url))
-    .bind(format!(
-        "Directory enumeration discovered a potentially sensitive resource at {} (HTTP {})",
-        url, status
-    ))
-    .bind(&authorization.guard.project_path)
-    .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok(())

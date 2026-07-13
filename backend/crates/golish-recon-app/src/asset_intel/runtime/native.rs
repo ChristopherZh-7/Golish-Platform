@@ -121,6 +121,8 @@ pub(crate) fn bridge_record(
         kind: OrganizationCandidateKind::Target,
         label: value.clone(),
         value,
+        organization_id: None,
+        ownership_percent: None,
         source: provider_id.to_string(),
         confidence: 0.7,
         status: "candidate".to_string(),

@@ -86,6 +86,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "ambient-authority"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9d4ee0d472d1cd2e28c97dfa124b3d8d992e10eb0a035f33f5d12e3a177ba3b"
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -721,6 +727,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629a66d692cb9ff1a1c664e41771b3dcaf961985a9774c0eb0bd1b51cf60a48"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "cap-primitives"
+version = "4.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdadbd7c002d3a484b35243669abdae85a0ebaded5a61117169dc3400f9a7ff0"
+dependencies = [
+ "ambient-authority",
+ "fs-set-times",
+ "io-extras",
+ "io-lifetimes 3.0.1",
+ "ipnet",
+ "maybe-owned",
+ "rustix",
+ "rustix-linux-procfs",
+ "windows-sys 0.61.2",
+ "winx",
+]
+
+[[package]]
+name = "cap-std"
+version = "4.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7281235d6e96d3544ca18bba9049be92f4190f8d923e3caef1b5f66cfa752608"
+dependencies = [
+ "cap-primitives",
+ "io-extras",
+ "io-lifetimes 3.0.1",
+ "rustix",
 ]
 
 [[package]]
@@ -1956,6 +1992,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-set-times"
+version = "0.20.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94e7099f6313ecacbe1256e8ff9d617b75d1bcb16a6fddef94866d225a01a14a"
+dependencies = [
+ "io-lifetimes 2.0.4",
+ "rustix",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "fs2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2462,6 +2509,7 @@ dependencies = [
  "golish-app-core",
  "golish-artifacts",
  "golish-auth-probe",
+ "golish-cleanup-app",
  "golish-cli-output",
  "golish-context",
  "golish-core",
@@ -2474,6 +2522,7 @@ dependencies = [
  "golish-js-analyzer",
  "golish-llm-providers",
  "golish-mcp",
+ "golish-memory-app",
  "golish-models",
  "golish-pentest",
  "golish-pentest-app",
@@ -2483,6 +2532,8 @@ dependencies = [
  "golish-prompts",
  "golish-pty",
  "golish-recon-app",
+ "golish-reporting-app",
+ "golish-reporting-domain",
  "golish-scan-runner",
  "golish-session",
  "golish-settings",
@@ -2496,6 +2547,7 @@ dependencies = [
  "graph-flow",
  "ignore",
  "insta",
+ "libc",
  "notify",
  "notify-debouncer-mini",
  "nucleo-matcher",
@@ -2550,6 +2602,8 @@ dependencies = [
  "golish-agent-kit",
  "golish-agent-runtime",
  "golish-app-core",
+ "golish-cleanup-app",
+ "golish-cleanup-domain",
  "golish-context",
  "golish-core",
  "golish-db",
@@ -2558,13 +2612,18 @@ dependencies = [
  "golish-indexer",
  "golish-llm-providers",
  "golish-mcp",
+ "golish-memory-app",
+ "golish-memory-domain",
  "golish-models",
  "golish-pentest",
+ "golish-pentest-app",
  "golish-pentest-domain",
  "golish-projects",
  "golish-prompts",
  "golish-pty",
  "golish-recon-app",
+ "golish-reporting-app",
+ "golish-reporting-domain",
  "golish-session",
  "golish-settings",
  "golish-sidecar",
@@ -2575,6 +2634,8 @@ dependencies = [
  "rig-core",
  "serde",
  "serde_json",
+ "serial_test",
+ "sha2 0.11.0",
  "sqlx",
  "tauri",
  "tempfile",
@@ -2600,6 +2661,7 @@ dependencies = [
  "golish-events",
  "golish-indexer",
  "golish-llm-providers",
+ "golish-memory-app",
  "golish-prompts",
  "golish-session",
  "golish-settings",
@@ -2637,6 +2699,8 @@ dependencies = [
  "golish-indexer",
  "golish-json-repair",
  "golish-llm-providers",
+ "golish-memory-app",
+ "golish-memory-domain",
  "golish-pentest",
  "golish-pentest-domain",
  "golish-prompts",
@@ -2678,6 +2742,8 @@ dependencies = [
  "golish-indexer",
  "golish-json-repair",
  "golish-llm-providers",
+ "golish-memory-app",
+ "golish-memory-domain",
  "golish-prompts",
  "golish-settings",
  "golish-sub-agents",
@@ -2761,6 +2827,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "golish-cleanup-app"
+version = "0.2.43"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "golish-cleanup-domain",
+ "golish-db",
+ "golish-post-exploit-domain",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "golish-cleanup-domain"
+version = "0.2.43"
+dependencies = [
+ "chrono",
+ "golish-post-exploit-domain",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "golish-cli-output"
 version = "0.2.43"
 dependencies = [
@@ -2813,8 +2911,10 @@ dependencies = [
  "chrono",
  "dirs",
  "golish-core",
+ "golish-memory-domain",
  "golish-pentest-domain",
  "golish-platform",
+ "golish-reporting-domain",
  "pg-embed",
  "reqwest 0.12.28",
  "serde",
@@ -2852,10 +2952,15 @@ version = "0.2.43"
 dependencies = [
  "chrono",
  "golish-db",
+ "golish-memory-domain",
  "serde",
  "serde_json",
+ "serial_test",
+ "sha2 0.11.0",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -2996,6 +3101,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "golish-memory-app"
+version = "0.2.43"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "golish-graphiti",
+ "golish-memory-domain",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "golish-memory-domain"
+version = "0.2.43"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "golish-models"
 version = "0.2.43"
 dependencies = [
@@ -3057,12 +3192,16 @@ dependencies = [
  "golish-agent-kit",
  "golish-app-core",
  "golish-auth-probe",
+ "golish-cleanup-app",
+ "golish-cleanup-domain",
  "golish-core",
  "golish-db",
  "golish-js-analyzer",
  "golish-pentest",
  "golish-pentest-domain",
  "golish-platform",
+ "golish-post-exploit-app",
+ "golish-post-exploit-domain",
  "golish-pty",
  "golish-settings",
  "parking_lot",
@@ -3091,6 +3230,7 @@ dependencies = [
  "serde_json",
  "ts-rs",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -3141,12 +3281,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "golish-post-exploit-app"
+version = "0.2.43"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "golish-cleanup-app",
+ "golish-cleanup-domain",
+ "golish-db",
+ "golish-post-exploit-domain",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "golish-post-exploit-domain"
+version = "0.2.43"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "golish-projects"
 version = "0.2.43"
 dependencies = [
  "anyhow",
+ "cap-primitives",
+ "cap-std",
  "chrono",
  "dirs",
+ "fs2",
+ "libc",
  "serde",
  "serde_json",
  "serial_test",
@@ -3156,6 +3331,7 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "walkdir",
+ "windows-sys 0.61.2",
  "zip 8.6.0",
 ]
 
@@ -3209,6 +3385,7 @@ dependencies = [
  "dirs",
  "futures",
  "golish-app-core",
+ "golish-cleanup-app",
  "golish-core",
  "golish-db",
  "golish-integrations",
@@ -3232,6 +3409,34 @@ dependencies = [
  "url",
  "uuid",
  "zip 8.6.0",
+]
+
+[[package]]
+name = "golish-reporting-app"
+version = "0.2.43"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "golish-reporting-domain",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "golish-reporting-domain"
+version = "0.2.43"
+dependencies = [
+ "chrono",
+ "golish-memory-domain",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
@@ -4223,6 +4428,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-extras"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20fd6de4ccfcc187e38bc21cfa543cb5a302cb86a8b114eb7f0bf0dc9f8ac00f"
+dependencies = [
+ "io-lifetimes 3.0.1",
+ "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "io-lifetimes"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06432fb54d3be7964ecd3649233cddf80db2832f47fec34c01f65b3d9d774983"
+
+[[package]]
+name = "io-lifetimes"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f0fb0570afe1fed943c5c3d4102d5358592d8625fda6a0007fdbe65a92fba96"
+
+[[package]]
 name = "ipconfig"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4794,6 +5021,12 @@ name = "matches"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
+
+[[package]]
+name = "maybe-owned"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
 name = "md-5"
@@ -6920,6 +7153,16 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rustix-linux-procfs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fc84bf7e9aa16c4f2c758f27412dc9841341e16aa682d9c7ac308fe3ee12056"
+dependencies = [
+ "once_cell",
+ "rustix",
 ]
 
 [[package]]
@@ -10766,6 +11009,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
 dependencies = [
  "cfg-if",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "winx"
+version = "0.36.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f3fd376f71958b862e7afb20cfe5a22830e1963462f3a17f49d82a6c1d1f42d"
+dependencies = [
+ "bitflags 2.11.1",
  "windows-sys 0.59.0",
 ]
 

@@ -10,7 +10,7 @@
 | Layer | Choice |
 |---|---|
 | Desktop shell | Tauri 2 |
-| Backend | Rust 2021 (45 crates) |
+| Backend | Rust 2021 (56 crates) |
 | Frontend | React 19 + TypeScript 6 + Vite 8 |
 | State mgmt | Zustand + Immer (14 slices) |
 | UI kit | Radix primitives + Tailwind 4 |
@@ -35,7 +35,7 @@ golish-platform/
 │   └── services/              # client-side service layer
 ├── backend/
 │   ├── Cargo.toml             # workspace root
-│   └── crates/                # 48 Rust crates (see layer table below)
+│   └── crates/                # 56 Rust crates (see layer table below)
 ├── e2e/                       # 20 Playwright spec files
 ├── docs/                      # this documentation
 └── .github/workflows/         # CI (incl. arch-check.yml DAG guard)
@@ -63,7 +63,8 @@ this on every PR.
 ┌─────────────────────▼─────────────────────────────────────────────┐
 │ L3 Domain services                                                │
 │   golish-sub-agents · golish-tools · golish-prompts               │
-│   golish-pipeline · golish-sidecar                                │
+│   golish-pipeline · golish-sidecar · golish-memory-app             │
+│   golish-post-exploit-app · golish-cleanup-app · reporting-app     │
 └─────────────────────┬─────────────────────────────────────────────┘
                       │
 ┌─────────────────────▼─────────────────────────────────────────────┐
@@ -83,6 +84,8 @@ this on every PR.
 │   golish-projects                                                 │
 │   golish-json-repair · golish-udiff                               │
 │   golish-pentest-domain · golish-vuln-intel-domain                │
+│   golish-memory-domain · golish-post-exploit-domain                │
+│   golish-cleanup-domain · golish-reporting-domain                  │
 │   rig-anthropic-vertex · rig-gemini-vertex                        │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -104,6 +107,10 @@ this on every PR.
 | `golish-udiff` | Unified-diff parsing + application |
 | `golish-pentest-domain` | Pentest data model (pure types) |
 | `golish-vuln-intel-domain` | Vulnerability intel data model |
+| `golish-memory-domain` | Pure typed Memory Fabric source/Episode/Assertion/event catalog plus ContextPack values/layers and fixed 1536-dimension contracts |
+| `golish-post-exploit-domain` | Pure Foothold/Internal Asset/Attack Path/Action/Approval contracts |
+| `golish-cleanup-domain` | Pure cleanup obligation/attempt/absence/waiver safety state machine |
+| `golish-reporting-domain` | Pure canonical report source/citation/revision validation contracts |
 | `rig-anthropic-vertex` | Rig provider fork (Claude on Vertex) |
 | `rig-gemini-vertex` | Rig provider fork (Gemini on Vertex) |
 
@@ -119,8 +126,8 @@ the same layer are OK; cluster grouping does not add edges.
 
 | Crate | Depends on | Purpose |
 |---|---|---|
-| `golish-db` | core | Postgres pool + migrations + gatekeeper |
-| `golish-graphiti` | db | Graph knowledge base (shares golish-db's embedded PG + `PgPool`) |
+| `golish-db` | core, memory-domain, reporting-domain | Postgres pool + migrations + gatekeeper + canonical Memory outbox, Reporting snapshot/history and scope-first ContextPack queries |
+| `golish-graphiti` | db, memory-domain | Legacy graph + authoritative scoped temporal node/edge projection client (shares embedded PG) |
 | `golish-models` | settings | Model metadata tables (IDs, capabilities, `AiProvider` mapping) |
 | `golish-session` | core | Session archive + manager |
 | `golish-indexer` | settings | File tree indexing via `vtcode-indexer` |
@@ -175,6 +182,10 @@ the same layer are OK; cluster grouping does not add edges.
 | `golish-sub-agents` | core, json-repair, llm-providers, shell-exec, skills, tools, udiff | Sub-agent registry + executor + defaults + prompt-contributor |
 | `golish-pipeline` | core, db, pentest | Pentest pipeline orchestrator |
 | `golish-sidecar` | artifacts, core, settings, synthesis | Session sidecar (artifact capture) |
+| `golish-memory-app` | memory-domain, graphiti | Port-driven promotion/invalidation/projectors plus opaque-auth scoped retrieval and 1536-dimension embedding policy; no SQL/provider implementation |
+| `golish-post-exploit-app` | post-exploit-domain, cleanup-app, cleanup-domain, db | Canonical Post-Exploit services plus approval-fenced P6b side-effect prepare/execute state machine |
+| `golish-cleanup-app` | cleanup-domain, post-exploit-domain, db | Cleanup obligation/attempt/absence/waiver application ports and PG adapter |
+| `golish-reporting-app` | reporting-domain | Port-driven read-model build, redaction, narrative claim-set fence and explicit publication finalizer |
 
 > **Invariant**: `golish-prompts` must **not** depend on `golish-sub-agents`
 > (fixed in A1 — see `CHANGELOG.md`). CI enforces this.
@@ -183,9 +194,9 @@ the same layer are OK; cluster grouping does not add edges.
 
 | Crate | Depends on | Role |
 |---|---|---|
-| `golish-agent-kit` (L4a) | core, context, events, indexer, json-repair, llm-providers, prompts, settings, sub-agents, tools | **Building blocks**: tool executors, HITL, loop detection, planner, tool policy, sidecar trait, system hooks, db trait + tracking, llm-client wiring |
-| `golish-agent-runtime` (L4b) | L4a + all L4a deps | **Streaming loop**: `run_agentic_loop_unified`, eval harness, test mocks |
-| `golish-agent-bridge` (L4c) | L4a + L4b + session + indexer + llm-providers, etc. | **Bridge to Tauri**: `AgentBridge` struct, `bridge_executor`, per-turn context preparation, contributor composition |
+| `golish-agent-kit` (L4a) | core, context, events, indexer, json-repair, llm-providers, memory-app, prompts, settings, sub-agents, tools | **Building blocks**: tool executors, HITL, loop detection, planner, tool policy, prompt-safe ContextPack rendering, db trait + tracking |
+| `golish-agent-runtime` (L4b) | L4a + memory-app/domain + all L4a deps | **Streaming loop**: `run_agentic_loop_unified`, exact-scope ContextPack injection, eval harness, test mocks |
+| `golish-agent-bridge` (L4c) | L4a + L4b + memory-app + session + indexer + llm-providers, etc. | **Bridge to Tauri**: `AgentBridge`, process-shared canonical UoW + scoped ContextPack provider injection, `bridge_executor`, per-turn preparation |
 
 > **Renamed in A2**: formerly `golish-agent-loop` + `golish-agentic-loop`
 > (one character apart — confusing). New names make responsibility

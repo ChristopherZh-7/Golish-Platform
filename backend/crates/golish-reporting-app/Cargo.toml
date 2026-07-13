@@ -1,0 +1,20 @@
+[package]
+name = "golish-reporting-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Port-driven canonical Reporting read-model and finalization service"
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+golish-reporting-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

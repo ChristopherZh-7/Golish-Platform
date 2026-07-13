@@ -14,6 +14,13 @@
 use std::collections::{HashMap, HashSet};
 
 use super::rule_engine::{EvidenceFact, GateContext, SourceQueryFact};
+use crate::harness::handoff_catalog::CanonicalFactKey;
+
+#[derive(Debug, Clone)]
+pub struct GateContextWithCanonicalSources {
+    pub context: GateContext,
+    pub canonical_source_hints: Vec<CanonicalFactKey>,
+}
 
 /// 累加器式构造 [`GateContext`]。所有 setter 取所有权、可链式；普通空集合在
 /// [`GateContextBuilder::build`] 统一折成 `None`。唯一例外是调用方明确通过
@@ -30,6 +37,11 @@ pub struct GateContextBuilder {
     evidence_facts: Vec<EvidenceFact>,
     source_queries: Vec<SourceQueryFact>,
     expected_techniques: Option<Vec<String>>,
+    candidate_work_item_keys: Option<Vec<String>>,
+    verification_truth_required: bool,
+    verification_truth_snapshots: Option<crate::harness::attack_execution::VerificationTruthSet>,
+    reporting_truth: Option<crate::harness::ReportingGateTruth>,
+    canonical_source_hints: Vec<CanonicalFactKey>,
 }
 
 impl GateContextBuilder {
@@ -125,10 +137,54 @@ impl GateContextBuilder {
         self
     }
 
+    /// Exact Candidate V2 manifest axis loaded from the trusted WaveUnit. An
+    /// explicit empty list is preserved and therefore fail-closed by the gate.
+    pub fn candidate_work_item_keys(mut self, keys: Option<Vec<String>>) -> Self {
+        self.candidate_work_item_keys = keys;
+        self
+    }
+
+    /// Activate V2-only Verification truth. An explicit empty vector remains
+    /// distinguishable from legacy mode and therefore blocks in the rule.
+    pub fn verification_truth(
+        mut self,
+        truth: Option<crate::harness::attack_execution::VerificationTruthSet>,
+    ) -> Self {
+        self.verification_truth_required = true;
+        self.verification_truth_snapshots = truth;
+        self
+    }
+
+    /// Current DB-authoritative Reporting revision truth. `None` is preserved:
+    /// the `report_revision_validated` rule treats a missing DB read as BLOCK.
+    pub fn reporting_truth(mut self, truth: Option<crate::harness::ReportingGateTruth>) -> Self {
+        self.reporting_truth = truth;
+        self
+    }
+
+    /// Append server-derived keys that a final PASS may project into its
+    /// handoff. These are hints only: the final-seal repository re-reads exact
+    /// owner/timestamp/hash/evidence fields under locks.
+    pub fn extend_canonical_source_hints<I>(mut self, hints: I) -> Self
+    where
+        I: IntoIterator<Item = CanonicalFactKey>,
+    {
+        self.canonical_source_hints.extend(hints);
+        self
+    }
+
     /// 组装 [`GateContext`]：普通集合的**唯一** `empty → None` 归一点；权威资产轴
     /// 已在 setter 中保留 `Some([])`。
     pub fn build(self) -> GateContext {
-        GateContext {
+        self.build_with_canonical_source_hints().context
+    }
+
+    /// Build the ordinary pure Gate context together with the separately
+    /// bounded final-seal source hints. Keeping them outside rule evaluation
+    /// prevents model claims from becoming Gate truth.
+    pub fn build_with_canonical_source_hints(self) -> GateContextWithCanonicalSources {
+        let canonical_source_hints = self.canonical_source_hints;
+        let context = GateContext {
             in_scope_assets: self.in_scope_assets,
             asset_types: (!self.asset_types.is_empty()).then_some(self.asset_types),
             web_capable_assets: (!self.web_capable_assets.is_empty())
@@ -138,8 +194,16 @@ impl GateContextBuilder {
             eas_required_web_origins: self.eas_required_web_origins,
             eas_completed_web_origins: self.eas_completed_web_origins,
             expected_techniques: self.expected_techniques,
+            candidate_work_item_keys: self.candidate_work_item_keys,
+            verification_truth_required: self.verification_truth_required,
+            verification_truth_snapshots: self.verification_truth_snapshots,
+            reporting_truth: self.reporting_truth,
             evidence_facts: (!self.evidence_facts.is_empty()).then_some(self.evidence_facts),
             source_queries: (!self.source_queries.is_empty()).then_some(self.source_queries),
+        };
+        GateContextWithCanonicalSources {
+            context,
+            canonical_source_hints,
         }
     }
 }
@@ -168,7 +232,9 @@ mod tests {
         assert_eq!(ctx.not_applicable_coverage, def.not_applicable_coverage);
         assert_eq!(ctx.eas_required_web_origins, def.eas_required_web_origins);
         assert_eq!(ctx.eas_completed_web_origins, def.eas_completed_web_origins);
+        assert_eq!(ctx.reporting_truth, def.reporting_truth);
         assert_eq!(ctx.expected_techniques, def.expected_techniques);
+        assert_eq!(ctx.candidate_work_item_keys, def.candidate_work_item_keys);
         assert!(ctx.evidence_facts.is_none() && def.evidence_facts.is_none());
         assert!(ctx.source_queries.is_none() && def.source_queries.is_none());
     }
@@ -179,6 +245,19 @@ mod tests {
             .authoritative_in_scope_assets(Some(Vec::new()))
             .build();
         assert_eq!(ctx.in_scope_assets, Some(Vec::new()));
+    }
+
+    #[test]
+    fn canonical_source_hints_stay_out_of_gate_truth_and_reach_final_seal_builder() {
+        let target_id = uuid::Uuid::new_v4();
+        let built = GateContextBuilder::new()
+            .extend_canonical_source_hints([CanonicalFactKey::Target { target_id }])
+            .build_with_canonical_source_hints();
+        assert_eq!(built.context.in_scope_assets, None);
+        assert_eq!(
+            built.canonical_source_hints,
+            vec![CanonicalFactKey::Target { target_id }]
+        );
     }
 
     #[test]
@@ -333,6 +412,10 @@ mod tests {
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
             expected_techniques: Some(vec!["GOLISH-INTEL-DNS".to_string()]),
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
             evidence_facts: Some(facts),
             source_queries: None,
         };

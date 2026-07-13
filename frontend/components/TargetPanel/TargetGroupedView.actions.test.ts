@@ -381,10 +381,15 @@ describe("getNextWorkspaceTabAfterAssetIntelRun", () => {
           candidates: {
             organizations: [
               {
+                id: "org:enscan-go:子公司 A",
                 kind: "organization",
                 label: "子公司 A",
                 value: "子公司 A",
                 source: "enscan-go",
+                confidence: 1,
+                status: "needs_review",
+                evidence: {},
+                createdAt: 1,
               },
             ],
             targets: [],
@@ -398,10 +403,15 @@ describe("getNextWorkspaceTabAfterAssetIntelRun", () => {
     const candidates = {
       organizations: [
         {
+          id: "org:enscan-go:半截输出子公司",
           kind: "organization" as const,
           label: "半截输出子公司",
           value: "半截输出子公司",
           source: "enscan-go",
+          confidence: 1,
+          status: "needs_review",
+          evidence: {},
+          createdAt: 1,
         },
       ],
       targets: [],

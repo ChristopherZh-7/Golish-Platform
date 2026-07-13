@@ -14,11 +14,13 @@ pub use registry::create_default_sub_agents_from_registry;
 use crate::definition::SubAgentDefinition;
 
 use super::prompts::{
-    build_adviser_prompt, build_browser_prompt, build_coder_prompt, build_enricher_prompt,
+    build_adviser_prompt, build_attack_analyst_prompt, build_browser_prompt,
+    build_candidate_verifier_prompt, build_coder_prompt, build_enricher_prompt,
     build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
-    build_orchestrator_prompt, build_pentester_prompt, build_planner_prompt, build_prober_prompt,
-    build_recon_prompt, build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
-    build_researcher_prompt, build_vuln_scanner_prompt,
+    build_orchestrator_prompt, build_pentester_prompt, build_planner_prompt,
+    build_post_exploit_operator_prompt, build_prober_prompt, build_recon_prompt,
+    build_refiner_prompt, build_reflector_prompt, build_reporter_prompt, build_researcher_prompt,
+    build_vuln_scanner_prompt,
 };
 
 /// Create default sub-agents for common tasks.
@@ -145,6 +147,49 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         .with_max_iterations(40)
         .with_idle_timeout(300)
         .with_delegatable_agents(vec!["enricher".to_string(), "memorist".to_string()]),
+        SubAgentDefinition::new(
+            "attack_analyst",
+            "Attack Analyst",
+            "Reasoning-only attack_candidate specialist. Produces bounded Candidate plans from durable facts and evidence; it never executes verification actions.",
+            build_attack_analyst_prompt(),
+        )
+        .with_tools(vec![
+            "query_target_data".to_string(),
+            "list_recent_evidence".to_string(),
+            "submit_stage_deliverable".to_string(),
+        ])
+        .with_max_iterations(30)
+        .with_idle_timeout(180),
+        SubAgentDefinition::new(
+            "candidate_verifier",
+            "Candidate Verifier",
+            "Foreground-only verifier for one scheduler-bound CandidateAttempt. Executes only canonical DB-authorized action ordinals.",
+            build_candidate_verifier_prompt(),
+        )
+        .with_tools(vec![
+            "verify_execute_candidate_action".to_string(),
+            "list_recent_evidence".to_string(),
+            "submit_candidate_attempt".to_string(),
+        ])
+        .with_max_iterations(30)
+        .with_idle_timeout(300),
+        SubAgentDefinition::new(
+            "post_exploit_operator",
+            "Post-Exploit Operator",
+            "Lease-fenced specialist for the four typed Post-Exploit V2 stages. It records canonical facts and prepares cleanup-bound actions without raw shell or scanner access.",
+            build_post_exploit_operator_prompt(),
+        )
+        .with_tools(vec![
+            "query_target_data".to_string(),
+            "list_recent_evidence".to_string(),
+            "post_exploit_validate_access".to_string(),
+            "post_exploit_record_internal_observation".to_string(),
+            "post_exploit_build_objective_path".to_string(),
+            "post_exploit_execute_action".to_string(),
+            "submit_stage_deliverable".to_string(),
+        ])
+        .with_max_iterations(30)
+        .with_idle_timeout(300),
         SubAgentDefinition::new(
             "prober",
             "Prober",

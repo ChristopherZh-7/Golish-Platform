@@ -5,6 +5,8 @@
 
 pub mod agents;
 pub mod analytics;
+pub mod attack;
+pub mod cleanup;
 pub mod config;
 pub mod context;
 pub mod core;
@@ -17,9 +19,11 @@ pub mod loop_detection;
 pub mod mode;
 pub mod plan;
 pub mod policy;
+pub mod reporting;
 pub mod session;
 pub mod stage_coverage;
 pub mod summarizer;
+pub mod temporal_graph;
 pub mod workflow;
 
 mod bridge_config;
@@ -27,6 +31,8 @@ mod bridge_config;
 // Re-export all commands for easier access
 pub use agents::*;
 pub use analytics::*;
+pub use attack::*;
+pub use cleanup::*;
 pub use config::*;
 pub use context::*;
 pub use core::*;
@@ -39,9 +45,11 @@ pub use loop_detection::*;
 pub use mode::*;
 pub use plan::*;
 pub use policy::*;
+pub use reporting::*;
 pub use session::*;
 pub use stage_coverage::*;
 pub use summarizer::*;
+pub use temporal_graph::*;
 pub use workflow::*;
 
 // Bridge wiring lives in `bridge_config`; re-export at the previous paths.

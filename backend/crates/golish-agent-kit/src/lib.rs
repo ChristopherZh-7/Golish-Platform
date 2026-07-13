@@ -57,6 +57,7 @@ pub mod loop_detection;
 pub mod memory_file;
 pub mod memory_gatekeeper;
 pub mod planner;
+pub mod runtime_memory;
 pub mod sidecar_trait;
 pub mod system_hooks;
 pub mod task_orchestrator;

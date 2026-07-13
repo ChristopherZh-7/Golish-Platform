@@ -106,9 +106,18 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         "metasploit" | "metasploit-framework" | "msfconsole" | "msfvenom" | "msf" => {
             ("exploit", "framework")
         }
+        "verify_execute_candidate_action" => ("exploit", "candidate-verifier"),
         // ── post-exploit ─────────────────────────────────────────────────────
         "netexec" | "crackmapexec" | "cme" | "nxc" => ("post-exploit", "lateral-movement"),
         "impacket" | "bloodhound-python" | "bloodhound" => ("post-exploit", "ad-tools"),
+        "post_exploit_validate_access" => ("post-exploit", "access-validation"),
+        "post_exploit_record_internal_observation" => ("post-exploit", "internal-observation"),
+        "post_exploit_build_objective_path" => ("post-exploit", "objective-path"),
+        "post_exploit_execute_action" => ("post-exploit", "cleanup-bound-action"),
+        "cleanup_inspect_obligation" => ("post-exploit", "cleanup-inspect"),
+        "cleanup_execute_obligation" => ("post-exploit", "cleanup-execute"),
+        "cleanup_verify_absence" => ("post-exploit", "cleanup-verify"),
+        "cleanup_suggest_waiver" => ("post-exploit", "cleanup-waiver-suggestion"),
         _ => return None,
     };
     Some(pair)
@@ -164,9 +173,18 @@ const CANONICAL_TOOLS: &[&str] = &[
     // exploit
     "searchsploit",
     "metasploit",
+    "verify_execute_candidate_action",
     // post-exploit
     "netexec",
     "impacket",
+    "post_exploit_validate_access",
+    "post_exploit_record_internal_observation",
+    "post_exploit_build_objective_path",
+    "post_exploit_execute_action",
+    "cleanup_inspect_obligation",
+    "cleanup_execute_obligation",
+    "cleanup_verify_absence",
+    "cleanup_suggest_waiver",
 ];
 
 /// Resolve a stage's `allowed_tool_types` type-selectors into the concrete

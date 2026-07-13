@@ -1,4 +1,15 @@
+import type { OrganizationCandidate } from "@/lib/generated/OrganizationCandidate";
+import type { OrganizationCandidates } from "@/lib/generated/OrganizationCandidates";
+import type { UnitReviewDecisionRow } from "@/lib/generated/UnitReviewDecisionRow";
+import type { UnitReviewSubmission } from "@/lib/generated/UnitReviewSubmission";
 import { invoke } from "./client";
+
+export type {
+  OrganizationCandidate,
+  OrganizationCandidates,
+  UnitReviewDecisionRow,
+  UnitReviewSubmission,
+};
 
 /**
  * Domain entry inside `Organization.domains`. The shape is a discriminated
@@ -107,24 +118,7 @@ export interface OrganizationProfilePatch {
   contacts?: unknown[];
 }
 
-export type OrganizationCandidateKind = "organization" | "target";
-
-export interface OrganizationCandidate {
-  id?: string;
-  kind: OrganizationCandidateKind;
-  label: string;
-  value: string;
-  source?: string;
-  confidence?: number;
-  status?: string;
-  evidence?: unknown;
-  createdAt?: number;
-}
-
-export interface OrganizationCandidates {
-  organizations: OrganizationCandidate[];
-  targets: OrganizationCandidate[];
-}
+export type OrganizationCandidateKind = OrganizationCandidate["kind"];
 
 export async function listOrganizations(projectPath: string | null): Promise<Organization[]> {
   return invoke<Organization[]>("organization_list", { projectPath });
@@ -177,6 +171,9 @@ export async function moveOrganization(params: {
   await invoke("organization_move", params);
 }
 
-export async function deleteOrganization(id: string): Promise<void> {
-  await invoke("organization_delete", { id });
+export async function deleteOrganization(params: {
+  id: string;
+  projectPath: string;
+}): Promise<void> {
+  await invoke("organization_delete", params);
 }

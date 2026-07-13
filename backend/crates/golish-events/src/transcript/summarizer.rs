@@ -280,6 +280,18 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
                         gap_count,
                         ..
                     } => format!("refiner {repair_kind} actions={action_count} gaps={gap_count}"),
+                    K::CandidateReviewRequired {
+                        wave_run_id,
+                        status,
+                        proposed_candidate_count,
+                        ..
+                    } => format!(
+                        "candidate_review {wave_run_id} {status} proposed={proposed_candidate_count}"
+                    ),
+                    K::CandidateReviewResumed {
+                        wave_run_id,
+                        resume_version,
+                    } => format!("candidate_review {wave_run_id} resumed v{resume_version}"),
                     K::StageRunOrgProgress {
                         org_name, status, ..
                     } => format!("stage_run {org_name} {status}"),

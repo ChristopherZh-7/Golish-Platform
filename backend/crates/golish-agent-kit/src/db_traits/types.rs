@@ -229,6 +229,12 @@ pub struct OperationStateView {
     pub operation_id: Uuid,
     pub profile: String,
     pub current_stage: String,
+    /// Immutable runtime-memory rollout contract frozen when this operation was
+    /// created. Unknown persisted values fail closed in the app bridge.
+    pub runtime_memory_contract: crate::runtime_memory::RuntimeMemoryContract,
+    /// Stable project/workspace authorization identity frozen when the runtime
+    /// operation is created. Legacy operations may remain unbound.
+    pub project_scope_id: Option<Uuid>,
     /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): the
     /// scoping-confirmed root org this operation is bound to. `None` = not yet
     /// bound (legacy whole-DB axis).

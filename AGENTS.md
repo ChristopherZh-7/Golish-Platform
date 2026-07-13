@@ -34,6 +34,8 @@
    ```
    预期：依赖装好、`just check` + `just test-fe` + `just test-rust` 全绿。**如果失败，先修基础环境，不要在坏的地基上叠新功能**。
 
+   在运行任何 Cargo 构建或 Rust 测试前先执行 `just space-guard`。它只在系统剩余空间低于安全水位且 Cargo/rustc/nextest 均空闲时回收最旧构建产物，禁止用 `cargo clean` 作为日常空间管理手段。
+
 3. **如果接到新需求且不在 `feature_list.json` 中**
    - 简单改动（单文件 ≤3 处）：直接动手，结束时在 progress 里记一笔即可
    - 复杂改动（跨多 crate / 改 IPC / 改 schema / 涉及安全语义）：

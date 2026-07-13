@@ -24,6 +24,7 @@
 | `execute_sub_agent` | 公开执行入口（超时 + 错误包装） |
 | `SubAgentResult.chain_id` | 可选、serde 向后兼容的结构化 UUID；只指向已成功写入 provider-valid body 的 chain checkpoint |
 | `SubAgentExecutorContext` / `SubAgentChainError` / `ToolProvider` / `BARRIER_TOOL_NAME`（re-export） | 执行上下文 / typed chain failure / 工具注入 / barrier |
+| `BoundWorkerChainContext` / `BoundWorkerToolLifecycle` | server-owned V2 worker/chain/fence；阻止 model resume/fresh chain，并在每个 regular tool 前后做 awaited lifecycle |
 | `SubAgentToolObserver` / `SubAgentToolObservation` | 上层 runtime 注入的工具结果观察点；包含真实 `tool_call_id`，可 trace-only，也可把纠偏提示附回 ToolResult |
 | `SubmitRepairMode` / `SubmitRepairKind` / `submit_repair_mode_from_submit_result` / `submit_coverage_gap_repair_mode_from_reasons` / `refine_eas_web_repair_mode_from_worklist` / `retain_eas_web_repair_targets_for_same_gap` | 可持久化的 capability-first submit repair lock；runtime 的 StageRefiner 写入 checkpoint，executor resume 时恢复；EAS WEB exact lock 可从 DB worklist 确定性细化，并在同一 WEB gap 的重复 `needs_fix` 中保留 |
 
@@ -50,6 +51,8 @@
 - `SubAgentExecutorContext.active_org_id_override` 是 stage-run per-org 硬隔离通道：registry fallback 执行 `manage_targets` / `manage_organizations`，以及 Enumeration 的 `enum_crawl_same_origin_urls` / `browser_collect_js_api` / `js_extract_apis` / `route_probe_paths` 时都会注入内部隐藏 `__harness_org_id`，让工具按当前 org 子树过滤/绑定；不要把这件事退化成 prompt 约束。
 - `SubAgentExecutorContext.operation_id` 是父 runtime 注入的可信 operation/stage-attempt identity。regular registry/router tool call 会把它和 `active_org_id_override` 一起写进 `AgentToolContext`，nested delegate 原值继承；它不能由模型可见参数覆盖或在子 agent 内重新生成。
 - `SubAgentExecutorContext.persistence_session_id` 是 message-chain 的真实 DB session UUID；`session_id` 只用于事件/transcript。`chain_persist` 优先使用前者，legacy 裸 UUID event session 只作兼容回退。缺少两者时 fail closed，不创建不可归属的 chain，也不伪造可 resume marker。
+- `bound_worker_chain=Some` 时 executor 必须忽略模型可见 `resume`，只 load exact bound worker/chain；所有 initial/batch/final checkpoint 都走 `chain_checkpoint_bound_worker` compound seam，generic `chain_create/update/usage` 禁止。fresh claim 可把 objective 放进已 commit initial chain，executor 不得重复追加；普通 `bound_worker_chain=None` 路径保持原 legacy 行为。
+- V2 regular tool（包括 unknown/可能有副作用的工具）必须经 `BoundWorkerToolLifecycle.begin/finish`。begin 失败不执行；finish/heartbeat/lease 失败不把 stale result 交给 post-result hook 或下一轮模型。prebound worker 禁止 nested delegation，以免同一 lease 出现两个 executor。
 - exact resume 的 UUID 不是授权凭证：`chain_load_by_id` 必须带当前 session + agent scope；miss、load error、ownership mismatch、空/坏 history 都返回 typed error，不能 fallback latest/fresh。只有 chain body durable update 成功才可发布结构化 `SubAgentResult.chain_id` 或追加兼容 `[sub_agent_session_id: ...]` marker；update 失败必须让整个 worker 返回失败，usage 统计失败可在 body 已保存后仅告警。
 - durable history 还必须满足 provider 的 tool-pair 不变量：每个 Assistant tool call 的下一条 User turn 都要含同 call id 的 ToolResult。fresh/exact/latest invocation 会在追加本次 user prompt 与恢复的 repair directive 后、任何 provider I/O 前（含 prompt-template generation）先写 initial provider-valid body；每个完整 Assistant tool-call batch + 对应 User ToolResult turn 再在 barrier / stage-stall / 下一次 provider request 前以单次 chain body update checkpoint。inner/outer 共享槽只在 update 成功后发布 UUID；graceful failure 和 outer timeout 只交还槽内最后成功快照，timeout drop 不做异步补写。initial snapshot 后的 generic `?` failure 会由 outer mapper 转为 `success=false + chain_id`；later `FinalizeFailed` 保持 typed/non-retryable，并把旧快照放在独立 `checkpointed_chain_id`，绝不把失败 update 的裸 chain id 当作新快照；initial update 失败时槽仍为空、原 Err 继续上抛。中间 checkpoint 不更新 usage，最终 teardown 只更新一次 usage。`submit_result` barrier 与 stage-stall 都必须先追加完整 result turn 再退出；同批 barrier 后的未执行 call 写明确 skipped result。serialize 写前和 exact/latest restore 后双向校验，任何普通工具缺口 fail closed，不能伪造执行结果。进程在 DB 确认 initial snapshot 前 hard-kill 不在该保证范围内。
 - durable replay 不是“校验通过即可原样发送”：exact/latest restore 会先压缩 bulky tool results、折叠重复 repair directive，并把 provider-visible history 控制在 512 KiB；若发生变化要在 provider I/O 前写回同一 chain。loop 每次 `model.stream` 前与最终 persist 前复用同一 compactor；超过总量时只按完整 turn 单元淘汰最旧历史，绝不拆 Assistant tool call 与紧随的 User ToolResult；保留结果必须是连续的最新完整单元后缀，一旦较新单元放不下，不能再回填更旧的小单元形成历史空洞。
@@ -67,6 +70,7 @@
 - `submit_stage_deliverable` 返回 `accepted` 时，executor 把该工具结果当 terminal barrier：先持久化完整 assistant tool-call + ToolResult chain，再直接返回 orchestrator；同批后续工具标记 skipped。不能只清 `SubmitRepairMode` 后再请求一轮模型，否则 worker 会在已通过后重复 worklist/provider/submit。
 - `SubAgentExecutorContext.initial_submit_repair_mode` 是 resume/refiner 入口：runtime 从 `agent_run.submit_repair_mode` 恢复后传入；executor 会把 directive 写进恢复后的 chat history，并发一条 SubAgentTextDelta 给 UI，随后用同一个 repair lock 继续拦截不允许的工具。`SubmitRepairMode` 支持 StageRefiner 覆盖 allowed/forbidden tools 和 directive 文案，用于 EAS/TargetIntel 的 stage-specific repair。
 - `background:true` 工具若同步失败，也会提示不要把它当成运行中的后台 job。
+- prebound Candidate worker 在 `BoundWorkerChainContext` 携带 opaque attempt ref；regular tool dispatch 在 generic tool lifecycle 前执行 core closed-tool guard，并把 ref 复制到 `AgentToolContext`，防止 raw/background/identity override 绕过。
 
 ## 测试入口
 

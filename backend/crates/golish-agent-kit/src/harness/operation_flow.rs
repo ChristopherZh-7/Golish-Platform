@@ -109,6 +109,24 @@ impl StageFlowOutcome {
     }
 }
 
+/// Convert exact persisted Verification truth into graph flow. V2 never opens
+/// a process-local chain wave from deliverable candidates; Task 10's durable
+/// FactDelta consolidation transaction exclusively owns that cursor change.
+pub fn exact_verification_flow_outcome(
+    truth: &super::attack_execution::VerificationTruthSet,
+) -> StageFlowOutcome {
+    let allowed = super::attack_execution::validate_verification_truth_set(truth).is_ok();
+    StageFlowOutcome {
+        gate_allowed: allowed,
+        made_progress: allowed
+            && truth
+                .snapshots
+                .iter()
+                .any(|snapshot| snapshot.approved_ever > 0),
+        reopen_wave: false,
+    }
+}
+
 /// metalcraft [`Reducer`] 状态：operation 流转的累积视图。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct OperationFlowState {

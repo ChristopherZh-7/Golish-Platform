@@ -47,6 +47,7 @@ export type {
   PlanSummary,
   ReasoningEffort,
   RenderMode,
+  ReportingReadModelHint,
   RiskLevel,
   Session,
   SessionMode,

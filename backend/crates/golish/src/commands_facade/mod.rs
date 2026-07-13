@@ -33,6 +33,8 @@
 
 pub mod ai;
 pub mod asset_intel;
+pub mod attack;
+pub mod cleanup;
 pub mod evidence;
 pub mod findings;
 pub mod git_pty;
@@ -42,6 +44,7 @@ pub mod intel_providers;
 pub mod mcp;
 pub mod organization_recon;
 pub mod pentest;
+pub mod reporting;
 pub mod settings;
 pub mod sidecar;
 pub mod vault;

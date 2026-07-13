@@ -2,6 +2,7 @@ import { ArrowUp, Image, LoaderCircle, Square, Wrench, X } from "lucide-react";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
+import { ReportReadModelView } from "@/components/Engagement/ReportReadModelView";
 import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
 import { respondToToolApproval } from "@/lib/ai";
 import { resetHarnessStageCheckpoint } from "@/lib/api/harness-dev";
@@ -84,6 +85,15 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const activeConversationTerminalId = useStore((s) => {
     const convId = s.activeConversationId;
     return convId ? (s.conversationTerminals[convId]?.[0] ?? null) : null;
+  });
+  const reportingReadModelHint = useStore((s) => {
+    const convId = s.activeConversationId;
+    if (!convId) return null;
+    const terminalId = s.conversationTerminals[convId]?.[0];
+    const terminalHint = terminalId ? s.sessions[terminalId]?.reportingReadModelHint : undefined;
+    if (terminalHint) return terminalHint;
+    const aiSessionId = s.conversations[convId]?.aiSessionId;
+    return aiSessionId ? (s.sessions[aiSessionId]?.reportingReadModelHint ?? null) : null;
   });
   const messages = activeConv?.messages ?? EMPTY_MESSAGES;
   const isStreaming = activeConv?.isStreaming ?? false;
@@ -491,7 +501,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
             />
           )}
           <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden">
-            {messages.length === 0 && showRestoreLoading ? (
+            {messages.length === 0 && !reportingReadModelHint && showRestoreLoading ? (
               <div className="flex flex-col items-center justify-center h-full select-none gap-3 text-center px-6">
                 <LoaderCircle className="w-5 h-5 text-accent/70 animate-spin" />
                 <div className="space-y-1">
@@ -501,7 +511,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
                   </p>
                 </div>
               </div>
-            ) : messages.length === 0 ? (
+            ) : messages.length === 0 && !reportingReadModelHint ? (
               <div className="flex flex-col items-center justify-center h-full select-none gap-4">
                 <div className="flex items-center gap-1.5">
                   {[0, 1, 2].map((i) => (
@@ -547,6 +557,18 @@ export const AIChatPanel = memo(function AIChatPanel() {
                     </React.Fragment>
                   );
                 })}
+
+                {reportingReadModelHint && (
+                  <div className="px-4 py-3">
+                    {/* Harness traces only locate/refresh this panel. The component
+                        always reloads report truth through the scoped IPC API. */}
+                    <ReportReadModelView
+                      key={reportingReadModelHint.operationId}
+                      operationId={reportingReadModelHint.operationId}
+                      refreshVersion={reportingReadModelHint.refreshVersion}
+                    />
+                  </div>
+                )}
 
                 {activeWorkflow && <WorkflowProgress workflow={activeWorkflow} />}
                 {compactionState && (

@@ -1,3 +1,5 @@
+> Superseded by [2026-07-12-candidate-verification-pipeline-v2-corrected.md](./2026-07-12-candidate-verification-pipeline-v2-corrected.md).
+
 # Candidate 审批、逐条验证与 FactDelta 波次 V2 实现计划
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。

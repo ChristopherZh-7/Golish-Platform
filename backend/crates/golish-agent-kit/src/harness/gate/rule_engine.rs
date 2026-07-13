@@ -147,6 +147,10 @@ pub enum GateRule {
         require_evidence_for_verified: bool,
         on_fail: OnFail,
     },
+    /// Reporting stage closeout. The outer adapter supplies a current
+    /// DB-authoritative revision snapshot; model prose and publication artifacts
+    /// are deliberately absent from this rule's input.
+    ReportRevisionValidated { on_fail: OnFail },
 }
 
 /// `named_check` 逃生舱可调的内建 check（闭合枚举 → 写错名 serde 报错 fail-closed）。
@@ -182,7 +186,8 @@ impl GateRule {
             | GateRule::CoverageDenominator { on_fail, .. }
             | GateRule::SourceCoverage { on_fail, .. }
             | GateRule::CandidateGrounded { on_fail, .. }
-            | GateRule::CandidateDispositionComplete { on_fail, .. } => on_fail.reason.clone(),
+            | GateRule::CandidateDispositionComplete { on_fail, .. }
+            | GateRule::ReportRevisionValidated { on_fail } => on_fail.reason.clone(),
             GateRule::NamedCheck { check, on_fail } => on_fail
                 .as_ref()
                 .map(|o| o.reason.clone())
@@ -203,6 +208,7 @@ impl GateRule {
             GateRule::SourceCoverage { .. } => "source_coverage",
             GateRule::CandidateGrounded { .. } => "candidate_grounded",
             GateRule::CandidateDispositionComplete { .. } => "candidate_disposition_complete",
+            GateRule::ReportRevisionValidated { .. } => "report_revision_validated",
         }
     }
 }
@@ -289,6 +295,20 @@ pub struct GateContext {
     pub eas_required_web_origins: Option<std::collections::HashSet<String>>,
     pub eas_completed_web_origins: Option<std::collections::HashSet<String>>,
     pub expected_techniques: Option<Vec<String>>,
+    /// Exact server-seeded Candidate reasoning manifest. `None` is retained only
+    /// for legacy callers; V2 submit/final-seal paths provide `Some` and require
+    /// one terminal decision per key.
+    pub candidate_work_item_keys: Option<Vec<String>>,
+    /// Exact persisted Candidate verification truth. `required=true` is set
+    /// only for operations whose persisted attack contract is V2-only; in that
+    /// mode `None`, an empty vector, or any invalid snapshot blocks. Legacy
+    /// operations keep `required=false` and retain their historical deliverable
+    /// compatibility until per-operation cutover.
+    pub verification_truth_required: bool,
+    pub verification_truth_snapshots: Option<super::super::attack_execution::VerificationTruthSet>,
+    /// Current canonical Reporting revision truth. Only the Reporting spec has
+    /// a rule that consumes it; `None` is fail-closed for that rule.
+    pub reporting_truth: Option<super::super::ReportingGateTruth>,
     /// PR3 (设计 2026-06-11-coverage-auto-derive §5.2) · 证据账本投影事实：
     /// 从 `audit_log` 三列 (`evidence_asset/technique/outcome`) 注入的只读三元组。
     /// `None` = 不启用投影（与旧行为逐字节一致）；规则侧还需
@@ -453,11 +473,12 @@ fn eval_one(
         GateRule::CandidateGrounded {
             require_evidence,
             on_fail,
-        } => candidate_grounded(d, *require_evidence, on_fail),
+        } => candidate_grounded(d, ctx, *require_evidence, on_fail),
         GateRule::CandidateDispositionComplete {
             require_evidence_for_verified,
             on_fail,
-        } => candidate_disposition_complete(d, *require_evidence_for_verified, on_fail),
+        } => candidate_disposition_complete(d, ctx, *require_evidence_for_verified, on_fail),
+        GateRule::ReportRevisionValidated { on_fail } => report_revision_validated(ctx, on_fail),
     };
 
     // Observability (2026-06-16): the semantic gate rules were the ONLY gate layer
@@ -1507,12 +1528,22 @@ fn status_to_str(s: CoverageStatus) -> &'static str {
 /// 控制器保证，不在本 op。
 fn candidate_grounded(
     d: &StageDeliverable,
+    ctx: &GateContext,
     require_evidence: bool,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
     let _ = require_evidence;
-    let ungrounded = d.candidates.iter().any(|c| c.rationale.trim().is_empty());
-    if ungrounded {
+    let legacy_ungrounded = d.candidates.iter().any(|c| c.rationale.trim().is_empty());
+    let decisions_complete = ctx
+        .candidate_work_item_keys
+        .as_deref()
+        .is_none_or(|expected| {
+            super::super::attack_execution::candidate_manifest_decisions_complete(
+                expected,
+                &d.candidate_decisions,
+            )
+        });
+    if legacy_ungrounded || !decisions_complete {
         block_from(on_fail)
     } else {
         GateCheckOutcome::Pass
@@ -1526,10 +1557,20 @@ fn candidate_grounded(
 /// 的判定范围（前者未过审、后者人审否决），只对「被批准要真打」的 candidate 求终态。
 fn candidate_disposition_complete(
     d: &StageDeliverable,
+    ctx: &GateContext,
     require_evidence_for_verified: bool,
     on_fail: &OnFail,
 ) -> GateCheckOutcome {
     let _ = require_evidence_for_verified;
+    if ctx.verification_truth_required {
+        let Some(truth) = ctx.verification_truth_snapshots.as_ref() else {
+            return block_from(on_fail);
+        };
+        if super::super::attack_execution::validate_verification_truth_set(truth).is_err() {
+            return block_from(on_fail);
+        }
+        return GateCheckOutcome::Pass;
+    }
     let unresolved = d.candidates.iter().any(|c| match c.disposition {
         CandidateDisposition::Approved => true,
         CandidateDisposition::Verified => false,
@@ -1542,6 +1583,28 @@ fn candidate_disposition_complete(
         block_from(on_fail)
     } else {
         GateCheckOutcome::Pass
+    }
+}
+
+fn report_revision_validated(ctx: &GateContext, on_fail: &OnFail) -> GateCheckOutcome {
+    let Some(truth) = ctx.reporting_truth.as_ref() else {
+        return block_with_code("REPORT_REVISION_NOT_VALIDATED", on_fail);
+    };
+    match super::super::validate_reporting_gate_truth(truth) {
+        Ok(()) => GateCheckOutcome::Pass,
+        Err(error) => block_with_code(error.code, on_fail),
+    }
+}
+
+fn block_with_code(code: &str, on_fail: &OnFail) -> GateCheckOutcome {
+    GateCheckOutcome::Block {
+        reasons: vec![format!("{code}: {}", on_fail.reason)],
+        recovery: HarnessRecoveryActions {
+            hints: on_fail.hints.clone(),
+            repair_tool_calls: on_fail.repair_tool_calls.clone(),
+            missing_evidence_kinds: on_fail.missing_evidence_kinds.clone(),
+            ..Default::default()
+        },
     }
 }
 
@@ -1597,6 +1660,65 @@ mod tests {
     }
 
     #[test]
+    fn reporting_read_model_gate_op_uses_only_current_db_truth() {
+        let rule = parse(
+            r#"{ "op":"report_revision_validated",
+                 "on_fail":{"reason":"canonical report revision must validate"} }"#,
+        );
+        let revision_id = Uuid::new_v4();
+        let valid_truth = crate::harness::ReportingGateTruth {
+            operation_id: Uuid::new_v4(),
+            report_id: Uuid::new_v4(),
+            current_revision_id: revision_id,
+            revision_id,
+            validation_status: "validated".to_string(),
+            publication_status: "unpublished".to_string(),
+            stored_source_set_hash: "a".repeat(64),
+            current_source_set_hash: "a".repeat(64),
+            source_snapshot_exact: true,
+            claims_citations_valid: true,
+            validation_attestation_valid: true,
+            cleanup_closeout_valid: true,
+        };
+        let deliverable = deliverable(Vec::new(), Vec::new());
+
+        let missing = eval_with_context(
+            &deliverable,
+            &test_spec(),
+            std::slice::from_ref(&rule),
+            &GateContext::default(),
+        );
+        assert!(matches!(
+            &missing[0],
+            GateCheckOutcome::Block { reasons, .. }
+                if reasons[0].starts_with("REPORT_REVISION_NOT_VALIDATED:")
+        ));
+
+        let valid = crate::harness::GateContextBuilder::new()
+            .reporting_truth(Some(valid_truth.clone()))
+            .build();
+        assert!(eval_with_context(
+            &deliverable,
+            &test_spec(),
+            std::slice::from_ref(&rule),
+            &valid,
+        )[0]
+        .is_pass());
+
+        let invalid = crate::harness::GateContextBuilder::new()
+            .reporting_truth(Some(crate::harness::ReportingGateTruth {
+                claims_citations_valid: false,
+                ..valid_truth
+            }))
+            .build();
+        assert!(matches!(
+            &eval_with_context(&deliverable, &test_spec(), &[rule], &invalid)[0],
+            GateCheckOutcome::Block { reasons, .. }
+                if reasons[0].starts_with("REPORT_CITATION_UNRESOLVED:")
+        ));
+    }
+
+    #[test]
     fn unknown_op_fails_closed() {
         let json = r#"{ "op": "coverage_matrix", "over": "findings", "min": 1,
                         "on_fail": { "reason": "x" } }"#;
@@ -1633,6 +1755,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         }
     }
 
@@ -1978,6 +2101,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let spec = host_aware_spec("external_attack_surface", "external_attack_surface", true);
         let outcomes = eval_with_context(
@@ -2011,6 +2138,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let spec = host_aware_spec("external_attack_surface", "external_attack_surface", true);
         let outcomes = eval_with_context(
@@ -2066,6 +2197,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         }
     }
 
@@ -2124,6 +2259,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let rule = coverage_complete_rule();
 
@@ -2158,6 +2297,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         // 只覆盖了 a，没覆盖 b → 两个都在轴里时必 BLOCK（证明 b 没被剔除）。
         let d = deliverable_with_coverage(vec![cov_cell(
@@ -2226,6 +2369,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -2291,6 +2438,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -2370,6 +2521,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let d = deliverable_with_coverage(vec![]);
 
@@ -2411,6 +2566,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let d = deliverable_with_coverage(vec![]);
         let spec_on = host_aware_spec("enumeration", "enumeration", true);
@@ -2437,6 +2596,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         assert!(
             eval_with_context(&d, &spec_on, &[evidence_derive_rule(None)], &covered_ip_ctx)[0]
@@ -2479,6 +2642,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let d = deliverable_with_coverage(vec![]);
         // host-aware ON：权威类型=域名 ⇒ 核全 6，缺 3 → BLOCK（若只按 from_value 会判 IP 而 PASS）。
@@ -4247,6 +4414,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         assert!(eval(&d, &test_spec(), std::slice::from_ref(&rule))[0].is_pass());
 
@@ -4284,6 +4452,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         assert!(eval(&d, &test_spec(), &[rule])[0].is_pass());
     }
@@ -4337,6 +4506,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let d = deliverable_with_coverage(vec![]);
         assert!(
@@ -4372,6 +4545,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let d = deliverable_with_coverage(vec![]);
         assert!(
@@ -4405,6 +4582,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let d = deliverable_with_coverage(vec![]);
         match &eval_with_context(
@@ -4446,6 +4627,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         let d = deliverable_with_coverage(vec![]);
         let spec = host_aware_spec("external_attack_surface", "external_attack_surface", false);
@@ -4476,6 +4661,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         assert!(
             !eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &host_only_ctx)[0]
@@ -4498,6 +4687,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
         assert!(
             eval_with_context(&d, &spec, &[evidence_derive_rule(None)], &endpoint_ctx)[0].is_pass(),
@@ -4534,6 +4727,10 @@ mod tests {
             not_applicable_coverage: None,
             eas_required_web_origins: None,
             eas_completed_web_origins: None,
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
         };
 
         assert!(
@@ -5016,6 +5213,73 @@ mod tests {
         );
         assert!(matches!(
             eval_one(&d, &test_spec(), &GateContext::default(), &rule),
+            GateCheckOutcome::Pass
+        ));
+    }
+
+    #[test]
+    fn verification_gate_v2_ignores_deliverable_and_requires_exact_db_snapshot() {
+        use crate::harness::attack_execution::{
+            AttemptTerminalTruth, VerificationTruthAuthority, VerificationTruthSet,
+            VerificationTruthSnapshot, VerificationUnitAuthority,
+        };
+        let rule = parse(
+            r#"{"op":"candidate_disposition_complete","on_fail":{"reason":"exact DB truth required"}}"#,
+        );
+        let hostile_deliverable = deliverable_with_candidates(
+            "verification",
+            vec![candidate_disposition(
+                CandidateDisposition::Verified,
+                vec![999],
+            )],
+        );
+        let missing = crate::harness::GateContextBuilder::new()
+            .verification_truth(None)
+            .build();
+        assert!(matches!(
+            eval_one(&hostile_deliverable, &test_spec(), &missing, &rule),
+            GateCheckOutcome::Block { .. }
+        ));
+
+        let snapshot = VerificationTruthSnapshot {
+            operation_id: Uuid::new_v4(),
+            scope_snapshot_id: Uuid::new_v4(),
+            wave_run_id: Uuid::new_v4(),
+            wave_unit_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            review_closed: true,
+            pending_work_items: 0,
+            approved_ever: 1,
+            attempts: vec![AttemptTerminalTruth {
+                candidate_id: Uuid::new_v4(),
+                attempt_id: Uuid::new_v4(),
+                candidate_plan_hash: "sha256:approved-plan".to_string(),
+                status: "refuted".to_string(),
+                proof_evidence_ids: vec![],
+                refutation_evidence_ids: vec![41],
+                blocker_evidence_ids: vec![],
+                blocker_reason_code: None,
+                finding_id: None,
+                finding_lineage_exact: false,
+            }],
+            residual_risks: vec![],
+        };
+        let exact = crate::harness::GateContextBuilder::new()
+            .verification_truth(Some(VerificationTruthSet {
+                authority: VerificationTruthAuthority {
+                    operation_id: snapshot.operation_id,
+                    scope_snapshot_id: snapshot.scope_snapshot_id,
+                    wave_run_id: snapshot.wave_run_id,
+                    expected_units: vec![VerificationUnitAuthority {
+                        wave_unit_id: snapshot.wave_unit_id,
+                        organization_id: snapshot.organization_id,
+                    }],
+                },
+                snapshots: vec![snapshot],
+            }))
+            .build();
+        assert!(matches!(
+            eval_one(&hostile_deliverable, &test_spec(), &exact, &rule),
             GateCheckOutcome::Pass
         ));
     }

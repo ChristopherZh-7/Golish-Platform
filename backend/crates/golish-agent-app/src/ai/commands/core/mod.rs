@@ -1,6 +1,7 @@
 //! AI commands grouped by domain.
 
 pub mod chat;
+pub mod operation_resume;
 pub mod session;
 
 pub use chat::*;

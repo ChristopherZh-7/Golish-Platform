@@ -15,6 +15,10 @@ import { ArrowLeft, CheckCircle2, Clock, Loader2, Wrench, XCircle } from "lucide
 import { memo, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Ansi } from "@/components/Ansi";
+import { AttackCandidateReview } from "@/components/Engagement/AttackCandidateReview";
+import { CandidateAttemptRows } from "@/components/Engagement/CandidateAttemptRows";
+import { CleanupObligationList } from "@/components/Engagement/CleanupObligationList";
+import { ReportReadModelView } from "@/components/Engagement/ReportReadModelView";
 import { StageRunOrgRows } from "@/components/Engagement/StageRunOrgRows";
 import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
@@ -93,6 +97,66 @@ function hasToolArgs(args: unknown): boolean {
   if (isRecord(args)) return Object.keys(args).length > 0;
   if (typeof args === "string") return args.trim().length > 0;
   return args !== null && args !== undefined;
+}
+
+export function isAttackCandidateStageRun(toolName: string, args: unknown): boolean {
+  if (toolName !== "stage_run") return false;
+  const normalized = normalizeToolArgs(args);
+  if (normalized.kind !== "record") return false;
+  const stage = normalized.value.stage ?? normalized.value.stage_id;
+  return stage === "attack_candidate";
+}
+
+export function isCleanupStageRun(toolName: string, args: unknown): boolean {
+  if (toolName !== "stage_run") return false;
+  const normalized = normalizeToolArgs(args);
+  if (normalized.kind !== "record") return false;
+  const stage = normalized.value.stage ?? normalized.value.stage_id;
+  return stage === "cleanup";
+}
+
+function normalizedRecord(value: unknown): Record<string, unknown> | null {
+  const normalized = normalizeToolArgs(value);
+  return normalized.kind === "record" ? normalized.value : null;
+}
+
+function nonEmptyString(record: Record<string, unknown> | null, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+/**
+ * Resolve the Reporting read-model owner only from the selected `stage_run`
+ * invocation/result pair. If both sides expose identity they must agree; a
+ * conflicting stage or operation fails closed instead of mounting a report for
+ * the wrong engagement.
+ */
+export function getReportingStageRunOperationId(
+  toolName: string,
+  args: unknown,
+  result: unknown
+): string | null {
+  if (toolName !== "stage_run") return null;
+
+  const argsRecord = normalizedRecord(args);
+  const resultRecord = normalizedRecord(result);
+  const stages = [
+    nonEmptyString(argsRecord, "stage", "stage_id"),
+    nonEmptyString(resultRecord, "stage", "stage_id"),
+  ].filter((stage): stage is string => stage !== null);
+  if (stages.length === 0 || stages.some((stage) => stage !== "reporting")) return null;
+
+  const operationIds = [
+    nonEmptyString(argsRecord, "operationId", "operation_id"),
+    nonEmptyString(resultRecord, "operationId", "operation_id"),
+  ].filter((operationId): operationId is string => operationId !== null);
+  if (operationIds.length === 0 || operationIds.some((value) => value !== operationIds[0])) {
+    return null;
+  }
+  return operationIds[0];
 }
 
 /**
@@ -416,6 +480,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     if (sr.requestId && targetRequestId && sr.requestId !== targetRequestId) return null;
     return sr;
   });
+  const candidateReviewHint = useStore((s) => s.sessions[sessionId]?.candidateReviewHint);
 
   const navigateBack = () => setDetailViewMode(sessionId, "timeline");
 
@@ -525,6 +590,11 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   const displayedLiveOutputText = liveOutputState.text
     ? limitLiveOutputForRender(liveOutputState.text, isRunning || isBackgrounded)
     : null;
+  const reportingOperationId = getReportingStageRunOperationId(
+    execution.toolName,
+    execution.args,
+    execution.result
+  );
 
   return (
     <div className="h-full flex flex-col bg-card">
@@ -602,6 +672,41 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
               isActive={isRunning}
               onDrillIn={handleDrillIntoOrg}
             />
+          </div>
+        )}
+
+        {candidateReviewHint && isAttackCandidateStageRun(execution.toolName, execution.args) && (
+          <div className="space-y-3 border-b border-border/20 px-4 py-3">
+            <AttackCandidateReview
+              operationId={candidateReviewHint.operationId}
+              waveRunId={candidateReviewHint.waveRunId}
+              refreshVersion={candidateReviewHint.refreshVersion}
+            />
+            <CandidateAttemptRows
+              operationId={candidateReviewHint.operationId}
+              waveRunId={candidateReviewHint.waveRunId}
+              refreshVersion={candidateReviewHint.refreshVersion}
+            />
+          </div>
+        )}
+
+        {stageRun && isCleanupStageRun(execution.toolName, execution.args) && (
+          <div className="space-y-3 border-b border-border/20 px-4 py-3">
+            {stageRun.rows.map((row) =>
+              row.operationId ? (
+                <CleanupObligationList
+                  key={`${row.operationId}:${row.id}`}
+                  operationId={row.operationId}
+                  organizationIdAtTime={row.id}
+                />
+              ) : null
+            )}
+          </div>
+        )}
+
+        {reportingOperationId && (
+          <div className="border-b border-border/20 px-4 py-3">
+            <ReportReadModelView operationId={reportingOperationId} />
           </div>
         )}
 

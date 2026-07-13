@@ -39,6 +39,8 @@ pub(crate) fn normalize_provider_records(
             kind: record.kind,
             label: record.label,
             value: record.value,
+            organization_id: None,
+            ownership_percent: None,
             source: provider_id.to_string(),
             confidence: record.confidence,
             status: "needs_review".to_string(),

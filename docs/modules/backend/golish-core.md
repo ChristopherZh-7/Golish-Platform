@@ -25,6 +25,8 @@
 | `AgentMode` / `SessionManager` / `SessionManagerFactory` | 会话与模式 |
 | `GolishRuntime` / `RuntimeEvent` / `ApprovalResult` | 运行时抽象 |
 | `TaskPlan` / `PlanStep` / `StepStatus` | 计划系统类型 |
+| `AttackExecutionContract` | operation-frozen Candidate 执行 rollout 枚举；稳定值为 `legacy` / `dual_write_read_legacy` / `dual_write_read_v2_fallback` / `v2_only` |
+| `CandidateAttemptContextRef` / `check_candidate_tool_boundary` | opaque verifier identity 与 dependency-floor closed-tool/foreground guard；不携带 plan/action/budget/scope |
 | HITL：`ApprovalDecision` / `ApprovalPattern` / `RiskLevel` / `ToolApprovalConfig` | 人类在环审批 |
 | `PromptContributor` / `PromptContext` / `PromptSection` | prompt 组装贡献机制 |
 | `EventEmitter` / `NullEmitter`、`DbReadyGate`、`SkillProvider` | 事件/就绪门/技能 |
@@ -50,11 +52,12 @@
 
 ## 关键文件（单文件模块）
 
-`agent_mode.rs`、`agent_session.rs`、`hitl.rs`、`plan.rs`、`prompt.rs`、`runtime.rs`、`session_manager.rs`、`tool.rs`、`tool_args.rs`、`textual_tool_call.rs`、`ready_gate.rs`、`skill_provider.rs`、`pentest_context.rs`、`event_emitter.rs`、`vault.rs`、`web_fetch.rs`、`paths.rs`、`os.rs`、`jsonl.rs`、`time.rs`、`utils.rs`、`message.rs`、`api_request_stats.rs`、`session_kind.rs`。
+`agent_mode.rs`、`agent_session.rs`、`attack_execution.rs`、`hitl.rs`、`plan.rs`、`prompt.rs`、`runtime.rs`、`session_manager.rs`、`tool.rs`、`tool_args.rs`、`textual_tool_call.rs`、`ready_gate.rs`、`skill_provider.rs`、`pentest_context.rs`、`event_emitter.rs`、`vault.rs`、`web_fetch.rs`、`paths.rs`、`os.rs`、`jsonl.rs`、`time.rs`、`utils.rs`、`message.rs`、`api_request_stats.rs`、`session_kind.rs`。
 
 ## 注意事项 / 坑
 
 - 跨 IPC 的类型若在此定义，必须 `#[derive(ts_rs::TS)]` 同步前端（不变量 I5）。
+- `AttackExecutionContract` 在这里仅定义稳定纯类型与 rollout 语义；deployment default、operation row 冻结、DB constraint/immutable trigger 属于 Candidate V2 后续 schema/repo task，不能用环境变量在 operation 中途覆盖。
 - `agent_session.rs` 的 task-local attribution 是 best-effort：只对 inline awaited work 生效，启动后台 job 时要立即 capture，不能等到 spawned task 里再读。`AgentToolContext.operation_id` 来自 runtime 的 active harness operation/stage attempt，不能从模型参数猜；`organization_id` 承载当前 harness org。后台 completion 用这些可信绑定把结构化扫描结果、证据和 coverage outcome 写回正确 run/org。
 - direct/bridge 工具如果要让前端实时看到“工具现在在看什么”，用 `emit_current_agent_tool_output_chunk` 发 chunk；主 loop / sub-agent executor 会注入 `with_agent_tool_output_sender`。如果工具自己 `tokio::spawn` 读子进程 stderr/stdout，必须先在 inline scope capture `current_agent_tool_context()` 和 `current_agent_tool_output_sender()`，spawn 里不能再读 task-local。
 - 改动牵一发动全身：优先在子模块内部小改，避免改公共 `pub` 签名。

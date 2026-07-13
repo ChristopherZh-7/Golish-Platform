@@ -62,6 +62,7 @@ mod tests {
             required_checks_done: done.into_iter().map(String::from).collect(),
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         }
     }
 

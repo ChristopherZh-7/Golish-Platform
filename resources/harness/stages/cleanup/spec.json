@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: cleanup. L5 red-team artifact cleanup before reporting. Cleanup required by red_team profile. Phase A.",
+  "$comment": "C8/P7b: Cleanup is DB-authoritative. Tools inspect/attempt/verify exact obligations; AI waiver is suggestion-only and trusted IPC owns the decision.",
 
   "id": "cleanup",
   "kind": "cleanup",
@@ -9,7 +9,12 @@
   "requires_stages": ["objective_simulation"],
   "allowed_next_stages": ["reporting"],
 
-  "allowed_tool_types": [],
+  "allowed_tool_types": [
+    "cleanup_inspect_obligation",
+    "cleanup_execute_obligation",
+    "cleanup_verify_absence",
+    "cleanup_suggest_waiver"
+  ],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",

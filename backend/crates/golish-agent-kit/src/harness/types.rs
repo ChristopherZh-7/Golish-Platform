@@ -242,6 +242,43 @@ pub struct AttackCandidate {
     pub disposition: CandidateDisposition,
 }
 
+/// Model-authored decision kind for one server-seeded Candidate work item.
+/// Runtime ownership, target identity, wave identity and execution authority are
+/// intentionally absent from the wire contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateDecisionKind {
+    Candidate,
+    NoCandidate,
+}
+
+pub const MAX_CANDIDATE_MANIFEST_ITEMS: usize = 100;
+pub const MAX_CANDIDATE_WORK_ITEM_KEY_BYTES: usize = 256;
+pub const MAX_CANDIDATE_HYPOTHESIS_BYTES: usize = 4 * 1024;
+pub const MAX_CANDIDATE_RATIONALE_BYTES: usize = 8 * 1024;
+pub const MAX_CANDIDATE_TECHNIQUE_BYTES: usize = 128;
+pub const MAX_CANDIDATE_REASON_CODE_BYTES: usize = 64;
+pub const MAX_CANDIDATE_DECISION_EVIDENCE_IDS: usize = 64;
+pub const MAX_CANDIDATE_ACCEPTANCE_BYTES: usize = 256 * 1024;
+
+/// Narrow Candidate V2 wire draft. The server joins `work_item_key` against the
+/// immutable manifest, derives the Candidate id/plan/hash/risk, and binds the
+/// trusted operation/scope/org/execution/submission identities at final PASS.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateDecisionDraft {
+    pub work_item_key: String,
+    pub decision: CandidateDecisionKind,
+    #[serde(default)]
+    pub hypothesis: Option<String>,
+    pub rationale: String,
+    #[serde(default)]
+    pub technique: Option<String>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub evidence_refs: Vec<i64>,
+    #[serde(default)]
+    pub no_candidate_reason_code: Option<String>,
+}
+
 /// Coverage matrix 单元格状态（设计 `docs/design/2026-06-05-coverage-matrix.md`）。
 ///
 /// 缺失（不在矩阵里）≡ `not_attempted` ≡ 不过关——这是 AGENTS.md I8
@@ -353,6 +390,11 @@ pub struct StageDeliverable {
     /// 解析路径不破（I10）。
     #[serde(default, deserialize_with = "null_as_default")]
     pub candidates: Vec<AttackCandidate>,
+    /// Candidate V2 decisions over the exact server-seeded manifest. Unlike the
+    /// legacy `candidates` field, these drafts carry no trusted identity or
+    /// executable plan authority.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub candidate_decisions: Vec<CandidateDecisionDraft>,
 }
 
 /// 向后兼容别名 (Phase B 泛化前的名字). 新代码用 `StageDeliverable`.
@@ -542,6 +584,7 @@ mod tests {
             required_checks_done: vec!["scope_status_present".to_string()],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         let s = serde_json::to_string(&d).unwrap();
         let back: ExternalAttackSurfaceDeliverable = serde_json::from_str(&s).unwrap();

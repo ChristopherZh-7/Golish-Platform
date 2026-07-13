@@ -11,7 +11,10 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::db_shim::{subtasks, tasks};
-use crate::db_traits::{DbRepoProvider, NewTask, TaskStatus};
+use crate::db_traits::{
+    CliRuntimeScope, CreateRuntimeOperation, DbRepoProvider, ProjectScopeRegistration,
+    RuntimeMemoryRepository, TaskStatus,
+};
 use golish_core::events::AiEvent;
 use golish_core::plan::{PlanStep, PlanSummary, StepStatus};
 
@@ -43,6 +46,7 @@ pub struct SubsidiaryScopePolicy {
 /// - **Enricher**: After each subtask, searches for additional context to inject.
 pub struct TaskOrchestrator {
     pub(super) repo: Arc<dyn DbRepoProvider>,
+    pub(super) runtime_repo: Arc<dyn RuntimeMemoryRepository>,
     pub(super) session_id: Uuid,
     pub(super) event_tx: mpsc::UnboundedSender<AiEvent>,
     pub(super) user_input_rx: Option<mpsc::UnboundedReceiver<String>>,
@@ -111,17 +115,23 @@ pub struct TaskOrchestrator {
     /// a↔b oscillation cannot reopen waves forever (only genuine a→b→c progress
     /// does). Rebuilt fresh per run (resume re-derives via DB dedupe on upsert).
     pub(super) chain_wave_seen: std::collections::HashSet<String>,
+    /// Trusted headless-CLI scope frozen during compound operation creation.
+    /// GUI/model runs leave this unset and continue through Scoping lifecycle
+    /// evidence. A CLI V2 operation sets it exactly once before `run_stage`.
+    pub(super) cli_runtime_scope: Option<CliRuntimeScope>,
 }
 
 impl TaskOrchestrator {
     pub fn new(
         repo: Arc<dyn DbRepoProvider>,
+        runtime_repo: Arc<dyn RuntimeMemoryRepository>,
         session_id: Uuid,
         event_tx: mpsc::UnboundedSender<AiEvent>,
     ) -> Self {
         let (user_input_tx, user_input_rx) = mpsc::unbounded_channel();
         Self {
             repo,
+            runtime_repo,
             session_id,
             event_tx,
             user_input_rx: Some(user_input_rx),
@@ -138,6 +148,7 @@ impl TaskOrchestrator {
             force_stage_run_on_resume_once: false,
             chain_wave: 0,
             chain_wave_seen: std::collections::HashSet::new(),
+            cli_runtime_scope: None,
         }
     }
 
@@ -172,6 +183,13 @@ impl TaskOrchestrator {
     /// false leaves the policy `None` (legacy scoping, zero behaviour change).
     pub fn set_subsidiary_scope(&mut self, include: bool, threshold_pct: u8) {
         self.harness_subsidiary_policy = include.then_some(SubsidiaryScopePolicy { threshold_pct });
+    }
+
+    /// Attach the trusted, already-resolved CLI scope to the next fresh
+    /// operation. It is consumed by `run_from_stage`; resume never rebuilds or
+    /// re-reads a mutable organization tree.
+    pub fn set_cli_runtime_scope(&mut self, scope: Option<CliRuntimeScope>) {
+        self.cli_runtime_scope = scope;
     }
 
     /// Wire the HITL coordinator so the two-level phase-approval gate can request
@@ -215,7 +233,12 @@ impl TaskOrchestrator {
     /// This is the top-level entry point, equivalent to PentAGI's
     /// `NewTaskWorker + tw.Run()`. The operation cursor starts at the DAG entry
     /// (`scoping`).
-    pub async fn run(&mut self, task_input: &str, executor: &dyn AgentExecutor) -> Result<String> {
+    pub async fn run(
+        &mut self,
+        task_input: &str,
+        project_scope: ProjectScopeRegistration,
+        executor: &dyn AgentExecutor,
+    ) -> Result<String> {
         let entry_stage = if let Some(plan) = self.continuity_adoption.as_ref() {
             if self.stage_allowlist.is_none() {
                 self.stage_allowlist = Some(plan.remaining_stages.iter().copied().collect());
@@ -224,7 +247,8 @@ impl TaskOrchestrator {
         } else {
             crate::harness::StageKind::Scoping
         };
-        self.run_from_stage(task_input, executor, entry_stage).await
+        self.run_from_stage(task_input, project_scope, executor, entry_stage)
+            .await
     }
 
     /// 方案 2 · headless single/range stage run: start a fresh operation whose
@@ -235,9 +259,11 @@ impl TaskOrchestrator {
         &mut self,
         entry_stage: crate::harness::StageKind,
         task_input: &str,
+        project_scope: ProjectScopeRegistration,
         executor: &dyn AgentExecutor,
     ) -> Result<String> {
-        self.run_from_stage(task_input, executor, entry_stage).await
+        self.run_from_stage(task_input, project_scope, executor, entry_stage)
+            .await
     }
 
     /// Shared body for [`Self::run`] / [`Self::run_stage`]: create the task +
@@ -246,22 +272,10 @@ impl TaskOrchestrator {
     async fn run_from_stage(
         &mut self,
         task_input: &str,
+        project_scope: ProjectScopeRegistration,
         executor: &dyn AgentExecutor,
         entry_stage: crate::harness::StageKind,
     ) -> Result<String> {
-        let task = tasks::create(
-            &*self.repo,
-            NewTask {
-                session_id: self.session_id,
-                title: None,
-                input: task_input.to_string(),
-            },
-        )
-        .await
-        .context("Failed to create task")?;
-
-        tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
-
         // Phase C harness: 一个 Task = 一个 operation. 建 operation_state 游标,
         // 起点为 `entry_stage` (正常 run = DAG entry scoping; 方案 2 run_stage = 切片
         // 入口); gate 过后沿 profile 投影的 DAG 推进. profile 经 GOLISH_HARNESS_PROFILE
@@ -285,20 +299,38 @@ impl TaskOrchestrator {
                 "assessment".to_string()
             }
         };
-        if let Err(e) = crate::db_shim::operation_state::insert(
-            &*self.repo,
-            task.id,
-            &profile_id,
-            entry_stage.as_str(),
-        )
-        .await
-        {
-            tracing::warn!(
-                target: "harness::hook",
-                error = %e,
-                "operation_state insert failed (continuing)"
-            );
-        }
+        let operation_id = Uuid::new_v4();
+        let initial_stage_execution_id = Uuid::new_v4();
+        let expected_project_scope_id = project_scope.project_scope_id;
+        let created = self
+            .runtime_repo
+            .create_runtime_operation(CreateRuntimeOperation {
+                operation_id,
+                initial_stage_execution_id,
+                session_id: self.session_id,
+                title: None,
+                input: task_input.to_string(),
+                profile: profile_id.clone(),
+                entry_stage: entry_stage.as_str().to_string(),
+                project_scope,
+                cli_scope: self.cli_runtime_scope.take(),
+            })
+            .await
+            .map_err(anyhow::Error::new)
+            .context("Failed to create task and operation atomically")?;
+        anyhow::ensure!(
+            created.task.id == operation_id
+                && created.operation.operation_id == operation_id
+                && created.initial_stage_execution_id == initial_stage_execution_id
+                && created.operation.project_scope_id == Some(expected_project_scope_id),
+            "atomic runtime operation returned mismatched task/operation/project identity"
+        );
+        let initial_stage_execution_id = created.initial_stage_execution_id;
+        let initial_operation_profile = created.operation.profile.clone();
+        let initial_operation_stage = created.operation.current_stage.clone();
+        let task = created.task;
+
+        tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
 
         self.emit(AiEvent::TaskProgress {
             task_id: task.id.to_string(),
@@ -397,42 +429,45 @@ impl TaskOrchestrator {
         // current_index` Completed.
         self.emit_plan_update(&queue, 0, StepStatus::Pending);
 
-        // P1 · write the initial harness checkpoint (open a stage_run for the
-        // entry stage + persist a resume state_blob) so a kill before the first
-        // stage transition can still resume from the right place.
-        {
-            if let Ok(Some(os)) = crate::db_shim::operation_state::get(&*self.repo, task.id).await {
-                let run_id = uuid::Uuid::new_v4();
-                let _ = crate::db_shim::stage_runs::insert(
-                    &*self.repo,
-                    run_id,
-                    task.id,
-                    &os.current_stage,
-                )
-                .await;
-                let rs = crate::task_orchestrator::harness_resume::HarnessResumeState {
-                    profile: os.profile.clone(),
-                    current_stage: os.current_stage.clone(),
-                    current_stage_run_id: Some(run_id),
-                    queue_titles: queue.iter().map(|p| p.title.clone()).collect(),
-                    completed_count: 0,
-                    continuity_adoption: self.continuity_adoption.clone(),
-                    schema_v: 1,
-                };
-                let _ = crate::db_shim::operation_state::write_state_blob(
-                    &*self.repo,
-                    task.id,
-                    serde_json::to_value(&rs).unwrap_or_default(),
-                )
-                .await;
-            }
+        // P1 · compound operation creation already opened the exact initial
+        // stage execution. The resume checkpoint must reference that returned
+        // identity; opening a second random `stage_run` would immediately make
+        // the operation ambiguous. Checkpoint failures are fatal because a run
+        // that cannot durably resume must not begin stage work.
+        let initial_checkpoint = async {
+            let rs = crate::task_orchestrator::harness_resume::HarnessResumeState {
+                profile: initial_operation_profile,
+                current_stage: initial_operation_stage,
+                current_stage_run_id: Some(initial_stage_execution_id),
+                queue_titles: queue.iter().map(|p| p.title.clone()).collect(),
+                completed_count: 0,
+                continuity_adoption: self.continuity_adoption.clone(),
+                schema_v: 1,
+            };
+            let checkpoint = serde_json::to_value(&rs)
+                .context("Failed to serialize initial harness checkpoint")?;
+            crate::db_shim::operation_state::write_state_blob(&*self.repo, task.id, checkpoint)
+                .await
+                .context("Failed to persist initial harness checkpoint")
+        }
+        .await;
+        if let Err(error) = initial_checkpoint {
+            self.fail_task_if_active(task.id, &error).await;
+            return Err(error);
         }
 
         // P2 方案 C · the metalcraft Executor drives the operation stage graph.
         // (`execute_subtask_loop` remains the resume path + the
         // run_executor_driven DAG-load-failure fallback.)
         let outcome = self
-            .run_executor_driven(task.id, &queue, executor, false, None)
+            .run_executor_driven(
+                task.id,
+                &queue,
+                executor,
+                false,
+                None,
+                Some(initial_stage_execution_id),
+            )
             .await;
 
         // P1 · never leave the task zombied in `running`: any error from the
@@ -496,7 +531,7 @@ impl TaskOrchestrator {
         // DAG inside run_executor_driven, which rehydrates the UI on resume.
         let queue: Vec<PlannedSubtask> = Vec::new();
         let outcome = self
-            .run_executor_driven(task_id, &queue, executor, true, Some(user_message))
+            .run_executor_driven(task_id, &queue, executor, true, Some(user_message), None)
             .await;
         if let Err(ref e) = outcome {
             self.fail_task_if_active(task_id, e).await;

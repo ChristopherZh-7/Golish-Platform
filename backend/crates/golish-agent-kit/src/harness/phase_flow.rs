@@ -16,6 +16,17 @@ use super::phase::{Phase, PhaseMap};
 use super::profile::Profile;
 use super::types::StageKind;
 
+/// Verification may satisfy the vuln phase only from a non-empty exact DB
+/// snapshot set. Deliverable findings/summary and process-local wave state are
+/// intentionally absent from this contract.
+pub fn verification_truth_is_complete(
+    truth: Option<&super::attack_execution::VerificationTruthSet>,
+) -> bool {
+    truth.is_some_and(|truth| {
+        super::attack_execution::validate_verification_truth_set(truth).is_ok()
+    })
+}
+
 /// 给定一组「已 gate PASS 的 stage」，phase 是否完成 = 它的（投影后）成员全部 PASS.
 ///
 /// 空成员的 phase 视为未完成（不应出现：投影会剔除空 phase）。

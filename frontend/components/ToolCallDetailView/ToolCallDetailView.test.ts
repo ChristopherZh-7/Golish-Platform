@@ -3,7 +3,10 @@ import {
   DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
   DETAIL_RUNNING_SPINNER_CLASS,
   getLiveOutputForDetail,
+  getReportingStageRunOperationId,
   getShellOutputForDetail,
+  isAttackCandidateStageRun,
+  isCleanupStageRun,
   isShellLikeToolForDetail,
   TOOL_DETAIL_STATUS_BADGE_STYLES,
 } from "./ToolCallDetailView";
@@ -76,6 +79,67 @@ describe("getShellOutputForDetail", () => {
     expect(TOOL_DETAIL_STATUS_BADGE_STYLES.running).toContain("text-[var(--ansi-blue)]");
     expect(TOOL_DETAIL_STATUS_BADGE_STYLES.running).toContain("border-[var(--ansi-blue)]/45");
     expect(TOOL_DETAIL_STATUS_BADGE_STYLES.backgrounded).toContain("text-amber-300");
+  });
+
+  it("mounts Candidate review only on attack_candidate stage_run detail", () => {
+    expect(isAttackCandidateStageRun("stage_run", { stage: "attack_candidate" })).toBe(true);
+    expect(isAttackCandidateStageRun("stage_run", '{"stage_id":"attack_candidate"}')).toBe(true);
+    expect(isAttackCandidateStageRun("stage_run", { stage: "verification" })).toBe(false);
+    expect(isAttackCandidateStageRun("submit_stage_deliverable", { stage: "attack_candidate" })).toBe(
+      false
+    );
+  });
+
+  it("mounts Cleanup closeout only on cleanup stage_run detail", () => {
+    expect(isCleanupStageRun("stage_run", { stage: "cleanup" })).toBe(true);
+    expect(isCleanupStageRun("stage_run", '{"stage_id":"cleanup"}')).toBe(true);
+    expect(isCleanupStageRun("stage_run", { stage: "reporting" })).toBe(false);
+    expect(isCleanupStageRun("cleanup_inspect_obligation", { stage: "cleanup" })).toBe(false);
+  });
+
+  it("derives a Reporting operation only from matching stage_run args or result identity", () => {
+    expect(
+      getReportingStageRunOperationId(
+        "stage_run",
+        { stage: "reporting", operation_id: "operation-from-args" },
+        undefined
+      )
+    ).toBe("operation-from-args");
+    expect(
+      getReportingStageRunOperationId(
+        "stage_run",
+        { orgs: [] },
+        { stage: "reporting", operationId: "operation-from-result" }
+      )
+    ).toBe("operation-from-result");
+    expect(
+      getReportingStageRunOperationId(
+        "stage_run",
+        '{"stage_id":"reporting","operation_id":"operation-json"}',
+        undefined
+      )
+    ).toBe("operation-json");
+    expect(
+      getReportingStageRunOperationId(
+        "stage_run",
+        { stage: "reporting", operation_id: "operation-a" },
+        { stage: "reporting", operation_id: "operation-b" }
+      )
+    ).toBeNull();
+    expect(
+      getReportingStageRunOperationId(
+        "stage_run",
+        { stage: "reporting", operation_id: "operation-a" },
+        { stage: "cleanup", operation_id: "operation-a" }
+      )
+    ).toBeNull();
+    expect(
+      getReportingStageRunOperationId(
+        "submit_stage_deliverable",
+        { stage: "reporting", operation_id: "operation-a" },
+        undefined
+      )
+    ).toBeNull();
   });
 });
 

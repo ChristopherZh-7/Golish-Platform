@@ -1,8 +1,9 @@
 use super::builder::create_default_sub_agents;
 use super::prompts::{
-    build_browser_prompt, build_coder_prompt, build_enumerator_prompt, build_orchestrator_prompt,
-    build_pentester_prompt, build_planner_prompt, build_prober_prompt, build_recon_prompt,
-    build_researcher_prompt, build_vuln_scanner_prompt,
+    build_attack_analyst_prompt, build_browser_prompt, build_candidate_verifier_prompt,
+    build_coder_prompt, build_enumerator_prompt, build_orchestrator_prompt, build_pentester_prompt,
+    build_planner_prompt, build_post_exploit_operator_prompt, build_prober_prompt,
+    build_recon_prompt, build_researcher_prompt, build_vuln_scanner_prompt,
 };
 
 fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
@@ -14,9 +15,9 @@ fn test_create_default_sub_agents_count() {
     let agents = create_default_sub_agents();
     // 13 base + recon (target_intel passive collector) + prober (external_attack_surface
     // active surface-mapper) + enumerator (enumeration active content-mapper)
-    // + vuln_scanner (formulaic vuln-triage worker) — the stage_run per-org
-    // stage_run per-org specialists (2026-06-13-stage-run-fanout).
-    assert_eq!(agents.len(), 17);
+    // + vuln_scanner (formulaic vuln-triage worker) + post_exploit_operator —
+    // the stage_run per-org specialists (2026-06-13-stage-run-fanout / C6 P6b).
+    assert_eq!(agents.len(), 20);
 }
 
 #[test]
@@ -34,6 +35,9 @@ fn test_create_default_sub_agents_ids() {
     assert!(ids.contains(&"prober"));
     assert!(ids.contains(&"enumerator"));
     assert!(ids.contains(&"vuln_scanner"));
+    assert!(ids.contains(&"attack_analyst"));
+    assert!(ids.contains(&"candidate_verifier"));
+    assert!(ids.contains(&"post_exploit_operator"));
     assert!(ids.contains(&"memorist"));
     assert!(ids.contains(&"planner"));
     assert!(ids.contains(&"reflector"));
@@ -444,6 +448,90 @@ fn test_vuln_scanner_prompt_is_wrapper_based() {
     assert!(prompt.contains("wpscan"));
     assert!(prompt.contains("The gate reads the DATABASE"));
     assert!(!prompt.contains("list_in_scope_targets first"));
+}
+
+#[test]
+fn candidate_verifier_has_exact_closed_tool_surface() {
+    let agents = create_default_sub_agents();
+    let verifier = agents
+        .iter()
+        .find(|agent| agent.id == "candidate_verifier")
+        .unwrap();
+    assert_eq!(
+        verifier.allowed_tools,
+        vec![
+            "verify_execute_candidate_action",
+            "list_recent_evidence",
+            "submit_candidate_attempt",
+        ]
+    );
+    assert!(verifier.delegatable_agents.is_empty());
+    for forbidden in [
+        "pentest_run",
+        "record_finding",
+        "vuln_run_formulaic_sweep",
+        "wait_for_background_jobs",
+        "check_job",
+        "kill_job",
+        "run_pty_cmd",
+    ] {
+        assert!(!has_tool(verifier, forbidden));
+    }
+
+    let prompt = build_candidate_verifier_prompt();
+    assert!(prompt.contains("action_ordinal"));
+    assert!(prompt.contains("foreground"));
+    assert!(prompt.contains("outcome_unknown"));
+}
+
+#[test]
+fn attack_analyst_is_reasoning_only_and_distinct_from_verifier() {
+    let agents = create_default_sub_agents();
+    let analyst = agents
+        .iter()
+        .find(|agent| agent.id == "attack_analyst")
+        .unwrap();
+    assert!(has_tool(analyst, "query_target_data"));
+    assert!(has_tool(analyst, "list_recent_evidence"));
+    assert!(has_tool(analyst, "submit_stage_deliverable"));
+    assert!(!has_tool(analyst, "verify_execute_candidate_action"));
+    assert!(!has_tool(analyst, "pentest_run"));
+    assert!(!has_tool(analyst, "record_finding"));
+    assert!(build_attack_analyst_prompt().contains("reasoning-only"));
+}
+
+#[test]
+fn post_exploit_operator_has_only_closed_stage_wrappers() {
+    let agents = create_default_sub_agents();
+    let operator = agents
+        .iter()
+        .find(|agent| agent.id == "post_exploit_operator")
+        .unwrap();
+    for tool in [
+        "post_exploit_validate_access",
+        "post_exploit_record_internal_observation",
+        "post_exploit_build_objective_path",
+        "post_exploit_execute_action",
+        "list_recent_evidence",
+        "submit_stage_deliverable",
+    ] {
+        assert!(has_tool(operator, tool), "missing {tool}");
+    }
+    for forbidden in [
+        "pentest_run",
+        "run_command",
+        "run_pty_cmd",
+        "record_finding",
+        "wait_for_background_jobs",
+        "check_job",
+        "kill_job",
+        "sub_agent_pentester",
+    ] {
+        assert!(!has_tool(operator, forbidden), "leaked {forbidden}");
+    }
+    let prompt = build_post_exploit_operator_prompt();
+    assert!(prompt.contains("approval_required"));
+    assert!(prompt.contains("never bypass or blindly replay"));
 }
 
 #[test]

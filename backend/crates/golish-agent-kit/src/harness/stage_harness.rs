@@ -214,6 +214,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         let base = h.validate_gate(&d, None);
         let ctx = h.validate_gate_with_context(&d, None, &GateContext::default());

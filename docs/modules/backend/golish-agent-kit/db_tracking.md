@@ -28,13 +28,14 @@ durable `sessions.id`。写入经 `DbReadinessGate` 门控；失败记 warn，�
 | `DbTracker` | 记录句柄；clones 共享 session identity；tool-call start/finish 可 await，其它非 gate-sensitive 写可后台化 |
 | `ToolCallGuard` | 工具调用生命周期 guard；固定保存 start 时的 session UUID，finish 不重新读取可变 identity |
 | `MemoryHit` / `ScoredMemoryHit` / `BriefingPlan` | 记忆命中 / 评分 / briefing |
+| `LegacyToolMemoryContext` / `should_store_legacy_tool_memory` | 自动 tool-result legacy memory 的硬边界；任何 trusted harness operation/stage 一律禁止写自由文本 memory |
 
 ## 关键文件
 
 | 文件 | 作用 |
 |---|---|
 | `mod.rs` | `DbTracker` 句柄 |
-| `recording.rs` / `memory.rs` / `helpers.rs` / `types.rs` | 记录 / 记忆 / helper / DTO |
+| `recording.rs` / `memory/{store,policy}.rs` / `helpers.rs` / `types.rs` | 记录 / 记忆 writer + harness cutoff policy / helper / DTO |
 
 ## 依赖
 
@@ -49,6 +50,7 @@ durable `sessions.id`。写入经 `DbReadinessGate` 门控；失败记 warn，�
   `await`。`ToolCallGuard` 必须让同一调用的 start/finish 永远使用 start UUID，即使
   bridge identity 随后发生合法 rebind。
 - 经 trait（db_traits）写，不直接依赖 golish-db；就绪门防 PG 启动期撞超时。
+- `maybe_store_tool_memory` 必须显式接收 `LegacyToolMemoryContext`；`HarnessCustomerFact` 直接返回，canonical customer facts 只能经受约束的 row + outbox projector。显式 general-memory 工具是独立用户授权路径，不属于自动 tool-result writer。
 
 ## 测试入口
 

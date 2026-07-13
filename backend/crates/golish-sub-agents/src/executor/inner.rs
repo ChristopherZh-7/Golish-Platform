@@ -78,6 +78,20 @@ fn is_provider_context_limit_error(error: &str) -> bool {
     normalized.contains("too many tokens") || request_token_count || explicit_token_overflow
 }
 
+fn ensure_bound_worker_lease(ctx: &SubAgentExecutorContext<'_>) -> anyhow::Result<()> {
+    let Some(bound) = ctx.bound_worker_chain.as_ref() else {
+        return Ok(());
+    };
+    if bound.lease_is_lost() {
+        return Err(SubAgentChainError::BoundWorkerUnavailable {
+            worker_run_id: bound.worker_lease.worker_run_id,
+            reason: "worker lease was lost before the next provider/tool turn".to_string(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn execute_sub_agent_inner<M, P>(
     agent_def: &SubAgentDefinition,
@@ -184,11 +198,17 @@ where
     // results / evidence ids) so the worker continues where it left off; then
     // append the new task as the next user turn.
     let mut chat_history: Vec<Message> = restored_messages;
-    chat_history.push(Message::User {
-        content: OneOrMany::one(UserContent::Text(Text {
-            text: sub_prompt.clone(),
-        })),
-    });
+    if !ctx
+        .bound_worker_chain
+        .as_ref()
+        .is_some_and(|bound| bound.initial_prompt_already_checkpointed)
+    {
+        chat_history.push(Message::User {
+            content: OneOrMany::one(UserContent::Text(Text {
+                text: sub_prompt.clone(),
+            })),
+        });
+    }
 
     let mut accumulated_response = String::new();
     let mut iteration = 0;
@@ -219,6 +239,7 @@ where
     // Prompt-template optimization may itself call the provider. Keep it after
     // the initial body checkpoint so every provider request in this invocation
     // has an already-addressable recovery point.
+    ensure_bound_worker_lease(&ctx)?;
     let effective_system_prompt = assemble_effective_system_prompt(
         agent_def,
         task,
@@ -231,6 +252,7 @@ where
 
     loop {
         iteration += 1;
+        ensure_bound_worker_lease(&ctx)?;
         if cancellation_requested(ctx.cancelled) {
             let message = "Agent stopped by user".to_string();
             tracing::info!("[sub-agent:{}] cancelled before iteration", agent_id);
@@ -271,6 +293,7 @@ where
             );
         }
         if iteration > agent_def.max_iterations {
+            ensure_bound_worker_lease(&ctx)?;
             run_final_summary(
                 agent_def,
                 &chat_history,
@@ -344,6 +367,7 @@ where
             stats.record_sent(ctx.provider_name).await;
         }
 
+        ensure_bound_worker_lease(&ctx)?;
         let stream_result = tokio::select! {
             _ = wait_for_cancelled(ctx.cancelled) => {
                 tracing::info!("[sub-agent:{}] cancelled before LLM stream started", agent_id);
@@ -793,7 +817,7 @@ fn persist_subagent_prose(writer: &Option<Arc<SubAgentTranscriptWriter>>, event:
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use futures::stream;
@@ -807,7 +831,9 @@ mod tests {
 
     use super::is_provider_context_limit_error;
     use crate::definition::{SubAgentContext, SubAgentDefinition};
-    use crate::executor_types::{SubAgentChainPersistence, SubAgentExecutorContext, ToolProvider};
+    use crate::executor_types::{
+        BoundWorkerChainContext, SubAgentChainPersistence, SubAgentExecutorContext, ToolProvider,
+    };
     use golish_core::events::AiEvent;
     use golish_tools::ToolRegistry;
     use rig::completion::request::ToolDefinition;
@@ -1049,6 +1075,41 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct ProviderCallCounterModel {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl completion::CompletionModel for ProviderCallCounterModel {
+        type Response = SingleToolStreamResponse;
+        type StreamingResponse = SingleToolStreamResponse;
+        type Client = ();
+
+        fn make(_client: &Self::Client, _model: impl Into<String>) -> Self {
+            panic!("test model must be constructed with its counter")
+        }
+
+        async fn completion(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(CompletionError::ProviderError(
+                "provider must not be reached".to_string(),
+            ))
+        }
+
+        async fn stream(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(CompletionError::ProviderError(
+                "provider must not be reached".to_string(),
+            ))
+        }
+    }
+
     #[derive(Clone, Debug)]
     struct PendingStreamModel;
 
@@ -1112,6 +1173,7 @@ mod tests {
             max_tokens_override: None,
             top_p_override: None,
             chain_persistence: Some(&persistence_backend),
+            bound_worker_chain: None,
             sub_agent_registry: None,
             post_shell_hook: None,
             resume: None,
@@ -1161,6 +1223,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_never_runs_when_prebound_worker_load_is_not_committed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = Arc::new(RwLock::new(temp.path().to_path_buf()));
+        let registry = Arc::new(RwLock::new(
+            ToolRegistry::new(temp.path().to_path_buf()).await,
+        ));
+        let (event_tx, _event_rx) = mpsc::unbounded_channel::<AiEvent>();
+        let persistence = Arc::new(RecordingPersistence {
+            chain_id: Uuid::new_v4(),
+            updates: Mutex::new(Vec::new()),
+            usage_updates: AtomicUsize::new(0),
+        });
+        let persistence_backend: Arc<dyn SubAgentChainPersistence> = persistence;
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let model = ProviderCallCounterModel {
+            calls: Arc::clone(&provider_calls),
+        };
+        let persistence_session_id = Uuid::new_v4();
+        let bound = BoundWorkerChainContext {
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            worker_lease: golish_core::WorkerLeaseContext {
+                worker_run_id: Uuid::new_v4(),
+                stage_run_unit_id: Uuid::new_v4(),
+                lease_token: Uuid::new_v4(),
+                attempt_epoch: 1,
+            },
+            candidate_attempt: None,
+            chain_id: Uuid::new_v4(),
+            session_id: persistence_session_id,
+            agent_type: "test-agent".to_string(),
+            initial_chain: serde_json::json!([]),
+            initial_prompt_already_checkpointed: false,
+            checkpoint_version: Arc::new(AtomicI64::new(0)),
+            checkpoint_body: Arc::new(std::sync::RwLock::new(serde_json::json!([]))),
+            lease_lost: Arc::new(AtomicBool::new(false)),
+            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            tool_lifecycle: None,
+        };
+        let ctx = SubAgentExecutorContext {
+            event_tx: &event_tx,
+            tool_registry: &registry,
+            workspace: &workspace,
+            provider_name: "test",
+            model_name: "test",
+            session_id: Some("stage-run-test"),
+            persistence_session_id: Some(persistence_session_id),
+            transcript_base_dir: None,
+            api_request_stats: None,
+            cancelled: None,
+            briefing: None,
+            temperature_override: None,
+            max_tokens_override: None,
+            top_p_override: None,
+            chain_persistence: Some(&persistence_backend),
+            bound_worker_chain: Some(bound),
+            sub_agent_registry: None,
+            post_shell_hook: None,
+            resume: Some("latest".to_string()),
+            sub_tool_router: None,
+            active_org_id_source: None,
+            active_org_id_override: None,
+            operation_id: None,
+            post_tool_result_hook: None,
+            tool_observer: None,
+            initial_submit_repair_mode: None,
+            stage_tool_guard: None,
+            hide_tool_in_stage: None,
+        };
+        let agent =
+            SubAgentDefinition::new("test-agent", "Test", "Test", "Test").with_max_iterations(1);
+
+        let error = super::super::execute_sub_agent(
+            &agent,
+            &serde_json::json!({"task": "must wait for committed bind"}),
+            &SubAgentContext::default(),
+            &model,
+            ctx,
+            &CancellingToolProvider {
+                cancelled: Arc::new(AtomicBool::new(false)),
+            },
+            "parent-request",
+        )
+        .await
+        .expect_err("missing exact bound checkpoint must fail closed");
+
+        assert!(error.to_string().contains("prebound stage worker"));
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
     async fn initial_checkpoint_precedes_prompt_generation_provider_request() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = Arc::new(RwLock::new(temp.path().to_path_buf()));
@@ -1196,6 +1350,7 @@ mod tests {
             max_tokens_override: None,
             top_p_override: None,
             chain_persistence: Some(&persistence_backend),
+            bound_worker_chain: None,
             sub_agent_registry: None,
             post_shell_hook: None,
             resume: None,
@@ -1271,6 +1426,7 @@ mod tests {
             max_tokens_override: None,
             top_p_override: None,
             chain_persistence: Some(&persistence_backend),
+            bound_worker_chain: None,
             sub_agent_registry: None,
             post_shell_hook: None,
             resume: None,
@@ -1349,6 +1505,7 @@ mod tests {
             max_tokens_override: None,
             top_p_override: None,
             chain_persistence: Some(&persistence_backend),
+            bound_worker_chain: None,
             sub_agent_registry: None,
             post_shell_hook: None,
             resume: None,

@@ -1,0 +1,15 @@
+[package]
+name = "golish-cleanup-domain"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pure retry-safe Cleanup obligation domain contracts"
+
+[dependencies]
+chrono.workspace = true
+golish-post-exploit-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

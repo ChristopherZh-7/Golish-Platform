@@ -64,6 +64,13 @@
 
   "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout \u00a73.2): specialist = the per-org sub-agent stage_run fans out (enumeration \u2192 enumerator, the ACTIVE content-enumeration specialist split from Pentester, mirroring prober for EAS); coverage_axis = the human-readable technique columns StageRunView renders per org row (one per expected technique: js / dir / param / jsapi).",
   "specialist": "enumerator",
+  "runtime_memory": {
+    "schema_version": 2,
+    "unit_identity": "stage_execution_organization",
+    "scope_source": "frozen_operation_snapshot",
+    "requires_worker_lease": true,
+    "publishes_handoff_after_final_seal": true
+  },
   "coverage_axis": ["JS", "DIR", "PARAM", "JSAPI"],
 
   "$comment_min_invocations": "No hard tool floor. HTTP probing and service fingerprinting belong to external_attack_surface; Enumeration completeness is the fresh exact-origin JS/DIR/PARAM/JSAPI technique_outcome matrix, with found/empty backed by real evidence and error/partial left unfinished.",

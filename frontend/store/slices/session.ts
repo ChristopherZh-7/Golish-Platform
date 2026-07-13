@@ -19,12 +19,14 @@
 import type { StageRunRow } from "@/components/Engagement/StageRunOrgRows";
 import type {
   AgentMode,
+  CandidateReviewHint,
   DetailViewMode,
   ExecutionMode,
   InputMode,
   InteractiveModeState,
   PendingCommand,
   RenderMode,
+  ReportingReadModelHint,
   Session,
   SessionMode,
   SessionStageRun,
@@ -92,6 +94,16 @@ export interface SessionActions {
   setToolDetailRequestIds: (sessionId: string, requestIds: string[] | null) => void;
   /** Set (or clear) the live stage-run progress for this session. */
   setSessionStageRun: (sessionId: string, stageRun: SessionStageRun | null) => void;
+  /** Record a refresh-only Candidate review trace hint. */
+  setCandidateReviewHint: (
+    sessionId: string,
+    hint: Omit<CandidateReviewHint, "refreshVersion">
+  ) => void;
+  /** Set, replace, or clear the refresh-only Reporting read-model pointer. */
+  setReportingReadModelHint: (
+    sessionId: string,
+    hint: Omit<ReportingReadModelHint, "refreshVersion"> | null
+  ) => void;
   /**
    * Upsert one org's live row into this session's stage-run from a
    * `StageRunOrgProgress` event (design 2026-06-13-stage-run-fanout). Builds the

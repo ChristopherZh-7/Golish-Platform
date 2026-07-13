@@ -14,6 +14,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use golish_agent_kit::db_traits::*;
+use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
 use golish_app_core::ports::pentest::{PentestPlanPort, PgPentestPlanAdapter};
 use golish_app_core::ports::recon::{
     PgReconAssetsAdapter, PgReconDirectoryAdapter, PgReconScansAdapter, PgReconTargetsAdapter,
@@ -23,10 +24,16 @@ use golish_app_core::ports::vuln::{
     PgVulnIntelAdapter, PgWikiKbAdapter, VulnIntelPort, WikiKbPort,
 };
 
+mod attack_execution;
 mod convert;
 pub(crate) mod evidence;
+pub mod knowledge_context;
+pub mod knowledge_memory;
 mod orchestration;
 mod recon;
+pub mod reporting;
+pub(crate) mod reporting_gate;
+mod runtime_memory;
 mod tasks;
 mod wiki;
 
@@ -312,6 +319,24 @@ impl DbRepoProvider for GolishDbRepoProvider {
             .await
     }
 
+    async fn cleanup_closeout_gate(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<golish_agent_kit::db_traits::CleanupCloseoutGateSnapshot> {
+        use golish_cleanup_app::CleanupCloseoutPort;
+        let gate = golish_cleanup_app::PgCleanupRepository::new(self.pool.as_ref().clone())
+            .closeout_counts(operation_id, organization_id)
+            .await
+            .map_err(anyhow::Error::new)?;
+        Ok(golish_agent_kit::db_traits::CleanupCloseoutGateSnapshot {
+            missing_obligation_count: gate.missing_obligation_count,
+            nonterminal_obligation_count: gate.nonterminal_obligation_count,
+            undisclosed_residual_count: gate.undisclosed_residual_count,
+            invalid_terminal_truth_count: gate.invalid_terminal_truth_count,
+        })
+    }
+
     async fn in_scope_targets(
         &self,
         org_id: Option<Uuid>,
@@ -386,6 +411,76 @@ impl DbRepoProvider for GolishDbRepoProvider {
         organization_id: Uuid,
     ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
         self.scoping_target_snapshot_impl(organization_id).await
+    }
+
+    async fn attack_v2_seed_candidate_manifest(
+        &self,
+        input: golish_agent_kit::harness::attack_execution::SeedCandidateManifest,
+    ) -> anyhow::Result<golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot>
+    {
+        self.attack_v2_seed_candidate_manifest_impl(input).await
+    }
+
+    async fn attack_v2_candidate_manifest_for_unit(
+        &self,
+        operation_id: Uuid,
+        stage_run_unit_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot>
+    {
+        self.attack_v2_candidate_manifest_for_unit_impl(
+            operation_id,
+            stage_run_unit_id,
+            organization_id,
+        )
+        .await
+    }
+
+    async fn attack_v2_seed_candidate_manifest_for_unit(
+        &self,
+        operation_id: Uuid,
+        stage_run_unit_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot>
+    {
+        self.attack_v2_seed_candidate_manifest_for_unit_impl(
+            operation_id,
+            stage_run_unit_id,
+            organization_id,
+        )
+        .await
+    }
+
+    async fn attack_v2_review_barrier_for_operation(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<golish_agent_kit::db_traits::AttackV2ReviewBarrierView> {
+        self.attack_v2_review_barrier_for_operation_impl(operation_id)
+            .await
+    }
+
+    async fn attack_v2_verification_truth_for_operation(
+        &self,
+        operation_id: Uuid,
+        organization_id: Option<Uuid>,
+    ) -> anyhow::Result<Option<golish_agent_kit::harness::attack_execution::VerificationTruthSet>>
+    {
+        self.attack_v2_verification_truth_for_operation_impl(operation_id, organization_id)
+            .await
+    }
+
+    async fn reporting_build_validated_revision(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<golish_agent_kit::harness::ReportingGateTruth> {
+        reporting_gate::build_or_reuse_validated_report(self.pool.clone(), operation_id).await
+    }
+
+    async fn reporting_gate_truth(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<Option<golish_agent_kit::harness::ReportingGateTruth>> {
+        reporting_gate::load_reporting_gate_truth(&self.pool, operation_id).await
     }
 
     async fn eas_port_delegated_assets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
@@ -531,9 +626,15 @@ impl DbRepoProvider for GolishDbRepoProvider {
         operation_id: Uuid,
         profile: &str,
         current_stage: &str,
+        runtime_memory_contract: RuntimeMemoryContract,
     ) -> anyhow::Result<()> {
-        self.operation_state_insert_impl(operation_id, profile, current_stage)
-            .await
+        self.operation_state_insert_impl(
+            operation_id,
+            profile,
+            current_stage,
+            runtime_memory_contract,
+        )
+        .await
     }
 
     async fn operation_state_get(
@@ -1072,6 +1173,7 @@ mod operation_state_integration_tests {
     use golish_agent_kit::harness::{
         base_operation_graph, decide_transition, load_profile_from_json, StageKind,
     };
+    use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
     use std::sync::Arc;
     use std::time::Duration;
     use uuid::Uuid;
@@ -1114,9 +1216,14 @@ mod operation_state_integration_tests {
         let repo = GolishDbRepoProvider::new(pool);
         let op = Uuid::new_v4();
 
-        repo.operation_state_insert(op, "assessment", StageKind::ExternalAttackSurface.as_str())
-            .await
-            .expect("insert operation_state");
+        repo.operation_state_insert(
+            op,
+            "assessment",
+            StageKind::ExternalAttackSurface.as_str(),
+            RuntimeMemoryContract::LegacyV1,
+        )
+        .await
+        .expect("insert operation_state");
         let row = repo
             .operation_state_get(op)
             .await
@@ -1150,9 +1257,14 @@ mod operation_state_integration_tests {
         let repo = GolishDbRepoProvider::new(pool);
         let op = Uuid::new_v4();
 
-        repo.operation_state_insert(op, "assessment", StageKind::ExternalAttackSurface.as_str())
-            .await
-            .expect("insert operation_state");
+        repo.operation_state_insert(
+            op,
+            "assessment",
+            StageKind::ExternalAttackSurface.as_str(),
+            RuntimeMemoryContract::LegacyV1,
+        )
+        .await
+        .expect("insert operation_state");
 
         assert!(
             assessment_advance_target(StageKind::ExternalAttackSurface, false).is_none(),

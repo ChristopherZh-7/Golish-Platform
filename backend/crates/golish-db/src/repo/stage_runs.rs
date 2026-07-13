@@ -8,8 +8,10 @@
 use crate::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{Executor, PgPool, Postgres};
 use uuid::Uuid;
+
+use super::runtime_memory_tx::{RuntimeMemoryStoreError, RuntimeMemoryStoreResult};
 
 /// `stage_runs` 行映射 (`sqlx::FromRow`).
 #[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
@@ -24,17 +26,135 @@ pub struct StageRunRow {
     pub active_sprint_contract_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageExecutionTerminal {
+    Completed,
+    Failed,
+    PausedNeedsUser,
+}
+
+impl StageExecutionTerminal {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::PausedNeedsUser => "paused_needs_user",
+        }
+    }
+}
+
+const STAGE_RUN_COLUMNS: &str = r#"id, operation_id, stage_kind, started_at,
+    completed_at, status, active_sprint_contract_id"#;
+
+/// Insert one started stage execution through the caller's PostgreSQL executor.
+/// Runtime-memory compound transactions pass their connection here so the
+/// execution identity cannot commit independently from its operation cursor.
+pub async fn insert_with_executor<'e, E>(
+    executor: E,
+    id: Uuid,
+    operation_id: Uuid,
+    stage_kind: &str,
+) -> Result<StageRunRow>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let sql = format!(
+        "INSERT INTO stage_runs (id, operation_id, stage_kind) \
+         VALUES ($1, $2, $3) RETURNING {STAGE_RUN_COLUMNS}"
+    );
+    let row = sqlx::query_as::<_, StageRunRow>(&sql)
+        .bind(id)
+        .bind(operation_id)
+        .bind(stage_kind)
+        .fetch_one(executor)
+        .await?;
+    Ok(row)
+}
+
+/// Lock and return every currently started execution for one operation.
+/// Callers must already hold the operation-state row lock; returning the full
+/// set lets them fail closed on legacy duplicate-active rows until cutover adds
+/// the partial unique index.
+pub async fn list_active_for_operation_with_executor<'e, E>(
+    executor: E,
+    operation_id: Uuid,
+) -> RuntimeMemoryStoreResult<Vec<StageRunRow>>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let sql = format!(
+        "SELECT {STAGE_RUN_COLUMNS} FROM stage_runs \
+         WHERE operation_id = $1 AND status = 'started' \
+         ORDER BY started_at ASC, id ASC FOR UPDATE"
+    );
+    let rows = sqlx::query_as::<_, StageRunRow>(&sql)
+        .bind(operation_id)
+        .fetch_all(executor)
+        .await?;
+    Ok(rows)
+}
+
+/// Return the one durable started execution for an operation.
+///
+/// Runtime orchestration must never guess a stage-execution identity from the
+/// operation cursor. Until the cutover can enforce a partial unique index,
+/// this read fails closed for both missing and duplicate active rows.
+pub async fn get_exact_active_for_operation(
+    pool: &PgPool,
+    operation_id: Uuid,
+) -> RuntimeMemoryStoreResult<StageRunRow> {
+    let sql = format!(
+        "SELECT {STAGE_RUN_COLUMNS} FROM stage_runs \
+         WHERE operation_id = $1 AND status = 'started' \
+         ORDER BY started_at ASC, id ASC"
+    );
+    let rows = sqlx::query_as::<_, StageRunRow>(&sql)
+        .bind(operation_id)
+        .fetch_all(pool)
+        .await?;
+    match rows.as_slice() {
+        [] => Err(RuntimeMemoryStoreError::Conflict {
+            code: "missing_active_stage_execution",
+        }),
+        [row] => Ok(row.clone()),
+        _ => Err(RuntimeMemoryStoreError::Conflict {
+            code: "multiple_active_stage_executions",
+        }),
+    }
+}
+
+/// Close exactly one active execution with a typed terminal state.
+/// A zero-row update is a stale or mismatched CAS and is never treated as a
+/// successful replay.
+pub async fn mark_terminal_cas<'e, E>(
+    executor: E,
+    operation_id: Uuid,
+    stage_execution_id: Uuid,
+    terminal: StageExecutionTerminal,
+) -> RuntimeMemoryStoreResult<StageRunRow>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let sql = format!(
+        "UPDATE stage_runs SET status = $3, completed_at = NOW() \
+         WHERE id = $1 AND operation_id = $2 AND status = 'started' \
+         RETURNING {STAGE_RUN_COLUMNS}"
+    );
+    let row = sqlx::query_as::<_, StageRunRow>(&sql)
+        .bind(stage_execution_id)
+        .bind(operation_id)
+        .bind(terminal.as_str())
+        .fetch_optional(executor)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Conflict {
+            code: "stage_execution_not_active",
+        })?;
+    Ok(row)
+}
+
 /// 创建一个新 stage_run · 调用方负责生成 UUID 并保证唯一.
 pub async fn insert(pool: &PgPool, id: Uuid, operation_id: Uuid, stage_kind: &str) -> Result<()> {
-    sqlx::query(
-        r#"INSERT INTO stage_runs (id, operation_id, stage_kind)
-           VALUES ($1, $2, $3)"#,
-    )
-    .bind(id)
-    .bind(operation_id)
-    .bind(stage_kind)
-    .execute(pool)
-    .await?;
+    insert_with_executor(pool, id, operation_id, stage_kind).await?;
     Ok(())
 }
 
@@ -120,5 +240,15 @@ mod tests {
         assert_eq!(row.id, back.id);
         assert_eq!(row.stage_kind, back.stage_kind);
         assert_eq!(row.status, back.status);
+    }
+
+    #[test]
+    fn typed_stage_execution_terminal_values_match_database_contract() {
+        assert_eq!(StageExecutionTerminal::Completed.as_str(), "completed");
+        assert_eq!(StageExecutionTerminal::Failed.as_str(), "failed");
+        assert_eq!(
+            StageExecutionTerminal::PausedNeedsUser.as_str(),
+            "paused_needs_user"
+        );
     }
 }

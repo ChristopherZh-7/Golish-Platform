@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::types::{AgentContinuity, FindingSeverity, RiskLevel, StageKind};
+use super::StageRuntimeContract;
 
 /// P2 · per-stage "trustworthy conclusion" rule (verification gate).
 ///
@@ -35,6 +36,21 @@ pub struct HumanApprovalPolicy {
 pub struct InheritsEvidenceFrom {
     pub stage_kind: StageKind,
     pub evidence_kinds: Vec<String>,
+}
+
+/// C4/P6a Post-Exploit execution boundary. This is descriptive input to the
+/// capability/router checks; database and app-layer policy remain the final
+/// authority. Side-effect classes are closed strings so an unknown future
+/// class fails stage-spec contract tests before becoming routable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PostExploitPolicy {
+    pub p6a_only: bool,
+    #[serde(default)]
+    pub allowed_side_effect_classes: Vec<String>,
+    pub requires_cleanup_kernel_for_side_effects: bool,
+    pub work_item_kind: String,
+    #[serde(default)]
+    pub canonical_rows: Vec<String>,
 }
 
 /// Doc 3 §4.1 StageSpec.
@@ -79,6 +95,18 @@ pub struct StageSpec {
 
     #[serde(default)]
     pub inherits_evidence_from: Vec<InheritsEvidenceFrom>,
+
+    /// Present only on the four post-exploit stages. C4 permits `none` only;
+    /// C6 may expand this after the cleanup-obligation kernel is installed.
+    #[serde(default)]
+    pub post_exploit_policy: Option<PostExploitPolicy>,
+
+    /// Declarative durable owner/scope/lease/final-seal contract. Absent on
+    /// legacy/root-only stages; present on the four Runtime Memory V2
+    /// specialist stages. This field describes stage ownership only and never
+    /// selects or upgrades an operation's persisted rollout contract.
+    #[serde(default)]
+    pub runtime_memory: Option<StageRuntimeContract>,
 
     // ── P2 · 配置驱动的「过关证据」声明（你填这里，gate 照执，零代码） ──────────
     /// P2 · 该 stage 交付物必须含的 evidence 种类（ledger 回查；空=不强制）。
@@ -196,9 +224,10 @@ pub struct StageSpec {
     /// `false`: their deliverable is observations (`claims`) + a coverage matrix,
     /// NOT vulnerabilities, so a weak model dumping junk into `findings` there is
     /// noise. The `submit_stage_deliverable` tool drops findings for such a stage
-    /// (and tells the model to put discoveries in `claims`). Vulnerability stages
-    /// (vuln_triage / verification) keep the default `true`. Default true =
-    /// back-compat (old specs / vuln stages unaffected).
+    /// (and tells the model to put discoveries in `claims`). Attack-stage static
+    /// specs preserve legacy compatibility; the persisted Candidate execution
+    /// contract derives the stricter V2Only policy at runtime. Default true also
+    /// remains back-compatible for specs that predate the flag.
     #[serde(default = "default_findings_allowed")]
     pub findings_allowed: bool,
 }
@@ -231,6 +260,16 @@ mod tests {
 
     const TARGET_INTEL_JSON: &str =
         include_str!("../../../../../resources/harness/stages/target_intel/spec.json");
+
+    const REPORTING_JSON: &str =
+        include_str!("../../../../../resources/harness/stages/reporting/spec.json");
+
+    const POST_EXPLOIT_STAGE_JSON: [&str; 4] = [
+        include_str!("../../../../../resources/harness/stages/access_validation/spec.json"),
+        include_str!("../../../../../resources/harness/stages/internal_discovery/spec.json"),
+        include_str!("../../../../../resources/harness/stages/objective_pathing/spec.json"),
+        include_str!("../../../../../resources/harness/stages/objective_simulation/spec.json"),
+    ];
 
     #[test]
     fn load_external_attack_surface_basic_shape() {
@@ -272,6 +311,41 @@ mod tests {
         assert!(!s
             .allowed_tool_types
             .contains(&"recon/url-history".to_string()));
+    }
+
+    #[test]
+    fn post_exploit_stages_expose_one_exact_p6b_wrapper_after_cleanup_cutover() {
+        let expected = [
+            "post_exploit_validate_access",
+            "post_exploit_record_internal_observation",
+            "post_exploit_build_objective_path",
+            "post_exploit_execute_action",
+        ];
+        for (raw, expected_tool) in POST_EXPLOIT_STAGE_JSON.into_iter().zip(expected) {
+            let spec = load_stage_spec_from_json(raw).expect("parse post-exploit spec");
+            let policy = spec
+                .post_exploit_policy
+                .expect("post-exploit stage declares execution policy");
+            assert!(!policy.p6a_only, "stage={}", spec.id);
+            assert!(policy
+                .allowed_side_effect_classes
+                .contains(&"none".to_string()));
+            assert!(policy.requires_cleanup_kernel_for_side_effects);
+            assert!(!policy.work_item_kind.trim().is_empty());
+            assert!(!policy.canonical_rows.is_empty());
+            assert_eq!(spec.specialist.as_deref(), Some("post_exploit_operator"));
+            assert_eq!(spec.allowed_tool_types, [expected_tool]);
+            assert!(!spec.findings_allowed);
+        }
+        let objective = load_stage_spec_from_json(POST_EXPLOIT_STAGE_JSON[3])
+            .expect("parse objective simulation spec");
+        let policy = objective.post_exploit_policy.expect("objective policy");
+        assert!(policy
+            .allowed_side_effect_classes
+            .contains(&"remote_state_mutation".to_string()));
+        assert!(policy
+            .allowed_side_effect_classes
+            .contains(&"local_artifact_mutation".to_string()));
     }
 
     #[test]
@@ -658,6 +732,61 @@ mod tests {
     }
 
     #[test]
+    fn four_specialist_stages_declare_the_exact_runtime_memory_v2_contract() {
+        use crate::harness::{RuntimeScopeSource, RuntimeUnitIdentity};
+
+        let expected = StageRuntimeContract {
+            schema_version: 2,
+            unit_identity: RuntimeUnitIdentity::StageExecutionOrganization,
+            scope_source: RuntimeScopeSource::FrozenOperationSnapshot,
+            requires_worker_lease: true,
+            publishes_handoff_after_final_seal: true,
+        };
+        for stage in [
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+            StageKind::Enumeration,
+            StageKind::VulnTriage,
+        ] {
+            let spec = crate::harness::resources::load_embedded_stage_spec(stage)
+                .unwrap_or_else(|error| panic!("load {} spec: {error}", stage.as_str()));
+            assert_eq!(
+                spec.runtime_memory,
+                Some(expected),
+                "{} must declare the exact Runtime Memory V2 specialist contract",
+                stage.as_str()
+            );
+            assert!(
+                spec.specialist
+                    .as_deref()
+                    .is_some_and(|specialist| !specialist.trim().is_empty()),
+                "{} must keep a concrete specialist",
+                stage.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn root_only_stages_do_not_invent_a_specialist_runtime_contract() {
+        for stage in [StageKind::Scoping, StageKind::Reporting] {
+            let spec = crate::harness::resources::load_embedded_stage_spec(stage)
+                .unwrap_or_else(|error| panic!("load {} spec: {error}", stage.as_str()));
+            assert!(spec.runtime_memory.is_none(), "stage={}", stage.as_str());
+        }
+    }
+
+    #[test]
+    fn reporting_declares_current_validated_revision_gate() {
+        let spec = load_stage_spec_from_json(REPORTING_JSON).expect("parse reporting spec");
+        assert_eq!(spec.kind, StageKind::Reporting);
+        assert!(spec.allowed_tool_types.is_empty());
+        assert!(matches!(
+            spec.gate_rules.as_slice(),
+            [crate::harness::gate::rule_engine::GateRule::ReportRevisionValidated { .. }]
+        ));
+    }
+
+    #[test]
     fn external_attack_surface_enables_asset_wave_barrier_only() {
         let eas =
             crate::harness::resources::load_embedded_stage_spec(StageKind::ExternalAttackSurface)
@@ -863,11 +992,11 @@ mod tests {
         assert!(!s2.findings_allowed);
     }
 
-    // 2026-06-15-recon-stage-findings-suppression: discovery/recon stages declare
-    // findings_allowed=false (deliverable = claims + coverage, not vulns); the
-    // vulnerability stages keep the default true.
+    // Static resources preserve legacy/dual operation behavior. Candidate V2Only
+    // derives the stricter observation/terminalizer policy from its persisted
+    // contract at runtime; attack_candidate is never a Finding writer.
     #[test]
-    fn recon_stages_disallow_findings_vuln_stages_allow() {
+    fn stage_findings_policy_preserves_candidate_v2_and_legacy_verification_boundaries() {
         use crate::harness::resources::load_embedded_stage_spec;
         for kind in [
             StageKind::Scoping,
@@ -881,11 +1010,14 @@ mod tests {
                 "recon stage {kind:?} must set findings_allowed=false"
             );
         }
+        let attack_candidate = load_embedded_stage_spec(StageKind::AttackCandidate)
+            .expect("load AttackCandidate spec");
+        assert!(!attack_candidate.findings_allowed);
         for kind in [StageKind::VulnTriage, StageKind::Verification] {
-            let s = load_embedded_stage_spec(kind).unwrap_or_else(|_| panic!("load {kind:?}"));
+            let spec = load_embedded_stage_spec(kind).unwrap_or_else(|_| panic!("load {kind:?}"));
             assert!(
-                s.findings_allowed,
-                "vulnerability stage {kind:?} must keep findings_allowed=true"
+                spec.findings_allowed,
+                "static {kind:?} policy must preserve persisted legacy compatibility"
             );
         }
     }

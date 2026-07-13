@@ -1,9 +1,36 @@
 use chrono::Duration;
-use sqlx::PgPool;
+use sqlx::{Executor, PgPool, Postgres};
 use uuid::Uuid;
 
 use crate::models::{NewTask, Task, TaskStatus};
 use crate::Result;
+
+const INSERT_TASK_WITH_ID_SQL: &str = r#"INSERT INTO tasks (id, session_id, title, input)
+           VALUES ($1, $2, $3, $4)
+           RETURNING *"#;
+
+/// Insert a task with a server-preallocated identity through any PostgreSQL
+/// executor. Runtime operation creation passes a transaction connection here
+/// so the task and its `operation_state` row cannot commit independently.
+pub async fn insert_with_id<'e, E>(
+    executor: E,
+    id: Uuid,
+    session_id: Uuid,
+    title: Option<&str>,
+    input: &str,
+) -> Result<Task>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let row = sqlx::query_as::<_, Task>(INSERT_TASK_WITH_ID_SQL)
+        .bind(id)
+        .bind(session_id)
+        .bind(title)
+        .bind(input)
+        .fetch_one(executor)
+        .await?;
+    Ok(row)
+}
 
 pub async fn create(pool: &PgPool, t: NewTask) -> Result<Task> {
     let row = sqlx::query_as::<_, Task>(
@@ -42,13 +69,18 @@ pub async fn list_by_session(pool: &PgPool, session_id: Uuid) -> Result<Vec<Task
 /// checkpoint persisted (`operation_state.state_blob -> 'graph_flow'`) so the
 /// engine can actually resume from `next_node`. `finished` / `failed` are
 /// excluded (terminal). Newest first so a fresh disconnect wins.
-const LATEST_RESUMABLE_BY_SESSION_SQL: &str = "SELECT t.* FROM tasks t \
-     JOIN operation_state os ON os.operation_id = t.id \
-     WHERE t.session_id = $1 \
-       AND t.status IN ('running', 'waiting') \
-       AND os.state_blob -> 'graph_flow' IS NOT NULL \
-     ORDER BY t.created_at DESC \
-     LIMIT 1";
+fn latest_resumable_by_session_sql() -> String {
+    let recoverable = latest_resumable_checkpoint_sql();
+    format!(
+        "SELECT tasks.* FROM tasks \
+         JOIN operation_state os ON os.operation_id = tasks.id \
+         WHERE tasks.session_id = $1 \
+           AND tasks.status IN ('running', 'waiting') \
+           AND {recoverable} \
+         ORDER BY tasks.created_at DESC \
+         LIMIT 1"
+    )
+}
 
 /// Find the most recent **resumable** harness operation for a chat session's DB
 /// session, or `None` if there is nothing to resume (→ caller starts fresh).
@@ -57,7 +89,8 @@ const LATEST_RESUMABLE_BY_SESSION_SQL: &str = "SELECT t.* FROM tasks t \
 /// without parsing the user's text (no "继续" keyword special-case): if a
 /// checkpointed non-terminal task exists, the next message resumes it.
 pub async fn latest_resumable_by_session(pool: &PgPool, session_id: Uuid) -> Result<Option<Task>> {
-    let row = sqlx::query_as::<_, Task>(LATEST_RESUMABLE_BY_SESSION_SQL)
+    let sql = latest_resumable_by_session_sql();
+    let row = sqlx::query_as::<_, Task>(&sql)
         .bind(session_id)
         .fetch_optional(pool)
         .await?;
@@ -97,7 +130,7 @@ pub const ABANDONED_TASK_RESULT: &str = "Abandoned: the process exited before th
 /// that the explicit exact-resume CLI can repair. Partial/malformed JSON, a
 /// mismatched operation identity, a nil/non-UUID run id, an empty worker map,
 /// or a superseded operation all fail closed and remain eligible for cleanup.
-const RECOVERABLE_ABANDONED_CHECKPOINT_SQL: &str = r#"os.superseded_by IS NULL
+const LEGACY_RECOVERABLE_CHECKPOINT_SQL: &str = r#"os.superseded_by IS NULL
              AND jsonb_typeof(os.state_blob) = 'object'
              AND (
                  (
@@ -168,10 +201,299 @@ const RECOVERABLE_ABANDONED_CHECKPOINT_SQL: &str = r#"os.superseded_by IS NULL
                  )
              )"#;
 
+const LEGACY_GRAPH_RESUME_SQL: &str = r#"os.superseded_by IS NULL
+             AND jsonb_typeof(os.state_blob)='object'
+             AND jsonb_typeof(os.state_blob -> 'graph_flow')='object'
+             AND jsonb_typeof(os.state_blob -> 'graph_flow' -> 'state')='object'
+             AND jsonb_typeof(os.state_blob -> 'graph_flow' -> 'state' -> 'seeded')='object'
+             AND jsonb_typeof(os.state_blob -> 'graph_flow' -> 'state' -> 'visited')='array'
+             AND jsonb_typeof(os.state_blob -> 'graph_flow' -> 'state' -> 'applied')='object'
+             AND jsonb_typeof(os.state_blob -> 'graph_flow' -> 'next_node')='string'
+             AND NULLIF(BTRIM(os.state_blob -> 'graph_flow' ->> 'next_node'),'') IS NOT NULL"#;
+
+/// Complete relational V2 shape. Scoping is resumable only in the exact
+/// pre-freeze state. Every later stage is owned by one sealed snapshot and one
+/// exact active execution. Specialist stages own exactly one Unit/Worker per
+/// frozen organization; non-specialist stages own exactly one root Unit and no
+/// WorkerRun. Any partial/cross-op row makes the whole operation unavailable
+/// rather than field-merging sources.
+const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
+             AND os.project_scope_id IS NOT NULL
+             AND (
+                 SELECT COUNT(*) FROM stage_runs active_count
+                 WHERE active_count.operation_id=os.operation_id
+                   AND active_count.status='started'
+             ) = 1
+             AND EXISTS (
+                 SELECT 1 FROM stage_runs active_execution
+                 WHERE active_execution.operation_id=os.operation_id
+                   AND active_execution.status='started'
+                   AND active_execution.stage_kind=os.current_stage
+             )
+             AND (
+                 (
+                     os.current_stage='scoping'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM operation_org_scope_snapshots snapshot
+                         WHERE snapshot.operation_id=os.operation_id
+                     )
+                     AND NOT EXISTS (
+                         SELECT 1 FROM stage_run_units unit
+                         WHERE unit.operation_id=os.operation_id
+                     )
+                     AND NOT EXISTS (
+                         SELECT 1 FROM stage_worker_runs worker
+                         WHERE worker.operation_id=os.operation_id
+                     )
+                 )
+                 OR
+                 (
+                     os.current_stage<>'scoping'
+                     AND (
+                         SELECT COUNT(*) FROM operation_org_scope_snapshots snapshot_count
+                         WHERE snapshot_count.operation_id=os.operation_id
+                           AND snapshot_count.project_scope_id=os.project_scope_id
+                           AND snapshot_count.sealed_at IS NOT NULL
+                     ) = 1
+                     AND EXISTS (
+                         SELECT 1
+                         FROM operation_org_scope_snapshots snapshot
+                         JOIN stage_runs active_execution
+                           ON active_execution.operation_id=os.operation_id
+                          AND active_execution.status='started'
+                          AND active_execution.stage_kind=os.current_stage
+                         WHERE snapshot.operation_id=os.operation_id
+                           AND snapshot.project_scope_id=os.project_scope_id
+                           AND snapshot.sealed_at IS NOT NULL
+                           AND (
+                               SELECT COUNT(*) FROM operation_org_scope_units member_count
+                               WHERE member_count.snapshot_id=snapshot.id
+                           ) > 0
+                           AND NOT EXISTS (
+                               SELECT 1
+                               FROM stage_run_units stray_unit
+                               WHERE stray_unit.operation_id=os.operation_id
+                                 AND stray_unit.stage_execution_id=active_execution.id
+                                 AND (
+                                     stray_unit.scope_snapshot_id<>snapshot.id
+                                     OR stray_unit.stage_kind<>os.current_stage
+                                     OR NOT EXISTS (
+                                         SELECT 1 FROM operation_org_scope_units member
+                                         WHERE member.snapshot_id=snapshot.id
+                                           AND member.organization_id=stray_unit.organization_id
+                                     )
+                                 )
+                           )
+                           AND (
+                               (
+                                   (
+                                       SELECT COUNT(*) FROM stage_run_units root_unit_count
+                                       WHERE root_unit_count.operation_id=os.operation_id
+                                         AND root_unit_count.stage_execution_id=active_execution.id
+                                   ) = 1
+                                   AND EXISTS (
+                                       SELECT 1 FROM stage_run_units root_unit
+                                       WHERE root_unit.operation_id=os.operation_id
+                                         AND root_unit.stage_execution_id=active_execution.id
+                                         AND root_unit.scope_snapshot_id=snapshot.id
+                                         AND root_unit.organization_id=snapshot.root_organization_id
+                                         AND root_unit.stage_kind=os.current_stage
+                                         AND root_unit.specialist IS NULL
+                                         AND root_unit.status IN ('queued','running','gate_blocked','passed')
+                                   )
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM stage_worker_runs unexpected_worker
+                                       WHERE unexpected_worker.operation_id=os.operation_id
+                                         AND unexpected_worker.stage_execution_id=active_execution.id
+                                   )
+                               )
+                               OR
+                               (
+                                   (
+                                       SELECT COUNT(*) FROM stage_run_units unit_count
+                                       WHERE unit_count.operation_id=os.operation_id
+                                         AND unit_count.stage_execution_id=active_execution.id
+                                         AND unit_count.scope_snapshot_id=snapshot.id
+                                   ) = (
+                                       SELECT COUNT(*) FROM operation_org_scope_units member_count
+                                       WHERE member_count.snapshot_id=snapshot.id
+                                   )
+                                   AND NOT EXISTS (
+                                       SELECT 1
+                                       FROM operation_org_scope_units member
+                                       WHERE member.snapshot_id=snapshot.id
+                                         AND (
+                                             SELECT COUNT(*)
+                                             FROM stage_run_units unit
+                                             WHERE unit.operation_id=os.operation_id
+                                               AND unit.stage_execution_id=active_execution.id
+                                               AND unit.scope_snapshot_id=snapshot.id
+                                               AND unit.organization_id=member.organization_id
+                                               AND unit.stage_kind=os.current_stage
+                                               AND NULLIF(BTRIM(unit.specialist),'') IS NOT NULL
+                                         ) <> 1
+                                   )
+                                   AND NOT EXISTS (
+                                       SELECT 1
+                                       FROM stage_run_units unit
+                                       WHERE unit.operation_id=os.operation_id
+                                         AND unit.stage_execution_id=active_execution.id
+                                         AND (
+                                             NULLIF(BTRIM(unit.specialist),'') IS NULL
+                                             OR (
+                                                 SELECT COUNT(*) FROM stage_worker_runs worker_count
+                                                 WHERE worker_count.operation_id=os.operation_id
+                                                   AND worker_count.stage_execution_id=active_execution.id
+                                                   AND worker_count.stage_run_unit_id=unit.id
+                                                   AND worker_count.organization_id=unit.organization_id
+                                                   AND worker_count.specialist=unit.specialist
+                                             ) <> 1
+                                         )
+                                   )
+                                   AND NOT EXISTS (
+                                       SELECT 1
+                                       FROM stage_worker_runs worker
+                                       JOIN stage_run_units unit
+                                         ON unit.id=worker.stage_run_unit_id
+                                        AND unit.operation_id=worker.operation_id
+                                        AND unit.stage_execution_id=worker.stage_execution_id
+                                        AND unit.organization_id=worker.organization_id
+                                       WHERE worker.operation_id=os.operation_id
+                                         AND worker.stage_execution_id=active_execution.id
+                                         AND (
+                                             unit.scope_snapshot_id<>snapshot.id
+                                             OR unit.stage_kind<>os.current_stage
+                                             OR NULLIF(BTRIM(unit.specialist),'') IS NULL
+                                             OR unit.specialist<>worker.specialist
+                                             OR (
+                                                 unit.status='passed'
+                                                 AND worker.status<>'passed'
+                                             )
+                                             OR (
+                                                 unit.status IN ('queued','running','gate_blocked')
+                                                 AND NOT (
+                                                     (
+                                                         worker.status='running'
+                                                         AND worker.lease_token IS NOT NULL
+                                                         AND worker.lease_expires_at IS NOT NULL
+                                                     )
+                                                     OR (
+                                                         worker.status IN ('queued','gate_blocked','waiting_background')
+                                                         AND worker.active_tool_call_id IS NULL
+                                                         AND (
+                                                             worker.lease_token IS NULL
+                                                             OR worker.lease_expires_at<=NOW()
+                                                         )
+                                                     )
+                                                     OR (
+                                                         worker.status='recovery_required'
+                                                         AND worker.active_tool_call_id IS NOT NULL
+                                                     )
+                                                 )
+                                             )
+                                             OR unit.status NOT IN ('queued','running','gate_blocked','passed')
+                                             OR (
+                                                 worker.active_tool_call_id IS NOT NULL
+                                                 AND NOT EXISTS (
+                                                     SELECT 1 FROM tool_calls active_tool
+                                                     WHERE active_tool.id=worker.active_tool_call_id
+                                                       AND active_tool.worker_run_id=worker.id
+                                                       AND active_tool.operation_id=worker.operation_id
+                                                       AND active_tool.stage_execution_id=worker.stage_execution_id
+                                                       AND active_tool.stage_run_unit_id=worker.stage_run_unit_id
+                                                       AND active_tool.organization_id=worker.organization_id
+                                                       AND active_tool.attempt_epoch=worker.attempt_epoch
+                                                       AND active_tool.lease_token=worker.lease_token
+                                                       AND active_tool.status IN ('received','running')
+                                                 )
+                                             )
+                                         )
+                                   )
+                               )
+                           )
+                     )
+                 )
+             )"#;
+
+/// Persisted contract chooses one complete source. `dual_write_v2_preferred`
+/// may fall back to a complete legacy checkpoint, but never combines fields;
+/// `v2_only` has no fallback.
+const RECOVERABLE_ABANDONED_CHECKPOINT_SQL: &str = r#"(
+                 (
+                     os.runtime_memory_contract IN ('legacy_v1','dual_write_legacy_read')
+                     AND (LEGACY_RECOVERABLE_CHECKPOINT_SQL)
+                 )
+                 OR (
+                     os.runtime_memory_contract='dual_write_v2_preferred'
+                     AND (
+                         (V2_RELATIONAL_RECOVERABLE_SQL)
+                         OR (LEGACY_RECOVERABLE_CHECKPOINT_SQL)
+                     )
+                 )
+                 OR (
+                     os.runtime_memory_contract='v2_only'
+                     AND (V2_RELATIONAL_RECOVERABLE_SQL)
+                 )
+             )"#;
+
+fn recoverable_abandoned_checkpoint_sql() -> String {
+    RECOVERABLE_ABANDONED_CHECKPOINT_SQL
+        .replace(
+            "LEGACY_RECOVERABLE_CHECKPOINT_SQL",
+            LEGACY_RECOVERABLE_CHECKPOINT_SQL,
+        )
+        .replace(
+            "V2_RELATIONAL_RECOVERABLE_SQL",
+            V2_RELATIONAL_RECOVERABLE_SQL,
+        )
+}
+
+fn latest_resumable_checkpoint_sql() -> String {
+    format!(
+        r#"(
+            (
+                os.runtime_memory_contract IN ('legacy_v1','dual_write_legacy_read')
+                AND ({LEGACY_GRAPH_RESUME_SQL})
+            )
+            OR (
+                os.runtime_memory_contract='dual_write_v2_preferred'
+                AND (({V2_RELATIONAL_RECOVERABLE_SQL}) OR ({LEGACY_GRAPH_RESUME_SQL}))
+            )
+            OR (
+                os.runtime_memory_contract='v2_only'
+                AND ({V2_RELATIONAL_RECOVERABLE_SQL})
+            )
+        )"#
+    )
+}
+
+const V2_LIVE_LEASE_SQL: &str = r#"os.runtime_memory_contract IN (
+                 'dual_write_v2_preferred','v2_only'
+             )
+             AND EXISTS (
+                 SELECT 1
+                 FROM stage_worker_runs live_worker
+                 JOIN stage_runs live_execution
+                   ON live_execution.id=live_worker.stage_execution_id
+                  AND live_execution.operation_id=os.operation_id
+                  AND live_execution.status='started'
+                  AND live_execution.stage_kind=os.current_stage
+                 JOIN stage_run_units live_unit
+                   ON live_unit.id=live_worker.stage_run_unit_id
+                  AND live_unit.operation_id=os.operation_id
+                  AND live_unit.stage_execution_id=live_execution.id
+                  AND live_unit.organization_id=live_worker.organization_id
+                 WHERE live_worker.operation_id=os.operation_id
+                   AND live_worker.status='running'
+                   AND live_worker.lease_token IS NOT NULL
+                   AND live_worker.lease_expires_at>NOW()
+             )"#;
+
 /// SQL for [`fail_abandoned`]. Built from the shared recoverability predicate
 /// so its complement is exactly the set handled by
 /// [`pause_resumable_abandoned`].
 fn fail_abandoned_tasks_sql() -> String {
+    let recoverable = recoverable_abandoned_checkpoint_sql();
     format!(
         "UPDATE tasks \
          SET status = 'failed', \
@@ -182,7 +504,13 @@ fn fail_abandoned_tasks_sql() -> String {
            AND NOT EXISTS ( \
                SELECT 1 FROM operation_state os \
                WHERE os.operation_id = tasks.id \
-                 AND {RECOVERABLE_ABANDONED_CHECKPOINT_SQL} \
+                 AND {recoverable} \
+           ) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM operation_state os \
+               WHERE os.operation_id = tasks.id \
+                 AND {V2_RELATIONAL_RECOVERABLE_SQL} \
+                 AND {V2_LIVE_LEASE_SQL} \
            )"
     )
 }
@@ -195,6 +523,7 @@ fn fail_abandoned_tasks_sql() -> String {
 /// [`latest_resumable_by_session`]. `waiting` rows are left as-is (already
 /// paused). Time-bounded like the fail reaper so a live run is never touched.
 fn pause_resumable_abandoned_tasks_sql() -> String {
+    let recoverable = recoverable_abandoned_checkpoint_sql();
     format!(
         "UPDATE tasks \
          SET status = 'waiting', updated_at = NOW() \
@@ -203,7 +532,13 @@ fn pause_resumable_abandoned_tasks_sql() -> String {
            AND EXISTS ( \
                SELECT 1 FROM operation_state os \
                WHERE os.operation_id = tasks.id \
-                 AND {RECOVERABLE_ABANDONED_CHECKPOINT_SQL} \
+                 AND {recoverable} \
+           ) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM operation_state os \
+               WHERE os.operation_id = tasks.id \
+                 AND {V2_RELATIONAL_RECOVERABLE_SQL} \
+                 AND {V2_LIVE_LEASE_SQL} \
            )"
     )
 }
@@ -237,12 +572,63 @@ pub async fn pause_resumable_abandoned(pool: &PgPool, threshold: Duration) -> Re
     Ok(result.rows_affected())
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StartupTaskReaperStats {
+    pub paused: u64,
+    pub failed: u64,
+    pub workers_requeued: u64,
+    pub workers_recovery_required: u64,
+}
+
+/// One startup transaction reconciles expired V2 worker leases first, then
+/// pauses complete resumable operations and fails every malformed/incomplete
+/// remainder. A live relational lease is excluded from both task updates.
+pub async fn startup_reap_abandoned(
+    pool: &PgPool,
+    threshold: Duration,
+) -> Result<StartupTaskReaperStats> {
+    let cutoff = crate::repo::audit::reclaim_cutoff(threshold);
+    let mut tx = pool.begin().await?;
+    let workers = super::runtime_memory_tx::reap_expired_workers_on_startup(&mut tx, cutoff)
+        .await
+        .map_err(|error| crate::DbError::Other(anyhow::Error::new(error)))?;
+    let pause_sql = pause_resumable_abandoned_tasks_sql();
+    let paused = sqlx::query(&pause_sql)
+        .bind(cutoff)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    let fail_sql = fail_abandoned_tasks_sql();
+    let failed = sqlx::query(&fail_sql)
+        .bind(cutoff)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(StartupTaskReaperStats {
+        paused,
+        failed,
+        workers_requeued: workers.requeued,
+        workers_recovery_required: workers.recovery_required,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        fail_abandoned_tasks_sql, pause_resumable_abandoned_tasks_sql, ABANDONED_TASK_RESULT,
-        LATEST_RESUMABLE_BY_SESSION_SQL, RECOVERABLE_ABANDONED_CHECKPOINT_SQL,
+        fail_abandoned_tasks_sql, latest_resumable_by_session_sql,
+        pause_resumable_abandoned_tasks_sql, recoverable_abandoned_checkpoint_sql,
+        ABANDONED_TASK_RESULT, INSERT_TASK_WITH_ID_SQL, LEGACY_RECOVERABLE_CHECKPOINT_SQL,
+        V2_LIVE_LEASE_SQL, V2_RELATIONAL_RECOVERABLE_SQL,
     };
+
+    #[test]
+    fn runtime_memory_store_task_insert_accepts_server_preallocated_identity() {
+        assert!(INSERT_TASK_WITH_ID_SQL.contains("INSERT INTO tasks"));
+        assert!(INSERT_TASK_WITH_ID_SQL.contains("(id, session_id, title, input)"));
+        assert!(INSERT_TASK_WITH_ID_SQL.contains("VALUES ($1, $2, $3, $4)"));
+        assert!(INSERT_TASK_WITH_ID_SQL.contains("RETURNING *"));
+    }
 
     /// Guard the reaper SQL: it must only touch non-terminal rows and finalize
     /// them as `failed`, never clobber `finished`, and stay time-bounded.
@@ -313,12 +699,12 @@ mod tests {
     /// a subtly different one in the immediately following update.
     #[test]
     fn abandoned_reapers_share_the_same_recoverable_checkpoint_predicate() {
-        let predicate = RECOVERABLE_ABANDONED_CHECKPOINT_SQL.trim();
+        let predicate = recoverable_abandoned_checkpoint_sql();
         let fail_sql = fail_abandoned_tasks_sql();
         let pause_sql = pause_resumable_abandoned_tasks_sql();
 
-        assert_eq!(fail_sql.matches(predicate).count(), 1, "sql={fail_sql}");
-        assert_eq!(pause_sql.matches(predicate).count(), 1, "sql={pause_sql}");
+        assert_eq!(fail_sql.matches(&predicate).count(), 1, "sql={fail_sql}");
+        assert_eq!(pause_sql.matches(&predicate).count(), 1, "sql={pause_sql}");
     }
 
     /// A flat first-stage checkpoint is recoverable only when every identity
@@ -326,7 +712,7 @@ mod tests {
     /// one or two JSON keys must never exempt a zombie from the fail reaper.
     #[test]
     fn recoverable_checkpoint_predicate_requires_complete_flat_identity() {
-        let sql = RECOVERABLE_ABANDONED_CHECKPOINT_SQL;
+        let sql = LEGACY_RECOVERABLE_CHECKPOINT_SQL;
 
         for required in [
             "jsonb_typeof(os.state_blob) = 'object'",
@@ -364,7 +750,7 @@ mod tests {
 
     #[test]
     fn recoverable_checkpoint_predicate_requires_valid_graph_shape() {
-        let sql = RECOVERABLE_ABANDONED_CHECKPOINT_SQL;
+        let sql = LEGACY_RECOVERABLE_CHECKPOINT_SQL;
         assert!(
             sql.contains("jsonb_typeof(os.state_blob -> 'graph_flow') = 'object'"),
             "graph checkpoint must be an object: {sql}"
@@ -425,7 +811,7 @@ mod tests {
                    SELECT 1
                    FROM operation_state os
                    CROSS JOIN tasks
-                   WHERE {RECOVERABLE_ABANDONED_CHECKPOINT_SQL}
+                   WHERE {LEGACY_RECOVERABLE_CHECKPOINT_SQL}
                )"#
         );
         sqlx::query_scalar::<_, bool>(&query)
@@ -598,8 +984,8 @@ mod tests {
     /// pick the newest task so a fresh disconnect wins.
     #[test]
     fn latest_resumable_sql_is_nonterminal_checkpointed_newest_first() {
-        let sql = LATEST_RESUMABLE_BY_SESSION_SQL;
-        assert!(sql.contains("FROM tasks t"), "sql={sql}");
+        let sql = latest_resumable_by_session_sql();
+        assert!(sql.contains("FROM tasks"), "sql={sql}");
         assert!(
             sql.contains("status IN ('running', 'waiting')"),
             "must exclude terminal rows: {sql}"
@@ -613,8 +999,45 @@ mod tests {
             "general chat resume must not be broadened to CLI-only flat repair: {sql}"
         );
         assert!(
-            sql.contains("ORDER BY t.created_at DESC") && sql.contains("LIMIT 1"),
+            sql.contains("ORDER BY tasks.created_at DESC") && sql.contains("LIMIT 1"),
             "must pick the newest resumable task: {sql}"
         );
+    }
+
+    #[test]
+    fn startup_reaper_branches_by_contract_and_relational_worker_safety() {
+        let recoverable = recoverable_abandoned_checkpoint_sql();
+        for contract in [
+            "legacy_v1",
+            "dual_write_legacy_read",
+            "dual_write_v2_preferred",
+            "v2_only",
+        ] {
+            assert!(
+                recoverable.contains(contract),
+                "contract={contract}: {recoverable}"
+            );
+        }
+        for required in [
+            "active_count.status='started'",
+            "snapshot.sealed_at IS NOT NULL",
+            "unit_count.scope_snapshot_id=snapshot.id",
+            "root_unit.specialist IS NULL",
+            "root_unit.organization_id=snapshot.root_organization_id",
+            "unexpected_worker.stage_execution_id=active_execution.id",
+            "worker.status='running'",
+            "worker.status='recovery_required'",
+            "worker.active_tool_call_id IS NOT NULL",
+            "active_tool.attempt_epoch=worker.attempt_epoch",
+            "active_tool.lease_token=worker.lease_token",
+        ] {
+            assert!(
+                V2_RELATIONAL_RECOVERABLE_SQL.contains(required),
+                "missing {required}: {V2_RELATIONAL_RECOVERABLE_SQL}"
+            );
+        }
+        assert!(V2_LIVE_LEASE_SQL.contains("lease_expires_at>NOW()"));
+        assert!(fail_abandoned_tasks_sql().contains(V2_LIVE_LEASE_SQL));
+        assert!(pause_resumable_abandoned_tasks_sql().contains(V2_LIVE_LEASE_SQL));
     }
 }

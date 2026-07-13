@@ -41,22 +41,27 @@ impl DbTrackingBackend for PgTrackingBackend {
         &self,
         call_id: &str,
         session_id: Uuid,
+        task_id: Option<Uuid>,
+        subtask_id: Option<Uuid>,
         tool_name: &str,
         args: &serde_json::Value,
-    ) {
-        self.record_tool_call_start_impl(call_id, session_id, tool_name, args)
-            .await
+        runtime: Option<&RuntimeToolIdentity>,
+    ) -> anyhow::Result<Uuid> {
+        self.record_tool_call_start_impl(
+            call_id, session_id, task_id, subtask_id, tool_name, args, runtime,
+        )
+        .await
     }
 
     async fn record_tool_call_finish(
         &self,
-        call_id: &str,
+        record_id: Uuid,
         session_id: Uuid,
         status: &str,
         result: &str,
         duration_ms: i32,
-    ) {
-        self.record_tool_call_finish_impl(call_id, session_id, status, result, duration_ms)
+    ) -> anyhow::Result<()> {
+        self.record_tool_call_finish_impl(record_id, session_id, status, result, duration_ms)
             .await
     }
 

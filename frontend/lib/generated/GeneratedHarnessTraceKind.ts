@@ -113,4 +113,4 @@ role_label: string,
 /**
  * Coverage technique columns for this stage (config-driven) — first frame.
  */
-coverage_axis: Array<string>, };
+coverage_axis: Array<string>, } | { "kind": "candidate_review_required", wave_run_id: string, status: string, resume_version: number, candidate_count: number, proposed_candidate_count: number, } | { "kind": "candidate_review_resumed", wave_run_id: string, resume_version: number, };

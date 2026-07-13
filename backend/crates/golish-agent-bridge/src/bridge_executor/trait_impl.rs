@@ -128,30 +128,35 @@ impl AgentExecutor for BridgeAgentExecutor {
         // bridge side-channel so the agentic loop's per-tool gate can enforce the
         // stage forbidden-tool barrier (stage) and the full pre-action authorizer
         // (authz). `None` when stage_mode is off or the subtask has no stage.
-        *self.bridge.harness_active_stage.write().await = execution_context.harness_stage;
-        *self.bridge.harness_active_authz.write().await = execution_context.harness_authz;
-        // Engagement-org isolation: publish the scoping-confirmed root org id so
-        // the agentic loop's fan-out / in-scope reads confine to its subtree.
-        *self.bridge.harness_active_org_id.write().await = execution_context.harness_org_id;
-        *self.bridge.harness_active_operation_id.write().await = execution_context.operation_id;
-        // 设计 2026-06-11 · targeted gate-repair pass: lock the loop's tool_choice
-        // to `submit_stage_deliverable` (work already evidenced, only the
-        // submission is missing). Reset per-subtask like the other side-channels.
-        *self.bridge.harness_submit_only.write().await = execution_context.harness_submit_only;
-        *self.bridge.harness_forced_tool.write().await =
-            execution_context.harness_forced_tool.clone();
+        // Scrub first as a same-request fallback for a previously dropped
+        // subtask future; publication then validates before writing any handle.
+        self.bridge.clear_active_subtask_context().await;
+        self.bridge
+            .publish_active_execution_context(execution_context)
+            .await?;
         // C2c/PR1 · reset the deliverable-capture sink — UNLESS the capture
         // belongs to this very stage: the retry loop re-enters here once per gate
         // attempt, and a same-stage capture from the previous attempt is the
         // fallback submission when the model returns empty text this attempt.
         {
-            let keep = captured_belongs_to_stage(
+            let trusted = self.bridge.harness_captured_submission.read().await.clone();
+            let keep_trusted = captured_belongs_to_stage(
+                trusted
+                    .as_ref()
+                    .map(|capture| capture.canonical_deliverable_json.as_str()),
+                execution_context.harness_stage,
+            );
+            if !keep_trusted {
+                *self.bridge.harness_captured_submission.write().await = None;
+            }
+            let keep_legacy = captured_belongs_to_stage(
                 self.bridge.harness_last_deliverable.read().await.as_deref(),
                 execution_context.harness_stage,
             );
-            if !keep {
+            if !keep_legacy {
                 *self.bridge.harness_last_deliverable.write().await = None;
-            } else {
+            }
+            if keep_trusted || keep_legacy {
                 tracing::info!(
                     "[TaskMode] keeping same-stage StageDeliverable capture across retry attempts"
                 );
@@ -162,10 +167,10 @@ impl AgentExecutor for BridgeAgentExecutor {
             .bridge
             .execute_isolated_with_context(&prompt, primary_loop_context(execution_context))
             .await;
-        // Forced tool locks are one-shot runtime hints. Clear the bridge
-        // side-channel even when the isolated loop returns an error so a later
-        // plain chat turn cannot inherit a stale tool lock.
-        *self.bridge.harness_forced_tool.write().await = None;
+        // Every active authorization/runtime-identity handle is subtask-local.
+        // Clear them before propagating an isolated-loop error so the next
+        // subtask cannot inherit this stage, unit, organization, or worker lease.
+        self.bridge.clear_active_subtask_context().await;
         let content = content_result?;
 
         // C2c/PR1 · The orchestrator often delegates the StageDeliverable to a
@@ -173,16 +178,21 @@ impl AgentExecutor for BridgeAgentExecutor {
         // gate parses only this content, so append the captured submission as a
         // trailing ```json fence. The gate's parser takes the LAST parseable
         // fence — the structured capture is authoritative over prose drafts.
+        let trusted_capture = self.bridge.harness_captured_submission.read().await.clone();
         let content = if execution_context.harness_stage.is_some() {
-            let captured = self.bridge.harness_last_deliverable.read().await.clone();
-            if let Some(d) = captured.as_deref() {
+            let legacy_capture = self.bridge.harness_last_deliverable.read().await.clone();
+            let captured = trusted_capture
+                .as_ref()
+                .map(|capture| capture.canonical_deliverable_json.as_str())
+                .or(legacy_capture.as_deref());
+            if let Some(d) = captured {
                 tracing::info!(
                     "[TaskMode] appending captured StageDeliverable to gate content ({} chars, agent_text {} chars)",
                     d.len(),
                     content.len()
                 );
             }
-            resolve_gate_content(&content, captured.as_deref())
+            resolve_gate_content(&content, captured)
         } else {
             content
         };
@@ -197,7 +207,8 @@ impl AgentExecutor for BridgeAgentExecutor {
                 duration_ms,
                 phase: format!("primary_subtask:{}", agent_label),
             },
-        ))
+        )
+        .with_captured_stage_submission(trusted_capture))
     }
 
     fn stage_run_retry_budget_exhausted(&self, stage: StageKind) -> bool {

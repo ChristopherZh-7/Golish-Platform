@@ -1,0 +1,16 @@
+[package]
+name = "golish-reporting-domain"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pure canonical cited reporting contracts"
+
+[dependencies]
+chrono.workspace = true
+golish-memory-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

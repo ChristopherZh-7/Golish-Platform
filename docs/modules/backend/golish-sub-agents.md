@@ -29,6 +29,7 @@
 | `discover_agents` / `AgentFileInfo` | 文件系统发现 + 加载 |
 | `PromptRegistry` / `PromptContext` / `SubAgentPromptContributor` | prompt 注册/上下文/贡献者 |
 | `StageToolGuard` / `StageToolHider` / `SubAgentToolRouter` / `SubAgentToolResultHook` / `SubAgentToolObserver` / `PostShellHook` / `SubAgentChainPersistence` | 阶段工具守卫/路由/工具结果后处理/telemetry observer/持久化（executor_types） |
+| `BoundWorkerChainContext` / `BoundWorkerToolLifecycle` | V2 stage worker 的 server-owned prebound chain、lease/version witness 与 awaited tool fence |
 | `SubmitRepairMode` / `SubmitRepairKind` / `StageCapabilitySuggestion` | StageRefiner 产出的 repair directive 在 executor 内的兼容投影；负责 resume repair lock、capability-first gap action 展示与 allowed/forbidden tools |
 
 ## 依赖
@@ -60,6 +61,7 @@
 - 默认 `recon` 子 agent 是 `target_intel` 的 provider-only 生产者：不暴露 `list_in_scope_targets` / `pentest_run`，避免在 intel 阶段查询尚未生产的目标或 fallback 到 subfinder/dig 类扫描路径；`prober` 消费 ranked attack-surface seeds，`enumerator` 必须先消费 `stage_worklist_status` / `stage_worklist_next` 的 DB-truth stage-local worklist，再把 `list_enumeration_web_roots` 当 web-root 上下文。`enumerator` 不暴露 `manage_targets` / `record_finding`，因为 `enumeration` 是 content coverage 阶段，产物是 DB truth + claims + non-found terminal coverage，不是资产状态更新或漏洞 findings。
 - sub-agent 的 registry/router 工具执行会在 `with_agent_session`、`with_agent_tool_context` 和 `with_agent_tool_output_sender` 下运行；`SubAgentExecutorContext.operation_id` 由父 runtime 提供并原样写入 tool context，nested delegate 继续继承。这样 direct bridge tools 既能发实时 `tool_output_chunk`，也能使用可信 stage-attempt identity；新增执行分支时不能丢这些 scope 或改从模型参数取 operation id。
 - `SubAgentExecutorContext.session_id` 是事件/trace 文本键，不保证能解析成 UUID；message-chain create/latest lookup 使用独立的 `persistence_session_id`。executor 仅为 legacy 裸 UUID session 保留回退，nested delegate 必须继承 persistence UUID，不能用 fresh chain 冒充精确 continuation。
+- prebound V2 worker 不是普通 resume selector：chain id、session、operation/execution/unit、lease token/epoch、checkpoint version 全由 host 注入；load/checkpoint/tool landing 任一 fence 失败都标记 lease lost 并停止后续 work。generic chain SQL 只保留给普通非-stage sub-agent。
 - `SubAgentChainError` 是跨 runtime 的稳定链失败类型。只有未传 `resume` 才允许创建 fresh chain；字面 `latest` 与 exact UUID 的 miss/error/坏 JSON 都 fail closed。exact load 必须同时校验当前 persistence session 与 agent ownership；final chain body 写回成功后才可输出 resume marker。provider 明确报告 input context 超限时返回 `ProviderContextLimitExceeded`（携带当前 optional chain id），不能降级成普通 `SubAgentResult` 后被 stage-run 自动重试；分类必须要求 context/token-limit 语义，不能把所有 HTTP 400 或 TPM rate limit 都归进来。
 - resumable chain 的历史必须保持 tool-call/tool-result 紧邻且 call id 成对；barrier/stall 退出和 provider stream error 都不能留下或继续持久化半轮。该约束在 executor control flow 与 serialize/restore validator 两层执行。
 - exact/latest chain restore 在首次 provider I/O 前还要执行 deterministic provider-history compaction：历史 ToolResult 按工具保留 worklist/retry/checkpoint 关键状态并设单结果上限，重复 `RESUME REPAIR DIRECTIVE` 只留最新 bounded projection，完整 tool-call/result turn 原子保留；变更后的 body 必须先 durable rewrite。相同 compactor 也在每次 sub-agent model stream 前和最终 chain persist 前执行，确保同一长 segment 新增的结果不会再次把上下文撑爆，重复 exact retry 字节稳定。

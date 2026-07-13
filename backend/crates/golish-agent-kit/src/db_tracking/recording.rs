@@ -5,6 +5,7 @@
 use super::helpers::{await_db_ready, truncate_for_db};
 use super::types::ToolCallGuard;
 use super::DbTracker;
+use crate::db_traits::RuntimeToolIdentity;
 use std::time::Instant;
 
 impl DbTracker {
@@ -16,33 +17,107 @@ impl DbTracker {
         tool_name: &str,
         args: &serde_json::Value,
     ) -> ToolCallGuard {
-        let session_uuid = self.session_uuid();
-        let mut gate = self.ready_gate.clone();
-        if await_db_ready(&mut gate).await {
-            self.backend
-                .record_tool_call_start(call_id, session_uuid, tool_name, args)
-                .await;
-        }
-
-        ToolCallGuard {
-            session_uuid,
-            call_id: call_id.to_string(),
-            started_at: Instant::now(),
+        match self
+            .start_tool_call_with_runtime(call_id, tool_name, args, None)
+            .await
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                tracing::warn!(
+                    call_id,
+                    tool_name,
+                    %error,
+                    "[db-track] legacy tool_call_start failed; continuing without telemetry"
+                );
+                ToolCallGuard {
+                    record_id: None,
+                    session_uuid: self.session_uuid(),
+                    call_id: call_id.to_string(),
+                    started_at: Instant::now(),
+                }
+            }
         }
     }
 
+    /// Await the durable start row and optionally stamp a trusted runtime
+    /// identity. Runtime-aware callers receive readiness/insert failures and
+    /// must stop before tool dispatch; the legacy wrapper above keeps ordinary
+    /// chat telemetry best-effort.
+    pub async fn start_tool_call_with_runtime(
+        &self,
+        call_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+        runtime: Option<&RuntimeToolIdentity>,
+    ) -> anyhow::Result<ToolCallGuard> {
+        let session_uuid = self.session_uuid();
+        let mut gate = self.ready_gate.clone();
+        if !await_db_ready(&mut gate).await {
+            if runtime.is_some() {
+                anyhow::bail!("runtime tool-call tracking database is unavailable");
+            }
+            return Ok(ToolCallGuard {
+                record_id: None,
+                session_uuid,
+                call_id: call_id.to_string(),
+                started_at: Instant::now(),
+            });
+        }
+
+        let record_id = self
+            .backend
+            .record_tool_call_start(
+                call_id,
+                session_uuid,
+                self.task_id,
+                self.subtask_id,
+                tool_name,
+                args,
+                runtime,
+            )
+            .await?;
+        Ok(ToolCallGuard {
+            record_id: Some(record_id),
+            session_uuid,
+            call_id: call_id.to_string(),
+            started_at: Instant::now(),
+        })
+    }
+
     pub async fn finish_tool_call(&self, guard: ToolCallGuard, success: bool, result_text: &str) {
+        if let Err(error) = self
+            .finish_tool_call_checked(guard, success, result_text)
+            .await
+        {
+            tracing::warn!(%error, "[db-track] tool_call_finish failed");
+        }
+    }
+
+    /// Finish by the persisted DB primary key and the session UUID captured at
+    /// start. This is the strict ordered seam for runtime-aware callers; the
+    /// legacy wrapper keeps its historical best-effort behavior.
+    pub async fn finish_tool_call_checked(
+        &self,
+        guard: ToolCallGuard,
+        success: bool,
+        result_text: &str,
+    ) -> anyhow::Result<()> {
+        let Some(record_id) = guard.record_id else {
+            return Ok(());
+        };
         let session_uuid = guard.session_uuid;
         let call_id = guard.call_id;
         let duration = guard.started_at.elapsed().as_millis() as i32;
         let status = if success { "finished" } else { "failed" };
         let result_text = truncate_for_db(result_text, 50_000);
         let mut gate = self.ready_gate.clone();
-        if await_db_ready(&mut gate).await {
-            self.backend
-                .record_tool_call_finish(&call_id, session_uuid, status, &result_text, duration)
-                .await;
+        if !await_db_ready(&mut gate).await {
+            anyhow::bail!("tool-call finish database is unavailable: call_id={call_id}");
         }
+        self.backend
+            .record_tool_call_finish(record_id, session_uuid, status, &result_text, duration)
+            .await
+            .map_err(|error| anyhow::anyhow!("finish tool_call {call_id}: {error}"))
     }
 
     // -- Token usage / message chains --------------------------------------

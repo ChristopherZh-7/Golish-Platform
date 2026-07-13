@@ -8,5 +8,6 @@
 //! - [`fetch`]: bulk fetch helpers used by briefings and the recent-memories UI.
 
 mod fetch;
+pub mod policy;
 mod search;
 mod store;

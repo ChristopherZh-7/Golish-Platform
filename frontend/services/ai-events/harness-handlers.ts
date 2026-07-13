@@ -6,8 +6,9 @@
  * tool-call detail pane (ToolCallDetailView → StageRunOrgRows) renders live
  * per-org fan-out progress on the `stage_run` tool row (design
  * 2026-06-13-stage-run-fanout, Task 6 — the real-event path that supersedes the
- * dev-only `__mockStageRun`). Other harness-trace kinds (gate / evidence /
- * deliverable / notes) are observability traces handled elsewhere, ignored here.
+ * dev-only `__mockStageRun`). Candidate review traces are refresh-only hints:
+ * the UI still reloads the durable review/barrier rows through IPC. Reporting
+ * gate/deliverable traces likewise only point the chat at a DB-backed read.
  */
 
 import type {
@@ -59,18 +60,38 @@ export function stageRunRequestIdFromAgentRequestId(agentRequestId?: string | nu
 }
 
 /**
- * Handle a `harness_trace` event. Only `stage_run_org_progress` drives UI today;
- * it upserts the per-org row into the session's stage-run, rendered in the
- * standard tool-call detail pane (ToolCallDetailView → StageRunOrgRows).
+ * Handle the two UI-facing trace families. Neither trace is authoritative:
+ * stage rows are progress display and Candidate review traces only trigger a
+ * DB reload in the detail panel.
  */
 export const handleHarnessTrace: EventHandler<Extract<AiEvent, { type: "harness_trace" }>> = (
   event,
   ctx
 ) => {
+  if (event.kind === "candidate_review_required" || event.kind === "candidate_review_resumed") {
+    ctx.getState().setCandidateReviewHint(ctx.sessionId, {
+      operationId: event.operation_id,
+      waveRunId: event.wave_run_id,
+      status: event.kind === "candidate_review_resumed" ? "resumed" : event.status,
+      resumeVersion: event.resume_version,
+    });
+    return;
+  }
+  if (
+    event.stage === "reporting" &&
+    (event.kind === "gate_decision" || event.kind === "deliverable_submitted") &&
+    event.operation_id.trim()
+  ) {
+    ctx.getState().setReportingReadModelHint(ctx.sessionId, {
+      operationId: event.operation_id,
+    });
+    return;
+  }
   if (event.kind !== "stage_run_org_progress") return;
 
   const row: StageRunRow = {
     id: event.org_id,
+    operationId: event.operation_id,
     name: event.org_name,
     ownershipPercent: event.ownership_percent ?? null,
     status: toStageRunStatus(event.status),

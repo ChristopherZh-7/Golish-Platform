@@ -1,5 +1,6 @@
 //! Single-subtask execution with enrichment, planning, and reflector retry.
 
+use anyhow::Context;
 use uuid::Uuid;
 
 use crate::db_shim::subtasks;
@@ -49,6 +50,38 @@ fn should_retry_gate_block(
     reflector_attempt < MAX_REFLECTOR_RETRIES && !stage_run_retry_budget_exhausted
 }
 
+fn exact_candidate_v2_contracts(
+    runtime: crate::runtime_memory::RuntimeMemoryContract,
+    attack: golish_core::AttackExecutionContract,
+) -> bool {
+    runtime == crate::runtime_memory::RuntimeMemoryContract::V2Only
+        && attack == golish_core::AttackExecutionContract::V2Only
+}
+
+/// Resolve the specialist visible to the depth-0 stage coordinator. Candidate
+/// V2 specialists are additive rollout behavior: Verification has no legacy
+/// specialist, and AttackCandidate retains its configured legacy analyst until
+/// both immutable operation contracts are exactly V2Only.
+fn effective_stage_run_specialist(
+    stage: crate::harness::StageKind,
+    configured: Option<&str>,
+    exact_candidate_v2: bool,
+) -> Option<String> {
+    let configured = configured
+        .map(str::trim)
+        .filter(|specialist| !specialist.is_empty())
+        .map(ToOwned::to_owned);
+    match stage {
+        crate::harness::StageKind::Verification => {
+            exact_candidate_v2.then(|| "candidate_verifier".to_string())
+        }
+        crate::harness::StageKind::AttackCandidate if exact_candidate_v2 => {
+            Some("attack_analyst".to_string())
+        }
+        _ => configured,
+    }
+}
+
 impl TaskOrchestrator {
     /// Execute a single subtask with enrichment, planning, reflector retry,
     /// and optional user input pause.
@@ -66,44 +99,58 @@ impl TaskOrchestrator {
         task_id: Uuid,
     ) -> (String, Option<AgentTokenUsage>) {
         let agent_type = planned.agent.as_deref().unwrap_or("primary");
+        let reporting_stage = planned
+            .harness_stage
+            .as_ref()
+            .is_some_and(|hint| hint.stage_kind == crate::harness::StageKind::Reporting);
 
         // Phase 1: Enrich — gather supplementary context
-        let enrichment = match executor
-            .enrich_subtask(&planned.title, &planned.description, exec_ctx, agent_type)
-            .await
-        {
-            Ok(Some(ctx)) => {
-                tracing::info!(
-                    "[TaskMode] Enrichment added for '{}': {} chars",
-                    planned.title,
-                    ctx.len()
-                );
-                Some(ctx)
-            }
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!("[TaskMode] Enrichment failed (continuing): {}", e);
-                None
+        let enrichment = if reporting_stage {
+            // Reporting authority is the server-built canonical read model. Do
+            // not let generic memory/wiki enrichment become report truth.
+            None
+        } else {
+            match executor
+                .enrich_subtask(&planned.title, &planned.description, exec_ctx, agent_type)
+                .await
+            {
+                Ok(Some(ctx)) => {
+                    tracing::info!(
+                        "[TaskMode] Enrichment added for '{}': {} chars",
+                        planned.title,
+                        ctx.len()
+                    );
+                    Some(ctx)
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!("[TaskMode] Enrichment failed (continuing): {}", e);
+                    None
+                }
             }
         };
 
         // Phase 2: Plan — generate execution checklist
-        let execution_plan = match executor
-            .plan_subtask(&planned.title, &planned.description, exec_ctx, agent_type)
-            .await
-        {
-            Ok(Some(plan)) => {
-                tracing::info!(
-                    "[TaskMode] Execution plan generated for '{}': {} chars",
-                    planned.title,
-                    plan.len()
-                );
-                Some(plan)
-            }
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!("[TaskMode] Planning failed (continuing): {}", e);
-                None
+        let execution_plan = if reporting_stage {
+            None
+        } else {
+            match executor
+                .plan_subtask(&planned.title, &planned.description, exec_ctx, agent_type)
+                .await
+            {
+                Ok(Some(plan)) => {
+                    tracing::info!(
+                        "[TaskMode] Execution plan generated for '{}': {} chars",
+                        planned.title,
+                        plan.len()
+                    );
+                    Some(plan)
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!("[TaskMode] Planning failed (continuing): {}", e);
+                    None
+                }
             }
         };
 
@@ -114,7 +161,20 @@ impl TaskOrchestrator {
             // 允许/禁止工具面 + deliverable/gate 要求).
             {
                 if let Some(hint) = planned.harness_stage.as_ref() {
-                    if let Ok(spec) = crate::harness::load_embedded_stage_spec(hint.stage_kind) {
+                    if let Ok(mut spec) = crate::harness::load_embedded_stage_spec(hint.stage_kind)
+                    {
+                        let exact_candidate_v2 = self
+                            .candidate_v2_specialist_for_operation(
+                                task_id,
+                                hint.stage_kind,
+                                "fresh_stage_prompt",
+                            )
+                            .await;
+                        spec.specialist = effective_stage_run_specialist(
+                            hint.stage_kind,
+                            spec.specialist.as_deref(),
+                            exact_candidate_v2,
+                        );
                         let scoping_policy = scoping_policy_for_ctx(exec_ctx);
                         desc.push_str(&super::super::prompts::stage_charter(
                             &spec,
@@ -176,13 +236,15 @@ impl TaskOrchestrator {
                         // known exploits/findings before testing. (Graph prior
                         // needs a graph handle the orchestrator doesn't hold yet
                         // → wiki-only here; graph wiring is a follow-up.)
-                        let pk = crate::harness::rag_prior::retrieve_wiki_prior(
-                            &*self.repo,
-                            &planned.title,
-                            5,
-                        )
-                        .await;
-                        desc.push_str(&crate::harness::rag_prior::render_prior_knowledge(&pk));
+                        if hint.stage_kind != crate::harness::StageKind::Reporting {
+                            let pk = crate::harness::rag_prior::retrieve_wiki_prior(
+                                &*self.repo,
+                                &planned.title,
+                                5,
+                            )
+                            .await;
+                            desc.push_str(&crate::harness::rag_prior::render_prior_knowledge(&pk));
+                        }
                     }
                 }
             }
@@ -290,12 +352,15 @@ impl TaskOrchestrator {
                         .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref(), task_id)
                         .await;
                     let source_queries = self.fetch_source_queries_for_gate(planned).await;
+                    let reporting_truth =
+                        self.fetch_reporting_truth_for_gate(planned, task_id).await;
                     // 设计 2026-06-12-unified-refiner · Refiner C 类诊断与 gate 用
                     // 同一份证据事实；hook move 走原值，这里留一份给渲染。
                     let refine_facts = evidence_facts.clone();
                     // Phase 1.5: fan-out 阶段收尾改判 stage_run pass_token（B-recompute），
                     // 跳过整阶段 coverage；非 fan-out / 不可解析交付物走常规 gate。
                     let mut specialist_gated = false;
+                    let trusted_submission = agent_result.captured_stage_submission.clone();
                     let (gated_content, gate_outcome) = if let Some(res) = self
                         .try_specialist_stage_gate(planned, &agent_result.content, task_id)
                         .await
@@ -314,10 +379,16 @@ impl TaskOrchestrator {
                             in_scope_target_types,
                             evidence_facts,
                             source_queries,
+                            reporting_truth,
                             self.harness_subsidiary_policy.map(|p| p.threshold_pct),
                         )
                     };
                     if let Some(mut outcome) = gate_outcome {
+                        outcome.trusted_submission = trusted_submission;
+                        self.enforce_trusted_submission(&mut outcome, exec_ctx)
+                            .await;
+                        self.enforce_cleanup_closeout_gate(task_id, &mut outcome)
+                            .await;
                         // P0 · reject deliverables citing fabricated evidence ids
                         // (may flip PASS→BLOCK) before the retry decision below.
                         self.enforce_evidence_existence(&mut outcome).await;
@@ -485,9 +556,11 @@ impl TaskOrchestrator {
             }
         }
 
-        let fallback = last_result
-            .map(|r| r.content)
-            .unwrap_or_else(|| "Subtask completed without tool usage.".to_string());
+        let fallback_result = last_result.unwrap_or_else(|| {
+            AgentResult::new("Subtask completed without tool usage.".to_string())
+        });
+        let trusted_submission = fallback_result.captured_stage_submission.clone();
+        let fallback = fallback_result.content;
         // Loop exhausted: run the gate once on the fallback content (no further
         // retry possible) and drive the transition on whatever it decides.
         let in_scope_assets = self.fetch_in_scope_assets_for_gate(planned, task_id).await;
@@ -503,6 +576,7 @@ impl TaskOrchestrator {
             .fetch_evidence_facts_for_gate(planned, in_scope_assets.as_deref(), task_id)
             .await;
         let source_queries = self.fetch_source_queries_for_gate(planned).await;
+        let reporting_truth = self.fetch_reporting_truth_for_gate(planned, task_id).await;
         let refine_facts = evidence_facts.clone();
         // Phase 1.5: fan-out 阶段收尾改判 stage_run pass_token；非 fan-out 走常规 gate。
         let mut specialist_gated = false;
@@ -524,10 +598,16 @@ impl TaskOrchestrator {
                 in_scope_target_types,
                 evidence_facts,
                 source_queries,
+                reporting_truth,
                 self.harness_subsidiary_policy.map(|p| p.threshold_pct),
             )
         };
         if let Some(mut outcome) = gate_outcome {
+            outcome.trusted_submission = trusted_submission;
+            self.enforce_trusted_submission(&mut outcome, exec_ctx)
+                .await;
+            self.enforce_cleanup_closeout_gate(task_id, &mut outcome)
+                .await;
             self.enforce_evidence_existence(&mut outcome).await;
             self.enforce_evidence_kinds(&mut outcome).await;
             self.enforce_evidence_freshness(&mut outcome).await;
@@ -558,6 +638,168 @@ impl TaskOrchestrator {
             self.consume_gate_outcome(task_id, outcome).await;
         }
         (out, None)
+    }
+
+    /// V2 stage close is authorized by the immutable submission row, never by
+    /// a parseable JSON fence alone. Legacy operations retain the compatibility
+    /// path; every V2-writing contract must round-trip the bridge capture through
+    /// the scoped repository before the gate can remain PASS.
+    async fn enforce_trusted_submission(
+        &self,
+        outcome: &mut HarnessGateOutcome,
+        exec_ctx: &ExecutionContext,
+    ) {
+        use sha2::{Digest, Sha256};
+
+        let Some(operation_id) = exec_ctx.operation_id else {
+            return;
+        };
+        let contract = match self
+            .runtime_repo
+            .runtime_memory_contract_for_operation(operation_id)
+            .await
+        {
+            Ok(contract) => contract,
+            Err(error) => {
+                outcome.gate_allowed = false;
+                outcome.gate_reasons.push(format!(
+                    "trusted runtime contract lookup failed at stage close: {error}"
+                ));
+                return;
+            }
+        };
+        if contract == crate::runtime_memory::RuntimeMemoryContract::LegacyV1 {
+            return;
+        }
+
+        let Some(captured) = outcome.trusted_submission.as_ref() else {
+            outcome.gate_allowed = false;
+            outcome.gate_reasons.push(
+                "V2 stage close requires a durable deliverable submission; a prose/legacy JSON capture is not authoritative."
+                    .to_string(),
+            );
+            return;
+        };
+        if captured.operation_id != operation_id
+            || Some(captured.stage_execution_id) != exec_ctx.stage_execution_id
+            || captured.stage_run_unit_id != exec_ctx.stage_run_unit_id
+        {
+            outcome.gate_allowed = false;
+            outcome.gate_reasons.push(
+                "trusted deliverable submission does not belong to the active operation/execution/unit."
+                    .to_string(),
+            );
+            return;
+        }
+        let actual_sha = Sha256::digest(captured.canonical_deliverable_json.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if actual_sha != captured.payload_sha256 {
+            outcome.gate_allowed = false;
+            outcome
+                .gate_reasons
+                .push("trusted deliverable capture hash mismatch.".to_string());
+            return;
+        }
+        let canonical_payload =
+            match serde_json::from_str::<serde_json::Value>(&captured.canonical_deliverable_json) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    outcome.gate_allowed = false;
+                    outcome.gate_reasons.push(format!(
+                        "trusted deliverable capture is invalid canonical JSON: {error}"
+                    ));
+                    return;
+                }
+            };
+        let persisted = match self
+            .runtime_repo
+            .load_stage_deliverable_submission(
+                captured.deliverable_submission_id,
+                operation_id,
+                captured.stage_execution_id,
+            )
+            .await
+        {
+            Ok(Some(persisted)) => persisted,
+            Ok(None) => {
+                outcome.gate_allowed = false;
+                outcome
+                    .gate_reasons
+                    .push("trusted deliverable submission row is missing.".to_string());
+                return;
+            }
+            Err(error) => {
+                outcome.gate_allowed = false;
+                outcome.gate_reasons.push(format!(
+                    "trusted deliverable submission reload failed: {error}"
+                ));
+                return;
+            }
+        };
+        if persisted.operation_id != operation_id
+            || persisted.stage_execution_id != captured.stage_execution_id
+            || persisted.stage_run_unit_id != captured.stage_run_unit_id
+            || persisted.payload_sha256 != captured.payload_sha256
+            || persisted.payload != canonical_payload
+            || persisted.stage_kind != outcome.gated_stage.as_str()
+        {
+            outcome.gate_allowed = false;
+            outcome.gate_reasons.push(
+                "trusted deliverable submission changed or failed its scoped identity reload."
+                    .to_string(),
+            );
+        }
+    }
+
+    /// Candidate V2 execution and exact Verification truth are enabled only
+    /// when both operation-frozen rollout contracts have reached V2Only.
+    async fn exact_candidate_v2_operation(&self, operation_id: Uuid) -> Result<bool, String> {
+        let runtime = self
+            .runtime_repo
+            .runtime_memory_contract_for_operation(operation_id)
+            .await
+            .map_err(|error| format!("runtime contract lookup failed: {error}"))?;
+        let attack = self
+            .runtime_repo
+            .attack_execution_contract_for_operation(operation_id)
+            .await
+            .map_err(|error| format!("attack contract lookup failed: {error}"))?;
+        Ok(exact_candidate_v2_contracts(runtime, attack))
+    }
+
+    /// Read the operation-frozen Candidate rollout pair for a coordinator seam.
+    /// A lookup failure on a Candidate stage fails closed to the specialist-only
+    /// route: `stage_run` will repeat the authoritative read and refuse dispatch
+    /// if the contracts still cannot be loaded, instead of allowing direct work
+    /// to bypass the immutable scheduler.
+    async fn candidate_v2_specialist_for_operation(
+        &self,
+        operation_id: Uuid,
+        stage: crate::harness::StageKind,
+        seam: &'static str,
+    ) -> bool {
+        if !matches!(
+            stage,
+            crate::harness::StageKind::AttackCandidate | crate::harness::StageKind::Verification
+        ) {
+            return false;
+        }
+        match self.exact_candidate_v2_operation(operation_id).await {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    operation_id = %operation_id,
+                    stage = %stage.as_str(),
+                    seam,
+                    %error,
+                    "Candidate contract lookup failed; keeping the primary on the specialist-only route"
+                );
+                true
+            }
+        }
     }
 
     /// Post-gate handling for the Executor-driven stage loop, shared by both gate
@@ -649,8 +891,66 @@ impl TaskOrchestrator {
         // the dedupe set + wave counter (it holds the deliverable candidates +
         // DB); the graph node re-applies the hard cap as defense-in-depth. Only
         // `verification` can open a wave; every other stage reports `false`.
+        let (v2_verification_truth, verification_truth_load_failed) =
+            if outcome.gated_stage == crate::harness::StageKind::Verification {
+                match self.exact_candidate_v2_operation(task_id).await {
+                    Ok(true) => match self
+                        .repo
+                        .attack_v2_verification_truth_for_operation(task_id, None)
+                        .await
+                    {
+                        Ok(Some(truth)) => {
+                            match crate::harness::attack_execution::validate_verification_truth_set(
+                                &truth,
+                            ) {
+                                Ok(()) => (Some(truth), false),
+                                Err(error) => {
+                                    tracing::warn!(
+                                        target: "harness::hook",
+                                        operation_id = %task_id,
+                                        error = %error,
+                                        "Verification flow rejected inconsistent exact DB truth"
+                                    );
+                                    (None, true)
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                target: "harness::hook",
+                                operation_id = %task_id,
+                                "V2Only Verification flow is missing exact DB truth"
+                            );
+                            (None, true)
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "harness::hook",
+                                operation_id = %task_id,
+                                error = %error,
+                                "Verification flow could not reload exact DB truth"
+                            );
+                            (None, true)
+                        }
+                    },
+                    Ok(false) => (None, false),
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "harness::hook",
+                            operation_id = %task_id,
+                            error = %error,
+                            "Verification flow could not resolve persisted Candidate V2 contracts"
+                        );
+                        (None, true)
+                    }
+                }
+            } else {
+                (None, false)
+            };
         let reopen_wave = if outcome.gate_allowed
             && outcome.gated_stage == crate::harness::StageKind::Verification
+            && v2_verification_truth.is_none()
+            && !verification_truth_load_failed
         {
             match crate::harness::chain_wave::decide_chain_wave(
                 &outcome.spawned_candidates,
@@ -680,10 +980,19 @@ impl TaskOrchestrator {
             false
         };
 
-        let flow = crate::harness::operation_flow::StageFlowOutcome {
-            gate_allowed: outcome.gate_allowed,
-            made_progress: gate_outcome_made_progress(&outcome),
-            reopen_wave,
+        let flow = if verification_truth_load_failed {
+            crate::harness::operation_flow::StageFlowOutcome::blocked()
+        } else if let Some(truth) = v2_verification_truth.as_ref() {
+            let mut exact = crate::harness::operation_flow::exact_verification_flow_outcome(truth);
+            exact.gate_allowed &= outcome.gate_allowed;
+            exact.made_progress &= outcome.gate_allowed;
+            exact
+        } else {
+            crate::harness::operation_flow::StageFlowOutcome {
+                gate_allowed: outcome.gate_allowed,
+                made_progress: gate_outcome_made_progress(&outcome),
+                reopen_wave,
+            }
         };
         self.stage_outcome_acc = Some(match self.stage_outcome_acc.take() {
             Some(prev) => crate::harness::operation_flow::StageFlowOutcome {
@@ -711,17 +1020,44 @@ impl TaskOrchestrator {
         executor: &dyn AgentExecutor,
         resume: bool,
         request_input_override: Option<&str>,
+        expected_initial_stage_execution_id: Option<Uuid>,
     ) -> anyhow::Result<String> {
         use crate::harness::operation_flow::{
             build_runner_graph, ChannelStageRunner, OperationFlowState, StageRunRequest,
         };
 
+        let operation = crate::db_shim::operation_state::get(&*self.repo, task_id)
+            .await
+            .context("load runtime operation before executor-driven run")?
+            .ok_or_else(|| anyhow::anyhow!("runtime operation {task_id} is missing"))?;
+        let active_stage_execution = self
+            .runtime_repo
+            .active_stage_execution(task_id)
+            .await
+            .map_err(anyhow::Error::new)
+            .context("load exact active stage execution before executor-driven run")?;
+        anyhow::ensure!(
+            active_stage_execution.operation_id == task_id,
+            "active stage execution belongs to a different operation"
+        );
+        anyhow::ensure!(
+            active_stage_execution.status
+                == crate::task_orchestrator::stage_execution::StageExecutionStatus::Started,
+            "active stage execution is not started"
+        );
+        anyhow::ensure!(
+            active_stage_execution.stage.as_str() == operation.current_stage,
+            "operation cursor and active stage execution disagree"
+        );
+        if let Some(expected_id) = expected_initial_stage_execution_id {
+            anyhow::ensure!(
+                active_stage_execution.id == expected_id,
+                "atomic create returned an initial stage execution that is not active"
+            );
+        }
         let (op_max_authz, op_profile_id) =
-            match crate::db_shim::operation_state::get(&*self.repo, task_id).await {
-                Ok(Some(state)) => match crate::harness::load_embedded_profile(&state.profile) {
-                    Ok(Some(p)) => (Some(p.max_authorization), Some(state.profile)),
-                    _ => (None, None),
-                },
+            match crate::harness::load_embedded_profile(&operation.profile) {
+                Ok(Some(p)) => (Some(p.max_authorization), Some(operation.profile.clone())),
                 _ => (None, None),
             };
 
@@ -754,14 +1090,13 @@ impl TaskOrchestrator {
                 .await;
                 Some(id)
             }
-            None => crate::db_shim::operation_state::get(&*self.repo, task_id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|s| s.engagement_org_id),
+            None => operation.engagement_org_id,
         };
         let mut exec_ctx = ExecutionContext {
             operation_id: Some(task_id),
+            stage_execution_id: Some(active_stage_execution.id),
+            stage_run_unit_id: None,
+            worker_lease: None,
             completed_results: Vec::new(),
             task_input,
             current_subtask: None,
@@ -938,7 +1273,12 @@ impl TaskOrchestrator {
                         planner_subtasks = indices.len(),
                         "graph-flow: entering stage"
                     );
-                    self.sync_operation_stage_on_entry(task_id, req.stage).await;
+                    // Stage work is permitted only after the exact durable
+                    // execution identity has been loaded or atomically rotated.
+                    // Propagating this error drops the request without invoking
+                    // the stage body, so a failed transition cannot execute under
+                    // the previous stage's identity.
+                    self.sync_stage_execution_on_entry(&mut exec_ctx, task_id, req.stage).await?;
                     // Two-level model (flag on): run the stage, then hold for human
                     // approval before crossing a 大阶段 boundary. A decline that
                     // carries a reviewer note re-runs THIS stage with the note as a
@@ -1056,55 +1396,90 @@ impl TaskOrchestrator {
         exec_ctx.harness_org_id = self.harness_org_id;
     }
 
-    /// Keep the operation-state cursor aligned with the stage currently being
-    /// executed. `operation_state.advance_stage` also refreshes `stage_started_at`,
-    /// so we only call it when the stage actually changes; a same-stage resume must
-    /// preserve the original start time for freshness-window gates.
-    async fn sync_operation_stage_on_entry(&self, task_id: Uuid, stage: crate::harness::StageKind) {
-        let desired = stage.as_str();
-        match crate::db_shim::operation_state::get(&*self.repo, task_id).await {
-            Ok(Some(state)) if state.current_stage == desired => {
-                tracing::debug!(
-                    target: "harness::hook",
-                    task_id = %task_id,
-                    stage = %desired,
-                    "graph-flow: operation_state cursor already at stage"
-                );
-            }
-            Ok(Some(state)) => {
-                match crate::db_shim::operation_state::advance_stage(&*self.repo, task_id, desired)
-                    .await
-                {
-                    Ok(()) => tracing::info!(
-                        target: "harness::hook",
-                        task_id = %task_id,
-                        previous_stage = %state.current_stage,
-                        stage = %desired,
-                        "graph-flow: operation_state cursor entered stage"
-                    ),
-                    Err(e) => tracing::warn!(
-                        target: "harness::hook",
-                        task_id = %task_id,
-                        stage = %desired,
-                        error = %e,
-                        "graph-flow: operation_state stage-entry sync failed"
-                    ),
-                }
-            }
-            Ok(None) => tracing::warn!(
+    /// Bind stage entry to the exact durable execution identity. A same-stage
+    /// resume retains the active id and freshness anchor; a real stage change is
+    /// one atomic close/open/cursor transition. Context changes happen only after
+    /// the repository returns and validates the complete transition.
+    async fn sync_stage_execution_on_entry(
+        &self,
+        exec_ctx: &mut ExecutionContext,
+        operation_id: Uuid,
+        stage: crate::harness::StageKind,
+    ) -> anyhow::Result<()> {
+        use crate::task_orchestrator::stage_execution::{
+            StageExecutionStatus, TransitionStageExecution,
+        };
+
+        anyhow::ensure!(
+            exec_ctx.operation_id == Some(operation_id),
+            "execution context operation identity does not match stage entry"
+        );
+        let active = self
+            .runtime_repo
+            .active_stage_execution(operation_id)
+            .await
+            .map_err(anyhow::Error::new)
+            .context("load exact active stage execution on stage entry")?;
+        anyhow::ensure!(
+            active.operation_id == operation_id && active.status == StageExecutionStatus::Started,
+            "repository returned an invalid active stage execution"
+        );
+        anyhow::ensure!(
+            exec_ctx.stage_execution_id == Some(active.id),
+            "execution context stage identity is stale"
+        );
+
+        if active.stage == stage {
+            tracing::debug!(
                 target: "harness::hook",
-                task_id = %task_id,
-                stage = %desired,
-                "graph-flow: operation_state missing during stage-entry sync"
-            ),
-            Err(e) => tracing::warn!(
-                target: "harness::hook",
-                task_id = %task_id,
-                stage = %desired,
-                error = %e,
-                "graph-flow: operation_state stage-entry lookup failed"
-            ),
+                operation_id = %operation_id,
+                stage_execution_id = %active.id,
+                stage = %stage.as_str(),
+                "graph-flow: retaining same-stage execution identity"
+            );
+            return Ok(());
         }
+
+        let next_stage_execution_id = Uuid::new_v4();
+        let transitioned = self
+            .runtime_repo
+            .transition_stage_execution(TransitionStageExecution {
+                operation_id,
+                current_stage_execution_id: active.id,
+                next_stage_execution_id,
+                next_stage: stage,
+            })
+            .await
+            .map_err(anyhow::Error::new)
+            .context("atomically transition stage execution on stage entry")?;
+        anyhow::ensure!(
+            transitioned.previous.id == active.id
+                && transitioned.previous.operation_id == operation_id
+                && transitioned.previous.stage == active.stage
+                && transitioned.previous.status == StageExecutionStatus::Completed,
+            "repository returned an invalid previous stage execution"
+        );
+        anyhow::ensure!(
+            transitioned.current.id == next_stage_execution_id
+                && transitioned.current.operation_id == operation_id
+                && transitioned.current.stage == stage
+                && transitioned.current.status == StageExecutionStatus::Started,
+            "repository returned an invalid current stage execution"
+        );
+
+        exec_ctx.stage_execution_id = Some(transitioned.current.id);
+        exec_ctx.stage_run_unit_id = None;
+        exec_ctx.worker_lease = None;
+        tracing::info!(
+            target: "harness::hook",
+            operation_id = %operation_id,
+            previous_stage_execution_id = %transitioned.previous.id,
+            stage_execution_id = %transitioned.current.id,
+            previous_stage = %transitioned.previous.stage.as_str(),
+            stage = %stage.as_str(),
+            "graph-flow: atomically entered stage execution"
+        );
+        Ok(())
     }
 
     /// P2 方案 C · run one stage's subtask group under the Executor.
@@ -1126,6 +1501,51 @@ impl TaskOrchestrator {
         human_correction: Option<&str>,
     ) -> crate::harness::operation_flow::StageFlowOutcome {
         self.stage_outcome_acc = None;
+
+        // Reporting is prepared entirely from canonical DB truth before any
+        // agent turn. This seam can build/validate a revision, but exposes no
+        // artifact or finalization operation; publication remains an explicit
+        // local-operator command after stage completion.
+        if stage == crate::harness::StageKind::Reporting {
+            let preparation = self
+                .repo
+                .reporting_build_validated_revision(task_id)
+                .await
+                .and_then(|truth| {
+                    if truth.operation_id != task_id {
+                        anyhow::bail!("REPORT_OPERATION_MISMATCH");
+                    }
+                    crate::harness::validate_reporting_gate_truth(&truth)
+                        .map_err(anyhow::Error::new)?;
+                    Ok(truth)
+                });
+            match preparation {
+                Ok(truth) => {
+                    tracing::info!(
+                        target: "harness::hook",
+                        operation_id = %task_id,
+                        report_id = %truth.report_id,
+                        revision_id = %truth.revision_id,
+                        publication_status = %truth.publication_status,
+                        "reporting canonical revision prepared and validated"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        operation_id = %task_id,
+                        error = %error,
+                        "reporting canonical revision preparation failed; stage blocked"
+                    );
+                    self.emit(AiEvent::TaskProgress {
+                        task_id: task_id.to_string(),
+                        status: "blocked".to_string(),
+                        message: format!("Reporting canonical read model is not ready: {error}"),
+                    });
+                    return crate::harness::operation_flow::StageFlowOutcome::blocked();
+                }
+            }
+        }
 
         // Agent-driven stage body (设计 2026-06-04 · D1=B / 阶段内 todo).
         //
@@ -1176,8 +1596,11 @@ impl TaskOrchestrator {
         // projection) see the bound org instead of a stale `None`.
         self.sync_engagement_org_into(exec_ctx);
         let force_stage_run = if std::mem::take(&mut self.force_stage_run_on_resume_once) {
-            let can_force =
-                exec_ctx.harness_org_id.is_some() && stage_has_stage_run_specialist(stage);
+            let exact_candidate_v2 = self
+                .candidate_v2_specialist_for_operation(task_id, stage, "fast_resume")
+                .await;
+            let can_force = exec_ctx.harness_org_id.is_some()
+                && stage_has_stage_run_specialist(stage, exact_candidate_v2);
             if !can_force {
                 tracing::info!(
                     target: "harness::hook",
@@ -1289,6 +1712,79 @@ impl TaskOrchestrator {
     ) -> PhaseGateDecision {
         if !outcome.gate_allowed {
             return PhaseGateDecision::Allowed;
+        }
+        if from_stage == crate::harness::StageKind::AttackCandidate {
+            let barrier = match self
+                .repo
+                .attack_v2_review_barrier_for_operation(task_id)
+                .await
+            {
+                Ok(barrier) => barrier,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        task_id = %task_id,
+                        error = %error,
+                        "Candidate review barrier DB read failed; holding stage"
+                    );
+                    self.emit(AiEvent::TaskProgress {
+                        task_id: task_id.to_string(),
+                        status: "waiting_approval".to_string(),
+                        message: "Candidate review is unavailable; holding before verification."
+                            .to_string(),
+                    });
+                    return PhaseGateDecision::Held;
+                }
+            };
+            let snapshot = crate::harness::attack_execution::ReviewBarrierSnapshot {
+                wave_unit_count: barrier.wave_unit_count,
+                review_closed_unit_count: barrier.review_closed_unit_count,
+                candidate_count: barrier.candidate_count,
+                proposed_candidate_count: barrier.proposed_candidate_count,
+                durable_status: barrier.status.clone(),
+                dispatch_is_stale: barrier.dispatch_is_stale,
+            };
+            let action = match crate::harness::attack_execution::decide_review_barrier(&snapshot) {
+                Ok(action) => action,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "harness::hook",
+                        task_id = %task_id,
+                        error = %error,
+                        "Candidate review barrier snapshot is inconsistent; holding stage"
+                    );
+                    return PhaseGateDecision::Held;
+                }
+            };
+            if matches!(
+                action,
+                crate::harness::attack_execution::ReviewBarrierAction::Resumed
+                    | crate::harness::attack_execution::ReviewBarrierAction::Terminal
+            ) {
+                return PhaseGateDecision::Allowed;
+            }
+            self.emit(AiEvent::TaskProgress {
+                task_id: task_id.to_string(),
+                status: "waiting_approval".to_string(),
+                message: format!(
+                    "Candidate review required for durable wave {} before verification.",
+                    barrier.wave_run_id
+                ),
+            });
+            self.emit(AiEvent::HarnessTrace {
+                operation_id: task_id.to_string(),
+                stage: from_stage.as_str().to_string(),
+                agent_path: "main".to_string(),
+                trace: golish_core::events::HarnessTraceKind::CandidateReviewRequired {
+                    wave_run_id: barrier.wave_run_id.to_string(),
+                    status: barrier.status,
+                    resume_version: barrier.resume_version,
+                    candidate_count: i64::try_from(barrier.candidate_count).unwrap_or(i64::MAX),
+                    proposed_candidate_count: i64::try_from(barrier.proposed_candidate_count)
+                        .unwrap_or(i64::MAX),
+                },
+            });
+            return PhaseGateDecision::Held;
         }
         let Some(profile) = profile else {
             return PhaseGateDecision::Allowed;
@@ -1764,13 +2260,76 @@ impl TaskOrchestrator {
         task_id: Uuid,
     ) -> Option<(String, Option<HarnessGateOutcome>)> {
         let stage = planned.harness_stage.as_ref()?.stage_kind;
-        let is_fanout = crate::harness::load_embedded_stage_spec(stage)
+        let configured_fanout = crate::harness::load_embedded_stage_spec(stage)
             .map(|s| s.specialist.is_some())
             .unwrap_or(false);
+        let exact_v2_verification = if stage == crate::harness::StageKind::Verification {
+            match self.exact_candidate_v2_operation(task_id).await {
+                Ok(enabled) => enabled,
+                Err(error) => {
+                    let deliverable = parse_deliverable_from_content(content)?;
+                    return Some(render_named_specialist_gate(
+                        content,
+                        stage,
+                        "verification_exact_db_truth",
+                        false,
+                        vec![format!(
+                            "Verification Candidate V2 contract lookup failed: {error}"
+                        )],
+                        &deliverable,
+                    ));
+                }
+            }
+        } else {
+            false
+        };
+        let is_fanout = configured_fanout || exact_v2_verification;
         if !is_fanout {
             return None;
         }
         let deliverable = parse_deliverable_from_content(content)?;
+        if exact_v2_verification {
+            match self
+                .repo
+                .attack_v2_verification_truth_for_operation(task_id, None)
+                .await
+            {
+                Ok(Some(truth)) => {
+                    let error =
+                        crate::harness::attack_execution::validate_verification_truth_set(&truth)
+                            .err()
+                            .map(|error| format!("Verification exact DB truth blocked: {error}"));
+                    return Some(render_named_specialist_gate(
+                        content,
+                        stage,
+                        "verification_exact_db_truth",
+                        error.is_none(),
+                        error.into_iter().collect(),
+                        &deliverable,
+                    ));
+                }
+                Ok(None) => {
+                    return Some(render_named_specialist_gate(
+                        content,
+                        stage,
+                        "verification_exact_db_truth",
+                        false,
+                        vec!["V2Only Verification is missing exact DB truth".to_string()],
+                        &deliverable,
+                    ));
+                }
+                Err(error) => {
+                    return Some(render_named_specialist_gate(
+                        content,
+                        stage,
+                        "verification_exact_db_truth",
+                        false,
+                        vec![format!("Verification DB truth load failed: {error}")],
+                        &deliverable,
+                    ));
+                }
+            }
+        }
         Some(
             self.verify_stage_run_pass_token(stage, content, &deliverable, task_id)
                 .await,
@@ -2114,6 +2673,90 @@ impl TaskOrchestrator {
             "#5: merged source_query_log rows into gate context"
         );
         Some(rows)
+    }
+
+    async fn fetch_reporting_truth_for_gate(
+        &self,
+        planned: &PlannedSubtask,
+        operation_id: Uuid,
+    ) -> Option<crate::harness::ReportingGateTruth> {
+        let stage = planned.harness_stage.as_ref()?.stage_kind;
+        if stage != crate::harness::StageKind::Reporting {
+            return None;
+        }
+        match self.repo.reporting_gate_truth(operation_id).await {
+            Ok(Some(truth)) if truth.operation_id == operation_id => Some(truth),
+            Ok(Some(truth)) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    expected_operation_id = %operation_id,
+                    actual_operation_id = %truth.operation_id,
+                    "reporting truth adapter returned a foreign operation; gate will block"
+                );
+                None
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    operation_id = %operation_id,
+                    "reporting current revision is missing; gate will block"
+                );
+                None
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "harness::hook",
+                    operation_id = %operation_id,
+                    %error,
+                    "reporting truth reload failed; gate will block"
+                );
+                None
+            }
+        }
+    }
+
+    /// Cleanup is never graded from model claims. The main-agent stage-close
+    /// path re-reads the exact operation/org obligation and residual counts;
+    /// missing identity or repository failure is a deterministic BLOCK.
+    async fn enforce_cleanup_closeout_gate(
+        &self,
+        operation_id: Uuid,
+        outcome: &mut HarnessGateOutcome,
+    ) {
+        if outcome.gated_stage != crate::harness::StageKind::Cleanup {
+            return;
+        }
+        let snapshot = match self.harness_org_id {
+            Some(organization_id) => self
+                .repo
+                .cleanup_closeout_gate(operation_id, organization_id)
+                .await
+                .map_err(|error| format!("cleanup authoritative closeout query failed: {error}")),
+            None => Err("cleanup gate requires exact organization identity".to_string()),
+        };
+        let reason = match snapshot {
+            Ok(snapshot) if snapshot.allows_closeout() => return,
+            Ok(snapshot) => format!(
+                "cleanup closeout blocked by DB truth: missing_obligations={}, nonterminal_obligations={}, undisclosed_residuals={}, invalid_terminal_truth={}",
+                snapshot.missing_obligation_count,
+                snapshot.nonterminal_obligation_count,
+                snapshot.undisclosed_residual_count,
+                snapshot.invalid_terminal_truth_count,
+            ),
+            Err(reason) => reason,
+        };
+        outcome.gate_allowed = false;
+        outcome.gate_reasons.push(reason);
+        let recovery = outcome.gate_recovery.get_or_insert_with(Default::default);
+        recovery.repair_tool_calls.extend([
+            "cleanup_inspect_obligation".to_string(),
+            "cleanup_execute_obligation".to_string(),
+            "cleanup_verify_absence".to_string(),
+        ]);
+        recovery.hints.push(
+            "retry exact cleanup/absence verification, or ask the local operator for a residual waiver; do not change deliverable prose"
+                .to_string(),
+        );
     }
 
     /// P0 · gate evidence 回查: 把交付物里引用、但 ledger 中**不存在**的 evidence
@@ -2579,6 +3222,9 @@ fn block_outcome_for_fabricated(
 struct HarnessGateOutcome {
     gated_stage: crate::harness::StageKind,
     gate_allowed: bool,
+    /// Exact DB-backed submission whose canonical payload was graded. Required
+    /// for every V2-writing operation; legacy operations may leave it absent.
+    trusted_submission: Option<crate::db_traits::CapturedStageSubmission>,
     /// C4 · when the gate BLOCKs, a correction message (reasons + recovery
     /// actions) the caller can feed back into the reflector retry loop so the
     /// agent re-does the subtask and resubmits a fixed deliverable. `None` when
@@ -2798,6 +3444,7 @@ fn apply_harness_gate_hook(
     in_scope_target_types: Vec<String>,
     evidence_facts: Option<Vec<crate::harness::gate::rule_engine::EvidenceFact>>,
     source_queries: Option<Vec<crate::harness::SourceQueryFact>>,
+    reporting_truth: Option<crate::harness::ReportingGateTruth>,
     subsidiary_threshold: Option<u8>,
 ) -> (String, Option<HarnessGateOutcome>) {
     let Some(stage_hint) = planned.harness_stage.as_ref() else {
@@ -2967,6 +3614,7 @@ fn apply_harness_gate_hook(
         .extend_evidence_facts(evidence_facts.unwrap_or_default())
         .extend_source_queries(source_queries.unwrap_or_default())
         .expected_techniques(expected_techniques)
+        .reporting_truth(reporting_truth)
         .build();
     let decision = harness.validate_gate_with_context(&deliverable, None, &gate_ctx);
 
@@ -3023,6 +3671,7 @@ fn apply_harness_gate_hook(
         Some(HarnessGateOutcome {
             gated_stage: stage_hint.stage_kind,
             gate_allowed: decision.allowed,
+            trusted_submission: None,
             engagement_org_id: extract_engagement_org_if_scoping(
                 stage_hint.stage_kind,
                 &deliverable,
@@ -3063,9 +3712,27 @@ fn render_specialist_gate(
     reasons: Vec<String>,
     deliverable: &crate::harness::StageDeliverable,
 ) -> (String, Option<HarnessGateOutcome>) {
+    render_named_specialist_gate(
+        content,
+        stage,
+        "stage_run_pass_token",
+        allowed,
+        reasons,
+        deliverable,
+    )
+}
+
+fn render_named_specialist_gate(
+    content: &str,
+    stage: crate::harness::StageKind,
+    gate_name: &str,
+    allowed: bool,
+    reasons: Vec<String>,
+    deliverable: &crate::harness::StageDeliverable,
+) -> (String, Option<HarnessGateOutcome>) {
     let decision = serde_json::json!({
         "allowed": allowed,
-        "gate": "stage_run_pass_token",
+        "gate": gate_name,
         "reasons": reasons.clone(),
     });
     let decision_json = serde_json::to_string_pretty(&decision)
@@ -3079,6 +3746,7 @@ fn render_specialist_gate(
         Some(HarnessGateOutcome {
             gated_stage: stage,
             gate_allowed: allowed,
+            trusted_submission: None,
             engagement_org_id: None,
             repair_correction: None,
             evidence_summary: Some(summarize_deliverable(deliverable)),
@@ -3246,6 +3914,7 @@ fn missing_deliverable_gate_outcome(
     Some(HarnessGateOutcome {
         gated_stage: stage,
         gate_allowed: false,
+        trusted_submission: None,
         engagement_org_id: None,
         repair_correction: None,
         evidence_summary: None,
@@ -3473,12 +4142,16 @@ fn intel_policy_for_ctx(exec_ctx: &ExecutionContext) -> crate::harness::profile:
         .unwrap_or_default()
 }
 
-fn stage_has_stage_run_specialist(stage: crate::harness::StageKind) -> bool {
+fn stage_has_stage_run_specialist(
+    stage: crate::harness::StageKind,
+    exact_candidate_v2: bool,
+) -> bool {
     crate::harness::load_embedded_stage_spec(stage)
         .ok()
-        .and_then(|spec| spec.specialist)
-        .map(|specialist| !specialist.trim().is_empty())
-        .unwrap_or(false)
+        .and_then(|spec| {
+            effective_stage_run_specialist(stage, spec.specialist.as_deref(), exact_candidate_v2)
+        })
+        .is_some()
 }
 
 fn synthesize_stage_subtask(
@@ -3601,10 +4274,14 @@ fn synthesize_stage_subtask(
             "pentester",
         ),
         K::Reporting => (
-            "Final Report Compilation",
+            "Validated Report Read Model",
             format!(
-                "Compile the final report for `{target}`: scope, methodology, findings with \
-                 evidence, and remediation guidance."
+                "The server has already built or reused the current canonical, cited report \
+                 revision for `{target}` and validated its complete source manifest, citations, \
+                 redaction boundary, and cleanup closeout. Do not scan, retrieve RAG/KG/wiki \
+                 context, invent narrative facts, render artifacts, or finalize publication. \
+                 Submit only the minimal Reporting StageDeliverable acknowledging that the \
+                 deterministic read model is ready; Gate PASS does not mean final publication."
             ),
             "analyzer",
         ),
@@ -3677,6 +4354,57 @@ fn resolve_request_local_task_input(
 mod dag_driven_helper_tests {
     use super::*;
     use crate::harness::StageKind;
+
+    #[test]
+    fn candidate_v2_truth_requires_both_exact_immutable_contracts() {
+        use crate::runtime_memory::RuntimeMemoryContract;
+        use golish_core::AttackExecutionContract;
+
+        assert!(exact_candidate_v2_contracts(
+            RuntimeMemoryContract::V2Only,
+            AttackExecutionContract::V2Only,
+        ));
+        for runtime in RuntimeMemoryContract::ALL {
+            for attack in AttackExecutionContract::ALL {
+                if (runtime, attack)
+                    != (
+                        RuntimeMemoryContract::V2Only,
+                        AttackExecutionContract::V2Only,
+                    )
+                {
+                    assert!(!exact_candidate_v2_contracts(runtime, attack));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn candidate_v2_fresh_and_resume_use_effective_specialists_only_after_double_cutover() {
+        assert_eq!(
+            effective_stage_run_specialist(StageKind::Verification, None, true).as_deref(),
+            Some("candidate_verifier"),
+            "fresh Verification must receive the stage_run coordinator prompt in exact V2",
+        );
+        assert_eq!(
+            effective_stage_run_specialist(StageKind::AttackCandidate, Some("analyst"), true)
+                .as_deref(),
+            Some("attack_analyst"),
+        );
+        assert!(stage_has_stage_run_specialist(
+            StageKind::Verification,
+            true
+        ));
+
+        assert_eq!(
+            effective_stage_run_specialist(StageKind::Verification, None, false),
+            None,
+            "legacy/dual Verification must not acquire a V2-only specialist",
+        );
+        assert!(!stage_has_stage_run_specialist(
+            StageKind::Verification,
+            false
+        ));
+    }
 
     #[test]
     fn final_fanout_gate_rejects_another_operations_completion() {
@@ -4274,6 +5002,7 @@ mod harness_gate_hook_tests {
                 None,
                 None,
                 None,
+                None,
             )
             .0,
             content
@@ -4295,6 +5024,7 @@ mod harness_gate_hook_tests {
                 None,
                 None,
                 vec![],
+                None,
                 None,
                 None,
                 None,
@@ -4518,6 +5248,7 @@ mod harness_gate_hook_tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         let s = summarize_deliverable(&d);
         assert!(s.contains("http_service_observed"));
@@ -4569,6 +5300,7 @@ mod harness_gate_hook_tests {
         HarnessGateOutcome {
             gated_stage: stage,
             gate_allowed: true,
+            trusted_submission: None,
             engagement_org_id: None,
             repair_correction: None,
             evidence_summary: None,
@@ -4752,6 +5484,7 @@ mod missing_deliverable_fail_closed_tests {
                 Some(facts),
                 None,
                 None,
+                None,
             );
             let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
             assert!(!o.gate_allowed, "{stage:?} must fail-closed BLOCK");
@@ -4787,6 +5520,7 @@ mod missing_deliverable_fail_closed_tests {
             None,
             None,
             None,
+            None,
         );
         let o = outcome.expect("stage-tagged unparseable content must produce an outcome");
         assert!(!o.gate_allowed, "confirm-only missing must BLOCK too");
@@ -4810,16 +5544,23 @@ mod missing_deliverable_fail_closed_tests {
 
     #[test]
     fn specialist_stages_are_fast_resume_stage_run_candidates() {
-        assert!(stage_has_stage_run_specialist(StageKind::TargetIntel));
         assert!(stage_has_stage_run_specialist(
-            StageKind::ExternalAttackSurface
+            StageKind::TargetIntel,
+            false
         ));
-        assert!(stage_has_stage_run_specialist(StageKind::Enumeration));
+        assert!(stage_has_stage_run_specialist(
+            StageKind::ExternalAttackSurface,
+            false
+        ));
+        assert!(stage_has_stage_run_specialist(
+            StageKind::Enumeration,
+            false
+        ));
     }
 
     #[test]
     fn non_specialist_stages_do_not_force_stage_run_on_resume() {
-        assert!(!stage_has_stage_run_specialist(StageKind::Scoping));
-        assert!(!stage_has_stage_run_specialist(StageKind::Reporting));
+        assert!(!stage_has_stage_run_specialist(StageKind::Scoping, false));
+        assert!(!stage_has_stage_run_specialist(StageKind::Reporting, false));
     }
 }

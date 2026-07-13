@@ -108,6 +108,7 @@ pub fn stage_methodology_md(kind: StageKind) -> Option<&'static str> {
         StageKind::VulnTriage => stage_methodology_raw!("vuln_triage/methodology.md"),
         StageKind::AttackCandidate => stage_methodology_raw!("attack_candidate/methodology.md"),
         StageKind::Verification => stage_methodology_raw!("verification/methodology.md"),
+        StageKind::Reporting => stage_methodology_raw!("reporting/methodology.md"),
         _ => return None,
     })
 }
@@ -259,7 +260,9 @@ mod tests {
 
         // Stages without a playbook return None (charter appends nothing).
         assert!(stage_methodology_md(StageKind::Cleanup).is_none());
-        assert!(stage_methodology_md(StageKind::Reporting).is_none());
+        let reporting = stage_methodology_md(StageKind::Reporting).expect("reporting playbook");
+        assert!(reporting.contains("deterministic read-model closeout"));
+        assert!(reporting.contains("final publication"));
     }
 
     // Attack-stage split (design 2026-07-02, P3 Task3.3): the two new attack-stage

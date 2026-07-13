@@ -42,7 +42,12 @@ pub(crate) struct OrgFleetExecutor {
     pub db_pool: Arc<sqlx::PgPool>,
     pub session_id: String,
     pub profile_id: String,
+    pub workspace: std::path::PathBuf,
     pub subsidiary_threshold: u8,
+    /// The per-org child-operation adapter is a LegacyV1 compatibility seam.
+    /// V2-writing CLI runs are represented by one frozen operation/snapshot and
+    /// must never reach `run_org`.
+    pub runtime_memory_contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract,
     /// GUI 单卡（StageRunView）靠 `StageRunOrgProgress` 渲染；CLI 无卡 → false。
     pub emit_progress: bool,
 }
@@ -81,6 +86,11 @@ impl OrgFleetExecutor {
 #[async_trait::async_trait]
 impl OrgRunExecutor for OrgFleetExecutor {
     async fn run_org(&self, task: &OrgRunTask) -> Result<String> {
+        anyhow::ensure!(
+            self.runtime_memory_contract
+                == golish_agent_kit::runtime_memory::RuntimeMemoryContract::LegacyV1,
+            "OrgFleetExecutor child operations are LegacyV1-only"
+        );
         if self.emit_progress {
             self.emit(
                 task,
@@ -93,6 +103,7 @@ impl OrgRunExecutor for OrgFleetExecutor {
             &self.db_pool,
             &self.session_id,
             &self.profile_id,
+            &self.workspace,
             task.entry_stage,
             task.allowlist.clone(),
             &task.objective,
@@ -101,6 +112,7 @@ impl OrgRunExecutor for OrgFleetExecutor {
             // SUBSIDIARY 扇出（避免双重扇出）。
             false,
             self.subsidiary_threshold,
+            None,
         )
         .await;
         if self.emit_progress {

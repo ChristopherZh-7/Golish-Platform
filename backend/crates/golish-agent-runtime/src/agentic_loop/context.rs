@@ -185,6 +185,11 @@ pub struct AgenticLoopContext<'a> {
         Option<Arc<dyn golish_agent_kit::tool_executors::graph_trait::GraphKnowledgeBase>>,
     pub sidecar_state: Option<&'a Arc<dyn SessionCaptureBackend>>,
     pub chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
+    pub runtime_memory: Option<Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository>>,
+    /// Exact-scope, server-authorized ContextPack provider. The opaque trusted
+    /// context remains inside the provider; runtime supplies only its own
+    /// operation/unit/worker identity hint and semantic query.
+    pub knowledge_context: Option<Arc<dyn golish_memory_app::ContextPackProvider>>,
     pub plan_manager: &'a Arc<golish_agent_kit::planner::PlanManager>,
     pub api_request_stats: &'a Arc<ApiRequestStats>,
     pub additional_tool_definitions: Vec<rig::completion::ToolDefinition>,
@@ -248,6 +253,16 @@ pub struct AgenticLoopContext<'a> {
     /// tools use this to update operation-scoped state such as
     /// `operation_state.state_blob` without guessing from the DB tracker session.
     pub harness_operation_id: Option<uuid::Uuid>,
+    /// Trusted `stage_runs.id` for the active execution.
+    pub stage_execution_id: Option<uuid::Uuid>,
+    /// Trusted per-organization stage unit for the active execution.
+    pub stage_run_unit_id: Option<uuid::Uuid>,
+    /// Trusted specialist worker fencing tuple. When present, its unit witness
+    /// must equal `stage_run_unit_id`.
+    pub worker_lease: Option<golish_core::WorkerLeaseContext>,
+    /// Opaque Candidate verification identity. Exact action authorization is
+    /// reloaded from durable state immediately before every action.
+    pub candidate_attempt: Option<golish_core::CandidateAttemptContextRef>,
     /// Shared circuit breaker for this top-level Task request. `stage_run`
     /// closes the stage entry after its bounded per-org retry budget is
     /// exhausted; a separate user request resets it before resuming.
@@ -259,6 +274,53 @@ pub(super) fn is_cancelled(ctx: &AgenticLoopContext<'_>) -> bool {
     ctx.cancelled
         .map(|f| f.load(std::sync::atomic::Ordering::SeqCst))
         .unwrap_or(false)
+}
+
+/// Resolve and render one exact-scope ContextPack. Missing runtime identity is
+/// an explicit no-context state; retrieval failures never fall back to legacy
+/// global memories/wiki/graph searches.
+pub(crate) async fn retrieve_scoped_context_data(
+    ctx: &AgenticLoopContext<'_>,
+    query: &str,
+    organization_id: Option<uuid::Uuid>,
+    worker_run_id: Option<uuid::Uuid>,
+) -> Result<Option<String>, String> {
+    let Some(provider) = ctx.knowledge_context.as_ref() else {
+        return Ok(None);
+    };
+    let (Some(operation_id), Some(stage_execution_id), Some(stage_run_unit_id), Some(stage)) = (
+        ctx.harness_operation_id,
+        ctx.stage_execution_id,
+        ctx.stage_run_unit_id,
+        ctx.harness_stage,
+    ) else {
+        return Ok(None);
+    };
+    let Some(organization_id) = organization_id.or(ctx.harness_org_id) else {
+        return Ok(None);
+    };
+    let worker_run_id =
+        worker_run_id.or_else(|| ctx.worker_lease.as_ref().map(|lease| lease.worker_run_id));
+    let subject = golish_memory_domain::ContextSubject::from_server_runtime(
+        operation_id,
+        stage_execution_id,
+        stage_run_unit_id,
+        worker_run_id,
+        organization_id,
+        stage.as_str(),
+        None,
+    )
+    .map_err(|error| error.code().to_string())?;
+    let pack = provider
+        .retrieve(
+            subject,
+            golish_memory_domain::ContextRequest::for_harness(query, 2_048),
+        )
+        .await
+        .map_err(|error| error.code().to_string())?;
+    let rendered =
+        golish_agent_kit::harness::render_context_pack(&pack).map_err(|error| error.to_string())?;
+    Ok(Some(rendered.data_block().to_string()))
 }
 
 /// Result of a single tool execution.

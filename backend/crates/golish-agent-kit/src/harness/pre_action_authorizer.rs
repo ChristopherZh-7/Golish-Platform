@@ -6,6 +6,7 @@
 //! [`IntentAxis`] must not exceed the operation profile's `max_authorization`.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 use super::profile::AuthorizationLevel;
@@ -18,6 +19,26 @@ pub enum AuthorizationError {
         intent: IntentAxis,
         max: AuthorizationLevel,
     },
+    #[error("Candidate verifier tool '{tool_name}' is not permitted")]
+    CandidateToolNotAllowed { tool_name: String },
+    #[error("Candidate verifier actions must execute in the foreground")]
+    CandidateForegroundRequired,
+    #[error("Candidate verifier arguments may not override trusted identity '{field}'")]
+    CandidateIdentityOverride { field: String },
+    #[error("verify_execute_candidate_action accepts only one integer action_ordinal")]
+    CandidateActionOrdinalOnly,
+}
+
+impl AuthorizationError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::IntentExceedsAuthorization { .. } => "HARNESS_AUTHORIZATION_EXCEEDED",
+            Self::CandidateToolNotAllowed { .. } => "ATTACK_VERIFIER_TOOL_NOT_ALLOWED",
+            Self::CandidateForegroundRequired => "ATTACK_VERIFIER_FOREGROUND_REQUIRED",
+            Self::CandidateIdentityOverride { .. } => "ATTACK_VERIFIER_IDENTITY_OVERRIDE",
+            Self::CandidateActionOrdinalOnly => "ATTACK_VERIFIER_ACTION_ORDINAL_ONLY",
+        }
+    }
 }
 
 /// C3 · authorization context threaded to per-tool dispatch.
@@ -37,6 +58,62 @@ pub struct HarnessAuthz {
 pub struct PreActionAuthorizer;
 
 impl PreActionAuthorizer {
+    /// Candidate verification is a closed tool surface. The opaque context is
+    /// trusted runtime state; model JSON may select only an action ordinal and
+    /// can never select an identity, raw execution recipe, or background
+    /// control path.
+    pub fn check_candidate_tool_call(
+        candidate: Option<&golish_core::CandidateAttemptContextRef>,
+        tool_name: &str,
+        args: &Value,
+    ) -> Result<(), AuthorizationError> {
+        if candidate.is_none() {
+            return Ok(());
+        }
+
+        if matches!(
+            tool_name,
+            "wait_for_background_jobs" | "check_job" | "kill_job" | "pentest_run"
+        ) {
+            return Err(AuthorizationError::CandidateToolNotAllowed {
+                tool_name: tool_name.to_string(),
+            });
+        }
+        if !matches!(
+            tool_name,
+            "verify_execute_candidate_action" | "list_recent_evidence" | "submit_candidate_attempt"
+        ) {
+            return Err(AuthorizationError::CandidateToolNotAllowed {
+                tool_name: tool_name.to_string(),
+            });
+        }
+
+        if let Some(field) = find_forbidden_candidate_arg(args) {
+            if field == "background" {
+                return Err(AuthorizationError::CandidateForegroundRequired);
+            }
+            return Err(AuthorizationError::CandidateIdentityOverride {
+                field: field.to_string(),
+            });
+        }
+
+        if tool_name == "verify_execute_candidate_action" {
+            let Some(object) = args.as_object() else {
+                return Err(AuthorizationError::CandidateActionOrdinalOnly);
+            };
+            if object.len() != 1
+                || object
+                    .get("action_ordinal")
+                    .and_then(Value::as_u64)
+                    .is_none()
+            {
+                return Err(AuthorizationError::CandidateActionOrdinalOnly);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Intent-vs-profile-ceiling check (no tool-list confinement).
     ///
     /// The per-stage tool boundary is enforced separately by the category
@@ -60,6 +137,31 @@ impl PreActionAuthorizer {
             });
         }
         Ok(())
+    }
+}
+
+fn find_forbidden_candidate_arg(value: &Value) -> Option<&str> {
+    match value {
+        Value::Object(object) => {
+            for (key, nested) in object {
+                if matches!(
+                    key.as_str(),
+                    "candidate_id"
+                        | "approval_id"
+                        | "attempt_id"
+                        | "candidate_plan_hash"
+                        | "background"
+                ) {
+                    return Some(key.as_str());
+                }
+                if let Some(field) = find_forbidden_candidate_arg(nested) {
+                    return Some(field);
+                }
+            }
+            None
+        }
+        Value::Array(values) => values.iter().find_map(find_forbidden_candidate_arg),
+        _ => None,
     }
 }
 
@@ -105,5 +207,88 @@ mod tests {
             AuthorizationLevel::ControlledExploit,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn candidate_context_rejects_background_control_tools_and_identity_override() {
+        let candidate = golish_core::CandidateAttemptContextRef {
+            candidate_id: uuid::Uuid::new_v4(),
+            approval_id: uuid::Uuid::new_v4(),
+            attempt_id: uuid::Uuid::new_v4(),
+            candidate_plan_hash: "sha256:plan".to_string(),
+        };
+
+        for tool_name in [
+            "wait_for_background_jobs",
+            "check_job",
+            "kill_job",
+            "pentest_run",
+            "record_finding",
+        ] {
+            let error = PreActionAuthorizer::check_candidate_tool_call(
+                Some(&candidate),
+                tool_name,
+                &serde_json::json!({}),
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), "ATTACK_VERIFIER_TOOL_NOT_ALLOWED");
+        }
+
+        let error = PreActionAuthorizer::check_candidate_tool_call(
+            Some(&candidate),
+            "list_recent_evidence",
+            &serde_json::json!({"filters": {"attempt_id": candidate.attempt_id}}),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "ATTACK_VERIFIER_IDENTITY_OVERRIDE");
+    }
+
+    #[test]
+    fn candidate_context_rejects_background_execution() {
+        let candidate = golish_core::CandidateAttemptContextRef {
+            candidate_id: uuid::Uuid::new_v4(),
+            approval_id: uuid::Uuid::new_v4(),
+            attempt_id: uuid::Uuid::new_v4(),
+            candidate_plan_hash: "sha256:plan".to_string(),
+        };
+        let error = PreActionAuthorizer::check_candidate_tool_call(
+            Some(&candidate),
+            "submit_candidate_attempt",
+            &serde_json::json!({"background": false}),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "ATTACK_VERIFIER_FOREGROUND_REQUIRED");
+    }
+
+    #[test]
+    fn candidate_wrapper_accepts_only_action_ordinal() {
+        let candidate = golish_core::CandidateAttemptContextRef {
+            candidate_id: uuid::Uuid::new_v4(),
+            approval_id: uuid::Uuid::new_v4(),
+            attempt_id: uuid::Uuid::new_v4(),
+            candidate_plan_hash: "sha256:plan".to_string(),
+        };
+        assert!(PreActionAuthorizer::check_candidate_tool_call(
+            Some(&candidate),
+            "verify_execute_candidate_action",
+            &serde_json::json!({"action_ordinal": 0}),
+        )
+        .is_ok());
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"action_ordinal": -1}),
+            serde_json::json!({"action_ordinal": 0, "target": "override"}),
+        ] {
+            assert_eq!(
+                PreActionAuthorizer::check_candidate_tool_call(
+                    Some(&candidate),
+                    "verify_execute_candidate_action",
+                    &invalid,
+                )
+                .unwrap_err()
+                .code(),
+                "ATTACK_VERIFIER_ACTION_ORDINAL_ONLY"
+            );
+        }
     }
 }

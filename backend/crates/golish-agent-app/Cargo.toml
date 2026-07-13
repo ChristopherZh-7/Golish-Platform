@@ -9,6 +9,8 @@ description = "Per-domain crate for the agent service: shared agent runtime stat
 # Application-boundary shared types (GolishError, DbState, pty_interactive,
 # runtime::TauriRuntime, ports); L5.
 golish-app-core = { workspace = true }
+golish-cleanup-app = { workspace = true }
+golish-cleanup-domain = { workspace = true }
 
 # Agent stack (L4): AiState holds per-session AgentBridge handles; the command
 # surface + bridges thread agent-kit/runtime trait objects.
@@ -22,6 +24,10 @@ golish-sub-agents = { path = "../golish-sub-agents" }
 golish-core = { workspace = true }
 golish-db = { workspace = true }
 golish-graphiti = { workspace = true }
+golish-memory-app = { workspace = true }
+golish-memory-domain = { workspace = true }
+golish-reporting-app = { workspace = true }
+golish-reporting-domain = { workspace = true }
 golish-settings = { workspace = true }
 golish-sidecar = { workspace = true }
 golish-indexer = { workspace = true }
@@ -55,6 +61,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+sha2 = { workspace = true }
 regex = "1"
 tracing = { workspace = true }
 rig-core = { workspace = true }
@@ -65,4 +72,6 @@ dotenvy = { workspace = true }
 ts-rs = { workspace = true }
 
 [dev-dependencies]
+golish-pentest-app = { workspace = true }
+serial_test.workspace = true
 tempfile = { workspace = true }

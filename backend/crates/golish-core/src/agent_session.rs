@@ -19,6 +19,18 @@ use tokio::sync::mpsc;
 
 use crate::events::{AiEvent, ToolSource};
 
+/// Trusted worker lease/fencing tuple captured by the runtime before a tool is
+/// dispatched. The unit id is intentionally duplicated from
+/// [`AgentToolContext::stage_run_unit_id`]: consumers must keep the two equal so
+/// a lease cannot be detached from the exact stage unit that owns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerLeaseContext {
+    pub worker_run_id: uuid::Uuid,
+    pub stage_run_unit_id: uuid::Uuid,
+    pub lease_token: uuid::Uuid,
+    pub attempt_epoch: i64,
+}
+
 /// The currently executing tool call, when a tool is running inside the agentic
 /// loop. This is intentionally tiny and UI-oriented: it is only for correlating
 /// side-channel output (for example background job stdout/stderr chunks) back to
@@ -26,16 +38,30 @@ use crate::events::{AiEvent, ToolSource};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentToolContext {
     pub request_id: String,
+    /// Awaited durable `tool_calls.id`, when tracking is authoritative for this
+    /// dispatch. This is never accepted from model-visible tool arguments.
+    pub tool_call_record_id: Option<uuid::Uuid>,
     pub tool_name: String,
     pub source: ToolSource,
     /// Trusted harness operation/stage-attempt identity captured by the agent
     /// runtime. Active tools use this instead of accepting a caller-supplied
     /// operation id from model-visible arguments.
     pub operation_id: Option<uuid::Uuid>,
+    /// Trusted `stage_runs.id` for the active execution.
+    pub stage_execution_id: Option<uuid::Uuid>,
+    /// Trusted per-organization stage unit, absent only before Scoping binds its
+    /// frozen scope unit or outside the harness.
+    pub stage_run_unit_id: Option<uuid::Uuid>,
     /// Active harness organization for tools spawned from a stage run. Background
     /// jobs finish outside the agent turn, so completion listeners need this to
     /// persist structured coverage facts into the correct org.
     pub organization_id: Option<uuid::Uuid>,
+    /// Active worker fencing tuple for specialist tools.
+    pub worker_lease: Option<WorkerLeaseContext>,
+    /// Opaque identity for an approved Candidate verification attempt. The
+    /// model never supplies this value and it deliberately contains no action
+    /// recipe or authorization material.
+    pub candidate_attempt: Option<crate::CandidateAttemptContextRef>,
 }
 
 tokio::task_local! {
@@ -165,10 +191,15 @@ mod tests {
     async fn tool_context_reads_inside_scope() {
         let ctx = AgentToolContext {
             request_id: "req-1".to_string(),
+            tool_call_record_id: None,
             tool_name: "pentest_run".to_string(),
             source: ToolSource::Main,
             operation_id: Some(uuid::Uuid::new_v4()),
+            stage_execution_id: None,
+            stage_run_unit_id: None,
             organization_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
         };
         let got =
             with_agent_tool_context(Some(ctx.clone()), async { current_agent_tool_context() })
@@ -180,20 +211,30 @@ mod tests {
     async fn nested_tool_context_overrides_then_restores() {
         let outer = AgentToolContext {
             request_id: "outer".to_string(),
+            tool_call_record_id: None,
             tool_name: "run_command".to_string(),
             source: ToolSource::Main,
             operation_id: None,
+            stage_execution_id: None,
+            stage_run_unit_id: None,
             organization_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
         };
         let inner = AgentToolContext {
             request_id: "inner".to_string(),
+            tool_call_record_id: None,
             tool_name: "pentest_run".to_string(),
             source: ToolSource::SubAgent {
                 agent_id: "recon".to_string(),
                 agent_name: "Recon".to_string(),
             },
             operation_id: Some(uuid::Uuid::new_v4()),
+            stage_execution_id: None,
+            stage_run_unit_id: None,
             organization_id: Some(uuid::Uuid::nil()),
+            worker_lease: None,
+            candidate_attempt: None,
         };
         let got = with_agent_tool_context(Some(outer.clone()), async {
             let nested = with_agent_tool_context(Some(inner.clone()), async {
@@ -212,10 +253,15 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let ctx = AgentToolContext {
             request_id: "req-1".to_string(),
+            tool_call_record_id: None,
             tool_name: "browser_collect_js_api".to_string(),
             source: ToolSource::Main,
             operation_id: None,
+            stage_execution_id: None,
+            stage_run_unit_id: None,
             organization_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
         };
 
         with_agent_tool_context(
@@ -242,5 +288,61 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn trusted_tool_context_nested_scopes_do_not_cross_stage_or_worker_identity() {
+        let outer_unit = uuid::Uuid::from_u128(0x101);
+        let inner_unit = uuid::Uuid::from_u128(0x201);
+        let outer = AgentToolContext {
+            request_id: "outer-request".to_string(),
+            tool_call_record_id: Some(uuid::Uuid::from_u128(0x102)),
+            tool_name: "outer-tool".to_string(),
+            source: ToolSource::Main,
+            operation_id: Some(uuid::Uuid::from_u128(0x103)),
+            stage_execution_id: Some(uuid::Uuid::from_u128(0x104)),
+            stage_run_unit_id: Some(outer_unit),
+            organization_id: Some(uuid::Uuid::from_u128(0x105)),
+            worker_lease: Some(WorkerLeaseContext {
+                worker_run_id: uuid::Uuid::from_u128(0x106),
+                stage_run_unit_id: outer_unit,
+                lease_token: uuid::Uuid::from_u128(0x107),
+                attempt_epoch: 1,
+            }),
+            candidate_attempt: None,
+        };
+        let inner = AgentToolContext {
+            request_id: "inner-request".to_string(),
+            tool_call_record_id: Some(uuid::Uuid::from_u128(0x202)),
+            tool_name: "inner-tool".to_string(),
+            source: ToolSource::SubAgent {
+                agent_id: "worker".to_string(),
+                agent_name: "Worker".to_string(),
+            },
+            operation_id: Some(uuid::Uuid::from_u128(0x203)),
+            stage_execution_id: Some(uuid::Uuid::from_u128(0x204)),
+            stage_run_unit_id: Some(inner_unit),
+            organization_id: Some(uuid::Uuid::from_u128(0x205)),
+            worker_lease: Some(WorkerLeaseContext {
+                worker_run_id: uuid::Uuid::from_u128(0x206),
+                stage_run_unit_id: inner_unit,
+                lease_token: uuid::Uuid::from_u128(0x207),
+                attempt_epoch: 2,
+            }),
+            candidate_attempt: None,
+        };
+
+        let observed = with_agent_tool_context(Some(outer.clone()), async {
+            let nested = with_agent_tool_context(Some(inner.clone()), async {
+                current_agent_tool_context()
+            })
+            .await;
+            (nested, current_agent_tool_context())
+        })
+        .await;
+
+        assert_eq!(observed.0, Some(inner));
+        assert_eq!(observed.1, Some(outer));
+        assert_eq!(current_agent_tool_context(), None);
     }
 }

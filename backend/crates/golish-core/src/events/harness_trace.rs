@@ -162,6 +162,27 @@ pub enum HarnessTraceKind {
         #[serde(default)]
         coverage_axis: Vec<String>,
     },
+
+    /// Wake hint only: the frontend must refresh the exact DB-backed review
+    /// state and must never treat this trace as approval authority.
+    CandidateReviewRequired {
+        wave_run_id: String,
+        status: String,
+        #[ts(type = "number")]
+        resume_version: i64,
+        #[ts(type = "number")]
+        candidate_count: i64,
+        #[ts(type = "number")]
+        proposed_candidate_count: i64,
+    },
+
+    /// Wake hint emitted after the durable resume CAS and trusted resume service
+    /// have started. Reloading the app still derives state from DB.
+    CandidateReviewResumed {
+        wave_run_id: String,
+        #[ts(type = "number")]
+        resume_version: i64,
+    },
 }
 
 /// Build a `>`-joined agent lineage string from an optional parent path and the
@@ -256,6 +277,29 @@ mod tests {
         assert_eq!(v["kind"], "background_notes_injected");
         assert_eq!(v["count"], 57);
         assert_eq!(v["evidence_ids"], serde_json::json!([86, 88, 90]));
+    }
+
+    #[test]
+    fn candidate_review_hints_serialize_without_becoming_authority() {
+        let required = HarnessTraceKind::CandidateReviewRequired {
+            wave_run_id: "wave-1".into(),
+            status: "open".into(),
+            resume_version: 2,
+            candidate_count: 3,
+            proposed_candidate_count: 1,
+        };
+        let resumed = HarnessTraceKind::CandidateReviewResumed {
+            wave_run_id: "wave-1".into(),
+            resume_version: 4,
+        };
+        assert_eq!(
+            serde_json::to_value(required).unwrap()["kind"],
+            "candidate_review_required"
+        );
+        assert_eq!(
+            serde_json::to_value(resumed).unwrap()["kind"],
+            "candidate_review_resumed"
+        );
     }
 
     #[test]

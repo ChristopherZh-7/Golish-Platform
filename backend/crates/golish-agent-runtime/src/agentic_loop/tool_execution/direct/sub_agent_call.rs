@@ -22,10 +22,11 @@ use golish_agent_kit::task_orchestrator::stage_refiner::{
 use golish_core::events::{AiEvent, HarnessTraceKind};
 use golish_core::utils::truncate_str;
 use golish_sub_agents::{
-    execute_sub_agent, SubAgentChainError, SubAgentContext, SubAgentDefinition,
-    SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairMode,
+    execute_sub_agent, BoundWorkerChainContext, SubAgentChainError, SubAgentContext,
+    SubAgentDefinition, SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairMode,
 };
 
+use super::super::super::context::retrieve_scoped_context_data;
 use super::super::super::llm_helpers::runtime_supervisor_one_shot;
 use super::super::super::sub_agent_dispatch::{
     build_sub_agent_briefing, execute_sub_agent_with_client,
@@ -36,6 +37,78 @@ use golish_agent_kit::tool_provider_impl::DefaultToolProvider;
 
 fn sub_agent_runtime_agent_path(agent_id: &str) -> String {
     format!("main>{agent_id}")
+}
+
+fn v2_vuln_triage_hides_record_finding(
+    stage: Option<golish_agent_kit::harness::StageKind>,
+    runtime_contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract,
+    attack_contract: golish_core::AttackExecutionContract,
+    tool_name: &str,
+) -> bool {
+    stage == Some(golish_agent_kit::harness::StageKind::VulnTriage)
+        && runtime_contract == golish_agent_kit::runtime_memory::RuntimeMemoryContract::V2Only
+        && attack_contract == golish_core::AttackExecutionContract::V2Only
+        && tool_name == "record_finding"
+}
+
+fn sub_agent_stage_tool_hidden(
+    tool_name: &str,
+    hide_scan_tools: bool,
+    deny_v2_vuln_finding: bool,
+) -> bool {
+    (hide_scan_tools && golish_agent_kit::harness::is_scan_tool_name(tool_name))
+        || (deny_v2_vuln_finding && tool_name == "record_finding")
+}
+
+async fn deny_v2_vuln_finding_writes(ctx: &AgenticLoopContext<'_>) -> bool {
+    if ctx.harness_stage != Some(golish_agent_kit::harness::StageKind::VulnTriage) {
+        return false;
+    }
+    let (Some(operation_id), Some(runtime_memory)) =
+        (ctx.harness_operation_id, ctx.runtime_memory.as_ref())
+    else {
+        tracing::warn!(
+            target: "harness::stage_tool_boundary",
+            "vuln_triage has no trusted contract authority; hiding record_finding fail-closed"
+        );
+        return true;
+    };
+    let runtime_contract = match runtime_memory
+        .runtime_memory_contract_for_operation(operation_id)
+        .await
+    {
+        Ok(contract) => contract,
+        Err(error) => {
+            tracing::warn!(
+                target: "harness::stage_tool_boundary",
+                operation_id = %operation_id,
+                %error,
+                "vuln_triage runtime contract lookup failed; hiding record_finding fail-closed"
+            );
+            return true;
+        }
+    };
+    let attack_contract = match runtime_memory
+        .attack_execution_contract_for_operation(operation_id)
+        .await
+    {
+        Ok(contract) => contract,
+        Err(error) => {
+            tracing::warn!(
+                target: "harness::stage_tool_boundary",
+                operation_id = %operation_id,
+                %error,
+                "vuln_triage attack contract lookup failed; hiding record_finding fail-closed"
+            );
+            return true;
+        }
+    };
+    v2_vuln_triage_hides_record_finding(
+        ctx.harness_stage,
+        runtime_contract,
+        attack_contract,
+        "record_finding",
+    )
 }
 
 fn sub_agent_execution_error_result(error: anyhow::Error) -> ToolExecutionResult {
@@ -69,6 +142,9 @@ fn sub_agent_execution_error_result(error: anyhow::Error) -> ToolExecutionResult
                     "context_limit",
                     *chain_id,
                 ),
+                SubAgentChainError::BoundWorkerUnavailable { .. } => {
+                    ("sub_agent_bound_worker_unavailable", "bound_worker", None)
+                }
             });
     let error = error.to_string();
     let value = match chain_failure_contract {
@@ -699,6 +775,26 @@ pub(super) async fn execute_sub_agent_call<M>(
 where
     M: RigCompletionModel + Sync,
 {
+    execute_sub_agent_call_with_bound(tool_name, tool_args, ctx, model, context, tool_id, None)
+        .await
+}
+
+/// Execute a sub-agent against an optional server-owned V2 worker binding.
+/// Ordinary callers use [`execute_sub_agent_call`] and retain legacy chain
+/// create/resume behavior; stage_run is the only live caller allowed to pass a
+/// prebound worker.
+pub(super) async fn execute_sub_agent_call_with_bound<M>(
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    ctx: &AgenticLoopContext<'_>,
+    model: &M,
+    context: &SubAgentContext,
+    tool_id: &str,
+    bound_worker_chain: Option<BoundWorkerChainContext>,
+) -> Result<ToolExecutionResult>
+where
+    M: RigCompletionModel + Sync,
+{
     let agent_id = tool_name.strip_prefix("sub_agent_").unwrap_or("");
 
     let registry = ctx.sub_agent_registry.read().await;
@@ -722,10 +818,16 @@ where
     let task_desc = tool_args.get("task").and_then(|v| v.as_str()).unwrap_or("");
     // AI-controlled resume: a prior sub-agent session id continues that exact
     // worker; `true` continues this agent's latest chain; absent/false = fresh.
-    let resume_arg: Option<String> = match tool_args.get("resume") {
-        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
-        Some(serde_json::Value::Bool(true)) => Some("latest".to_string()),
-        _ => None,
+    let resume_arg: Option<String> = if bound_worker_chain.is_some() {
+        None
+    } else {
+        match tool_args.get("resume") {
+            Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
+                Some(s.trim().to_string())
+            }
+            Some(serde_json::Value::Bool(true)) => Some("latest".to_string()),
+            _ => None,
+        }
     };
 
     let project_id = {
@@ -796,14 +898,37 @@ where
             });
         Some(router)
     };
-    let briefing = build_sub_agent_briefing(
-        ctx.events.db_tracker,
-        ctx.graph_backend.as_deref(),
-        project_id_opt.as_deref(),
-        agent_id,
-        task_desc,
-    )
-    .await;
+    let briefing = if ctx.harness_stage.is_some() {
+        let worker_run_id = bound_worker_chain
+            .as_ref()
+            .map(|bound| bound.worker_lease.worker_run_id)
+            .or_else(|| ctx.worker_lease.as_ref().map(|lease| lease.worker_run_id));
+        match retrieve_scoped_context_data(ctx, task_desc, effective_harness_org_id, worker_run_id)
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => {
+                tracing::warn!(
+                    target: "harness::knowledge_context",
+                    %error,
+                    "sub-agent scoped ContextPack unavailable; refusing legacy global fallback"
+                );
+                Some(format!(
+                    "[SCOPED CONTEXT UNAVAILABLE] code={error}; do not use global or sibling customer memory."
+                ))
+            }
+        }
+    } else {
+        build_sub_agent_briefing(
+            ctx.events.db_tracker,
+            ctx.graph_backend.as_deref(),
+            project_id_opt.as_deref(),
+            agent_id,
+            task_desc,
+        )
+        .await
+    };
+    let deny_v2_vuln_finding = deny_v2_vuln_finding_writes(ctx).await;
 
     // Per-stage tool boundary for the delegated sub-agent: inside a harness
     // stage, enforce the category whitelist (deny-by-default) — a scan invocation
@@ -819,6 +944,12 @@ where
             let allowed = spec.allowed_tool_types.clone();
             let guard: golish_sub_agents::StageToolGuard =
                 std::sync::Arc::new(move |tn: &str, args: &serde_json::Value| {
+                    if deny_v2_vuln_finding && tn == "record_finding" {
+                        return Err(
+                            "record_finding is not permitted in Candidate V2 vuln_triage; the formulaic scanner records observations/evidence only"
+                                .to_string(),
+                        );
+                    }
                     if golish_agent_kit::harness::is_scan_invocation(tn, args)
                         && !golish_agent_kit::harness::stage_allows(tn, args, &allowed)
                     {
@@ -849,14 +980,16 @@ where
     // `pentest_run` and can't spin retrying it (the 26x-retry case in scoping).
     // Mirrors the main agent's `hide_scans_for_zero_scan_stage`; the call-time
     // `stage_tool_guard` above stays as the backstop.
-    let hide_tool_in_stage: Option<golish_sub_agents::StageToolHider> = ctx
+    let hide_scan_tools = ctx
         .harness_stage
         .and_then(|kind| golish_agent_kit::harness::load_embedded_stage_spec(kind).ok())
-        .filter(|spec| spec.allowed_tool_types.is_empty())
-        .map(|_| {
-            let hider: golish_sub_agents::StageToolHider = std::sync::Arc::new(|name: &str| {
-                golish_agent_kit::harness::is_scan_tool_name(name)
-            });
+        .is_some_and(|spec| spec.allowed_tool_types.is_empty());
+    let hide_tool_in_stage: Option<golish_sub_agents::StageToolHider> =
+        (hide_scan_tools || deny_v2_vuln_finding).then(|| {
+            let hider: golish_sub_agents::StageToolHider =
+                std::sync::Arc::new(move |name: &str| {
+                    sub_agent_stage_tool_hidden(name, hide_scan_tools, deny_v2_vuln_finding)
+                });
             hider
         });
 
@@ -1018,6 +1151,7 @@ where
                 max_tokens_override: agent_def.max_tokens,
                 top_p_override: agent_def.top_p,
                 chain_persistence: ctx.chain_persistence.as_ref(),
+                bound_worker_chain: bound_worker_chain.clone(),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
                 post_tool_result_hook: sub_tool_result_hook.clone(),
@@ -1067,6 +1201,7 @@ where
                 max_tokens_override: agent_def.max_tokens,
                 top_p_override: agent_def.top_p,
                 chain_persistence: ctx.chain_persistence.as_ref(),
+                bound_worker_chain: bound_worker_chain.clone(),
                 sub_agent_registry: Some(ctx.sub_agent_registry),
                 post_shell_hook: ctx.post_shell_hook.clone(),
                 post_tool_result_hook: sub_tool_result_hook.clone(),
@@ -1117,6 +1252,7 @@ where
             max_tokens_override: agent_def.max_tokens,
             top_p_override: agent_def.top_p,
             chain_persistence: ctx.chain_persistence.as_ref(),
+            bound_worker_chain,
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: ctx.post_shell_hook.clone(),
             post_tool_result_hook: sub_tool_result_hook.clone(),
@@ -1239,8 +1375,9 @@ mod tests {
         agent_run_from_state_blob, dispatch_status_for_sub_agent_success,
         stage_run_org_id_from_request_id, state_blob_with_refined_eas_web_repair_checkpoint,
         sub_agent_checkpoint_agent_path, sub_agent_execution_error_result,
-        sub_agent_tool_execution_result, sub_agent_tool_observer_needed,
-        submit_repair_mode_from_agent_run,
+        sub_agent_stage_tool_hidden, sub_agent_tool_execution_result,
+        sub_agent_tool_observer_needed, submit_repair_mode_from_agent_run,
+        v2_vuln_triage_hides_record_finding,
     };
     use golish_agent_kit::harness::StageKind;
     use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
@@ -1248,6 +1385,51 @@ mod tests {
         ToolCheckpointState,
     };
     use golish_sub_agents::{SubAgentContext, SubAgentResult, SubmitRepairKind, SubmitRepairMode};
+
+    #[test]
+    fn v2_vuln_scanner_hides_finding_writer_but_legacy_and_dual_retain_it() {
+        use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
+        use golish_core::AttackExecutionContract;
+
+        assert!(v2_vuln_triage_hides_record_finding(
+            Some(StageKind::VulnTriage),
+            RuntimeMemoryContract::V2Only,
+            AttackExecutionContract::V2Only,
+            "record_finding",
+        ));
+        for runtime in RuntimeMemoryContract::ALL {
+            for attack in AttackExecutionContract::ALL {
+                if (runtime, attack)
+                    != (
+                        RuntimeMemoryContract::V2Only,
+                        AttackExecutionContract::V2Only,
+                    )
+                {
+                    assert!(!v2_vuln_triage_hides_record_finding(
+                        Some(StageKind::VulnTriage),
+                        runtime,
+                        attack,
+                        "record_finding",
+                    ));
+                }
+            }
+        }
+        assert!(!v2_vuln_triage_hides_record_finding(
+            Some(StageKind::Enumeration),
+            RuntimeMemoryContract::V2Only,
+            AttackExecutionContract::V2Only,
+            "record_finding",
+        ));
+        assert!(!v2_vuln_triage_hides_record_finding(
+            Some(StageKind::VulnTriage),
+            RuntimeMemoryContract::V2Only,
+            AttackExecutionContract::V2Only,
+            "vuln_run_formulaic_sweep",
+        ));
+        assert!(sub_agent_stage_tool_hidden("record_finding", false, true));
+        assert!(!sub_agent_stage_tool_hidden("record_finding", false, false,));
+        assert!(sub_agent_stage_tool_hidden("pentest_run", true, false));
+    }
 
     #[test]
     fn unsuccessful_sub_agent_result_is_tracked_as_failed_dispatch() {

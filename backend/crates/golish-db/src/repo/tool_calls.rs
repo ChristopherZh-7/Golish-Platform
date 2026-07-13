@@ -1,8 +1,164 @@
-use crate::Result;
-use sqlx::PgPool;
+use crate::{DbError, Result};
+use chrono::{DateTime, Utc};
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::models::{NewToolCall, ToolCall, ToolcallStatus};
+
+const RECORD_TRACKED_START_SQL: &str = r#"INSERT INTO tool_calls (
+        call_id, session_id, task_id, subtask_id, agent, name, args, status, source,
+        operation_id, stage_execution_id, stage_run_unit_id, worker_run_id,
+        organization_id, attempt_epoch, lease_token
+    ) VALUES (
+        $1, $2, $3, $4, 'primary'::agent_type, $5, $6,
+        'running'::toolcall_status, 'ai', $7, $8, $9, $10, $11, $12, $13
+    )
+    RETURNING id"#;
+
+const RECORD_TRACKED_FINISH_SQL: &str = r#"UPDATE tool_calls
+    SET status = $1::toolcall_status,
+        result = $2,
+        duration_ms = $3,
+        updated_at = NOW()
+    WHERE id = $4
+      AND session_id = $5
+      AND status IN ('received', 'running')"#;
+
+/// Concrete DB-side projection of the sqlx-free agent-kit runtime identity.
+/// The database constraints and worker-fence trigger remain the final authority
+/// for which optional-field shapes are valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeToolIdentity {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Option<Uuid>,
+    pub worker_run_id: Option<Uuid>,
+    pub organization_id: Option<Uuid>,
+    pub attempt_epoch: Option<i64>,
+    pub lease_token: Option<Uuid>,
+}
+
+/// One terminal Scoping control-plane call bound to the exact operation and
+/// StageExecution. The ordered lifecycle is the only input accepted by the V2
+/// scope-decision derivation; session/time-window rows are legacy gate hints.
+#[derive(Debug, Clone, sqlx::FromRow, PartialEq)]
+pub struct ExactScopingLifecycleRow {
+    pub id: Uuid,
+    pub call_id: String,
+    pub session_id: Uuid,
+    pub name: String,
+    pub args: serde_json::Value,
+    pub result: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+const EXACT_SCOPING_LIFECYCLE_SQL: &str = r#"SELECT id, call_id, session_id,
+       name, args, result, created_at
+FROM tool_calls
+WHERE operation_id = $1
+  AND stage_execution_id = $2
+  AND task_id = $1
+  AND status = 'finished'::toolcall_status
+  AND (
+      (name = 'ask_human'
+       AND args->>'input_type' IN ('choice', 'unit_review', 'scope_review'))
+      OR
+      (name = 'manage_organizations'
+       AND args->>'action' IN ('propose_candidates', 'create', 'create_batch'))
+  )
+ORDER BY created_at ASC, id ASC"#;
+
+pub async fn scoping_lifecycle_for_execution(
+    pool: &PgPool,
+    operation_id: Uuid,
+    stage_execution_id: Uuid,
+) -> Result<Vec<ExactScopingLifecycleRow>> {
+    let mut connection = pool.acquire().await?;
+    scoping_lifecycle_for_execution_with_connection(
+        &mut connection,
+        operation_id,
+        stage_execution_id,
+    )
+    .await
+}
+
+pub async fn scoping_lifecycle_for_execution_with_connection(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+    stage_execution_id: Uuid,
+) -> Result<Vec<ExactScopingLifecycleRow>> {
+    Ok(
+        sqlx::query_as::<_, ExactScopingLifecycleRow>(EXACT_SCOPING_LIFECYCLE_SQL)
+            .bind(operation_id)
+            .bind(stage_execution_id)
+            .fetch_all(connection)
+            .await?,
+    )
+}
+
+/// Insert the durable start row and return its DB primary key. Runtime-aware
+/// callers must receive any FK/fence/shape failure before dispatching the tool.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_tracked_start(
+    pool: &PgPool,
+    call_id: &str,
+    session_id: Uuid,
+    task_id: Option<Uuid>,
+    subtask_id: Option<Uuid>,
+    tool_name: &str,
+    args: &serde_json::Value,
+    runtime: Option<&RuntimeToolIdentity>,
+) -> Result<Uuid> {
+    let record_id = sqlx::query_scalar::<_, Uuid>(RECORD_TRACKED_START_SQL)
+        .bind(call_id)
+        .bind(session_id)
+        .bind(task_id)
+        .bind(subtask_id)
+        .bind(tool_name)
+        .bind(args)
+        .bind(runtime.map(|identity| identity.operation_id))
+        .bind(runtime.map(|identity| identity.stage_execution_id))
+        .bind(runtime.and_then(|identity| identity.stage_run_unit_id))
+        .bind(runtime.and_then(|identity| identity.worker_run_id))
+        .bind(runtime.and_then(|identity| identity.organization_id))
+        .bind(runtime.and_then(|identity| identity.attempt_epoch))
+        .bind(runtime.and_then(|identity| identity.lease_token))
+        .fetch_one(pool)
+        .await?;
+    Ok(record_id)
+}
+
+/// Finish exactly one start row by trusted DB identity plus its start-session
+/// owner. The running-state predicate makes duplicate/late finalization a CAS
+/// miss instead of silently rewriting terminal telemetry.
+pub async fn record_tracked_finish(
+    pool: &PgPool,
+    record_id: Uuid,
+    session_id: Uuid,
+    status: &str,
+    result: &str,
+    duration_ms: i32,
+) -> Result<()> {
+    let rows_affected = sqlx::query(RECORD_TRACKED_FINISH_SQL)
+        .bind(status)
+        .bind(result)
+        .bind(duration_ms)
+        .bind(record_id)
+        .bind(session_id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    require_exactly_one_finish(rows_affected, record_id, session_id)
+}
+
+fn require_exactly_one_finish(rows_affected: u64, record_id: Uuid, session_id: Uuid) -> Result<()> {
+    if rows_affected == 1 {
+        return Ok(());
+    }
+    Err(DbError::NotFound(format!(
+        "active tool_call id={record_id} session_id={session_id}"
+    )))
+}
 
 pub async fn create(pool: &PgPool, tc: NewToolCall) -> Result<ToolCall> {
     let row = sqlx::query_as::<_, ToolCall>(
@@ -487,10 +643,140 @@ pub struct ToolCallStats {
 #[cfg(test)]
 mod tests {
     use super::{
-        org_ids_from_create_result, scoping_scope_review_results_sql, subsidiary_scope_decision,
-        unit_flow_for_org,
+        org_ids_from_create_result, require_exactly_one_finish, scoping_scope_review_results_sql,
+        subsidiary_scope_decision, unit_flow_for_org, RECORD_TRACKED_FINISH_SQL,
+        RECORD_TRACKED_START_SQL,
     };
+    use crate::models::NewSession;
+    use crate::repo::sessions;
+    use crate::{DbConfig, GolishDb};
+    use serial_test::serial;
     use uuid::Uuid;
+
+    fn reserve_local_port() -> u16 {
+        std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("reserve local postgres port")
+            .local_addr()
+            .expect("read reserved postgres port")
+            .port()
+    }
+
+    #[test]
+    fn runtime_tool_tracking_start_returns_db_id_and_writes_the_complete_identity() {
+        for column in [
+            "operation_id",
+            "stage_execution_id",
+            "stage_run_unit_id",
+            "worker_run_id",
+            "organization_id",
+            "attempt_epoch",
+            "lease_token",
+        ] {
+            assert!(
+                RECORD_TRACKED_START_SQL.contains(column),
+                "missing {column}"
+            );
+        }
+        assert!(RECORD_TRACKED_START_SQL.contains("task_id"));
+        assert!(RECORD_TRACKED_START_SQL.contains("subtask_id"));
+        assert!(RECORD_TRACKED_START_SQL.contains("RETURNING id"));
+        assert!(!RECORD_TRACKED_START_SQL.contains("ON CONFLICT DO NOTHING"));
+    }
+
+    #[test]
+    fn runtime_tool_tracking_finish_is_a_record_and_session_scoped_cas() {
+        assert!(RECORD_TRACKED_FINISH_SQL.contains("WHERE id = $4"));
+        assert!(RECORD_TRACKED_FINISH_SQL.contains("session_id = $5"));
+        assert!(RECORD_TRACKED_FINISH_SQL.contains("status IN ('received', 'running')"));
+        assert!(require_exactly_one_finish(1, Uuid::new_v4(), Uuid::new_v4()).is_ok());
+        assert!(require_exactly_one_finish(0, Uuid::new_v4(), Uuid::new_v4()).is_err());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn runtime_tool_tracking_record_id_finish_cas_executes_on_postgres() {
+        let data_dir = tempfile::tempdir().expect("temporary postgres data directory");
+        let config = DbConfig {
+            pg_data_dir: data_dir.path().join("pgdata"),
+            port: reserve_local_port(),
+            database: format!("runtime_tool_tracking_{}", Uuid::new_v4().simple()),
+            ..DbConfig::default()
+        };
+        let mut db = GolishDb::start(config)
+            .await
+            .expect("start migrated embedded postgres");
+        let session = sessions::create(
+            db.pool(),
+            NewSession {
+                title: Some("runtime tool tracking".to_string()),
+                workspace_path: None,
+                workspace_label: None,
+                model: None,
+                provider: None,
+                project_path: None,
+            },
+        )
+        .await
+        .expect("create tracking session");
+
+        let record_id = super::record_tracked_start(
+            db.pool(),
+            "tool-request-id",
+            session.id,
+            None,
+            None,
+            "query_target_data",
+            &serde_json::json!({"section": "targets"}),
+            None,
+        )
+        .await
+        .expect("insert durable tool-call start");
+        let persisted_id: Uuid =
+            sqlx::query_scalar("SELECT id FROM tool_calls WHERE call_id = $1 AND session_id = $2")
+                .bind("tool-request-id")
+                .bind(session.id)
+                .fetch_one(db.pool())
+                .await
+                .expect("read persisted start id");
+        assert_eq!(persisted_id, record_id);
+
+        assert!(super::record_tracked_finish(
+            db.pool(),
+            record_id,
+            Uuid::new_v4(),
+            "finished",
+            "wrong session",
+            1,
+        )
+        .await
+        .is_err());
+        super::record_tracked_finish(db.pool(), record_id, session.id, "finished", "done", 2)
+            .await
+            .expect("finish exact record and start session");
+        assert!(super::record_tracked_finish(
+            db.pool(),
+            record_id,
+            session.id,
+            "failed",
+            "late duplicate",
+            3,
+        )
+        .await
+        .is_err());
+        let persisted: (String, Option<String>, Option<i32>) = sqlx::query_as(
+            "SELECT status::text, result, duration_ms FROM tool_calls WHERE id = $1",
+        )
+        .bind(record_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("read terminal tool call");
+        assert_eq!(
+            persisted,
+            ("finished".to_string(), Some("done".to_string()), Some(2))
+        );
+
+        db.stop().await;
+    }
 
     #[test]
     fn persisted_parent_only_choice_is_a_deterministic_subsidiary_exclusion() {

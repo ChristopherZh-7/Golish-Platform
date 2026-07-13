@@ -16,6 +16,7 @@ export type {
   // Re-exported externals
   ApprovalPattern,
   AskHumanRequest,
+  CandidateReviewHint,
   // Messages
   CommandBlock,
   CompactionResult,
@@ -29,6 +30,7 @@ export type {
   PlanSummary,
   ReasoningEffort,
   RenderMode,
+  ReportingReadModelHint,
   RetiredPlan,
   RiskLevel,
   Session,

@@ -138,6 +138,10 @@ pub(crate) struct BridgeLlmConfig {
 pub(crate) struct BridgeServices {
     pub(crate) db_tracker: Option<crate::db_tracking::DbTracker>,
     pub(crate) chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
+    pub(crate) runtime_memory:
+        Option<Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository>>,
+    pub(crate) knowledge_memory: Option<Arc<dyn golish_memory_app::KnowledgeUnitOfWork>>,
+    pub(crate) knowledge_context: Option<Arc<dyn golish_memory_app::ContextPackProvider>>,
     pub(crate) indexer_state: Option<Arc<IndexerState>>,
     pub(crate) sidecar_state: Option<Arc<dyn SessionCaptureBackend>>,
     pub(crate) graph_backend: Option<Arc<dyn GraphKnowledgeBase>>,
@@ -267,6 +271,12 @@ pub struct AgentBridge {
     /// `stage_run` worker resume) can update the same `operation_state` row as the
     /// graph checkpointer.
     pub(crate) harness_active_operation_id: Arc<RwLock<Option<uuid::Uuid>>>,
+    /// Trusted `stage_runs.id` for the active subtask execution.
+    pub(crate) harness_active_stage_execution_id: Arc<RwLock<Option<uuid::Uuid>>>,
+    /// Trusted per-organization stage unit for the active subtask.
+    pub(crate) harness_active_stage_run_unit_id: Arc<RwLock<Option<uuid::Uuid>>>,
+    /// Trusted specialist worker fencing tuple for the active subtask.
+    pub(crate) harness_active_worker_lease: Arc<RwLock<Option<golish_core::WorkerLeaseContext>>>,
     /// Circuit breaker shared by every Primary loop/reflector pass in one
     /// top-level Task request. `BridgeAgentExecutor` resets it only after the
     /// universal request owner upgrades into Task execution; `stage_run` closes
@@ -295,6 +305,11 @@ pub struct AgentBridge {
     /// signature here; `BridgeAgentExecutor::execute_subtask` appends it to the
     /// content before the gate runs. Reset per-subtask. `None` = none captured.
     pub(crate) harness_last_deliverable: Arc<RwLock<Option<String>>>,
+    /// V2 counterpart to `harness_last_deliverable`: immutable DB submission id
+    /// plus its canonical gate payload. This never accepts model-authored
+    /// identity and is propagated separately from the legacy string sink.
+    pub(crate) harness_captured_submission:
+        Arc<RwLock<Option<golish_agent_kit::db_traits::CapturedStageSubmission>>>,
     /// Lead-agent decision side-channel: the `start_operation` tool writes a JSON
     /// `{objective, analysis}` here when the orchestrator decides the request needs
     /// the structured planner. The Task-mode router reads it after the lead turn to
@@ -348,13 +363,9 @@ impl AgentBridge {
             "top-level request lease belongs to a different agent session"
         );
 
-        *self.harness_active_stage.write().await = None;
-        *self.harness_active_authz.write().await = None;
-        *self.harness_active_org_id.write().await = None;
-        *self.harness_active_operation_id.write().await = None;
-        *self.harness_submit_only.write().await = false;
-        *self.harness_forced_tool.write().await = None;
+        self.clear_active_subtask_context().await;
         *self.harness_last_deliverable.write().await = None;
+        *self.harness_captured_submission.write().await = None;
         *self.pending_plan_request.write().await = None;
         Ok(())
     }

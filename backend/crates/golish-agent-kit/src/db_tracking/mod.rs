@@ -9,6 +9,7 @@ mod memory;
 mod recording;
 mod types;
 
+pub use memory::policy::{should_store_legacy_tool_memory, LegacyToolMemoryContext};
 pub use types::{BriefingPlan, MemoryHit, ScoredMemoryHit, ToolCallGuard};
 
 use std::sync::Arc;

@@ -1,14 +1,17 @@
 import { KeyRound, List, ListChecks, MessageSquare, Pencil, ShieldQuestion } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
-import { listOrganizationCandidates } from "@/lib/api/organizations";
+import {
+  listOrganizationCandidates,
+  type UnitReviewDecisionRow,
+  type UnitReviewSubmission,
+} from "@/lib/api/organizations";
 import { cn } from "@/lib/utils";
 import {
   candidatesToUnitRows,
   parseBulkRows,
   type ScopeReviewHandle,
   type ScopeReviewKind,
-  type ScopeReviewRow,
   ScopeReviewTable,
 } from "./ScopeReviewTable";
 
@@ -259,7 +262,7 @@ export function AskHumanInline({
   // For the org-sourced path the candidates load asynchronously from the DB;
   // null = still loading, [] = loaded-empty / failed. The table is remounted via
   // `key` once these arrive so its seeded textarea picks them up.
-  const [dbRows, setDbRows] = useState<ScopeReviewRow[] | null>(null);
+  const [dbRows, setDbRows] = useState<UnitReviewDecisionRow[] | null>(null);
   useEffect(() => {
     if (!orgId) return;
     let alive = true;
@@ -409,7 +412,16 @@ export function AskHumanInline({
                   ? parseBulkRows(request.inputType as ScopeReviewKind, reviewSource.text)
                   : []
           }
-          onConfirm={(rows) => onSubmit(JSON.stringify(rows))}
+          onConfirm={(rows) => {
+            if (request.inputType === "unit_review") {
+              const submission: UnitReviewSubmission = {
+                rows: rows as UnitReviewDecisionRow[],
+              };
+              onSubmit(JSON.stringify(submission));
+            } else {
+              onSubmit(JSON.stringify(rows));
+            }
+          }}
           onSkip={onSkip}
         />
       )}

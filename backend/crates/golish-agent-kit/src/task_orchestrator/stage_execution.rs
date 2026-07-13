@@ -23,6 +23,61 @@ use crate::harness::StageKind;
 
 use super::types::PlannedSubtask;
 
+/// Durable lifecycle state for one exact stage execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageExecutionStatus {
+    Started,
+    Completed,
+    Failed,
+    PausedNeedsUser,
+}
+
+impl StageExecutionStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::PausedNeedsUser => "paused_needs_user",
+        }
+    }
+
+    pub fn try_parse(value: &str) -> Option<Self> {
+        match value {
+            "started" => Some(Self::Started),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            "paused_needs_user" => Some(Self::PausedNeedsUser),
+            _ => None,
+        }
+    }
+}
+
+/// SQLx-free identity of one durable stage execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageExecution {
+    pub id: Uuid,
+    pub operation_id: Uuid,
+    pub stage: StageKind,
+    pub status: StageExecutionStatus,
+}
+
+/// Compare-and-swap command for moving an operation to its next stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransitionStageExecution {
+    pub operation_id: Uuid,
+    pub current_stage_execution_id: Uuid,
+    pub next_stage_execution_id: Uuid,
+    pub next_stage: StageKind,
+}
+
+/// Exact old/new identities returned by an atomic stage transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransitionedStageExecution {
+    pub previous: StageExecution,
+    pub current: StageExecution,
+}
+
 /// 把 subtask 队列按 harness stage 分组（按 stage **首次出现**的顺序）。
 ///
 /// 返回 `(stage, 属于该 stage 的 subtask 在原队列中的下标)`，下标按队列顺序。无 stage
@@ -194,5 +249,20 @@ mod tests {
             "22222222-2222-2222-2222-222222222222"
         );
         assert_eq!(merged["graph_flow"]["next_node"], "target_intel");
+    }
+
+    #[test]
+    fn typed_stage_execution_preserves_exact_operation_stage_and_status() {
+        let execution = StageExecution {
+            id: Uuid::from_u128(0xa01),
+            operation_id: Uuid::from_u128(0xa02),
+            stage: StageKind::TargetIntel,
+            status: StageExecutionStatus::Started,
+        };
+
+        assert_eq!(execution.id, Uuid::from_u128(0xa01));
+        assert_eq!(execution.operation_id, Uuid::from_u128(0xa02));
+        assert_eq!(execution.stage, StageKind::TargetIntel);
+        assert_eq!(execution.status, StageExecutionStatus::Started);
     }
 }

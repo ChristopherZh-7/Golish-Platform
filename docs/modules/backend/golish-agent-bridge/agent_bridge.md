@@ -15,7 +15,7 @@
 
 ## 职责
 
-`AgentBridge` 是 app↔runtime 的核心句柄，按关注点分解：`BridgeEventBus`（事件发射/seq/frontend-ready 缓冲/coordinator/transcript）、`BridgeLlmConfig`（client + provider/model + provider 特定配置）、`BridgeServices`（DB/PTY/sidecar/indexer/settings 可选句柄）、`BridgeAccessControl`（tool policy/HITL/agent mode/loop detection）、`BridgeSession`（历史 + 持久化）。顶层字段是跨切面身份/编排状态（workspace/tool registry/sub-agents/context/MCP）。standalone bridge 持有私有 active request slot；GUI bridge 绑定 `AiState` 的 stable logical-session slot + generation，让 Chat/Task/附件/CLI/history mutation 的 cancel、history、harness side-channel 与 retry budget 在 bridge replacement 前后仍是 single-flight。
+`AgentBridge` 是 app↔runtime 的核心句柄，按关注点分解：`BridgeEventBus`（事件发射/seq/frontend-ready 缓冲/coordinator/transcript）、`BridgeLlmConfig`（client + provider/model + provider 特定配置）、`BridgeServices`（DB/PTY/sidecar/indexer/settings/ContextPack provider 可选句柄）、`BridgeAccessControl`（tool policy/HITL/agent mode/loop detection）、`BridgeSession`（历史 + 持久化）。顶层字段是跨切面身份/编排状态（workspace/tool registry/sub-agents/context/MCP）。standalone bridge 持有私有 active request slot；GUI bridge 绑定 `AiState` 的 stable logical-session slot + generation，让 Chat/Task/附件/CLI/history mutation 的 cancel、history、harness side-channel 与 retry budget 在 bridge replacement 前后仍是 single-flight。
 
 ## 公开接口
 
@@ -30,6 +30,9 @@
 | `TopLevelRequestLease` | cloneable request token；last clone Drop 才 Release，供 Task lead→executor handoff |
 | `SessionRequestSlot` / `SessionRequestTransitionLease` | 跨 bridge generation 的 stable request authority + init lifecycle reservation；lease 同时校验 slot identity/generation |
 | `BridgeEventBus` / `BridgeLlmConfig` / `BridgeServices` / `BridgeAccessControl` / `BridgeSession` | 5 子系统 |
+| `set_runtime_memory_repository` | 注入 V2 compound runtime-memory backend；`prepare.rs` 原样快照到每-turn `AgenticLoopContext` |
+| `set_knowledge_memory` / `knowledge_memory` | 注入 process-shared canonical UoW，供后续 compound terminalizer 使用；不启动 projector |
+| `set_knowledge_context` / `knowledge_context` | 注入 C7 scoped `ContextPackProvider`；`prepare.rs` 只把同一 Arc 快照到每-turn runtime context，不在 bridge 自行检索或缓存跨 operation 数据 |
 | `harness_active_operation_id_handle` / `harness_active_org_id_handle` / `harness_active_stage_handle` | harness side-channel handles；工具注册层可读 active operation/stage/org，用于 submit 预检、org 隔离和 wave cutoff |
 
 ## 关键文件
@@ -47,6 +50,9 @@
 ## 注意事项 / 坑
 
 - 5 子系统是有意分解（隔离关注点）；加字段先想归哪个子系统，别全堆顶层。
+- `BridgeServices.runtime_memory` 与 generic `DbTracker`/`chain_persistence` 职责不同：前者提供 V2 原子 seed/claim/heartbeat/tool/chain mutation。production bridge 三者一起装配；eval/legacy context 可显式不提供 runtime-memory backend。
+- `BridgeServices.knowledge_memory` 与 process supervisor 职责分离：它只 clone 同一 `KnowledgeUnitOfWork` Arc；per-session `BridgeBackends` 不得创建 runtime、cancellation token 或 join handle。
+- `BridgeServices.knowledge_context` 只是 provider capability 的依赖注入；bridge 不接受 caller 构造的 trusted auth，不缓存 ContextPack，也不得在缺 provider/identity 时回退 legacy global memories/wiki。
 - 事件经 `BridgeEventBus` → coordinator（单任务）发射；别绕过 coordinator 直发。
 - `prepare.rs` 渲染 prompt 时，Task/Profile 的 lead turn（`harness_active_stage=None`）不应告诉模型有 sub-agent dispatch；只有真正进入 harness stage 后才把 sub-agent 能力写进 prompt。否则 lead turn 会被提示去走不存在的 stage/sub-agent 工具面。
 - `execute_with_turn_instructions` 只把本 turn 附加说明拼进 system prompt；`AiEvent::UserMessage`、sidecar capture、conversation history 都必须继续使用原始 prompt。Task/Profile lead policy 走这里，避免把控制指令显示成用户消息。

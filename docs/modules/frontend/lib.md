@@ -16,14 +16,14 @@
 
 ## 职责
 
-承载前端所有非-UI 逻辑与后端边界。`api/` 是唯一允许 `invoke` 的地方（37 个域 wrapper + `client.ts` + `error-codes.ts`）；`generated/` 是 ts-rs 从后端生成的 wire 类型（62 文件，手写文件**禁改**）；其余子目录是领域逻辑/工具。
+承载前端所有非-UI 逻辑与后端边界。`api/` 是唯一允许 `invoke` 的地方（38 个域 wrapper + `client.ts` + `error-codes.ts`）；`generated/` 是 ts-rs 从后端生成的 wire 类型（手写文件**禁改**）；其余子目录是领域逻辑/工具。
 
 ## 关键子目录
 
 | 子目录 | 说明 |
 |---|---|
-| `api/` | 统一 Tauri 客户端：`api.<domain>.<verb>`，37 域 wrapper + `client.ts`（持 `invoke`）+ `error-codes.ts` |
-| `generated/` | **ts-rs 生成**的后端 wire 类型（62 文件，禁手改） |
+| `api/` | 统一 Tauri 客户端：`api.<domain>.<verb>`，38 域 wrapper + `client.ts`（持 `invoke`）+ `error-codes.ts` |
+| `generated/` | **ts-rs 生成**的后端 wire 类型（禁手改） |
 | `events/` / `ai/` | AI 事件类型 / 前端 AI 逻辑 |
 | `pentest/` / `target-panel/` / `timeline/` | pentest 视图模型 / 目标面板 / 时间线 |
 | `models/` / `settings/` / `theme/` / `i18n/` / `terminal/` / `ui-state/` / `serde_json/` | 模型 / 设置 / 主题 / 国际化 / 终端 / UI 状态 / JSON 工具 |
@@ -43,6 +43,10 @@
 - **不变量（AGENTS.md §2.3）**：组件调后端走 `lib/api/<domain>.ts`，**禁裸 `invoke()`**；`invoke` 只在 `api/client.ts`。
 - **不变量 I1**：错误按 `error-codes.ts` 的 `code` 翻译，不靠 HTTP status 做业务判断。
 - 加新后端域：加 `lib/api/<domain>.ts` wrapper + 在 `api/index.ts` 注册。
+- `api/attack.ts` 只接受 ts-rs 生成的 operation/wave scope、Candidate id/plan hash/row version/decision/expiry；actor/project/org/action/budget 不得进入 request DTO。五个 `ATTACK_*` code 由 `error-codes.ts` 稳定翻译。
+- `api/cleanup.ts` 只消费 ts-rs 生成的 operation/org read scope 与 exact operation/project-scope/snapshot/org/obligation/row-version waiver CAS；request 不含 actor id，可信 local principal 只在后端解析。
+- `api/reporting.ts` 只消费 ts-rs 生成的 operation scope 与 revision/source CAS；`buildReportReadModel`、read/list/artifact/finalize 都走该 wrapper。actor、project root、storage path/content key 不得出现在 request DTO。
+- `api/temporal-graph.ts` 只消费 ts-rs 生成的 closed scope/request/result；它与手写 legacy `lib/ai/kg.ts` 分离，不能添加 actorId/projectPath authority 字段。
 - `target-panel/org-tree.ts` 是 TargetPanel 左侧组织树投影入口，默认只用于公司层级和计数；`summarizeTargetCounts` 同时给出 own 与 subtree 口径，UI 主数字必须用 own，删除/汇总才用 subtree；`target-panel/asset-groups.ts` 负责右侧 Targets 面板的 IP ⇄ 域名/URL 联合分组，避免大型客户的资产列表遮住子公司层级。IP target 必须按自己的 `value` 成组，即使 `real_ip` 里有 provider 归因值；只有 domain / url 才用 `real_ip` 挂到 IP 组，否则会出现“IP 下面挂 IP”的误导。IP 组的展示列表要把 `www.<apex>` 折叠到 `<apex>`，优先展示 apex，但不要折叠 `m.` / `api.` 等真实子域，底层 `targets` 和计数仍保留原始资产。
 - `api/security-analysis.ts` 是 Target Surface 安全数据的 IPC 边界；后端命令返回 `serde_json` 时字段是 Rust snake_case（如 `asset_type` / `target_id` / `status_code`），wrapper 必须在这里归一成前端接口声明的 camelCase（`assetType` / `targetId` / `statusCode` 等），不要让组件直接消费未规整的原始行。`Fingerprint.evidence` 的 canonical shape 是 observation array，但历史 DB 行可能仍是单个 JSON object；normalizer 必须把非空 object 包成单元素数组，不能用普通 `arrayField` 把旧指纹静默变成无证据。`targetSurfaceHierarchyGet(targetId, includeRelated)` 是 Phase 2.4 的 backend identity hierarchy wrapper；当前没有 ts-rs 生成类型时，本地 DTO 只描述 command 的 camelCase 输出，组件仍通过 adapter 合成后消费。Phase 2.5B 本地 DTO 扩展了 backend 的 legacy content 聚合：`BackendWebOriginDto.contentCounts`（`BackendWebOriginContentCountsDto | null`）、`BackendSurfaceSummaryDto` 的 `urlCount/apiCount/jsCount/paramCount/directoryEntryCount/passiveLogCount/evidenceCount/contentUnassignedCount/contentUnmatchedOriginCount`（均 `number | null`）、`BackendUnassignedWebDataDto.counts`（`BackendUnassignedWebDataCountsDto | null`）。归一化时用 `presentNumberField` 区分「字段缺失（旧 payload → null，前端回退自身推断计数）」与「存在且为 0」，`contentCounts` / `counts` 缺失整块时归一为 `null`，绝不把缺失当 0。Phase 2.5C 再加轻量 refs 与 backfill：`BackendWebOriginDto.refs` / `BackendUnassignedWebDataDto.refs`（`BackendWebOriginContentRefDto[]`，旧 payload 归一为空数组）；`surfaceIdentityBackfill(projectPath?, organizationId?)` 包 `target_surface_identity_backfill` 命令并归一返回 `SurfaceIdentityBackfillSummary`。refs 是轻量指针（kind/id/url/method?/status?/capture?/source?），不是完整 legacy row。2026-07-04 起 `BackendWebOriginDto.crawlObservations`（`BackendCrawlObservationDto[]`，旧 payload 归一为空数组）表示来源 origin 下的 crawler URL 观察项；它不是 `ApiEndpoint` row，也不代表 coverage truth。
 - `tools.ts::toolResultIndicatesFailure` 是工具结果显示态的共享判定：transport success 不等于业务成功，组件画状态图标前要检查 rejected/needs_fix/error/failed、非 0 exit、以及 stderr 里的 ERROR/FATAL/EXCEPTION。

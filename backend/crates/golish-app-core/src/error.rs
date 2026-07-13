@@ -68,6 +68,12 @@ pub enum GolishError {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    /// Immutable runtime scope snapshots retain organization identity. A
+    /// caller must use the future explicit invalidation workflow before the
+    /// live organization subtree can be deleted.
+    #[error("Runtime scope history must be invalidated before deleting organization {0}")]
+    RuntimeScopeHistoryRequiresInvalidation(String),
+
     #[error("{0}")]
     Internal(String),
 }
@@ -96,6 +102,9 @@ impl GolishError {
             Self::NotFound(_) => "NOT_FOUND",
             Self::Validation(_) => "VALIDATION",
             Self::Config(_) => "CONFIG",
+            Self::RuntimeScopeHistoryRequiresInvalidation(_) => {
+                "runtime_scope_history_requires_invalidation"
+            }
             Self::Internal(_) => "INTERNAL",
         }
     }
@@ -194,6 +203,10 @@ mod tests {
         assert_eq!(GolishError::NotFound("x".into()).code(), "NOT_FOUND");
         assert_eq!(GolishError::Validation("x".into()).code(), "VALIDATION");
         assert_eq!(GolishError::Config("x".into()).code(), "CONFIG");
+        assert_eq!(
+            GolishError::RuntimeScopeHistoryRequiresInvalidation("org".into()).code(),
+            "runtime_scope_history_requires_invalidation"
+        );
         assert_eq!(GolishError::Internal("x".into()).code(), "INTERNAL");
         assert_eq!(
             GolishError::SessionNotFound("s".into()).code(),

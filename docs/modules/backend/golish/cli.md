@@ -15,7 +15,7 @@
 
 ## 职责
 
-提供与 GUI 共享服务的命令行入口（自动化/脚本）。`args` 解析（clap）、`runner` 执行、`repl` 交互、`bootstrap` 初始化（`initialize_agent` 用 `CliRuntime`）。事件经 `CliRuntime::emit` → channel → output handler（terminal/JSON/quiet，见 `golish-cli-output`）。
+提供与 GUI 共享服务的命令行入口。普通 CLI 在 DB-ready 后启动同一 Memory Supervisor + Cleanup DB-global worker + Reporting orphan-artifact GC；shutdown 顺序为 Cleanup/Reporting → Memory → runtime → embedded PG，避免 worker 在 pool 停止后继续 claim 或扫文件。
 
 ## 公开接口
 
@@ -53,6 +53,7 @@
   expected identity、固定 marker、operation advisory claim 和 CAS 全匹配时恢复，
   普通 failed task 永不复活。
 - `runner::execute_once` 在启动 terminal-event receiver 前获取 bridge universal top-level lease；busy 请求不会发 `Completed/Error`，若先启动 receiver 再 acquire 会让 CLI 永久等待。执行结束仍持 lease 做 async request-state cleanup。
+- `CliContext::shutdown` 顺序固定为 agent/MCP/sidecar → Cleanup/Reporting workers → Memory Supervisor graceful join → runtime → owned embedded PG；不能先停 pool 再等 worker/projector。
 
 ## 测试入口
 

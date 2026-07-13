@@ -13,6 +13,9 @@
 //! ├── scripts/{category}/{file}
 //! ├── evidence/{finding_id}/{file}
 //! ├── analysis/{host}/{type}_{timestamp}.md
+//! ├── reports/.staging/{revision_id}/{sha256}.{ext}
+//! ├── reports/blobs/sha256/{sha256}.{ext}
+//! ├── reports/.locks/sha256/{sha256}.{ext}.lock
 //! └── temp/
 //! ```
 
@@ -20,6 +23,10 @@
 
 mod crud_ops;
 mod import_export;
+#[cfg(unix)]
+mod report_artifacts_unix;
+#[cfg(windows)]
+mod report_artifacts_windows;
 
 pub use crud_ops::*;
 pub use import_export::*;
@@ -86,6 +93,9 @@ const TOOL_OUTPUT_DIR: &str = "tool-output";
 const SCRIPTS_DIR: &str = "scripts";
 const EVIDENCE_DIR: &str = "evidence";
 const ANALYSIS_DIR: &str = "analysis";
+const REPORTS_DIR: &str = "reports";
+const REPORT_STAGING_DIR: &str = ".staging";
+const REPORT_BLOBS_DIR: &str = "blobs";
 const TEMP_DIR: &str = "temp";
 const HOST_INFO_DIR: &str = "_info";
 
@@ -105,6 +115,8 @@ pub async fn init_project_dirs(project_root: &Path) -> Result<()> {
         base.join(SCRIPTS_DIR).join("utils"),
         base.join(EVIDENCE_DIR),
         base.join(ANALYSIS_DIR),
+        base.join(REPORTS_DIR).join(REPORT_STAGING_DIR),
+        base.join(REPORTS_DIR).join(REPORT_BLOBS_DIR),
         base.join(TEMP_DIR),
     ];
 
@@ -237,6 +249,20 @@ pub fn scripts_dir(project_root: &Path, category: &str) -> PathBuf {
 
 pub fn temp_dir(project_root: &Path) -> PathBuf {
     project_root.join(GOLISH_DIR).join(TEMP_DIR)
+}
+
+pub fn report_staging_dir(project_root: &Path) -> PathBuf {
+    project_root
+        .join(GOLISH_DIR)
+        .join(REPORTS_DIR)
+        .join(REPORT_STAGING_DIR)
+}
+
+pub fn report_blobs_dir(project_root: &Path) -> PathBuf {
+    project_root
+        .join(GOLISH_DIR)
+        .join(REPORTS_DIR)
+        .join(REPORT_BLOBS_DIR)
 }
 
 #[cfg(test)]

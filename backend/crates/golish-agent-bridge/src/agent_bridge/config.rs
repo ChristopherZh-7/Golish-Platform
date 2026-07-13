@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use golish_agent_kit::task_orchestrator::ExecutionContext;
 use golish_core::{ApiRequestStats, PromptMatchedSkill, PromptSkillInfo};
 
 use crate::sidecar_trait::SessionCaptureBackend;
@@ -25,6 +26,47 @@ use golish_indexer::IndexerState;
 use super::AgentBridge;
 
 impl AgentBridge {
+    /// Publish one subtask's trusted runtime identity after validating the
+    /// redundant worker-lease unit witness. Validation happens before any
+    /// handle is mutated so a malformed context cannot partially overwrite the
+    /// preceding cleanup state.
+    pub(crate) async fn publish_active_execution_context(
+        &self,
+        execution_context: &ExecutionContext,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            execution_context.trusted_worker_lease_is_consistent(),
+            "worker lease stage_run_unit_id does not match execution context"
+        );
+
+        *self.harness_active_stage.write().await = execution_context.harness_stage;
+        *self.harness_active_authz.write().await = execution_context.harness_authz;
+        *self.harness_active_org_id.write().await = execution_context.harness_org_id;
+        *self.harness_active_operation_id.write().await = execution_context.operation_id;
+        *self.harness_active_stage_execution_id.write().await =
+            execution_context.stage_execution_id;
+        *self.harness_active_stage_run_unit_id.write().await = execution_context.stage_run_unit_id;
+        *self.harness_active_worker_lease.write().await = execution_context.worker_lease.clone();
+        *self.harness_submit_only.write().await = execution_context.harness_submit_only;
+        *self.harness_forced_tool.write().await = execution_context.harness_forced_tool.clone();
+        Ok(())
+    }
+
+    /// Clear every subtask-local authorization and trusted runtime identity
+    /// handle. Called after each isolated Primary loop (including its error
+    /// path) and again during top-level cleanup as the unwind/drop fallback.
+    pub(crate) async fn clear_active_subtask_context(&self) {
+        *self.harness_active_stage.write().await = None;
+        *self.harness_active_authz.write().await = None;
+        *self.harness_active_org_id.write().await = None;
+        *self.harness_active_operation_id.write().await = None;
+        *self.harness_active_stage_execution_id.write().await = None;
+        *self.harness_active_stage_run_unit_id.write().await = None;
+        *self.harness_active_worker_lease.write().await = None;
+        *self.harness_submit_only.write().await = false;
+        *self.harness_forced_tool.write().await = None;
+    }
+
     // ========================================================================
     // Database / persistence
     // ========================================================================
@@ -104,6 +146,39 @@ impl AgentBridge {
 
             plan_manager.load_from_db().await;
         });
+    }
+
+    /// Install the compound V2 runtime-memory repository used by stage-worker
+    /// claim, heartbeat, tool and bound-chain fencing.
+    pub fn set_runtime_memory_repository(
+        &mut self,
+        repository: Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository>,
+    ) {
+        self.services.runtime_memory = Some(repository);
+    }
+
+    /// Inject the process-shared canonical Memory Fabric transaction port.
+    /// Worker ownership remains exclusively in the host composition root.
+    pub fn set_knowledge_memory(
+        &mut self,
+        unit_of_work: Arc<dyn golish_memory_app::KnowledgeUnitOfWork>,
+    ) {
+        self.services.knowledge_memory = Some(unit_of_work);
+    }
+
+    pub fn knowledge_memory(&self) -> Option<Arc<dyn golish_memory_app::KnowledgeUnitOfWork>> {
+        self.services.knowledge_memory.clone()
+    }
+
+    pub fn set_knowledge_context(
+        &mut self,
+        provider: Arc<dyn golish_memory_app::ContextPackProvider>,
+    ) {
+        self.services.knowledge_context = Some(provider);
+    }
+
+    pub fn knowledge_context(&self) -> Option<Arc<dyn golish_memory_app::ContextPackProvider>> {
+        self.services.knowledge_context.clone()
     }
 
     /// Override the DB tracker's session UUID after [`Self::set_db_backend`].
@@ -447,11 +522,36 @@ impl AgentBridge {
         self.harness_active_operation_id.clone()
     }
 
+    /// Trusted active stage-execution id handle for runtime tool attribution.
+    pub fn harness_active_stage_execution_id_handle(&self) -> Arc<RwLock<Option<uuid::Uuid>>> {
+        self.harness_active_stage_execution_id.clone()
+    }
+
+    /// Trusted active stage-unit id handle for runtime tool attribution.
+    pub fn harness_active_stage_run_unit_id_handle(&self) -> Arc<RwLock<Option<uuid::Uuid>>> {
+        self.harness_active_stage_run_unit_id.clone()
+    }
+
+    /// Trusted active worker lease/fence handle for specialist tool attribution.
+    pub fn harness_active_worker_lease_handle(
+        &self,
+    ) -> Arc<RwLock<Option<golish_core::WorkerLeaseContext>>> {
+        self.harness_active_worker_lease.clone()
+    }
+
     /// C2c · Side-channel handle: the captured-StageDeliverable sink (write side).
     /// The `submit_stage_deliverable` tool writes here; the Task-mode executor
     /// reads it at stage close and feeds it to the deterministic gate.
     pub fn harness_last_deliverable_handle(&self) -> Arc<RwLock<Option<String>>> {
         self.harness_last_deliverable.clone()
+    }
+
+    /// V2 trusted submission side-channel. The submit tool writes a durable
+    /// identity here; the Task executor forwards it without parsing prose.
+    pub fn harness_captured_submission_handle(
+        &self,
+    ) -> Arc<RwLock<Option<golish_agent_kit::db_traits::CapturedStageSubmission>>> {
+        self.harness_captured_submission.clone()
     }
 
     /// Lead-agent decision side-channel handle. The `start_operation` tool writes

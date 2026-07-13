@@ -50,6 +50,22 @@ const OUTPUT_CHANNEL_CAP: usize = 1024;
 /// never be exposed as a clean exit with incomplete output.
 const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
+pub const ATTACK_VERIFIER_FOREGROUND_REQUIRED: &str = "ATTACK_VERIFIER_FOREGROUND_REQUIRED";
+
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum BackgroundJobSpawnError {
+    #[error("Candidate verifier actions must execute in the foreground")]
+    CandidateVerifierForegroundRequired,
+}
+
+impl BackgroundJobSpawnError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::CandidateVerifierForegroundRequired => ATTACK_VERIFIER_FOREGROUND_REQUIRED,
+        }
+    }
+}
+
 /// High-level lifecycle state of a background job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobStatus {
@@ -358,6 +374,50 @@ impl BackgroundJobManager {
     /// Spawn `command` in the background, additionally attributing live output
     /// to an agent tool call when `tool_context` is provided.
     pub fn spawn_for_session_and_tool(
+        &self,
+        command: &str,
+        workspace: &Path,
+        hard_limit: Duration,
+        session_id: Option<String>,
+        tool_context: Option<golish_core::AgentToolContext>,
+    ) -> String {
+        self.spawn_for_session_and_tool_unchecked(
+            command,
+            workspace,
+            hard_limit,
+            session_id,
+            tool_context,
+        )
+    }
+
+    /// Attributed production spawn path. Candidate verifier contexts are
+    /// durably scheduled and must never escape into the in-memory background
+    /// process map.
+    pub fn try_spawn_for_session_and_tool(
+        &self,
+        command: &str,
+        workspace: &Path,
+        hard_limit: Duration,
+        session_id: Option<String>,
+        tool_context: Option<golish_core::AgentToolContext>,
+    ) -> Result<String, BackgroundJobSpawnError> {
+        if tool_context
+            .as_ref()
+            .and_then(|context| context.candidate_attempt.as_ref())
+            .is_some()
+        {
+            return Err(BackgroundJobSpawnError::CandidateVerifierForegroundRequired);
+        }
+        Ok(self.spawn_for_session_and_tool_unchecked(
+            command,
+            workspace,
+            hard_limit,
+            session_id,
+            tool_context,
+        ))
+    }
+
+    fn spawn_for_session_and_tool_unchecked(
         &self,
         command: &str,
         workspace: &Path,
@@ -921,10 +981,15 @@ mod tests {
         let mut rx = mgr.subscribe_output_chunks();
         let ctx = golish_core::AgentToolContext {
             request_id: "req-live".to_string(),
+            tool_call_record_id: None,
             tool_name: "pentest_run".to_string(),
             source: golish_core::events::ToolSource::Main,
             operation_id: None,
+            stage_execution_id: None,
+            stage_run_unit_id: None,
             organization_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
         };
         let id = mgr.spawn_for_session_and_tool(
             "printf live-out",
@@ -953,6 +1018,46 @@ mod tests {
 
         let snap = wait_terminal(&mgr, &id, Duration::from_secs(5)).await;
         assert_eq!(snap.status, JobStatus::Done);
+    }
+
+    #[tokio::test]
+    async fn candidate_context_rejects_background_execution_before_spawn() {
+        let mgr = BackgroundJobManager::new();
+        let unit_id = uuid::Uuid::new_v4();
+        let context = golish_core::AgentToolContext {
+            request_id: "candidate-action".to_string(),
+            tool_call_record_id: None,
+            tool_name: "verify_execute_candidate_action".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(uuid::Uuid::new_v4()),
+            stage_execution_id: Some(uuid::Uuid::new_v4()),
+            stage_run_unit_id: Some(unit_id),
+            organization_id: Some(uuid::Uuid::new_v4()),
+            worker_lease: Some(golish_core::WorkerLeaseContext {
+                worker_run_id: uuid::Uuid::new_v4(),
+                stage_run_unit_id: unit_id,
+                lease_token: uuid::Uuid::new_v4(),
+                attempt_epoch: 1,
+            }),
+            candidate_attempt: Some(golish_core::CandidateAttemptContextRef {
+                candidate_id: uuid::Uuid::new_v4(),
+                approval_id: uuid::Uuid::new_v4(),
+                attempt_id: uuid::Uuid::new_v4(),
+                candidate_plan_hash: "sha256:plan".to_string(),
+            }),
+        };
+
+        let error = mgr
+            .try_spawn_for_session_and_tool(
+                "printf should-not-run",
+                &ws(),
+                Duration::from_secs(10),
+                Some("candidate-session".to_string()),
+                Some(context),
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), ATTACK_VERIFIER_FOREGROUND_REQUIRED);
+        assert!(mgr.running_for_session("candidate-session").is_empty());
     }
 
     #[tokio::test]

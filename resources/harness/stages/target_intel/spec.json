@@ -87,6 +87,13 @@
 
   "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout §3.2): specialist = the per-org sub-agent the stage_run tool fans out (intel → recon, the passive collector split from Pentester); coverage_axis = the human-readable technique columns the StageRunView renders per org row.",
   "specialist": "recon",
+  "runtime_memory": {
+    "schema_version": 2,
+    "unit_identity": "stage_execution_organization",
+    "scope_source": "frozen_operation_snapshot",
+    "requires_worker_lease": true,
+    "publishes_handoff_after_final_seal": true
+  },
   "coverage_axis": ["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"],
 
   "$comment_min_invocations": "No scan-tool selectors are exposed in this zero-touch stage. SUBDOMAIN/DNS/ASN/CT/OSINT coverage remains required on the stage-start axis/org context, and found states must come from positive provider/registry business landing (recon_map_assets DNS/target_assets/organization facts; WHOIS via recon_lookup_whois). Current-run target rows prove EAS handoff but neither join the denominator nor independently create a per-target found cell. A successful landing call with zero rows is not found. If no configured provider/source can land a technique, the agent must record blocked/checked_empty/not_applicable with evidence or note instead of running a CLI fallback. Completeness is enforced by coverage_complete (authoritative_found, reads the DB).",

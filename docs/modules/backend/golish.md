@@ -25,10 +25,11 @@
 | `run_gui()` | Tauri GUI 入口（bootstrap → configure_builder → install_handlers → run） |
 | `install_handlers`（来自 `commands_registry.rs`，`include!`-d） | `tauri::generate_handler![...]` ~300 命令 |
 | `commands_facade::<domain>`（ai/pentest/vuln_intel/vault/workspace…18 个） | 各域**权威命令面** re-export（glob `__cmd__$name`） |
-| `app`（`bootstrap` / `tauri_app` / `window_lifecycle` / `menu` / `mcp_bootstrap` / `sidecar_bootstrap`） | 进程级 setup + builder 装配 + 生命周期 |
+| `app`（`bootstrap` / `tauri_app` / `window_lifecycle` / `menu` / `mcp_bootstrap` / `sidecar_bootstrap`） | 进程级 setup + DB-ready Memory Supervisor + builder/退出生命周期 |
 | `cli`（`args` / `bootstrap` / `repl` / `runner`） | headless CLI / REPL 模式（clap） |
 | `state`（`db` / `pty` / `mcp` / `sidecar` / `telemetry`） | 全局 `AppState` 各子状态 |
 | `tools` / `pentest_tool_factory` / `stage_run` / `runtime` | 工具装配 / pentest 工具工厂 / stage 运行 / runtime 适配 |
+| `reporting_artifact_store` | 把 Reporting artifact port 绑定到 server-resolved project root，并拥有 GUI/CLI 共享 orphan GC runtime |
 
 ## 依赖
 
@@ -71,6 +72,8 @@
 - **不变量 I5**：跨 IPC 类型用 ts-rs 同步，别手写两份。
 - `commands_registry.rs` 是 `include!` 进 `lib.rs` 的，因为 `#[tauri::command]` 的 `__cmd__$name` 宏 `#[macro_export]` 到 crate 根。
 - `AppState` 故意留在本 crate（聚合内部子系统）；app crate 取窄 `DbState`。
+- Memory Supervisor 只由 GUI/CLI composition root 启停；AppState 持有 cancel/join owner，`AgentState`/`AgentBridge` 只拿同 adapter 的 UoW Arc。
+- Reporting artifact store factory 只在 composition root 解析 canonical project root；IPC/model 不得传路径或 content key。`ProjectReportArtifactStore::promote` 把底层 `ReservedReportArtifact` 包成 `ArtifactPublicationReservation`，让 `ReportFinalizer` 持 per-content lock 到 DB attach 提交。GUI/CLI 都在 DB ready 后启动同一 GC 语义，退出时必须在 pool 前 shutdown。Orphan GC 必须先按 `canonical_project_path` 分组，union 同一路径全部 active/retired `project_scope_id` 的 DB referenced content keys 后只扫物理目录一次，不能让 sibling scope 的局部 reference set 互删 retained blob；底层 file-storage 在 Unix 对 symlink/binding swap、在 Windows 对 symlink/reparse/junction/handle replacement 统一 fail closed，并在同一 content lock 后重查 grace。
 
 ## 测试入口
 

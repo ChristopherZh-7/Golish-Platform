@@ -22,6 +22,7 @@
 
 use golish_app_core::DbState;
 use golish_app_core::GolishError;
+use golish_cleanup_app::OrganizationDeletionPort;
 use uuid::Uuid;
 
 mod artifact_cleanup;
@@ -32,10 +33,11 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
+pub use artifact_cleanup::DbBackedOrganizationArtifactCleaner;
 pub use types::*;
 
-use candidates::read_candidates_from_intel;
 pub use candidates::upsert_organization_candidates_for_org;
+use candidates::{candidate_for_existing_child, read_candidates_from_intel};
 use validation::validate_profile_patch;
 
 fn to_org(o: golish_db::models::Organization) -> Organization {
@@ -163,13 +165,21 @@ pub async fn organization_move(
 pub async fn organization_delete(
     state: tauri::State<'_, DbState>,
     id: String,
+    project_path: String,
 ) -> Result<(), GolishError> {
     let pool = state.pool_ready().await?;
     let uid: Uuid = id
         .parse()
         .map_err(|e: uuid::Error| GolishError::from(e.to_string()))?;
-    artifact_cleanup::cleanup_before_delete(pool, uid).await?;
-    golish_db::repo::organizations::delete(pool, uid).await?;
+    // C8 two-phase deletion: this command only commits DB preconditions,
+    // invalidation deliveries and a durable job. The process-global worker is
+    // the only component allowed to perform filesystem cleanup, and it does so
+    // after this transaction commits. Operator identity is server-derived;
+    // callers cannot provide an actor id.
+    golish_cleanup_app::PgCleanupRepository::new(pool.clone())
+        .request_organization_deletion(uid, &project_path)
+        .await
+        .map_err(|error| GolishError::Internal(format!("{}: {error}", error.code())))?;
     Ok(())
 }
 
@@ -208,7 +218,30 @@ pub async fn organization_candidates_list(
     let row = golish_db::repo::organizations::get_one(pool, uid)
         .await?
         .ok_or_else(|| GolishError::NotFound(format!("organization {id}")))?;
-    Ok(read_candidates_from_intel(&row.intel))
+    let mut candidates = read_candidates_from_intel(&row.intel);
+
+    // Existing direct children are reviewable REUSE units too. Project them as
+    // stable candidates carrying both a namespaced candidate id and the real
+    // organization id. Existing children win over same-name recon proposals so
+    // the UI presents one unambiguous identity instead of duplicate text rows.
+    let existing_children: Vec<_> = golish_db::repo::organizations::subtree(pool, uid)
+        .await?
+        .into_iter()
+        .filter(|child| child.parent_id == Some(uid))
+        .collect();
+    let existing_names: std::collections::HashSet<String> = existing_children
+        .iter()
+        .map(|child| child.name.trim().to_lowercase())
+        .collect();
+    candidates
+        .organizations
+        .retain(|candidate| !existing_names.contains(&candidate.value.trim().to_lowercase()));
+    candidates
+        .organizations
+        .extend(existing_children.into_iter().map(|child| {
+            candidate_for_existing_child(child.id, &child.name, child.created_at.timestamp() as u64)
+        }));
+    Ok(candidates)
 }
 
 #[tauri::command]

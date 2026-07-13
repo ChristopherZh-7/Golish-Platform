@@ -1,6 +1,6 @@
 # golish-agent-kit
 
-> **一句话职责**：agent runtime 的**底层构件**（Layer 4a）——工具执行路由/执行器、loop detection、task orchestrator、HITL 审批、tool policy、planner、agent 侧 DB/memory tracking、llm-client 装配，以及 stage harness gate。
+> **一句话职责**：agent runtime 的**底层构件**（Layer 4a）——工具路由、orchestrator、HITL/tool policy、DB tracking、llm-client、stage gate，以及 prompt-safe ContextPack data renderer。
 
 - **类型**：crate（Layer 4a · agent 底层）
 - **路径**：`backend/crates/golish-agent-kit/`
@@ -28,14 +28,14 @@
 | `get_tool_definitions_*` / `ToolPreset` / `ToolSelectionConfig` | 工具 schema + preset 选择 |
 | `DefaultToolProvider` | `ToolProvider` 默认实现 |
 | `task_orchestrator` / `planner` / `hitl` / `loop_detection` / `tool_policy` / `system_hooks` | 编排 / 计划 / 审批 / 防循环 / 策略 / 钩子 |
-| `harness`（`gate` / `graph_engine`） | stage harness gate（Phase 1c） |
+| `harness`（`gate` / `graph_engine` / `knowledge_context`） | stage harness gate + prompt-safe ContextPack renderer；`StageSpec.runtime_memory` 以 typed closed contract 声明 specialist 的 Unit owner、冻结 scope、lease 与 final-seal handoff 语义 |
 | `db_traits` / `db_tracking` / `db_shim` / `memory_*` | repo/tracking 抽象 + 长期记忆；`OrgScopeUnit` / `org_subtree_units` 给 stage fan-out 提供 root subtree 权威组织集合 |
 | `SharedComponentsConfig` / `ExecutionMode` / `AgentMode`（re-export） | llm-client 配置 / 执行模式 |
 | `SessionCaptureBackend` | per-bridge sidecar lifecycle/capture；restore 支持 end/find/resume/start，禁止回退到 app-global sidecar |
 
 ## 依赖
 
-- **内部**：`golish-core`、`golish-settings`、`golish-tools`、`golish-events`、`golish-context`、`golish-indexer`、`golish-llm-providers`、`golish-sub-agents`、`golish-prompts`、`golish-pentest`、`golish-json-repair`
+- **内部**：`golish-core`、`golish-settings`、`golish-tools`、`golish-events`、`golish-context`、`golish-indexer`、`golish-llm-providers`、`golish-sub-agents`、`golish-prompts`、`golish-pentest`、`golish-memory-domain`、`golish-memory-app`、`golish-json-repair`
 - **外部**：`rig-core`、`rig-anthropic-vertex`、`rig-openai-responses`、`tokenx-rs`
 
 ## 被谁依赖 / 改动影响面
@@ -67,6 +67,7 @@
 ## 注意事项 / 坑
 
 - **不变量 I7**：harness gate 依赖 evidence ledger（类型来自 `golish-pentest`），阶段产物必须有证据。
+- ContextPack renderer 只能消费已授权 pack 并输出 escaped data；不得把检索内容变成 ToolDefinition/ToolChoice/authz，也不得解引用 VaultRef。
 - 与 `golish-agent-runtime` 是**有意分家**（A2）：底层基础设施在此，流式 loop 在那；改这层会触发下游重编。
 - `db_traits::DbRepoProvider::org_subtree_units` 是 root-bound `stage_run` 的 scope truth 入口；默认实现只能给测试 double 兜底，生产实现必须返回 DB root+descendants 的 id/name/parent_id，避免续跑时靠模型重建 org 列表漏资产。
 - crate 级 `#![allow(too_many_arguments / needless_borrow / manual_async_fn)]` 是有意保留（宽 context 透传 / object-safe trait）。

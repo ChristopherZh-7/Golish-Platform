@@ -8,8 +8,9 @@ use uuid::Uuid;
 use super::convert::*;
 use super::GolishDbRepoProvider;
 use golish_agent_kit::db_traits::*;
+use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
 
-fn stage_asset_wave_to_view(
+pub(super) fn stage_asset_wave_to_view(
     wave: golish_db::repo::stage_asset_waves::StageAssetWaveWithItems,
 ) -> StageAssetWaveView {
     let target_ids = wave.items.iter().map(|item| item.target_id).collect();
@@ -37,10 +38,17 @@ impl GolishDbRepoProvider {
         operation_id: Uuid,
         profile: &str,
         current_stage: &str,
+        runtime_memory_contract: RuntimeMemoryContract,
     ) -> anyhow::Result<()> {
-        golish_db::repo::operation_state::insert(&self.pool, operation_id, profile, current_stage)
-            .await
-            .map_err(Into::into)
+        golish_db::repo::operation_state::insert(
+            &self.pool,
+            operation_id,
+            profile,
+            current_stage,
+            runtime_memory_contract.as_str(),
+        )
+        .await
+        .map_err(Into::into)
     }
 
     pub(super) async fn operation_state_get_impl(
@@ -48,14 +56,21 @@ impl GolishDbRepoProvider {
         operation_id: Uuid,
     ) -> anyhow::Result<Option<OperationStateView>> {
         let row = golish_db::repo::operation_state::get(&self.pool, operation_id).await?;
-        Ok(row.map(|r| OperationStateView {
-            operation_id: r.operation_id,
-            profile: r.profile,
-            current_stage: r.current_stage,
-            engagement_org_id: r.engagement_org_id,
-            state_blob: r.state_blob,
-            stage_started_at: r.stage_started_at,
-        }))
+        row.map(|r| {
+            let runtime_memory_contract =
+                RuntimeMemoryContract::try_from(r.runtime_memory_contract.as_str())?;
+            Ok(OperationStateView {
+                operation_id: r.operation_id,
+                profile: r.profile,
+                current_stage: r.current_stage,
+                runtime_memory_contract,
+                project_scope_id: r.project_scope_id,
+                engagement_org_id: r.engagement_org_id,
+                state_blob: r.state_blob,
+                stage_started_at: r.stage_started_at,
+            })
+        })
+        .transpose()
     }
 
     pub(super) async fn operation_state_set_engagement_org_impl(

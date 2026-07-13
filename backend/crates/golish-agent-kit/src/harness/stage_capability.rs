@@ -366,7 +366,7 @@ const CAPABILITIES: &[StageCapabilitySpec] = &[
         risk: CapabilityRisk::Active,
         batchable: true,
         max_batch: 50,
-        writes: &["findings", "audit_log", "technique_outcomes"],
+        writes: &["audit_log", "technique_outcomes", "attack_candidate_seeds"],
         runner: CapabilityRunnerKind::BackendWrapper,
     },
     StageCapabilitySpec {
@@ -379,7 +379,9 @@ const CAPABILITIES: &[StageCapabilitySpec] = &[
         risk: CapabilityRisk::Passive,
         batchable: false,
         max_batch: 1,
-        writes: &["attack_candidates"],
+        // `attack_candidates` is authoritative only after the final Gate PASS
+        // transaction accepts a complete reasoning work-item manifest.
+        writes: &["attack_candidate_work_items", "attack_candidates"],
         runner: CapabilityRunnerKind::MetadataOnly,
     },
     StageCapabilitySpec {
@@ -387,13 +389,132 @@ const CAPABILITIES: &[StageCapabilitySpec] = &[
         label: "Validate approved candidate",
         stage: StageKind::Verification,
         techniques: &[],
-        tool_names: &["sqlmap", "metasploit", "searchsploit"],
-        allowed_tool_types: &["web/injection", "exploit"],
+        tool_names: &["verify_execute_candidate_action"],
+        allowed_tool_types: &["verify_execute_candidate_action"],
         risk: CapabilityRisk::Exploit,
         batchable: false,
         max_batch: 1,
-        writes: &["findings", "attack_candidates", "evidence_ledger"],
-        runner: CapabilityRunnerKind::PentestRunRecipe,
+        // Declarative terminal business effects of the server-owned submission
+        // boundary. The verifier never receives direct table-write authority:
+        // the execution wrapper owns its action journal and the compound
+        // terminalizer alone persists these exact Attempt outcomes.
+        writes: &[
+            "candidate_attempt_evidence",
+            "candidate_attempt_results",
+            "finding_lineage",
+            "attack_fact_deltas",
+        ],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
+        id: "post_exploit.validate_access",
+        label: "Validate exact access",
+        stage: StageKind::AccessValidation,
+        techniques: &[],
+        tool_names: &["post_exploit_validate_access"],
+        allowed_tool_types: &["post_exploit_validate_access"],
+        risk: CapabilityRisk::PostExploit,
+        batchable: false,
+        max_batch: 1,
+        writes: &["footholds", "audit_log", "knowledge_outbox_events"],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
+        id: "post_exploit.record_internal_observation",
+        label: "Record internal observations",
+        stage: StageKind::InternalDiscovery,
+        techniques: &[],
+        tool_names: &["post_exploit_record_internal_observation"],
+        allowed_tool_types: &["post_exploit_record_internal_observation"],
+        risk: CapabilityRisk::PostExploit,
+        batchable: true,
+        max_batch: 256,
+        writes: &["internal_asset_observations", "audit_log"],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
+        id: "post_exploit.build_objective_path",
+        label: "Build objective path",
+        stage: StageKind::ObjectivePathing,
+        techniques: &[],
+        tool_names: &["post_exploit_build_objective_path"],
+        allowed_tool_types: &["post_exploit_build_objective_path"],
+        risk: CapabilityRisk::PostExploit,
+        batchable: true,
+        max_batch: 256,
+        writes: &["attack_paths", "attack_path_edges", "audit_log"],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
+        id: "post_exploit.execute_action",
+        label: "Prepare or execute cleanup-bound action",
+        stage: StageKind::ObjectiveSimulation,
+        techniques: &[],
+        tool_names: &["post_exploit_execute_action"],
+        allowed_tool_types: &["post_exploit_execute_action"],
+        risk: CapabilityRisk::PostExploit,
+        batchable: false,
+        max_batch: 1,
+        writes: &[
+            "post_exploit_actions",
+            "post_exploit_approvals",
+            "cleanup_obligations",
+            "audit_log",
+            "knowledge_outbox_events",
+        ],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
+        id: "cleanup.inspect_obligation",
+        label: "Inspect cleanup obligation",
+        stage: StageKind::Cleanup,
+        techniques: &[],
+        tool_names: &["cleanup_inspect_obligation"],
+        allowed_tool_types: &["cleanup_inspect_obligation"],
+        risk: CapabilityRisk::PostExploit,
+        batchable: false,
+        max_batch: 1,
+        writes: &[],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
+        id: "cleanup.execute_obligation",
+        label: "Execute typed cleanup",
+        stage: StageKind::Cleanup,
+        techniques: &[],
+        tool_names: &["cleanup_execute_obligation"],
+        allowed_tool_types: &["cleanup_execute_obligation"],
+        risk: CapabilityRisk::PostExploit,
+        batchable: false,
+        max_batch: 1,
+        writes: &["cleanup_attempts", "cleanup_attempt_evidence"],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
+        id: "cleanup.verify_absence",
+        label: "Verify cleanup absence",
+        stage: StageKind::Cleanup,
+        techniques: &[],
+        tool_names: &["cleanup_verify_absence"],
+        allowed_tool_types: &["cleanup_verify_absence"],
+        risk: CapabilityRisk::PostExploit,
+        batchable: false,
+        max_batch: 1,
+        writes: &["cleanup_absence_checks", "knowledge_outbox_events"],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
+        id: "cleanup.suggest_waiver",
+        label: "Suggest residual-risk waiver",
+        stage: StageKind::Cleanup,
+        techniques: &[],
+        tool_names: &["cleanup_suggest_waiver"],
+        allowed_tool_types: &["cleanup_suggest_waiver"],
+        risk: CapabilityRisk::PostExploit,
+        batchable: false,
+        max_batch: 1,
+        writes: &[],
+        runner: CapabilityRunnerKind::BackendWrapper,
     },
 ];
 
@@ -542,6 +663,21 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_capabilities_are_registered_tools_not_metadata_only() {
+        let capabilities = capabilities_for_stage(StageKind::Cleanup);
+        assert_eq!(capabilities.len(), 4);
+        assert!(capabilities.iter().all(|capability| {
+            capability.runner == CapabilityRunnerKind::BackendWrapper
+                && capability.tool_names.len() == 1
+                && capability.allowed_tool_types == capability.tool_names
+        }));
+        assert!(capabilities
+            .iter()
+            .any(|capability| capability.id == "cleanup.suggest_waiver"
+                && capability.writes.is_empty()));
+    }
+
+    #[test]
     fn enumeration_capabilities_do_not_expose_external_dir_fuzzers() {
         let tools = capabilities_for_stage(StageKind::Enumeration)
             .into_iter()
@@ -624,5 +760,95 @@ mod tests {
             &["enum_preflight_web_origins"]
         );
         assert_ne!(eas.allowed_tool_types, preflight.allowed_tool_types);
+    }
+
+    #[test]
+    fn candidate_v2_stage_metadata_preserves_writer_boundaries() {
+        let vuln = capability_by_id("vuln.run_formulaic_sweep").unwrap();
+        assert_eq!(
+            vuln.writes,
+            &["audit_log", "technique_outcomes", "attack_candidate_seeds"]
+        );
+
+        let synthesis = capability_by_id("attack.synthesize_candidates").unwrap();
+        assert_eq!(
+            synthesis.writes,
+            &["attack_candidate_work_items", "attack_candidates"]
+        );
+
+        let verification = capability_by_id("verify.validate_candidate").unwrap();
+        assert_eq!(
+            verification.writes,
+            &[
+                "candidate_attempt_evidence",
+                "candidate_attempt_results",
+                "finding_lineage",
+                "attack_fact_deltas",
+            ]
+        );
+    }
+
+    #[test]
+    fn verification_metadata_exposes_closed_wrapper_not_classifier_recipes_or_raw_tools() {
+        let verification = capability_by_id("verify.validate_candidate").unwrap();
+
+        assert_eq!(
+            verification.tool_names,
+            &["verify_execute_candidate_action"]
+        );
+        assert_eq!(
+            verification.allowed_tool_types,
+            &["verify_execute_candidate_action"]
+        );
+        for internal_or_raw in crate::harness::attack_execution::VERIFICATION_CAPABILITY_IDS
+            .iter()
+            .copied()
+            .chain([
+                "sqlmap",
+                "metasploit",
+                "searchsploit",
+                "web/injection",
+                "exploit",
+            ])
+        {
+            assert!(!verification.tool_names.contains(&internal_or_raw));
+            assert!(!verification.allowed_tool_types.contains(&internal_or_raw));
+        }
+    }
+
+    #[test]
+    fn post_exploit_p6b_tools_are_one_per_stage_and_not_cross_visible() {
+        let expected = [
+            (StageKind::AccessValidation, "post_exploit_validate_access"),
+            (
+                StageKind::InternalDiscovery,
+                "post_exploit_record_internal_observation",
+            ),
+            (
+                StageKind::ObjectivePathing,
+                "post_exploit_build_objective_path",
+            ),
+            (
+                StageKind::ObjectiveSimulation,
+                "post_exploit_execute_action",
+            ),
+        ];
+        for &(stage, tool) in &expected {
+            let capabilities = capabilities_for_stage(stage);
+            assert_eq!(capabilities.len(), 1, "stage={stage:?}");
+            assert_eq!(capabilities[0].tool_names, &[tool]);
+            let spec = load_embedded_stage_spec(stage).expect("post-exploit spec");
+            assert_eq!(spec.allowed_tool_types, [tool]);
+            assert!(stage_allows(tool, &Value::Null, &spec.allowed_tool_types));
+            for &(other_stage, other_tool) in &expected {
+                if other_stage != stage {
+                    assert!(!stage_allows(
+                        other_tool,
+                        &Value::Null,
+                        &spec.allowed_tool_types
+                    ));
+                }
+            }
+        }
     }
 }

@@ -4,49 +4,68 @@
 
 use uuid::Uuid;
 
+use golish_agent_kit::db_traits::RuntimeToolIdentity;
+
 use super::PgTrackingBackend;
+
+fn runtime_tool_identity_to_db(
+    identity: &RuntimeToolIdentity,
+) -> golish_db::repo::tool_calls::RuntimeToolIdentity {
+    golish_db::repo::tool_calls::RuntimeToolIdentity {
+        operation_id: identity.operation_id,
+        stage_execution_id: identity.stage_execution_id,
+        stage_run_unit_id: identity.stage_run_unit_id,
+        worker_run_id: identity.worker_run_id,
+        organization_id: identity.organization_id,
+        attempt_epoch: identity.attempt_epoch,
+        lease_token: identity.lease_token,
+    }
+}
 
 impl PgTrackingBackend {
     pub(super) async fn record_tool_call_start_impl(
         &self,
         call_id: &str,
         session_id: Uuid,
+        task_id: Option<Uuid>,
+        subtask_id: Option<Uuid>,
         tool_name: &str,
         args: &serde_json::Value,
-    ) {
-        let res = sqlx::query(
-            r#"INSERT INTO tool_calls (call_id, session_id, agent, name, args, status, source)
-               VALUES ($1, $2, 'primary'::agent_type, $3, $4, 'running'::toolcall_status, 'ai')
-               ON CONFLICT DO NOTHING"#,
+        runtime: Option<&RuntimeToolIdentity>,
+    ) -> anyhow::Result<Uuid> {
+        let runtime = runtime.map(runtime_tool_identity_to_db);
+        golish_db::repo::tool_calls::record_tracked_start(
+            self.pool.as_ref(),
+            call_id,
+            session_id,
+            task_id,
+            subtask_id,
+            tool_name,
+            args,
+            runtime.as_ref(),
         )
-        .bind(call_id)
-        .bind(session_id)
-        .bind(tool_name)
-        .bind(args)
-        .execute(self.pool.as_ref())
-        .await;
-        if let Err(e) = res {
-            tracing::warn!("[db-track] tool_call_start: {e}");
-        }
+        .await
+        .map_err(Into::into)
     }
 
     pub(super) async fn record_tool_call_finish_impl(
         &self,
-        call_id: &str,
+        record_id: Uuid,
         session_id: Uuid,
         status: &str,
         result: &str,
         duration_ms: i32,
-    ) {
-        let res = sqlx::query(
-            r#"UPDATE tool_calls SET status = $1::toolcall_status, result = $2, duration_ms = $3, updated_at = NOW()
-               WHERE call_id = $4 AND session_id = $5"#,
+    ) -> anyhow::Result<()> {
+        golish_db::repo::tool_calls::record_tracked_finish(
+            self.pool.as_ref(),
+            record_id,
+            session_id,
+            status,
+            result,
+            duration_ms,
         )
-        .bind(status).bind(result).bind(duration_ms).bind(call_id).bind(session_id)
-        .execute(self.pool.as_ref()).await;
-        if let Err(e) = res {
-            tracing::warn!("[db-track] tool_call_finish: {e}");
-        }
+        .await
+        .map_err(Into::into)
     }
 
     pub(super) async fn record_token_usage_impl(
@@ -203,5 +222,100 @@ impl PgTrackingBackend {
         if let Err(e) = res {
             tracing::warn!("[db-track] vecstore_op: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use golish_agent_kit::db_tracking::DbTracker;
+    use golish_agent_kit::db_traits::{DbReadinessGate, RuntimeToolIdentity};
+    use sqlx::postgres::PgPoolOptions;
+    use uuid::Uuid;
+
+    use super::{runtime_tool_identity_to_db, PgTrackingBackend};
+
+    #[derive(Clone)]
+    struct AlwaysReady;
+
+    #[async_trait]
+    impl DbReadinessGate for AlwaysReady {
+        fn is_ready(&self) -> bool {
+            true
+        }
+
+        fn is_failed(&self) -> bool {
+            false
+        }
+
+        async fn wait(&mut self) -> bool {
+            true
+        }
+
+        fn clone_box(&self) -> Box<dyn DbReadinessGate> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn runtime_tool_tracking_bridge_preserves_every_identity_and_fence_field() {
+        let identity = RuntimeToolIdentity {
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            stage_run_unit_id: Some(Uuid::new_v4()),
+            worker_run_id: Some(Uuid::new_v4()),
+            organization_id: Some(Uuid::new_v4()),
+            attempt_epoch: Some(9),
+            lease_token: Some(Uuid::new_v4()),
+        };
+        let row = runtime_tool_identity_to_db(&identity);
+        assert_eq!(row.operation_id, identity.operation_id);
+        assert_eq!(row.stage_execution_id, identity.stage_execution_id);
+        assert_eq!(row.stage_run_unit_id, identity.stage_run_unit_id);
+        assert_eq!(row.worker_run_id, identity.worker_run_id);
+        assert_eq!(row.organization_id, identity.organization_id);
+        assert_eq!(row.attempt_epoch, identity.attempt_epoch);
+        assert_eq!(row.lease_token, identity.lease_token);
+    }
+
+    #[tokio::test]
+    async fn runtime_tool_tracking_insert_failure_propagates_but_legacy_wrapper_stays_best_effort()
+    {
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(25))
+            .connect_lazy("postgres://golish:golish@127.0.0.1:1/unavailable")
+            .expect("construct lazy unavailable pool");
+        let backend = Arc::new(PgTrackingBackend::new(Arc::new(pool)));
+        let tracker = DbTracker::new(backend, Uuid::new_v4(), AlwaysReady);
+        let identity = RuntimeToolIdentity {
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            stage_run_unit_id: None,
+            worker_run_id: None,
+            organization_id: None,
+            attempt_epoch: None,
+            lease_token: None,
+        };
+
+        let strict = tracker
+            .start_tool_call_with_runtime(
+                "runtime-call",
+                "query_target_data",
+                &serde_json::json!({}),
+                Some(&identity),
+            )
+            .await;
+        assert!(
+            strict.is_err(),
+            "runtime-aware start must propagate DB failure"
+        );
+
+        let legacy = tracker
+            .start_tool_call("legacy-call", "read_file", &serde_json::json!({}))
+            .await;
+        assert_eq!(legacy.record_id, None);
     }
 }

@@ -11,6 +11,7 @@
 //! See `docs/design/2026-06-06-headless-single-stage-runner.md`.
 
 pub(crate) mod fleet;
+pub(crate) mod runtime_v2;
 /// Stage-agnostic per-org scheduling kernel (K-controlled concurrency, resume
 /// skip, failure isolation). A general, unit-tested component owned by
 /// `stage_run`; exposed `pub` so its full tested API isn't flagged as crate-dead
@@ -38,7 +39,7 @@ use crate::cli::Args;
 use crate::runtime::CliRuntime;
 use crate::stage_run::fleet::{AlwaysRunOracle, CliFleetProgress, NoopScorer, OrgFleetExecutor};
 use crate::stage_run::scheduler::{
-    run_fleet_scheduler, FleetConfig, FleetMode, FleetReport, OrgRunTask,
+    run_legacy_child_operation_fleet, FleetConfig, FleetMode, FleetReport, OrgRunTask,
 };
 
 /// `resolve_slice` moved to `golish_agent_kit::harness::slice` (Phase B,
@@ -946,6 +947,37 @@ pub async fn run(args: Args) -> Result<()> {
     let seed = maybe_seed(&db_pool, &workspace_str, &args).await;
     maybe_seed_open_ports(&db_pool, &workspace_str).await;
 
+    // Runtime Memory V2 freezes the trusted CLI scope once, before the one
+    // operation is created. LegacyV1 retains the historical per-org fallback.
+    let runtime_rollout = golish_db::repo::runtime_memory_rollout::get(&db_pool)
+        .await
+        .map_err(anyhow::Error::new)
+        .context("read persisted runtime-memory rollout for stage-run")?;
+    let runtime_contract = runtime_v2::persisted_contract(&runtime_rollout.contract)?;
+    let cli_runtime_scope = if runtime_v2::contract_writes_v2(runtime_contract) {
+        match seed.as_ref().and_then(|seed| seed.org_id) {
+            Some(root_organization_id) => {
+                let organizations = golish_db::repo::organizations::list(&db_pool, &workspace_str)
+                    .await
+                    .context("load trusted CLI organization tree")?;
+                Some(runtime_v2::build_cli_runtime_scope(
+                    &organizations,
+                    root_organization_id,
+                    args.include_subsidiaries,
+                    args.subsidiary_threshold,
+                )?)
+            }
+            None => None, // V2 Scoping pre-freeze is a legal resumable shape.
+        }
+    } else {
+        None
+    };
+    let has_cli_runtime_scope = cli_runtime_scope.is_some();
+    let to_stage_has_specialist = golish_agent_kit::harness::load_embedded_stage_spec(to_stage)
+        .ok()
+        .and_then(|spec| spec.specialist)
+        .is_some_and(|specialist| !specialist.trim().is_empty());
+
     let app_state = crate::state::AppState::new(
         settings_manager.clone(),
         false,
@@ -981,6 +1013,7 @@ pub async fn run(args: Args) -> Result<()> {
         app_state.indexer_state.clone(),
         app_state.sidecar_state.clone(),
         &session_id,
+        Some(app_state.memory_supervisor.unit_of_work()),
     )
     .await
     .context("build agent bridge")
@@ -1023,7 +1056,7 @@ pub async fn run(args: Args) -> Result<()> {
     // calls instead of fail-opening. `set_db_backend` built the tracker with a
     // random uuid; override it here with the chat-key-resolved session row id —
     // the same id `orchestrate()` uses (upsert is idempotent on the key).
-    {
+    let tracker_session_id = {
         let model_name = bridge.model_name().to_string();
         let provider_name = bridge.provider_name().to_string();
         match golish_db::repo::sessions::upsert_by_chat_key(
@@ -1040,11 +1073,27 @@ pub async fn run(args: Args) -> Result<()> {
         )
         .await
         {
-            Ok(row) => bridge.set_tracker_session_uuid(row.id),
+            Ok(row) => {
+                bridge.set_tracker_session_uuid(row.id);
+                Some(row.id)
+            }
             Err(e) => {
-                tracing::warn!("stage-run: tracker/orchestrator session unify failed: {e}")
+                tracing::warn!("stage-run: tracker/orchestrator session unify failed: {e}");
+                None
             }
         }
+    };
+
+    if let Err(error) = app_state.memory_supervisor.start().await {
+        if let Some(manager) = mcp_manager {
+            manager.shutdown().await;
+        }
+        finish_embedded_pg(pg_handle_rx, !preexisting_pg_on_port).await;
+        maybe_keep_ephemeral_db(&mut stage_db, args.keep_ephemeral_db);
+        return Err(anyhow!(
+            "start CLI Memory Supervisor after DB readiness: {}",
+            error.code()
+        ));
     }
 
     let bridge = Arc::new(bridge);
@@ -1066,19 +1115,53 @@ pub async fn run(args: Args) -> Result<()> {
 
     // 6) Orchestrate the slice (mirrors execute_task_mode, headless).
     let task_input = build_objective(&args, to_stage, seed.as_ref());
-    let result = orchestrate(
+    let mut result = orchestrate(
         &bridge,
         &db_pool,
         &session_id,
         &profile_id,
+        &workspace,
         entry_stage,
         allowlist,
         &task_input,
         seed.as_ref().and_then(|s| s.org_id),
         args.include_subsidiaries,
         args.subsidiary_threshold,
+        cli_runtime_scope,
     )
     .await;
+
+    // The deployment rollout read before bootstrap can change concurrently;
+    // only the contract frozen on the newly created operation may authorize
+    // LegacyV1 child operations. A drifted rollout fails closed instead of
+    // dispatching through the wrong adapter.
+    let frozen_runtime_contract = if result.is_ok() {
+        match tracker_session_id {
+            Some(session_id) => {
+                match runtime_v2::load_session_operation_contract(&db_pool, session_id).await {
+                    Ok(contract) if contract == runtime_contract => contract,
+                    Ok(contract) => {
+                        result = Err(anyhow!(
+                            "runtime-memory rollout changed during CLI bootstrap: preflight={runtime_contract}, operation={contract}"
+                        ));
+                        contract
+                    }
+                    Err(error) => {
+                        result = Err(error.context("load frozen CLI runtime-memory contract"));
+                        runtime_contract
+                    }
+                }
+            }
+            None => {
+                result = Err(anyhow!(
+                    "CLI cannot authorize its runtime adapter without the durable session id"
+                ));
+                runtime_contract
+            }
+        }
+    } else {
+        runtime_contract
+    };
 
     // 6.5) Phase 3 (2026-06-12-redteam-phase3, 方案 A): after the parent run
     // succeeded, run the slice's post-scoping stages once per subsidiary org
@@ -1090,7 +1173,39 @@ pub async fn run(args: Args) -> Result<()> {
     // exposes ALL gaps). Without --include-subsidiaries this whole step is
     // skipped (zero behaviour change).
     let mut fleet_report: Option<FleetReport> = None;
-    if args.include_subsidiaries && result.is_ok() {
+    if runtime_v2::contract_writes_v2(frozen_runtime_contract)
+        && has_cli_runtime_scope
+        && to_stage_has_specialist
+        && result.is_ok()
+    {
+        match tracker_session_id {
+            Some(session_id) => {
+                match runtime_v2::load_cli_report(&db_pool, session_id, to_stage).await {
+                    Ok(report) => {
+                        tracing::info!(
+                            target: "harness::stage_run",
+                            operation_id = %report.operation_id,
+                            scope_units = report.scope_unit_count,
+                            stage_units = report.stage_unit_count,
+                            "V2 CLI report aggregated from one relational operation"
+                        );
+                        fleet_report = Some(report.fleet);
+                    }
+                    Err(error) => {
+                        result = Err(error.context("aggregate V2 CLI relational report"));
+                    }
+                }
+            }
+            None => {
+                result = Err(anyhow!(
+                    "V2 CLI cannot validate its single operation without the durable session id"
+                ));
+            }
+        }
+    } else if !runtime_v2::contract_writes_v2(frozen_runtime_contract)
+        && args.include_subsidiaries
+        && result.is_ok()
+    {
         match (
             seed.as_ref().and_then(|s| s.org_id),
             child_slice(&profile_id, to_stage),
@@ -1138,11 +1253,15 @@ pub async fn run(args: Args) -> Result<()> {
                         db_pool: db_pool.clone(),
                         session_id: session_id.clone(),
                         profile_id: profile_id.clone(),
+                        workspace: workspace.clone(),
                         subsidiary_threshold: args.subsidiary_threshold,
+                        runtime_memory_contract:
+                            golish_agent_kit::runtime_memory::RuntimeMemoryContract::LegacyV1,
                         // CLI 无单卡：不 emit StageRunOrgProgress（事件只进 transcript，无害）。
                         emit_progress: false,
                     };
-                    let report = run_fleet_scheduler(
+                    let report = run_legacy_child_operation_fleet(
+                        frozen_runtime_contract,
                         FleetConfig {
                             concurrency: 1,
                             mode: FleetMode::Checklist,
@@ -1159,7 +1278,8 @@ pub async fn run(args: Args) -> Result<()> {
                             label: "subsidiary",
                         },
                     )
-                    .await;
+                    .await
+                    .expect("LegacyV1 branch must enable child-operation fleet");
                     fleet_report = Some(report);
                 }
             }
@@ -1230,6 +1350,13 @@ pub async fn run(args: Args) -> Result<()> {
 
     if let Some(mgr) = mcp_manager {
         mgr.shutdown().await;
+    }
+
+    if let Err(error) = app_state.memory_supervisor.shutdown().await {
+        tracing::warn!(
+            error_code = error.code(),
+            "stage-run Memory Supervisor shutdown failed"
+        );
     }
 
     // Stop only the PG this headless run actually started. When the normal app
@@ -1410,6 +1537,7 @@ async fn run_resume(mut args: Args) -> Result<()> {
             app_state.indexer_state.clone(),
             app_state.sidecar_state.clone(),
             &target.chat_session_key,
+            Some(app_state.memory_supervisor.unit_of_work()),
         )
         .await
         .context("build exact-resume agent bridge")?;
@@ -1441,6 +1569,15 @@ async fn run_resume(mut args: Args) -> Result<()> {
             bridge.set_agent_mode(AgentMode::AutoApprove).await;
         }
 
+        app_state
+            .memory_supervisor
+            .start()
+            .await
+            .map_err(|error| anyhow!(
+                "start resume Memory Supervisor after DB readiness: {}",
+                error.code()
+            ))?;
+
         let bridge = Arc::new(bridge);
         crate::ai::commands::configure_bridge_background_listeners(&bridge, &agent_state).await;
         bridge.mark_frontend_ready().await;
@@ -1454,7 +1591,8 @@ async fn run_resume(mut args: Args) -> Result<()> {
         );
 
         let continuation = args.execute.as_deref().unwrap_or("继续");
-        let result = orchestrate_resume(&bridge, &db_pool, &target, continuation).await;
+        let result =
+            orchestrate_resume(&bridge, &db_pool, &workspace, &target, continuation).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         let _ = golish_events::op_trace::write_trace_artifacts(
             &transcripts_dir,
@@ -1512,12 +1650,17 @@ async fn run_resume(mut args: Args) -> Result<()> {
         if let Some(manager) = mcp_manager {
             manager.shutdown().await;
         }
+        let supervisor_shutdown = app_state.memory_supervisor.shutdown().await;
         let resume_result = result.map(|_| ());
         let release_result = claim.release().await;
-        match (resume_result, release_result) {
-            (Err(error), _) => Err(error),
-            (Ok(()), Err(error)) => Err(error),
-            (Ok(()), Ok(())) => Ok(()),
+        match (resume_result, release_result, supervisor_shutdown) {
+            (Err(error), _, _) => Err(error),
+            (Ok(()), Err(error), _) => Err(error),
+            (Ok(()), Ok(()), Err(error)) => Err(anyhow!(
+                "shutdown resume Memory Supervisor: {}",
+                error.code()
+            )),
+            (Ok(()), Ok(()), Ok(())) => Ok(()),
         }
     }
     .await;
@@ -1561,12 +1704,14 @@ pub(crate) async fn orchestrate(
     db_pool: &Arc<sqlx::PgPool>,
     session_id: &str,
     profile_id: &str,
+    workspace: &std::path::Path,
     entry_stage: StageKind,
     allowlist: HashSet<StageKind>,
     task_input: &str,
     org_id: Option<uuid::Uuid>,
     include_subsidiaries: bool,
     subsidiary_threshold: u8,
+    cli_runtime_scope: Option<golish_agent_kit::db_traits::CliRuntimeScope>,
 ) -> Result<String> {
     use golish_agent_bridge::bridge_executor::BridgeAgentExecutor;
     use golish_agent_kit::task_orchestrator::TaskOrchestrator;
@@ -1595,20 +1740,32 @@ pub(crate) async fn orchestrate(
     .context("upsert session row (FK precondition for tasks)")?;
 
     let event_tx = bridge.get_or_create_event_tx();
-    let db_repo: Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> = Arc::new(
-        crate::ai::db_bridge::GolishDbRepoProvider::new(db_pool.clone()),
-    );
+    let provider = Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+        db_pool.clone(),
+    ));
+    let db_repo: Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> = provider.clone();
+    let runtime_repo: Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository> = provider;
+    let (canonical_path, path_sha256) =
+        golish_agent_kit::runtime_memory::canonical_workspace_identity(workspace)
+            .map_err(anyhow::Error::new)
+            .context("resolve trusted stage-run workspace identity")?;
+    let project_scope = runtime_repo
+        .project_scope_register_first_open(&canonical_path, &path_sha256)
+        .await
+        .map_err(anyhow::Error::new)
+        .context("register trusted stage-run project scope")?;
 
-    let mut orchestrator = TaskOrchestrator::new(db_repo, session_row.id, event_tx);
+    let mut orchestrator = TaskOrchestrator::new(db_repo, runtime_repo, session_row.id, event_tx);
     orchestrator.set_profile_override(Some(profile_id.to_string()));
     orchestrator.set_chat_session_id(session_id);
     orchestrator.set_approval_coordinator(bridge.coordinator().cloned());
     orchestrator.set_stage_allowlist(Some(allowlist));
     orchestrator.set_harness_org_id(org_id);
     orchestrator.set_subsidiary_scope(include_subsidiaries, subsidiary_threshold);
+    orchestrator.set_cli_runtime_scope(cli_runtime_scope);
 
     let result = orchestrator
-        .run_stage(entry_stage, task_input, &executor)
+        .run_stage(entry_stage, task_input, project_scope, &executor)
         .await;
     let cleanup = bridge.clear_top_level_request_state(&request).await;
     match (result, cleanup) {
@@ -1625,6 +1782,7 @@ pub(crate) async fn orchestrate(
 async fn orchestrate_resume(
     bridge: &Arc<AgentBridge>,
     db_pool: &Arc<sqlx::PgPool>,
+    workspace: &std::path::Path,
     target: &ValidatedResumeTarget,
     continuation: &str,
 ) -> Result<String> {
@@ -1638,10 +1796,34 @@ async fn orchestrate_resume(
     let executor = BridgeAgentExecutor::from_request(bridge.clone(), request.clone())
         .context("upgrade exact resume request into Task execution")?;
     let event_tx = bridge.get_or_create_event_tx();
-    let db_repo: Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> = Arc::new(
-        crate::ai::db_bridge::GolishDbRepoProvider::new(db_pool.clone()),
-    );
-    let mut orchestrator = TaskOrchestrator::new(db_repo, target.session_id, event_tx);
+    let provider = Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+        db_pool.clone(),
+    ));
+    let db_repo: Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> = provider.clone();
+    let runtime_repo: Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository> = provider;
+    let (canonical_path, path_sha256) =
+        golish_agent_kit::runtime_memory::canonical_workspace_identity(workspace)
+            .map_err(anyhow::Error::new)
+            .context("resolve trusted exact-resume workspace identity")?;
+    let current_project_scope = runtime_repo
+        .project_scope_register_first_open(&canonical_path, &path_sha256)
+        .await
+        .map_err(anyhow::Error::new)
+        .context("register trusted exact-resume project scope")?;
+    let operation = db_repo
+        .operation_state_get(target.operation_id)
+        .await
+        .context("load exact-resume operation project scope")?
+        .ok_or_else(|| anyhow!("resume operation_state is missing"))?;
+    golish_agent_kit::runtime_memory::authorize_operation_project_scope(
+        operation.project_scope_id,
+        operation.runtime_memory_contract,
+        current_project_scope.project_scope_id,
+    )
+    .map_err(anyhow::Error::new)
+    .context("authorize exact-resume project scope")?;
+    let mut orchestrator =
+        TaskOrchestrator::new(db_repo, runtime_repo, target.session_id, event_tx);
     orchestrator.set_profile_override(Some(target.profile.clone()));
     orchestrator.set_chat_session_id(&target.chat_session_key);
     orchestrator.set_approval_coordinator(bridge.coordinator().cloned());

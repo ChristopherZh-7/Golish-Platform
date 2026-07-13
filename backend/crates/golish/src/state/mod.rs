@@ -56,6 +56,16 @@ pub struct AppState {
     pub pentest_busy_sessions: Arc<Mutex<HashSet<String>>>,
     pub db_pool: Arc<PgPool>,
     pub db_ready: DbReadyGate,
+    /// Process-global Memory Fabric owner. Session bridges only receive its
+    /// shared UoW handle; start/cancel/join stay in this AppState lifecycle.
+    pub memory_supervisor:
+        golish_agent_app::ai::db_bridge::knowledge_memory::KnowledgeMemoryRuntime,
+    /// DB-global Cleanup P7b worker. The lease in Postgres is authoritative,
+    /// so a concurrently running CLI/desktop process cannot double-clean.
+    pub cleanup_closeout: golish_cleanup_app::CleanupCloseoutRuntime,
+    /// GUI-owned orphan blob GC lifecycle. It starts only after DB readiness
+    /// and is joined before the process tears down the DB.
+    pub reporting_artifact_gc: crate::reporting_artifact_store::ReportArtifactGcRuntime,
 }
 
 impl AppState {
@@ -69,6 +79,32 @@ impl AppState {
         let settings = settings_manager.get().await;
         let sidecar_config = SidecarConfig::from_golish_settings(&settings.sidecar);
         let sidecar_state = Arc::new(SidecarState::with_config(sidecar_config.clone()));
+        let memory_supervisor =
+            golish_agent_app::ai::db_bridge::knowledge_memory::KnowledgeMemoryRuntime::from_settings(
+                db_pool.clone(),
+                &settings,
+            );
+        let cleanup_closeout = golish_cleanup_app::CleanupCloseoutRuntime::new(
+            db_pool.clone(),
+            Arc::new(
+                golish_recon_app::organizations::DbBackedOrganizationArtifactCleaner::new(
+                    db_pool.clone(),
+                ),
+            ),
+            format!(
+                "desktop-cleanup-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ),
+        )
+        .expect("cleanup closeout worker identity is valid");
+        let reporting_artifact_store_factory: std::sync::Arc<
+            dyn golish_reporting_app::ReportArtifactStoreFactory,
+        > = std::sync::Arc::new(crate::reporting_artifact_store::ProjectReportArtifactStoreFactory);
+        let reporting_artifact_gc = crate::reporting_artifact_store::ReportArtifactGcRuntime::new(
+            db_pool.clone(),
+            reporting_artifact_store_factory,
+        );
 
         Self {
             pty_manager: Arc::new(crate::pty::PtyManager::new()),
@@ -87,6 +123,9 @@ impl AppState {
             pentest_busy_sessions: Arc::new(Mutex::new(HashSet::new())),
             db_pool,
             db_ready,
+            memory_supervisor,
+            cleanup_closeout,
+            reporting_artifact_gc,
         }
     }
 
@@ -139,6 +178,16 @@ impl AppState {
             pentest_busy_sessions: self.pentest_busy_sessions.clone(),
             db_pool: self.db_pool.clone(),
             db_ready: self.db_ready.clone(),
+            knowledge_memory: self.memory_supervisor.unit_of_work(),
+            operator_principal_provider: std::sync::Arc::new(
+                golish_agent_app::DbTrustedOperatorPrincipalProvider::new(
+                    self.db_pool.clone(),
+                    self.db_ready.clone(),
+                ),
+            ),
+            reporting_artifact_store_factory: std::sync::Arc::new(
+                crate::reporting_artifact_store::ProjectReportArtifactStoreFactory,
+            ),
             pentest_tool_factory: std::sync::Arc::new(
                 crate::pentest_tool_factory::GolishPentestToolFactory,
             ),

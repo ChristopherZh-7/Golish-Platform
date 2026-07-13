@@ -19,11 +19,13 @@ use tokio::sync::RwLock;
 use golish_agent_bridge::{
     AgentBridge, SessionRequestBusy, SessionRequestSlot, SessionRequestTransitionLease,
 };
+use golish_app_core::domain::operator::TrustedOperatorPrincipalProvider;
 use golish_app_core::ports::pentest::PentestToolFactory;
 use golish_app_core::pty_interactive::PtyOutputTap;
 use golish_app_core::GolishError;
 use golish_core::runtime::GolishRuntime;
 use golish_db::DbReadyGate;
+use golish_reporting_app::ReportArtifactStoreFactory;
 
 // Re-export so the moved `conversation_store` keeps resolving `crate::state::DbState`.
 pub use golish_app_core::DbState;
@@ -297,6 +299,16 @@ pub struct AgentState {
     pub pentest_busy_sessions: Arc<Mutex<HashSet<String>>>,
     pub db_pool: Arc<PgPool>,
     pub db_ready: DbReadyGate,
+    /// Process-shared canonical Memory Fabric UoW. Per-session bridge setup may
+    /// clone this handle but never owns or starts projector workers.
+    pub knowledge_memory: Arc<dyn golish_memory_app::KnowledgeUnitOfWork>,
+    /// Server-owned local actor identity. Privileged commands resolve this
+    /// provider instead of accepting actor UUIDs in request DTOs.
+    pub operator_principal_provider: Arc<dyn TrustedOperatorPrincipalProvider>,
+    /// Server-resolved project-local Reporting artifact storage. Callers can
+    /// select only a report/revision; project roots and storage keys never
+    /// cross IPC or model boundaries.
+    pub reporting_artifact_store_factory: Arc<dyn ReportArtifactStoreFactory>,
     /// Inbound port supplying the pentest tool set the bridge registers, so this
     /// crate needs no compile-time `golish-pentest-app` dependency (S1-3). The
     /// composition root (`golish`) injects the concrete factory.

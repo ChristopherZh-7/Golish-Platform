@@ -86,44 +86,53 @@ impl GolishDb {
         // Same fire-and-forget reclaim for tasks: a process killed mid-run can't
         // finalize its own `tasks` rows, so they leak forever as `running`.
         //
-        // Two-step (Task 断线恢复 · L4b): first PAUSE the resumable ones — an
-        // abandoned `running` task that still holds a harness checkpoint is not
-        // dead, it is paused; demote it to `waiting` so it stops zombieing yet
-        // stays resumable on the next user message. THEN fail the truly-dead
-        // ones (no checkpoint). Order matters: pause first, then the fail reaper
-        // (which now skips checkpointed rows) only sweeps the rest.
-        match repo::tasks::pause_resumable_abandoned(
+        // Runtime-aware compound reaper: first fence expired relational workers
+        // (requeue only when no tool is active; otherwise recovery_required),
+        // then pause complete resumable operations and fail malformed remainder.
+        // Live leases are left untouched. All four outcomes commit together.
+        match repo::tasks::startup_reap_abandoned(
             &info.pool,
             Duration::hours(DEFAULT_RECLAIM_THRESHOLD_HOURS),
         )
         .await
         {
-            Ok(n) if n > 0 => {
+            Ok(stats)
+                if stats.paused > 0
+                    || stats.failed > 0
+                    || stats.workers_requeued > 0
+                    || stats.workers_recovery_required > 0 =>
+            {
                 tracing::info!(
-                    paused = n,
-                    "Paused abandoned-but-resumable tasks on startup (kept for resume)"
+                    paused = stats.paused,
+                    failed = stats.failed,
+                    workers_requeued = stats.workers_requeued,
+                    workers_recovery_required = stats.workers_recovery_required,
+                    "Reconciled abandoned runtime operations on startup"
                 );
             }
             Ok(_) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to pause resumable tasks on startup");
+                tracing::warn!(error = %e, "Failed to reconcile abandoned runtime operations on startup");
             }
         }
-        match repo::tasks::fail_abandoned(
+
+        match repo::attack_candidate_approvals::reap_stale_candidate_review_dispatches(
             &info.pool,
-            Duration::hours(DEFAULT_RECLAIM_THRESHOLD_HOURS),
+            Duration::seconds(
+                repo::attack_candidate_approvals::DEFAULT_REVIEW_DISPATCH_STALE_SECONDS,
+            ),
         )
         .await
         {
             Ok(n) if n > 0 => {
                 tracing::info!(
-                    reaped = n,
-                    "Failed abandoned running/waiting tasks on startup"
+                    reclaimed = n,
+                    "Reset stale Candidate review resume dispatches on startup"
                 );
             }
             Ok(_) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to reap abandoned tasks on startup");
+                tracing::warn!(error = %e, "Failed to reset Candidate review dispatches on startup");
             }
         }
 

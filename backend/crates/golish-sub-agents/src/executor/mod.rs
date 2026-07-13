@@ -100,6 +100,7 @@ fn map_inner_result(
                 | SubAgentChainError::ExactResumeUnavailable { .. }
                 | SubAgentChainError::LatestResumeUnavailable { .. }
                 | SubAgentChainError::CreateFreshFailed { .. }
+                | SubAgentChainError::BoundWorkerUnavailable { .. }
         )
     );
     if preserve_typed_error {

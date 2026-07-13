@@ -188,17 +188,27 @@ pub async fn harness_dev_reset_stage_checkpoint(
         organization_id.as_deref(),
         mode,
     );
-    golish_db::repo::operation_state::write_state_blob(&state.db_pool, operation_id, next_blob)
-        .await?;
-
-    if mode.resets_stage_cursor() {
-        golish_db::repo::operation_state::advance_stage(
-            &state.db_pool,
+    let runtime_stats = golish_db::repo::runtime_memory_tx::supersede_stage_checkpoint(
+        &state.db_pool,
+        &golish_db::repo::runtime_memory_tx::SupersedeStageCheckpointRow {
             operation_id,
-            stage_kind.as_str(),
-        )
-        .await?;
-    }
+            expected_current_stage: row.current_stage.clone(),
+            selected_stage: stage_kind.as_str().to_string(),
+            affected_stage_kinds: affected_names.clone(),
+            next_state_blob: next_blob,
+            replacement_specialist: load_embedded_stage_spec(stage_kind)
+                .ok()
+                .and_then(|spec| spec.specialist)
+                .filter(|specialist| !specialist.trim().is_empty()),
+            replacement_stage_execution_id: mode.resets_stage_cursor().then(Uuid::new_v4),
+        },
+    )
+    .await
+    .map_err(|error| {
+        GolishError::Internal(format!(
+            "atomically supersede runtime stage checkpoint: {error}"
+        ))
+    })?;
 
     let (purged_facts, purge_scope_org_count, purge_counts, purge_note) = if mode.purges_facts() {
         let (counts, org_count, note) = purge_stage_facts(
@@ -214,10 +224,11 @@ pub async fn harness_dev_reset_stage_checkpoint(
         (false, 0, None, None)
     };
 
-    let current_stage = golish_db::repo::operation_state::get(&state.db_pool, operation_id)
-        .await?
-        .map(|row| row.current_stage)
-        .unwrap_or_else(|| stage_kind.as_str().to_string());
+    let current_stage = if mode.resets_stage_cursor() {
+        stage_kind.as_str().to_string()
+    } else {
+        row.current_stage.clone()
+    };
 
     Ok(HarnessDevStageCheckpointResetResult {
         operation_id: operation_id.to_string(),
@@ -232,16 +243,24 @@ pub async fn harness_dev_reset_stage_checkpoint(
         refreshed_stage_cursor: mode.resets_stage_cursor(),
         previous_stage: row.current_stage,
         current_stage,
-        message: match mode {
-            HarnessDevResetMode::ClearRepair => "cleared matching repair checkpoint".to_string(),
-            HarnessDevResetMode::RestartStage => "reset selected stage checkpoint".to_string(),
-            HarnessDevResetMode::RestartFromStage => {
-                "reset graph-flow checkpoint from selected stage".to_string()
-            }
-            HarnessDevResetMode::RestartFromStagePurge => {
-                "reset checkpoint and purged discovered facts from selected stage".to_string()
-            }
-        },
+        message: format!(
+            "{}; superseded workers={}, units={}, stage_executions={}, invalidated_handoffs={}",
+            match mode {
+                HarnessDevResetMode::ClearRepair =>
+                    "cleared matching repair checkpoint".to_string(),
+                HarnessDevResetMode::RestartStage => "reset selected stage checkpoint".to_string(),
+                HarnessDevResetMode::RestartFromStage => {
+                    "reset graph-flow checkpoint from selected stage".to_string()
+                }
+                HarnessDevResetMode::RestartFromStagePurge => {
+                    "reset checkpoint and purged discovered facts from selected stage".to_string()
+                }
+            },
+            runtime_stats.workers_superseded,
+            runtime_stats.units_superseded,
+            runtime_stats.executions_superseded,
+            runtime_stats.handoffs_invalidated,
+        ),
         purged_facts,
         purge_scope_org_count,
         purge_counts,

@@ -8,6 +8,7 @@ description = "Per-domain Tauri command crate: reconnaissance (targets, asset in
 [dependencies]
 # Application-boundary shared types (GolishError, DbState, TauriEventEmitter); L5.
 golish-app-core = { workspace = true }
+golish-cleanup-app = { workspace = true }
 
 # Domain + infrastructure crates (L1/L2) — legal downward edges.
 golish-db = { workspace = true }

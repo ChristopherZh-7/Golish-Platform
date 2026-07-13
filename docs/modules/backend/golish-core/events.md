@@ -25,7 +25,7 @@
 | `AiEvent`（+ `event_type()`） | 全部 AI 事件的大枚举（wire 契约） |
 | `AiEventEnvelope` | seq + ts 包装，保证可靠投递 |
 | `ToolSource` | 一次工具调用的来源（main/sub-agent/server tool 等） |
-| `HarnessTraceKind` / `build_agent_path` | harness 观测事件类型 + agent_path 构造；覆盖 gate/evidence/background/stage_run/stage_refiner/mentor telemetry trace |
+| `HarnessTraceKind` / `build_agent_path` | harness 观测事件类型 + agent_path 构造；覆盖 gate/evidence/background/stage_run/stage_refiner/mentor/Candidate review refresh telemetry trace |
 
 均经 crate 根 `pub use events::*` 暴露为 `golish_core::events::*`。
 
@@ -47,6 +47,7 @@
 
 - **不变量 I5**：`AiEvent` 跨 IPC，必须 ts-rs 同步前端；新增/改变体要同步前端绑定与所有消费方（`golish-cli-output/cli_json`、`op_trace`、前端 hooks）。
 - 新增 `HarnessTraceKind` 变体时必须同步 `golish-events` 的 op_trace / transcript summarizer match。`StageRefinerDecision` 用于展示 repair_kind/action/gap/hash；`RuntimeSupervisorDecision` 用于展示运行中 strategy_kind/action/hash/injected。
+- `CandidateReviewRequired` / `CandidateReviewResumed` 只携带 operation/wave/status/version/count wake hint；前端收到后必须重读 DB review API，trace 本身不能作为审批或 resume authority。
 - `event.rs` 是**单一大枚举**，别拆散——拆了会破坏 wire 契约一致性。
 - `ToolSource` 被 agent tool context 用作可比较字段，保持 `PartialEq + Eq` derive；否则 `AgentToolContext` 的任务本地 attribution 测试会在 `golish-core` 编译期失败。
 - `should_transcript`（在 `golish-events/transcript`）会按变体过滤；加流式/sub-agent 内部事件时注意是否该落 transcript。

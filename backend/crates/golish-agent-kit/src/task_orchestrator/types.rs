@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use anyhow::Result;
+use golish_core::WorkerLeaseContext;
 
 /// Maximum reflector attempts before giving up (originally 3, matching PentAGI's
 /// maxReflectorCallsPerChain). Raised to 5 (design 2026-07-02-eas-worker-evidence):
@@ -58,6 +59,14 @@ pub struct ExecutionContext {
     /// into the bridge so loop-level tools such as `stage_run` can update the same
     /// `operation_state` row that the graph checkpointer uses.
     pub operation_id: Option<uuid::Uuid>,
+    /// Trusted `stage_runs.id` for this execution. Fresh runs receive it from
+    /// compound operation creation; resumes load the exact active row.
+    pub stage_execution_id: Option<uuid::Uuid>,
+    /// Trusted per-organization stage unit for the active stage.
+    pub stage_run_unit_id: Option<uuid::Uuid>,
+    /// Specialist worker fencing tuple. Its duplicated unit id must match
+    /// `stage_run_unit_id` before the bridge publishes the context.
+    pub worker_lease: Option<WorkerLeaseContext>,
     /// Accumulated results from completed subtasks.
     pub completed_results: Vec<SubtaskResult>,
     /// Request-local top-level input exposed to agents for this execution.
@@ -130,6 +139,15 @@ pub struct SubtaskResult {
 }
 
 impl ExecutionContext {
+    /// Whether the redundant worker-lease unit witness agrees with this
+    /// execution context. Keeping this check at the bridge boundary prevents a
+    /// lease from one unit being paired with another unit's trusted identity.
+    pub fn trusted_worker_lease_is_consistent(&self) -> bool {
+        self.worker_lease
+            .as_ref()
+            .is_none_or(|lease| self.stage_run_unit_id == Some(lease.stage_run_unit_id))
+    }
+
     pub fn summary(&self) -> String {
         if self.completed_results.is_empty() {
             return "No subtasks completed yet.".to_string();
@@ -208,6 +226,9 @@ impl ExecutionContext {
 pub struct AgentResult {
     pub content: String,
     pub token_usage: Option<AgentTokenUsage>,
+    /// Durable trusted submission captured by `submit_stage_deliverable` during
+    /// this agent turn. `None` for ordinary chat and explicit legacy fixtures.
+    pub captured_stage_submission: Option<crate::db_traits::CapturedStageSubmission>,
 }
 
 impl AgentResult {
@@ -215,6 +236,7 @@ impl AgentResult {
         Self {
             content,
             token_usage: None,
+            captured_stage_submission: None,
         }
     }
 
@@ -222,7 +244,16 @@ impl AgentResult {
         Self {
             content,
             token_usage: Some(usage),
+            captured_stage_submission: None,
         }
+    }
+
+    pub fn with_captured_stage_submission(
+        mut self,
+        submission: Option<crate::db_traits::CapturedStageSubmission>,
+    ) -> Self {
+        self.captured_stage_submission = submission;
+        self
     }
 }
 
@@ -346,5 +377,33 @@ pub trait AgentExecutor: Send + Sync {
     /// `message_chains` table. Default returns `None` (no persistence).
     fn current_message_chain(&self) -> Option<serde_json::Value> {
         None
+    }
+}
+
+#[cfg(test)]
+mod trusted_context_tests {
+    use super::*;
+
+    #[test]
+    fn worker_lease_must_witness_the_same_stage_run_unit() {
+        let unit_id = uuid::Uuid::from_u128(0x701);
+        let matching = ExecutionContext {
+            stage_execution_id: Some(uuid::Uuid::from_u128(0x702)),
+            stage_run_unit_id: Some(unit_id),
+            worker_lease: Some(WorkerLeaseContext {
+                worker_run_id: uuid::Uuid::from_u128(0x703),
+                stage_run_unit_id: unit_id,
+                lease_token: uuid::Uuid::from_u128(0x704),
+                attempt_epoch: 1,
+            }),
+            ..Default::default()
+        };
+        assert!(matching.trusted_worker_lease_is_consistent());
+
+        let mismatched = ExecutionContext {
+            stage_run_unit_id: Some(uuid::Uuid::from_u128(0x705)),
+            ..matching
+        };
+        assert!(!mismatched.trusted_worker_lease_is_consistent());
     }
 }

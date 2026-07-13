@@ -4,8 +4,10 @@ technique classes a tool + dictionary/template can cover with a relatively
 objective verdict — not creative exploitation. Anything that needs reasoning
 about business semantics (SSRF chains, SSTI, LFI, auth-bypass logic, business
 logic) is deliberately NOT here; it is synthesized in the next stage
-(`attack_candidate`). A confirmed formulaic hit IS a real vulnerability, so it
-goes straight into `findings`.
+(`attack_candidate`). Even a formulaic `found` result is an evidence-backed
+observation seed here, not yet a retained Candidate or Finding. Candidate V2
+creates neither row until the next stage reasons over the exact final-sealed
+manifest and its final Gate PASS transaction accepts the result.
 
 **Recommended sequence (only on live services / endpoints from enumeration):**
 
@@ -31,10 +33,10 @@ goes straight into `findings`.
      (sqlmap / dalfox / injection scanners) to catch low-hanging results; hand
      the suspicious-but-unconfirmed points to `attack_candidate`, do not manually
      craft deep payloads here.
-3. Land results as DB truth. Tool runs that produce a confirmed vuln should be
-   recorded with real `evidence_refs`; the coverage matrix reads found/empty
-   from the evidence the scanners produced (`derive_from_evidence`), so do not
-   hand-fabricate `found` cells the database can derive.
+3. Land results as DB truth. Every terminal formulaic cell (`found`,
+   `checked_empty`, `blocked`, or `not_applicable`) must be a durable
+   `technique_outcomes` row grounded by real evidence. Do not write a Candidate
+   or Finding and do not hand-fabricate `found` cells the database can derive.
 4. Slim submit — call `stage_worklist_status` + `check_stage_asset_coverage`.
    Only submit when `ready_to_submit=true`, adding summary claims + the
    checked_empty/blocked/not_applicable coverage that DB truth cannot derive.
@@ -59,6 +61,6 @@ goes straight into `findings`.
   units for that technique). Full coverage needs `tested_units == total_units`;
   to sample a huge surface set `sampling_rationale` and meet the ratio, else the
   cell counts as partial and the gate BLOCKS.
-- A confirmed formulaic hit goes into `findings` with real evidence; the deep /
-  reasoning-heavy leads do NOT — they are the raw material for
-  `attack_candidate`.
+- Submit `findings=[]` and legacy `candidates=[]`. Formulaic found and
+  checked-empty outcomes are both retained observation facts; the exact sealed
+  set becomes the next stage's immutable reasoning manifest.

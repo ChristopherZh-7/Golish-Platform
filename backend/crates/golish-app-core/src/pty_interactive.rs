@@ -246,13 +246,15 @@ async fn run_shell_command_detail_with_mode(
             golish_core::current_agent_tool_context(),
         ),
     };
-    let job_id = crate::background_jobs::manager().spawn_for_session_and_tool(
-        command,
-        workspace,
-        Duration::from_millis(hard_ms),
-        session_id.clone(),
-        tool_context,
-    );
+    let job_id = crate::background_jobs::manager()
+        .try_spawn_for_session_and_tool(
+            command,
+            workspace,
+            Duration::from_millis(hard_ms),
+            session_id.clone(),
+            tool_context,
+        )
+        .map_err(|error| anyhow::anyhow!("{}: {}", error.code(), error))?;
 
     tracing::info!(
         "[run_pty_cmd] spawn: command={}, mode={:?}, soft_ms={}, hard_ms={}, job_id={}, session={:?}",

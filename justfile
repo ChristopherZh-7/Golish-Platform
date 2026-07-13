@@ -252,6 +252,53 @@ clean-cap size="30GB":
     if [ ! -d backend/target ]; then echo "backend/target/ absent — nothing to sweep."; exit 0; fi
     cd backend && cargo sweep --maxsize {{size}}
 
+# Reclaim only stale Rust artifacts when the data volume is low. Safe to call
+# before any AI-driven Cargo command; it is a no-op while Cargo/rustc is active.
+space-guard:
+    ./scripts/cargo_space_guard.sh
+
+# Install a local macOS watchdog that checks the space guard every 10 minutes.
+# The watchdog never sweeps while Cargo/rustc/nextest is active.
+space-guard-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo="$(pwd)"
+    plist="$HOME/Library/LaunchAgents/com.golish.cargo-space-guard.plist"
+    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.golish"
+    /usr/bin/python3 - "$repo" "$plist" <<'PY'
+    import plistlib
+    import sys
+    from pathlib import Path
+
+    repo, destination = sys.argv[1:]
+    payload = {
+        "Label": "com.golish.cargo-space-guard",
+        "ProgramArguments": [str(Path(repo) / "scripts/cargo_space_guard.sh")],
+        "RunAtLoad": True,
+        "StartInterval": 600,
+        "StandardOutPath": str(Path.home() / ".golish/cargo-space-guard.log"),
+        "StandardErrorPath": str(Path.home() / ".golish/cargo-space-guard.log"),
+        "EnvironmentVariables": {
+            "PATH": f"{Path.home()}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+            "GOLISH_MIN_FREE_GB": "80",
+            "GOLISH_TARGET_CAP": "30GB",
+        },
+    }
+    with open(destination, "wb") as handle:
+        plistlib.dump(payload, handle)
+    PY
+    launchctl bootout "gui/$(id -u)/com.golish.cargo-space-guard" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$(id -u)" "$plist"
+    echo "✓ Cargo space guard installed (80GB free-space floor, checked every 10 minutes)."
+
+space-guard-uninstall:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    plist="$HOME/Library/LaunchAgents/com.golish.cargo-space-guard.plist"
+    launchctl bootout "gui/$(id -u)/com.golish.cargo-space-guard" >/dev/null 2>&1 || true
+    rm -f "$plist"
+    echo "✓ Cargo space guard uninstalled."
+
 # Enable target/ auto-cap: route git through .githooks/ (post-merge + post-checkout). One-time.
 hooks-install:
     git config core.hooksPath .githooks

@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../docs/design/2026-07-02-attack-stage-formulaic-candidate-exploit.md#3.3",
-  "$comment": "Stage spec: attack_candidate — synthesize structured attack hypotheses (AttackCandidate) from info-gathering context + vuln_triage found + RAG prior. Reasoning stage; runs no scan tools. Design 2026-07-02.",
+  "$comment": "Candidate V2: decide the exact server-frozen vuln_triage observation manifest. Model wire carries only CandidateDecisionDraft; server derives identity, immutable plan/hash/risk and accepts rows only in final PASS transaction.",
 
   "id": "attack_candidate",
   "kind": "attack_candidate",
@@ -26,7 +26,7 @@
     {
       "op": "candidate_grounded",
       "require_evidence": true,
-      "on_fail": { "reason": "every attack candidate must carry a rationale + observation evidence", "hints": ["cite the fingerprint/endpoint/finding that makes this hypothesis credible"] }
+      "on_fail": { "reason": "every server-seeded work item must end exactly once as candidate or evidence-backed no_candidate", "hints": ["use the exact work_item_key and cite observation evidence from that work item"] }
     }
   ],
 
@@ -41,7 +41,7 @@
   "agent_continuity": "single_session",
 
   "inherits_evidence_from": [
-    { "stage_kind": "vuln_triage", "evidence_kinds": ["vuln_finding"] },
+    { "stage_kind": "vuln_triage", "evidence_kinds": ["formulaic_observation"] },
     { "stage_kind": "enumeration", "evidence_kinds": ["http_service", "api_endpoint", "dir_entry"] }
   ]
 }

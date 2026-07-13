@@ -58,6 +58,10 @@ LAYER_TABLE: dict[str, float] = {
     "golish-udiff": 1.0,
     "golish-pentest-domain": 1.0,
     "golish-vuln-intel-domain": 1.0,
+    "golish-memory-domain": 1.0,
+    "golish-post-exploit-domain": 1.0,
+    "golish-cleanup-domain": 1.0,
+    "golish-reporting-domain": 1.0,
     "rig-anthropic-vertex": 1.0,
     "rig-gemini-vertex": 1.0,
     # L2 Simple infrastructure (depends on L1 and optionally L2 siblings)
@@ -91,6 +95,10 @@ LAYER_TABLE: dict[str, float] = {
     "golish-prompts": 3.0,
     "golish-sub-agents": 3.0,
     "golish-sidecar": 3.0,
+    "golish-memory-app": 3.0,
+    "golish-post-exploit-app": 3.0,
+    "golish-cleanup-app": 3.0,
+    "golish-reporting-app": 3.0,
     # L4 Agent stack (three-tier)
     "golish-agent-kit": 4.1,
     "golish-agent-runtime": 4.2,

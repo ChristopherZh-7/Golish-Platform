@@ -59,12 +59,17 @@ pub(crate) async fn build_tool_list(
     // into targets or pop a target `scope_review` during scoping (user directive
     // 2026-06-13; methodology backstop at the tool boundary).
     hide_manage_targets_in_scoping(&mut tools, ctx.harness_stage);
-    // Stages that declare a per-org specialist (for example target_intel →
-    // recon) must be driven through `stage_run`; the depth-0 primary is only a
-    // coordinator. Hide direct work tools so the model cannot bypass per-org
-    // isolation and gates by calling recon/sub-agent tools itself.
+    // Stages with an effective per-org specialist (a static spec declaration or
+    // a persisted Candidate V2 override) must be driven through `stage_run`; the
+    // depth-0 primary is only a coordinator. Hide direct work tools so the model
+    // cannot bypass per-org isolation and gates by calling sub-agents itself.
     if sub_agent_context.depth == 0 {
-        hide_direct_work_tools_for_specialist_stage(&mut tools, ctx.harness_stage);
+        let candidate_v2_specialist = persisted_candidate_v2_specialist(ctx).await;
+        hide_direct_work_tools_for_specialist_stage(
+            &mut tools,
+            ctx.harness_stage,
+            candidate_v2_specialist,
+        );
     }
     // Read-only coverage self-check: the depth-0 stage orchestrator builds its
     // coverage matrix from what actually landed in the DB, but task
@@ -161,6 +166,7 @@ fn hide_manage_targets_in_scoping(
 fn hide_direct_work_tools_for_specialist_stage(
     tools: &mut Vec<rig::completion::ToolDefinition>,
     harness_stage: Option<golish_agent_kit::harness::StageKind>,
+    candidate_v2_specialist: bool,
 ) {
     let Some(kind) = harness_stage else {
         return;
@@ -168,12 +174,22 @@ fn hide_direct_work_tools_for_specialist_stage(
     let Ok(spec) = golish_agent_kit::harness::load_embedded_stage_spec(kind) else {
         return;
     };
-    let Some(specialist) = spec
+    let configured = spec
         .specialist
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-    else {
+        .map(ToOwned::to_owned);
+    let specialist = match kind {
+        golish_agent_kit::harness::StageKind::Verification if candidate_v2_specialist => {
+            Some("candidate_verifier".to_string())
+        }
+        golish_agent_kit::harness::StageKind::AttackCandidate if candidate_v2_specialist => {
+            Some("attack_analyst".to_string())
+        }
+        _ => configured,
+    };
+    let Some(specialist) = specialist else {
         return;
     };
 
@@ -199,6 +215,79 @@ fn hide_direct_work_tools_for_specialist_stage(
             "tool-list: hid direct work tools for specialist stage; use stage_run"
         );
     }
+}
+
+fn candidate_v2_specialist_from_contracts(
+    stage: golish_agent_kit::harness::StageKind,
+    runtime: golish_agent_kit::runtime_memory::RuntimeMemoryContract,
+    attack: golish_core::AttackExecutionContract,
+) -> bool {
+    matches!(
+        stage,
+        golish_agent_kit::harness::StageKind::AttackCandidate
+            | golish_agent_kit::harness::StageKind::Verification
+    ) && runtime == golish_agent_kit::runtime_memory::RuntimeMemoryContract::V2Only
+        && attack == golish_core::AttackExecutionContract::V2Only
+}
+
+/// Resolve the primary coordinator's Candidate tool surface from the two
+/// immutable operation contracts. Missing authority or a failed lookup hides
+/// direct work fail-closed; `stage_run` performs the same reads and will refuse
+/// dispatch until durable authority is available again.
+async fn persisted_candidate_v2_specialist(ctx: &AgenticLoopContext<'_>) -> bool {
+    let Some(stage) = ctx.harness_stage else {
+        return false;
+    };
+    if !matches!(
+        stage,
+        golish_agent_kit::harness::StageKind::AttackCandidate
+            | golish_agent_kit::harness::StageKind::Verification
+    ) {
+        return false;
+    }
+    let (Some(operation_id), Some(repository)) =
+        (ctx.harness_operation_id, ctx.runtime_memory.as_ref())
+    else {
+        tracing::warn!(
+            target: "harness::hook",
+            stage = %stage.as_str(),
+            "Candidate tool-list contract authority is missing; hiding direct work fail-closed"
+        );
+        return true;
+    };
+    let runtime = match repository
+        .runtime_memory_contract_for_operation(operation_id)
+        .await
+    {
+        Ok(contract) => contract,
+        Err(error) => {
+            tracing::warn!(
+                target: "harness::hook",
+                operation_id = %operation_id,
+                stage = %stage.as_str(),
+                %error,
+                "Candidate runtime contract lookup failed; hiding direct work fail-closed"
+            );
+            return true;
+        }
+    };
+    let attack = match repository
+        .attack_execution_contract_for_operation(operation_id)
+        .await
+    {
+        Ok(contract) => contract,
+        Err(error) => {
+            tracing::warn!(
+                target: "harness::hook",
+                operation_id = %operation_id,
+                stage = %stage.as_str(),
+                %error,
+                "Candidate attack contract lookup failed; hiding direct work fail-closed"
+            );
+            return true;
+        }
+    };
+    candidate_v2_specialist_from_contracts(stage, runtime, attack)
 }
 
 /// D1 · when an active harness stage allows no scan tools, strip scan-execution
@@ -367,7 +456,11 @@ mod tests {
             td("sub_agent_recon"),
             td("query_target_data"),
         ];
-        hide_direct_work_tools_for_specialist_stage(&mut tools, Some(StageKind::TargetIntel));
+        hide_direct_work_tools_for_specialist_stage(
+            &mut tools,
+            Some(StageKind::TargetIntel),
+            false,
+        );
 
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         for kept in [
@@ -396,11 +489,82 @@ mod tests {
         }
 
         let mut scoping_tools = vec![td("recon_map_assets")];
-        hide_direct_work_tools_for_specialist_stage(&mut scoping_tools, Some(StageKind::Scoping));
+        hide_direct_work_tools_for_specialist_stage(
+            &mut scoping_tools,
+            Some(StageKind::Scoping),
+            false,
+        );
         assert_eq!(
             scoping_tools.len(),
             1,
             "non-specialist stages must not use the specialist-stage filter"
+        );
+    }
+
+    #[test]
+    fn verification_primary_tool_surface_tracks_the_persisted_double_contract() {
+        use golish_agent_kit::harness::StageKind;
+        use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
+        use golish_core::AttackExecutionContract;
+
+        assert!(candidate_v2_specialist_from_contracts(
+            StageKind::Verification,
+            RuntimeMemoryContract::V2Only,
+            AttackExecutionContract::V2Only,
+        ));
+        for runtime in RuntimeMemoryContract::ALL {
+            for attack in AttackExecutionContract::ALL {
+                if (runtime, attack)
+                    != (
+                        RuntimeMemoryContract::V2Only,
+                        AttackExecutionContract::V2Only,
+                    )
+                {
+                    assert!(
+                        !candidate_v2_specialist_from_contracts(
+                            StageKind::Verification,
+                            runtime,
+                            attack,
+                        ),
+                        "legacy/dual contract pair must not acquire V2 specialist tools"
+                    );
+                }
+            }
+        }
+
+        let base = || {
+            vec![
+                td("stage_run"),
+                td("submit_stage_deliverable"),
+                td("sub_agent_pentester"),
+                td("query_target_data"),
+            ]
+        };
+        let mut v2_tools = base();
+        hide_direct_work_tools_for_specialist_stage(
+            &mut v2_tools,
+            Some(StageKind::Verification),
+            true,
+        );
+        assert!(v2_tools.iter().any(|tool| tool.name == "stage_run"));
+        assert!(
+            !v2_tools
+                .iter()
+                .any(|tool| tool.name == "sub_agent_pentester"),
+            "exact V2 Verification primary must remain a stage_run-only coordinator"
+        );
+
+        let mut legacy_tools = base();
+        hide_direct_work_tools_for_specialist_stage(
+            &mut legacy_tools,
+            Some(StageKind::Verification),
+            false,
+        );
+        assert!(
+            legacy_tools
+                .iter()
+                .any(|tool| tool.name == "sub_agent_pentester"),
+            "legacy Verification must retain its configured no-specialist tool surface"
         );
     }
 

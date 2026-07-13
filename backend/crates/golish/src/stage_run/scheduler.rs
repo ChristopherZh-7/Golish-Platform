@@ -21,6 +21,7 @@ use futures::stream::{self, StreamExt};
 use uuid::Uuid;
 
 use golish_agent_kit::harness::StageKind;
+use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
 
 /// 一个 org-run 的任务描述。`entry_stage`/`to_stage`/`allowlist` 对调度器不透明。
 #[derive(Debug, Clone)]
@@ -306,6 +307,25 @@ pub async fn run_fleet_scheduler(
     FleetReport { outcomes }
 }
 
+/// Production adapter for the historical per-org child-operation fleet. The
+/// adapter itself owns the rollout guard so a future caller cannot accidentally
+/// invoke the executor while a V2-writing operation is active.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_legacy_child_operation_fleet(
+    contract: RuntimeMemoryContract,
+    config: FleetConfig,
+    tasks: Vec<OrgRunTask>,
+    executor: &dyn OrgRunExecutor,
+    oracle: &dyn OrgCompletionOracle,
+    scorer: &dyn WeaknessScorer,
+    progress: &dyn FleetProgress,
+) -> Option<FleetReport> {
+    if contract != RuntimeMemoryContract::LegacyV1 {
+        return None;
+    }
+    Some(run_fleet_scheduler(config, tasks, executor, oracle, scorer, progress).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +483,50 @@ mod tests {
         assert_eq!(by("pending"), OrgRunStatus::Passed);
         // covered 计数含「续跑跳过」。
         assert!(report.is_complete());
+    }
+
+    #[tokio::test]
+    async fn v2_adapter_never_invokes_legacy_child_operation_executor() {
+        let exec = MockExec {
+            calls: Mutex::new(vec![]),
+        };
+        for contract in [
+            RuntimeMemoryContract::DualWriteLegacyRead,
+            RuntimeMemoryContract::DualWriteV2Preferred,
+            RuntimeMemoryContract::V2Only,
+        ] {
+            let report = run_legacy_child_operation_fleet(
+                contract,
+                FleetConfig {
+                    concurrency: 1,
+                    mode: FleetMode::Checklist,
+                },
+                vec![task("child", StageKind::TargetIntel)],
+                &exec,
+                &AllIncomplete,
+                &ZeroScore,
+                &NoopProgress,
+            )
+            .await;
+            assert!(report.is_none(), "contract={contract}");
+        }
+        assert!(exec.calls.lock().unwrap().is_empty());
+
+        let legacy = run_legacy_child_operation_fleet(
+            RuntimeMemoryContract::LegacyV1,
+            FleetConfig {
+                concurrency: 1,
+                mode: FleetMode::Checklist,
+            },
+            vec![task("child", StageKind::TargetIntel)],
+            &exec,
+            &AllIncomplete,
+            &ZeroScore,
+            &NoopProgress,
+        )
+        .await;
+        assert_eq!(legacy.expect("LegacyV1 report").total(), 1);
+        assert_eq!(exec.calls.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

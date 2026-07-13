@@ -18,6 +18,12 @@ export const GOLISH_ERROR_CODES = [
   "NOT_FOUND",
   "VALIDATION",
   "CONFIG",
+  "runtime_scope_history_requires_invalidation",
+  "ATTACK_CANDIDATE_PLAN_CHANGED",
+  "ATTACK_REVIEW_SCOPE_MISMATCH",
+  "ATTACK_APPROVAL_EXPIRED",
+  "ATTACK_REVIEW_ALREADY_CLOSED",
+  "ATTACK_RESUME_NOT_READY",
   "INTERNAL",
 ] as const;
 
@@ -41,6 +47,14 @@ const MESSAGES: Record<GolishErrorCode | typeof UNKNOWN_ERROR_CODE, string> = {
   NOT_FOUND: "The requested item was not found.",
   VALIDATION: "The input was invalid.",
   CONFIG: "There is a configuration problem.",
+  runtime_scope_history_requires_invalidation:
+    "This organization is retained by immutable runtime scope history. Invalidate that history before deleting it.",
+  ATTACK_CANDIDATE_PLAN_CHANGED:
+    "This Candidate changed after the review loaded. Refresh before deciding.",
+  ATTACK_REVIEW_SCOPE_MISMATCH: "The Candidate review no longer matches this operation wave.",
+  ATTACK_APPROVAL_EXPIRED: "The requested Candidate approval expiry is invalid or has passed.",
+  ATTACK_REVIEW_ALREADY_CLOSED: "This Candidate review is already closed.",
+  ATTACK_RESUME_NOT_READY: "The durable Candidate review is not ready to resume verification.",
   INTERNAL: "An unexpected error occurred.",
   UNKNOWN: "An unexpected error occurred.",
 };

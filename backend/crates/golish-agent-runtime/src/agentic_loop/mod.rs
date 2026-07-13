@@ -65,6 +65,8 @@ mod tool_list;
 pub mod toolcall_fixer;
 mod turn;
 mod unified_helpers;
+mod worker_lease;
+mod worker_tool_lifecycle;
 
 pub mod compaction;
 

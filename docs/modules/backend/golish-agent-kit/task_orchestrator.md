@@ -22,7 +22,8 @@
 
 | 符号 | 说明 |
 |---|---|
-| `TaskOrchestrator`（`run`） | 编排主体 + 入口 + 事件发射 |
+| `TaskOrchestrator`（`run`） | 编排主体 + 入口 + 事件发射；fresh run 接 trusted `ProjectScopeRegistration`，并经 `RuntimeMemoryRepository` 原子创建 task/operation |
+| `TaskOrchestrator::set_cli_runtime_scope` | headless fresh-only trusted seam；把一次解析的 root/descendants/threshold 交给 compound create，`run_from_stage` 消费后清空，resume 永不重建 scope |
 | `AgentExecutor`（trait） | 每次 agent 调用的抽象（bridge 实现在 `golish-agent-bridge::bridge_executor`） |
 | `agent_run_checkpoint` | P2a 细粒度 agent-run checkpoint DTO + `state_blob.agent_run` merge helpers |
 | `stage_refiner` | Stage-aware deterministic repair owner：submit/gate 失败后生成 capability-first `RepairDirective`，并转换为 sub-agent `SubmitRepairMode` |
@@ -49,6 +50,8 @@
 ## 注意事项 / 坑
 
 - **不变量 I7/I8**：每阶段必须过 evidence gate 才前进；gate 是确定性规则，不能拿「agent 自信说完成」当通过。
+- Verification flow 必须同时读取 operation persisted `RuntimeMemoryContract` 与 `AttackExecutionContract`：只有两者都为 `v2_only` 才进入 Candidate verifier/exact DB truth；同一 effective-specialist 解析也用于 fresh stage prompt 与裸 resume 的 `stage_run` one-shot force，使 V2 Verification 动态得到 `candidate_verifier`，而 Legacy/dual Verification 不会因 additive worker 获得 specialist。contract lookup 失败时 Candidate primary 留在 specialist-only 路由，交由 `stage_run` 的权威重读 fail closed。Legacy/dual 保留旧 deliverable candidate 的 bounded chain-wave fallback。V2 必须取得 server-owned authority envelope 声明的同 operation/scope/current-wave 全部 unit snapshot，missing/extra/DB error/foreign/inconsistent 一律 BLOCK，不能从返回行自推 scope 或回退进程内 wave state。
+- Reporting stage entry 先通过 `DbRepoProvider::reporting_build_validated_revision` 从完整 canonical DB source set build/reuse validated revision；失败时在任何 agent turn 前 BLOCK。stage close 再用 `reporting_gate_truth` 重读 current truth。Reporting 跳过 generic enrichment/planner/wiki prior，只允许最小 StageDeliverable；stage seam 不持有 artifact/finalizer 能力，最终发布只能走显式本地 operator command。
 - `bridge_executor`（`AgentExecutor` 实现）在 `golish-agent-bridge`（依赖 AgentBridge）；本模块只持 trait。
 - graph-flow 的 `operation_state.current_stage` 表示**当前正在执行的 stage**：进入新 stage 时同步并刷新 `stage_started_at`；断线后回到同一 stage 时不能重复刷新，否则 freshness-window gate 会看不到断线前已落库的 evidence。
 - `operation_state.state_blob` 是 graph checkpoint、stage_run worker resume 等多消费者共享 JSON；更新 `graph_flow` 时要 merge 保留其他 key，不能整段覆盖。
@@ -56,6 +59,7 @@
 - Cross-session adoption 不等于 resume：resume 继续同一个 `graph_flow` checkpoint；adoption 是新 operation 经用户确认后复用旧 DB truth。`TaskOrchestrator::set_continuity_adoption` 会同时设置 entry stage 和 remaining-stage allowlist，否则 metalcraft Executor 仍会从 profile DAG entry（通常 scoping）启动。
 - continuity preflight 不能在没有 `engagement_root` 的情况下 adopt `scoping`：legacy `in_scope_org_ids(None)` 可能包含 sibling/test org，跳过 scoping 会让后续 pass-token/coverage/gate 落回全库口径并污染当前任务。
 - TaskMode 必须先把 chat key 解析出的 durable `sessions.id` 绑定到所有共享 `DbTracker` clones，再构造/运行 stage executor。`TaskOrchestrator.session_id`、gate 的 session 查询和工具生命周期写入必须同值；随机 tracker UUID 不能进入 stage，否则真实 `unit_review` / `scope_review` 也会因查不到 lifecycle 而被反复 BLOCK。
+- Fresh operation 不再由 orchestrator 分两步写 task/operation，也不存在 runtime-contract setter；它把 server UUID、profile、entry stage 与 trusted project scope 交给 compound repository。headless CLI 可额外通过 `set_cli_runtime_scope` 附加已经解析的 trusted flags scope；该值只在下一次 fresh create 被 `take()` 一次，并与 task/operation/initial execution/decision/snapshot 原子提交，不能进入 resume 或由模型输入构造。原子创建或 project identity 失败时必须在任何 LLM/provider 调用前返回；resume 只读原 operation 的 frozen contract/scope，当前 workspace scope 不匹配时拒绝重绑。
 - Red-team scoping 的 anti-shortcut gate 是两分支：同一 trusted root 的 persisted subsidiary choice 明确 parent/root-only 时，不能再制造空 `propose_candidates` / `unit_review`；选择纳入时才强制成功 `propose_candidates` 后接同 org、non-skipped、可解析的 `unit_review`。不再强制 `manage_organizations(create)`：已有 root/org tree 经用户确认后就是可复用记录，不能为了满足 gate 再 `create_batch` 扩树。只有 root 缺失或用户在 unit review 里显式新增/确认的单位才创建。
 - Red-team `scope_review` 只能审 trusted UI/CLI 在 stage 前落库的 exact target
   snapshot；trusted intake 包含 `customer_provided`，但 `discovered` / `asset_intel` /
@@ -83,7 +87,7 @@
   单位，内部 WhatWeb WEB 以 `scheme://host:port` 为单位；模型只调 wrapper。
 - `prompts::stage_charter` 的 submit 示例不要把内部 canonical empty arrays 伪装成模型必填字段：`submit_stage_deliverable` 由后端补齐省略的 `evidence_refs` / `findings` / `coverage` / `skipped_checks` / `required_checks_done`；各阶段都不要求模型手写 evidence ids，若模型写了 id 则必须是真实 ledger id。普通 scope exclusion 不应被描述成 skipped check。
 - 带 `StageSpec.specialist` 的阶段（如 `target_intel` → `recon`）必须让 primary 通过 `stage_run` 扇出；`synthesize_stage_subtask` / prompt 不应再要求 primary 直接调用 `recon_*`，否则会绕过 per-org worker gate。
-- `TaskOrchestrator::set_force_stage_run_on_resume_once` 只用于裸 continuation resume：若当前 active stage 有 `StageSpec.specialist` 且已绑定 `engagement_root`，下一次 primary loop 会通过 `ExecutionContext.harness_forced_tool="stage_run"` 强制先 dispatch `stage_run`；非 specialist/rootless/带 steering 的 resume 保持普通 agentic loop。该 hint 是 one-shot，进入 loop 后必须清掉，避免后续聊天继承。
+- `TaskOrchestrator::set_force_stage_run_on_resume_once` 只用于裸 continuation resume：若当前 active stage 有 effective specialist（静态 `StageSpec.specialist`，或 persisted 双 `v2_only` 契约动态选择的 `attack_analyst` / `candidate_verifier`）且已绑定 `engagement_root`，下一次 primary loop 会通过 `ExecutionContext.harness_forced_tool="stage_run"` 强制先 dispatch `stage_run`；非 specialist/rootless/带 steering 的 resume 保持普通 agentic loop。该 hint 是 one-shot，进入 loop 后必须清掉，避免后续聊天继承。
 - `TaskOrchestrator::resume(task_id, user_message, ...)` 把本次非空 continuation/steering 文本作为 request-local `ExecutionContext.task_input`，继而由 bridge 传到 `SubAgentContext.original_request` 和 stage-run worker 的 operator-constraint 摘录；不覆写 `tasks.input` 中的 durable 初始目标。空或全空白 continuation 明确回退 durable 初始目标。worker chain/checkpoint 和 request-scoped reentry guard 不参与该选择。
 - Graph-flow 分支路由的 `made_progress` 必须按 stage 语义判断：漏洞阶段可以用 `findings_count`，但 `findings_allowed=false` 的信息收集/覆盖矩阵阶段（`target_intel` / `external_attack_surface` / `enumeration`）不能要求 findings；它们通过 DB/ledger truth、coverage handoff、stage_run pass token 等信号表示“有进展”，不要依赖模型提交的 evidence ids。否则 EAS 会因 `findings=[]` 被误判为无进展并走 `reporting` 短路，跳过 `enumeration`。
 - RuntimeSupervisor 是运行中策略纠偏机制：只在 `ExecutionMonitor` 触发后运行，模型输出必须先解析成 `StrategyDirective` 并经过 stage/tool policy 裁剪，不能覆盖 gate，也不能覆盖 StageRefiner 的 post-gate `RepairDirective`。repair/stage_run 的确定性补洞仍以 StageRefiner 为准。

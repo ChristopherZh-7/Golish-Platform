@@ -7,9 +7,74 @@
 
 use crate::Result;
 use chrono::{DateTime, Utc};
+use golish_core::AttackExecutionContract;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{Executor, PgPool, Postgres};
 use uuid::Uuid;
+
+use super::attack_execution_rollout;
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum OperationContractValidationError {
+    #[error("unknown runtime-memory contract: {0}")]
+    UnknownRuntimeMemoryContract(String),
+    #[error("attack execution v2 requires runtime_memory_contract=v2_only, got {0}")]
+    RuntimeMemoryV2Required(String),
+}
+
+impl OperationContractValidationError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::UnknownRuntimeMemoryContract(_) => "ATTACK_RUNTIME_MEMORY_CONTRACT_UNKNOWN",
+            Self::RuntimeMemoryV2Required(_) => "ATTACK_RUNTIME_MEMORY_V2_REQUIRED",
+        }
+    }
+}
+
+/// Validate the two operation-frozen rollout contracts without reading or
+/// mutating SQL state. DB constraints and operation-creation transaction wiring
+/// land in the later schema/repository tasks.
+pub fn validate_operation_contracts(
+    runtime_memory_contract: &str,
+    attack_execution_contract: AttackExecutionContract,
+) -> std::result::Result<(), OperationContractValidationError> {
+    if !matches!(
+        runtime_memory_contract,
+        "legacy_v1" | "dual_write_legacy_read" | "dual_write_v2_preferred" | "v2_only"
+    ) {
+        return Err(
+            OperationContractValidationError::UnknownRuntimeMemoryContract(
+                runtime_memory_contract.to_string(),
+            ),
+        );
+    }
+    if attack_execution_contract.executes_v2_verifier() && runtime_memory_contract != "v2_only" {
+        return Err(OperationContractValidationError::RuntimeMemoryV2Required(
+            runtime_memory_contract.to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_attack_execution_contract(value: &str) -> Result<AttackExecutionContract> {
+    match value {
+        "legacy" => Ok(AttackExecutionContract::Legacy),
+        "dual_write_read_legacy" => Ok(AttackExecutionContract::DualWriteReadLegacy),
+        "dual_write_read_v2_fallback" => Ok(AttackExecutionContract::DualWriteReadV2Fallback),
+        "v2_only" => Ok(AttackExecutionContract::V2Only),
+        other => Err(crate::DbError::Other(anyhow::anyhow!(
+            "unknown attack-execution contract: {other}"
+        ))),
+    }
+}
+
+fn validate_frozen_operation_contracts(
+    runtime_memory_contract: &str,
+    attack_execution_contract: AttackExecutionContract,
+) -> Result<()> {
+    validate_operation_contracts(runtime_memory_contract, attack_execution_contract)
+        .map_err(|error| crate::DbError::Other(anyhow::Error::new(error)))
+}
 
 fn build_clear_engagement_org_for_subtree_sql() -> String {
     "WITH RECURSIVE subtree AS ( \
@@ -277,6 +342,10 @@ pub struct OperationStateRow {
     pub operation_id: Uuid,
     pub profile: String,
     pub current_stage: String,
+    pub runtime_memory_contract: String,
+    /// Stable workspace identity for runtime-memory V2. Legacy rows remain
+    /// nullable; every newly created runtime operation supplies this value.
+    pub project_scope_id: Option<Uuid>,
     pub stage_started_at: DateTime<Utc>,
     pub last_evidence_audit_id: Option<i64>,
     pub last_classification_id: Option<i64>,
@@ -304,29 +373,83 @@ pub struct OperationEpochRow {
 }
 
 /// 创建一个新 operation_state 行 (新 operation 入口).
+const INSERT_OPERATION_SQL: &str = r#"INSERT INTO operation_state
+        (operation_id, profile, current_stage, runtime_memory_contract,
+         attack_execution_contract)
+    VALUES ($1, $2, $3, $4, $5)"#;
+
+#[cfg(test)]
+const OPERATION_STATE_ROW_COLUMNS: &str = r#"operation_id, profile, current_stage,
+    runtime_memory_contract, project_scope_id, stage_started_at,
+    last_evidence_audit_id, last_classification_id, last_scope_version,
+    state_blob, superseded_by, engagement_org_id"#;
+
+const INSERT_OPERATION_WITH_EXECUTOR_SQL: &str = r#"INSERT INTO operation_state
+        (operation_id, profile, current_stage, runtime_memory_contract, project_scope_id,
+         attack_execution_contract)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    RETURNING operation_id, profile, current_stage, runtime_memory_contract,
+              project_scope_id, stage_started_at, last_evidence_audit_id,
+              last_classification_id, last_scope_version, state_blob,
+              superseded_by, engagement_org_id"#;
+
 pub async fn insert(
     pool: &PgPool,
     operation_id: Uuid,
     profile: &str,
     current_stage: &str,
+    runtime_memory_contract: &str,
 ) -> Result<()> {
-    sqlx::query(
-        r#"INSERT INTO operation_state
-               (operation_id, profile, current_stage)
-           VALUES ($1, $2, $3)"#,
-    )
-    .bind(operation_id)
-    .bind(profile)
-    .bind(current_stage)
-    .execute(pool)
-    .await?;
+    let mut tx = pool.begin().await?;
+    let attack_rollout = attack_execution_rollout::get_for_share(&mut tx).await?;
+    let attack_contract = parse_attack_execution_contract(&attack_rollout.contract)?;
+    validate_frozen_operation_contracts(runtime_memory_contract, attack_contract)?;
+    sqlx::query(INSERT_OPERATION_SQL)
+        .bind(operation_id)
+        .bind(profile)
+        .bind(current_stage)
+        .bind(runtime_memory_contract)
+        .bind(attack_contract.as_str())
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
+}
+
+/// Insert a fully bound runtime operation through the caller's executor and
+/// return the frozen row. The mandatory `project_scope_id` is enforced by the
+/// signature even though the migration keeps the column nullable for legacy
+/// operations.
+pub async fn insert_with_executor<'e, E>(
+    executor: E,
+    operation_id: Uuid,
+    profile: &str,
+    current_stage: &str,
+    runtime_memory_contract: &str,
+    project_scope_id: Uuid,
+    attack_execution_contract: AttackExecutionContract,
+) -> Result<OperationStateRow>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    validate_frozen_operation_contracts(runtime_memory_contract, attack_execution_contract)?;
+    let row = sqlx::query_as::<_, OperationStateRow>(INSERT_OPERATION_WITH_EXECUTOR_SQL)
+        .bind(operation_id)
+        .bind(profile)
+        .bind(current_stage)
+        .bind(runtime_memory_contract)
+        .bind(project_scope_id)
+        .bind(attack_execution_contract.as_str())
+        .fetch_one(executor)
+        .await?;
+    Ok(row)
 }
 
 /// 读 operation_state · 主 lookup.
 pub async fn get(pool: &PgPool, operation_id: Uuid) -> Result<Option<OperationStateRow>> {
     let row = sqlx::query_as::<_, OperationStateRow>(
-        r#"SELECT operation_id, profile, current_stage, stage_started_at,
+        r#"SELECT operation_id, profile, current_stage, runtime_memory_contract,
+                  project_scope_id, stage_started_at,
                   last_evidence_audit_id, last_classification_id,
                   last_scope_version, state_blob, superseded_by, engagement_org_id
            FROM operation_state
@@ -336,6 +459,23 @@ pub async fn get(pool: &PgPool, operation_id: Uuid) -> Result<Option<OperationSt
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// Read and strictly decode the immutable Candidate execution contract without
+/// widening the hot-path [`OperationStateRow`] projection.
+pub async fn get_attack_execution_contract(
+    pool: &PgPool,
+    operation_id: Uuid,
+) -> Result<Option<AttackExecutionContract>> {
+    let value: Option<String> = sqlx::query_scalar(
+        "SELECT attack_execution_contract FROM operation_state WHERE operation_id=$1",
+    )
+    .bind(operation_id)
+    .fetch_optional(pool)
+    .await?;
+    value
+        .map(|value| parse_attack_execution_contract(&value))
+        .transpose()
 }
 
 /// Read only the operation epoch fields required by stage-validity guards.
@@ -587,6 +727,8 @@ mod tests {
             operation_id: Uuid::new_v4(),
             profile: "assessment".to_string(),
             current_stage: "external_attack_surface".to_string(),
+            runtime_memory_contract: "dual_write_legacy_read".to_string(),
+            project_scope_id: Some(Uuid::new_v4()),
             stage_started_at: Utc::now(),
             last_evidence_audit_id: Some(42),
             last_classification_id: Some(7),
@@ -599,7 +741,36 @@ mod tests {
         let back: OperationStateRow = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(row.operation_id, back.operation_id);
         assert_eq!(row.current_stage, back.current_stage);
+        assert_eq!(row.runtime_memory_contract, back.runtime_memory_contract);
         assert_eq!(row.state_blob, back.state_blob);
+    }
+
+    #[test]
+    fn operation_insert_freezes_runtime_memory_contract() {
+        assert!(INSERT_OPERATION_SQL.contains("runtime_memory_contract"));
+        assert!(INSERT_OPERATION_SQL.contains("$4"));
+    }
+
+    #[test]
+    fn runtime_memory_store_operation_insert_requires_project_scope_and_returns_row() {
+        assert!(INSERT_OPERATION_WITH_EXECUTOR_SQL.contains("project_scope_id"));
+        assert!(INSERT_OPERATION_WITH_EXECUTOR_SQL.contains("$5"));
+        assert!(INSERT_OPERATION_WITH_EXECUTOR_SQL.contains("RETURNING"));
+        assert!(OPERATION_STATE_ROW_COLUMNS.contains("project_scope_id"));
+    }
+
+    #[test]
+    fn attack_contract_cannot_enable_v2_on_non_v2_runtime_memory() {
+        assert!(validate_operation_contracts(
+            "dual_write_read_v2_fallback",
+            golish_core::AttackExecutionContract::V2Only,
+        )
+        .is_err());
+        assert!(validate_operation_contracts(
+            "v2_only",
+            golish_core::AttackExecutionContract::V2Only,
+        )
+        .is_ok());
     }
 
     #[test]

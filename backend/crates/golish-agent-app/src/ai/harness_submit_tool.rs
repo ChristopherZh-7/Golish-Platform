@@ -21,10 +21,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use golish_agent_kit::db_traits::{StageAssetWaveView, TechniqueOutcomeFact};
+use golish_agent_kit::db_traits::{
+    CapturedStageSubmission, NewStageDeliverableSubmission, RuntimeMemoryError,
+    RuntimeMemoryRepository, StageAssetWaveView, TechniqueOutcomeFact,
+};
 use golish_agent_kit::harness::org_gate::{
     apply_technique_outcome_rows, eas_service_not_applicable_from_port_outcomes,
     extract_pass_token, stage_accepts_outcome_projection, stage_accepts_source_query_completion,
@@ -33,9 +37,9 @@ use golish_agent_kit::harness::org_gate::{
 };
 use golish_agent_kit::harness::{
     completed_from_guarded_outcomes, load_embedded_stage_spec, validate_stage_gate_with_context,
-    AttackCandidate, EvidenceFact, GateContext, GateContextBuilder, SourceQueryFact,
-    StageDeliverable, StageKind,
+    EvidenceFact, GateContext, GateContextBuilder, SourceQueryFact, StageDeliverable, StageKind,
 };
+use golish_agent_kit::runtime_memory::RuntimeMemoryWriteStrategy;
 use golish_core::Tool;
 
 /// Narrow read-only seam over the evidence ledger so the submit tool can run the
@@ -56,22 +60,37 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// P5.1 (设计 2026-07-02-attack-stage §3.7 · candidate persistence): upsert the
-    /// deliverable's attack hypotheses into `attack_candidates` so the chain-wave
-    /// controller can dedupe across waves and follow a→b→c lineage
-    /// (`parent_finding_id`). This is a **deterministic handler write** (the tool
-    /// captured a structured `candidates[]`, not a model prose claim), org-isolated
-    /// (I2), idempotent by `(operation_id, target, hypothesis_hash)`. Returns the
-    /// number persisted. Default no-op (test doubles / no-DB); a write failure is
-    /// non-fatal — the impl logs a warn and returns what it managed to persist.
-    async fn persist_attack_candidates(
+    /// Candidate V2 manifest projection for submit-time Gate validation. Missing
+    /// implementations fail closed rather than returning an empty manifest.
+    async fn candidate_manifest_work_item_keys(
         &self,
-        operation_id: &str,
-        organization_id: Option<Uuid>,
-        candidates: &[AttackCandidate],
-    ) -> usize {
-        let _ = (operation_id, organization_id, candidates);
-        0
+        operation_id: Uuid,
+        stage_run_unit_id: Uuid,
+        organization_id: Uuid,
+    ) -> Result<Vec<String>> {
+        let _ = (operation_id, stage_run_unit_id, organization_id);
+        anyhow::bail!("ATTACK_V2_REPO_UNAVAILABLE")
+    }
+
+    /// Persisted-contract-aware Verification truth. `None` means the operation
+    /// is legacy; `Some(empty)` means V2 truth was queried but no exact WaveUnit
+    /// existed and must therefore block.
+    async fn verification_truth_for_operation(
+        &self,
+        operation_id: Uuid,
+    ) -> Result<Option<golish_agent_kit::harness::attack_execution::VerificationTruthSet>> {
+        let _ = operation_id;
+        anyhow::bail!("ATTACK_V2_VERIFICATION_TRUTH_UNAVAILABLE")
+    }
+
+    /// Current DB-authoritative Reporting revision truth for submit-time Gate
+    /// preview. `None` is a real missing-revision state and must block.
+    async fn reporting_truth_for_operation(
+        &self,
+        operation_id: Uuid,
+    ) -> Result<Option<golish_agent_kit::harness::ReportingGateTruth>> {
+        let _ = operation_id;
+        anyhow::bail!("REPORTING_TRUTH_REPO_UNAVAILABLE")
     }
 
     /// Map real evidence ids to their ledger kind (`detail->>'kind'`). The submit
@@ -320,6 +339,15 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         let _ = (operation_id, organization_id, stage);
         Ok(None)
     }
+
+    async fn cleanup_closeout_gate(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> Result<golish_agent_kit::db_traits::CleanupCloseoutGateSnapshot> {
+        let _ = (operation_id, organization_id);
+        anyhow::bail!("CLEANUP_CLOSEOUT_REPO_UNAVAILABLE")
+    }
 }
 
 /// A still-running background job attributed to the current session. The closeout
@@ -456,6 +484,47 @@ fn canonicalize_model_submit_args(mut args: Value) -> Value {
     args
 }
 
+/// RFC-8259 JSON with recursively lexicographic object keys and no insignificant
+/// whitespace. JSONB does not retain input key order, so this exact string is
+/// captured beside its SHA-256 and remains the deterministic Gate input.
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).expect("JSON string serialization"),
+        Value::Array(values) => {
+            let values = values
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("[{values}]")
+        }
+        Value::Object(object) => {
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            let fields = keys
+                .into_iter()
+                .map(|key| {
+                    let encoded_key =
+                        serde_json::to_string(key).expect("JSON object-key serialization");
+                    format!("{encoded_key}:{}", canonical_json(&object[key]))
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{fields}}}")
+        }
+    }
+}
+
+fn sha256_hex(value: &str) -> String {
+    Sha256::digest(value.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// Tool that captures a structured [`StageDeliverable`] into the bridge
 /// side-channel so the deterministic gate can validate it, regardless of which
 /// agent (orchestrator or `reporter`) produced it.
@@ -464,6 +533,13 @@ pub struct SubmitStageDeliverableTool {
     active_stage: Arc<RwLock<Option<StageKind>>>,
     /// Sink the Task-mode executor reads at stage close + appends to content.
     last_deliverable: Arc<RwLock<Option<String>>>,
+    /// V2 side-channel: exact durable submission identity + canonical Gate
+    /// payload. The legacy string sink remains until the stage-close consumer is
+    /// migrated, but V2 callers no longer have to infer identity from that JSON.
+    captured_submission: Arc<RwLock<Option<CapturedStageSubmission>>>,
+    /// Operation-scoped runtime-memory store. Absent only in explicit legacy
+    /// fixtures/direct tests; production wiring always supplies the DB bridge.
+    runtime_memory_repo: Option<Arc<dyn RuntimeMemoryRepository>>,
     /// P2 (validate-on-submit) · evidence-ledger handle. When present, the tool
     /// runs the same fabricated-evidence cross-check the stage-close gate uses,
     /// so a structurally-OK deliverable that cites non-existent ledger ids is
@@ -502,6 +578,19 @@ pub struct SubmitStageDeliverableTool {
     reconcile_poll_ms: u64,
 }
 
+fn findings_allowed_for_attack_contract(
+    stage: StageKind,
+    statically_allowed: bool,
+    contract: golish_core::AttackExecutionContract,
+) -> bool {
+    statically_allowed
+        && !(contract.executes_v2_verifier()
+            && matches!(
+                stage,
+                StageKind::VulnTriage | StageKind::AttackCandidate | StageKind::Verification
+            ))
+}
+
 impl SubmitStageDeliverableTool {
     pub fn new(
         active_stage: Arc<RwLock<Option<StageKind>>>,
@@ -510,6 +599,8 @@ impl SubmitStageDeliverableTool {
         Self {
             active_stage,
             last_deliverable,
+            captured_submission: Arc::new(RwLock::new(None)),
+            runtime_memory_repo: None,
             evidence_repo: None,
             session_id: None,
             org_id_source: None,
@@ -518,6 +609,304 @@ impl SubmitStageDeliverableTool {
             reconcile_wait_ms: 0,
             reconcile_poll_ms: 1000,
         }
+    }
+
+    pub fn with_runtime_memory_repository(
+        mut self,
+        repo: Arc<dyn RuntimeMemoryRepository>,
+    ) -> Self {
+        self.runtime_memory_repo = Some(repo);
+        self
+    }
+
+    /// Override the typed sink when a stage-close consumer owns the handle.
+    pub fn with_captured_submission_sink(
+        mut self,
+        sink: Arc<RwLock<Option<CapturedStageSubmission>>>,
+    ) -> Self {
+        self.captured_submission = sink;
+        self
+    }
+
+    pub fn captured_submission_handle(&self) -> Arc<RwLock<Option<CapturedStageSubmission>>> {
+        Arc::clone(&self.captured_submission)
+    }
+
+    async fn attack_execution_contract(&self) -> Result<golish_core::AttackExecutionContract> {
+        let Some(repo) = self.runtime_memory_repo.as_ref() else {
+            // Explicit no-repository fixtures and direct legacy use retain the
+            // historical deliverable contract. Production always injects the
+            // repository and must resolve the persisted operation contract.
+            return Ok(golish_core::AttackExecutionContract::Legacy);
+        };
+        let sourced_operation_id = match self.operation_id_source.as_ref() {
+            Some(source) => *source.read().await,
+            None => None,
+        };
+        let context_operation_id =
+            golish_core::current_agent_tool_context().and_then(|context| context.operation_id);
+        let operation_id = sourced_operation_id
+            .or(context_operation_id)
+            .ok_or_else(|| {
+                anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                    code: "missing_operation_id",
+                })
+            })?;
+        if sourced_operation_id.is_some_and(|trusted| trusted != operation_id)
+            || context_operation_id.is_some_and(|trusted| trusted != operation_id)
+        {
+            return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                code: "submission_operation_identity_mismatch",
+            }));
+        }
+        repo.attack_execution_contract_for_operation(operation_id)
+            .await
+            .map_err(anyhow::Error::new)
+    }
+
+    async fn effective_findings_allowed(
+        &self,
+        stage: StageKind,
+        statically_allowed: bool,
+    ) -> Result<bool> {
+        if !matches!(
+            stage,
+            StageKind::VulnTriage | StageKind::AttackCandidate | StageKind::Verification
+        ) {
+            return Ok(statically_allowed);
+        }
+        let contract = self.attack_execution_contract().await?;
+        Ok(findings_allowed_for_attack_contract(
+            stage,
+            statically_allowed,
+            contract,
+        ))
+    }
+
+    async fn persist_trusted_submission(
+        &self,
+        active_stage: StageKind,
+        deliverable: &mut StageDeliverable,
+    ) -> Result<Option<CapturedStageSubmission>> {
+        let Some(repo) = self.runtime_memory_repo.as_ref() else {
+            // Explicit legacy fixture/direct-test seam. Production registers the
+            // runtime repository and cannot silently enter this branch.
+            deliverable.stage_run_id = Uuid::new_v4();
+            return Ok(None);
+        };
+
+        let context = golish_core::current_agent_tool_context();
+        let sourced_operation_id = match self.operation_id_source.as_ref() {
+            Some(source) => *source.read().await,
+            None => None,
+        };
+        let context_operation_id = context.as_ref().and_then(|context| context.operation_id);
+        let operation_id = sourced_operation_id
+            .or(context_operation_id)
+            .ok_or_else(|| {
+                anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                    code: "missing_operation_id",
+                })
+            })?;
+        if sourced_operation_id.is_some_and(|trusted| trusted != operation_id)
+            || context_operation_id.is_some_and(|trusted| trusted != operation_id)
+        {
+            return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                code: "submission_operation_identity_mismatch",
+            }));
+        }
+
+        let contract = repo
+            .runtime_memory_contract_for_operation(operation_id)
+            .await
+            .map_err(anyhow::Error::new)?;
+        if contract.policy().write == RuntimeMemoryWriteStrategy::LegacyOnly {
+            deliverable.stage_run_id = Uuid::new_v4();
+            return Ok(None);
+        }
+
+        let context = context.ok_or_else(|| {
+            anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                code: "missing_trusted_tool_context",
+            })
+        })?;
+        if context.operation_id != Some(operation_id) {
+            return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                code: "submission_operation_identity_mismatch",
+            }));
+        }
+        if context.tool_name != self.name() {
+            return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                code: "submission_tool_name_mismatch",
+            }));
+        }
+        let stage_execution_id = context.stage_execution_id.ok_or_else(|| {
+            anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                code: "missing_stage_execution_id",
+            })
+        })?;
+        let tool_call_record_id = context.tool_call_record_id.ok_or_else(|| {
+            anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                code: "missing_tool_call_record_id",
+            })
+        })?;
+
+        let stage_run_unit_id = context.stage_run_unit_id;
+        let organization_id = context.organization_id;
+        let worker = context.worker_lease.as_ref();
+        if active_stage == StageKind::Scoping {
+            if stage_run_unit_id.is_some() != organization_id.is_some() {
+                return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                    code: "scoping_stage_unit_organization_shape_mismatch",
+                }));
+            }
+            if worker.is_some() {
+                return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                    code: "scoping_submission_must_not_bind_worker",
+                }));
+            }
+        } else {
+            if stage_run_unit_id.is_none() {
+                return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                    code: "missing_stage_run_unit",
+                }));
+            }
+            if organization_id.is_none() {
+                return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                    code: "missing_stage_organization",
+                }));
+            }
+            if worker.is_none() {
+                return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                    code: "missing_worker_run",
+                }));
+            }
+        }
+        if let Some(worker) = worker {
+            if Some(worker.stage_run_unit_id) != stage_run_unit_id {
+                return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                    code: "worker_stage_run_unit_mismatch",
+                }));
+            }
+        }
+
+        deliverable.stage_run_id = stage_execution_id;
+        let payload = serde_json::to_value(&*deliverable)?;
+        let canonical_deliverable_json = canonical_json(&payload);
+        let payload_sha256 = sha256_hex(&canonical_deliverable_json);
+        let persisted = repo
+            .insert_stage_deliverable_submission(NewStageDeliverableSubmission {
+                operation_id,
+                stage_execution_id,
+                stage_run_unit_id,
+                worker_run_id: worker.map(|worker| worker.worker_run_id),
+                organization_id,
+                tool_call_record_id,
+                tool_request_id: context.request_id,
+                stage_kind: active_stage.as_str().to_string(),
+                attempt_epoch: worker.map(|worker| worker.attempt_epoch),
+                lease_token: worker.map(|worker| worker.lease_token),
+                canonical_deliverable_json: canonical_deliverable_json.clone(),
+                payload_sha256: payload_sha256.clone(),
+            })
+            .await
+            .map_err(anyhow::Error::new)?;
+        if persisted.operation_id != operation_id
+            || persisted.stage_execution_id != stage_execution_id
+            || persisted.stage_run_unit_id != stage_run_unit_id
+            || persisted.tool_call_record_id != tool_call_record_id
+            || persisted.payload_sha256 != payload_sha256
+        {
+            return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                code: "persisted_submission_identity_mismatch",
+            }));
+        }
+        let captured = CapturedStageSubmission {
+            deliverable_submission_id: persisted.deliverable_submission_id,
+            operation_id,
+            stage_execution_id,
+            stage_run_unit_id,
+            canonical_deliverable_json: canonical_deliverable_json.clone(),
+            payload_sha256,
+        };
+        *self.captured_submission.write().await = Some(captured.clone());
+        // V2 callers consume the exact durable submission id from their own
+        // tool result. Do not publish it through the shared legacy
+        // last-deliverable slot, which can leak residue across serial workers.
+        Ok(Some(captured))
+    }
+
+    async fn cleanup_gate_block_reason(&self) -> Option<String> {
+        let Some(repo) = self.evidence_repo.as_ref() else {
+            return Some("cleanup authoritative repository is unavailable".to_string());
+        };
+        let context = golish_core::current_agent_tool_context();
+        let sourced_operation = match self.operation_id_source.as_ref() {
+            Some(source) => *source.read().await,
+            None => None,
+        };
+        let context_operation = context.as_ref().and_then(|value| value.operation_id);
+        if sourced_operation.is_some()
+            && context_operation.is_some()
+            && sourced_operation != context_operation
+        {
+            return Some("cleanup operation identity sources disagree".to_string());
+        }
+        let sourced_org = match self.org_id_source.as_ref() {
+            Some(source) => *source.read().await,
+            None => None,
+        };
+        let context_org = context.as_ref().and_then(|value| value.organization_id);
+        if sourced_org.is_some() && context_org.is_some() && sourced_org != context_org {
+            return Some("cleanup organization identity sources disagree".to_string());
+        }
+        let Some(operation_id) = context_operation.or(sourced_operation) else {
+            return Some("cleanup gate has no exact operation identity".to_string());
+        };
+        let Some(organization_id) = context_org.or(sourced_org) else {
+            return Some("cleanup gate has no exact organization identity".to_string());
+        };
+        match repo
+            .cleanup_closeout_gate(operation_id, organization_id)
+            .await
+        {
+            Ok(snapshot) if snapshot.allows_closeout() => None,
+            Ok(snapshot) => Some(format!(
+                "cleanup DB truth blocks closeout: missing_obligations={}, nonterminal_obligations={}, undisclosed_residuals={}, invalid_terminal_truth={}",
+                snapshot.missing_obligation_count,
+                snapshot.nonterminal_obligation_count,
+                snapshot.undisclosed_residual_count,
+                snapshot.invalid_terminal_truth_count,
+            )),
+            Err(error) => Some(format!(
+                "cleanup authoritative closeout query failed: {error}"
+            )),
+        }
+    }
+
+    fn attach_submission_identity(
+        mut response: Value,
+        captured: Option<&CapturedStageSubmission>,
+    ) -> Value {
+        let Some(captured) = captured else {
+            return response;
+        };
+        let Some(object) = response.as_object_mut() else {
+            return response;
+        };
+        object.insert(
+            "deliverable_submission_id".to_string(),
+            json!(captured.deliverable_submission_id),
+        );
+        object.insert(
+            "stage_execution_id".to_string(),
+            json!(captured.stage_execution_id),
+        );
+        object.insert(
+            "stage_run_unit_id".to_string(),
+            json!(captured.stage_run_unit_id),
+        );
+        response
     }
 
     /// Attach an evidence-ledger handle to enable validate-on-submit (P2).
@@ -636,45 +1025,6 @@ impl SubmitStageDeliverableTool {
             return Vec::new();
         };
         repo.recent_evidence_ids(sid, 25).await.unwrap_or_default()
-    }
-
-    /// P5.1 · persist the deliverable's attack candidates (if any) to the DB via
-    /// the evidence-repo seam. Requires a bound operation id (the persistence key)
-    /// + the repo handle; otherwise a no-op. Non-fatal — persistence failure only
-    ///   logs (the deliverable itself is still captured by the gate path).
-    async fn persist_candidates_if_any(&self, deliverable: &StageDeliverable) {
-        if deliverable.candidates.is_empty() {
-            return;
-        }
-        let Some(repo) = self.evidence_repo.as_ref() else {
-            return;
-        };
-        let operation_id = match &self.operation_id_source {
-            Some(src) => (*src.read().await).map(|id| id.to_string()),
-            None => None,
-        };
-        let Some(operation_id) = operation_id else {
-            tracing::debug!(
-                target: "harness::submit_tool",
-                candidates = deliverable.candidates.len(),
-                "attack candidates not persisted: no bound operation id"
-            );
-            return;
-        };
-        let org_id = match &self.org_id_source {
-            Some(src) => *src.read().await,
-            None => None,
-        };
-        let stored = repo
-            .persist_attack_candidates(&operation_id, org_id, &deliverable.candidates)
-            .await;
-        tracing::info!(
-            target: "harness::submit_tool",
-            operation_id = %operation_id,
-            submitted = deliverable.candidates.len(),
-            stored,
-            "attack candidates persisted"
-        );
     }
 
     /// Cross-check any model-supplied evidence ids against the real ledger.
@@ -817,11 +1167,17 @@ impl SubmitStageDeliverableTool {
             self.session_id.as_deref()
         };
         let Some(repo) = self.evidence_repo.as_ref() else {
-            if stage == StageKind::Enumeration {
-                return Err(
-                    "enumeration submit preview requires the trusted DB coverage repository"
-                        .to_string(),
-                );
+            if matches!(
+                stage,
+                StageKind::Enumeration
+                    | StageKind::AttackCandidate
+                    | StageKind::Verification
+                    | StageKind::Reporting
+            ) {
+                return Err(format!(
+                    "{} submit preview requires the trusted DB repository",
+                    stage.as_str()
+                ));
             }
             return Ok(GateContext::default());
         };
@@ -852,6 +1208,81 @@ impl SubmitStageDeliverableTool {
         let org_id = match self.org_id_source.as_ref() {
             Some(src) => *src.read().await,
             None => None,
+        };
+        let candidate_work_item_keys = if stage == StageKind::AttackCandidate {
+            let context = golish_core::current_agent_tool_context().ok_or_else(|| {
+                "attack_candidate submit preview requires trusted tool context".to_string()
+            })?;
+            let operation_id = context.operation_id.ok_or_else(|| {
+                "attack_candidate submit preview requires operation identity".to_string()
+            })?;
+            let stage_run_unit_id = context.stage_run_unit_id.ok_or_else(|| {
+                "attack_candidate submit preview requires StageRunUnit identity".to_string()
+            })?;
+            let organization_id = context.organization_id.ok_or_else(|| {
+                "attack_candidate submit preview requires organization identity".to_string()
+            })?;
+            repo.candidate_manifest_work_item_keys(operation_id, stage_run_unit_id, organization_id)
+                .await
+                .map(Some)
+                .map_err(|error| format!("attack_candidate manifest load failed: {error}"))?
+        } else {
+            None
+        };
+        let verification_truth = if stage == StageKind::Verification {
+            let operation_id = golish_core::current_agent_tool_context()
+                .and_then(|context| context.operation_id)
+                .or(match self.operation_id_source.as_ref() {
+                    Some(source) => *source.read().await,
+                    None => None,
+                })
+                .ok_or_else(|| {
+                    "verification submit preview requires operation identity".to_string()
+                })?;
+            let truth = repo
+                .verification_truth_for_operation(operation_id)
+                .await
+                .map_err(|error| format!("verification truth load failed: {error}"))?;
+            if truth.as_ref().is_some_and(|truth| {
+                truth.authority.operation_id != operation_id
+                    || truth
+                        .snapshots
+                        .iter()
+                        .any(|row| row.operation_id != operation_id)
+            }) {
+                return Err(
+                    "verification truth load returned a foreign operation snapshot".to_string(),
+                );
+            }
+            truth
+        } else {
+            None
+        };
+        let reporting_truth = if stage == StageKind::Reporting {
+            let operation_id = golish_core::current_agent_tool_context()
+                .and_then(|context| context.operation_id)
+                .or(match self.operation_id_source.as_ref() {
+                    Some(source) => *source.read().await,
+                    None => None,
+                })
+                .ok_or_else(|| {
+                    "reporting submit preview requires operation identity".to_string()
+                })?;
+            let truth = repo
+                .reporting_truth_for_operation(operation_id)
+                .await
+                .map_err(|error| format!("reporting truth load failed: {error}"))?;
+            if truth
+                .as_ref()
+                .is_some_and(|truth| truth.operation_id != operation_id)
+            {
+                return Err(
+                    "reporting truth load returned a foreign operation snapshot".to_string()
+                );
+            }
+            truth
+        } else {
+            None
         };
         if stage == StageKind::Enumeration && org_id.is_none() {
             return Err(
@@ -1061,7 +1492,14 @@ impl SubmitStageDeliverableTool {
             .not_applicable_coverage(not_applicable_coverage)
             .extend_evidence_facts(facts)
             .extend_source_queries(source_queries)
-            .expected_techniques(expected_techniques);
+            .expected_techniques(expected_techniques)
+            .candidate_work_item_keys(candidate_work_item_keys)
+            .reporting_truth(reporting_truth);
+        if stage == StageKind::Verification {
+            if let Some(snapshots) = verification_truth {
+                builder = builder.verification_truth(Some(snapshots));
+            }
+        }
         if let Some((required, completed)) = eas_origin_barrier {
             builder = builder.eas_web_origin_barrier(required, completed);
         }
@@ -1144,6 +1582,25 @@ impl Tool for SubmitStageDeliverableTool {
                         "required": ["finding_id", "kind", "subject", "severity"]
                     }
                 },
+                "candidate_decisions": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "description": "attack_candidate only: exactly one decision for every server-seeded work_item_key. Never provide operation/scope/org/wave/execution/submission ids or an execution plan; the server derives them. Both candidate and no_candidate decisions require real evidence_refs from the work item.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "work_item_key": { "type": "string", "minLength": 1, "maxLength": 256 },
+                            "decision": { "type": "string", "enum": ["candidate", "no_candidate"] },
+                            "hypothesis": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Required only for candidate." },
+                            "rationale": { "type": "string", "minLength": 1, "maxLength": 8192 },
+                            "technique": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Optional for candidate; if present it must equal the frozen work-item technique." },
+                            "evidence_refs": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
+                            "no_candidate_reason_code": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9_]+$", "description": "Required only for no_candidate." }
+                        },
+                        "required": ["work_item_key", "decision", "rationale", "evidence_refs"]
+                    }
+                },
                 "coverage": {
                     "type": "array",
                     "description": "Coverage matrix for stages whose contract still requires model-authored terminal cells. Call check_stage_asset_coverage before submit. ENUMERATION IS FULLY AUTHORITATIVE: always submit coverage=[]; current-run producer evidence owns found/checked_empty, while current-target blocked evidence is limited to enum_preflight_web_origins on all four axes, route_probe_paths recovery on DIR, and browser_collect_js_api recovery on JS/JSAPI/PARAM. Non-web/rootless hosts are excluded before the exact-origin denominator is built. Enumeration model-authored coverage cannot close a cell. Other DB-truth stages should omit DB-derived found cells and include only contract-permitted terminal exceptions. Stages that run no tools submit []. For non-DB-truth stages, missing expected asset × technique cells fail the gate. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted and total_units = open ports discovered. Evidence ids are optional internal refs; never invent them. Omit optional fields you do not use and never pass null.",
@@ -1212,32 +1669,15 @@ impl Tool for SubmitStageDeliverableTool {
                     "reason": format!(
                         "could not parse StageDeliverable: {e}. Pass the structured fields \
                          (stage_id, claims[], plus optional evidence_refs[], findings[], \
-                         coverage[], skipped_checks[], required_checks_done[]) as tool \
+                         coverage[], candidate_decisions[], skipped_checks[], required_checks_done[]) as tool \
                          arguments — do not describe the JSON in prose."
                     ),
                 }));
             }
         };
 
-        // stage_run_id is server-assigned: overwrite any model-supplied value with a
-        // fresh random UUID before it reaches the gate preview, the side-channel sink,
-        // or any log. The field is only logged + non-nil-checked downstream, never used
-        // for evidence binding (which keys off evidence_ids), so generating it here
-        // removes a weak model's ability to emit fabricated, patterned ids
-        // (deepseek-v4-flash emitted incrementing bb07→bb08→… UUIDs that polluted the
-        // gate logs). The authoritative per-stage-run id used for evidence isolation /
-        // persistence is the harness's own, sourced separately.
-        deliverable.stage_run_id = uuid::Uuid::new_v4();
-
-        // P5.1 · persist attack hypotheses (attack_candidate / verification stages)
-        // to `attack_candidates` so the chain-wave controller can dedupe across
-        // waves + follow a→b→c lineage. Deterministic handler write (the tool
-        // captured structured candidates, not model prose), idempotent by hash,
-        // org-isolated. No-op unless the deliverable actually carries candidates
-        // and an operation id is bound (⇒ zero change for the recon stages).
-        self.persist_candidates_if_any(&deliverable).await;
-
         let active = *self.active_stage.read().await;
+        let mut trusted_capture = None;
         if let Some(kind) = active {
             if deliverable.stage_id != kind.as_str() {
                 return Ok(json!({
@@ -1266,17 +1706,28 @@ impl Tool for SubmitStageDeliverableTool {
             if let Some(deferred) = self.reconcile_background_jobs().await {
                 return Ok(deferred);
             }
+            if kind == StageKind::Cleanup {
+                if let Some(reason) = self.cleanup_gate_block_reason().await {
+                    return Ok(json!({
+                        "status": "needs_fix",
+                        "reasons": [reason],
+                        "note": "Cleanup is graded only from canonical obligation, absence and residual rows. Inspect/retry cleanup or ask the local operator for a residual waiver."
+                    }));
+                }
+            }
             // 甲 · structural/semantic gate preview (no DB). The authoritative
             // evidence-ledger cross-check runs at stage close in the gate hook.
             if let Ok(spec) = load_embedded_stage_spec(kind) {
+                let findings_allowed = self
+                    .effective_findings_allowed(kind, spec.findings_allowed)
+                    .await?;
                 // Recon/discovery stages declare `findings_allowed=false`: their
                 // deliverable is observations (`claims`) + a coverage matrix, NOT
                 // vulnerabilities. Drop any `findings` a (weak) model dumped here so
                 // junk never pollutes the stored deliverable or the stage-close gate;
                 // the accept note tells the model to put discoveries in `claims`.
                 // Design 2026-06-15-recon-stage-findings-suppression.
-                let dropped_findings = if !spec.findings_allowed && !deliverable.findings.is_empty()
-                {
+                let dropped_findings = if !findings_allowed && !deliverable.findings.is_empty() {
                     let n = deliverable.findings.len();
                     deliverable.findings.clear();
                     n
@@ -1291,62 +1742,84 @@ impl Tool for SubmitStageDeliverableTool {
                 // the stage-close口径 (env GOLISH_SUBMIT_PREVIEW_AUTHORITATIVE_CONTEXT=0 reverts).
                 self.backfill_required_checks_done_from_evidence(&mut deliverable, &spec)
                     .await;
+                // Persist after deterministic server normalization so the
+                // immutable row is the exact payload graded at stage close, not
+                // an earlier model draft. A Gate BLOCK still retains this row.
+                trusted_capture = self
+                    .persist_trusted_submission(kind, &mut deliverable)
+                    .await?;
                 let authoritative = golish_agent_kit::harness::feature_flags::submit_preview_authoritative_context_enabled();
                 let ctx = match self.gate_context(kind, authoritative).await {
                     Ok(ctx) => ctx,
                     Err(reason) => {
-                        return Ok(json!({
-                            "status": "needs_fix",
-                            "reasons": [reason],
-                            "note": "the trusted current-wave context is invalid; repair/reset the wave before resubmitting."
-                        }));
+                        return Ok(Self::attach_submission_identity(
+                            json!({
+                                "status": "needs_fix",
+                                "reasons": [reason],
+                                "note": "the trusted current-wave context is invalid; repair/reset the wave before resubmitting."
+                            }),
+                            trusted_capture.as_ref(),
+                        ));
                     }
                 };
                 if spec.specialist.is_some() && extract_pass_token(&deliverable).is_some() {
-                    if let Ok(json_str) = serde_json::to_string(&deliverable) {
-                        *self.last_deliverable.write().await = Some(json_str);
+                    if trusted_capture.is_none() {
+                        if let Ok(json_str) = serde_json::to_string(&deliverable) {
+                            *self.last_deliverable.write().await = Some(json_str);
+                        }
                     }
                     let fabricated = self.fabricated_refs(&deliverable).await;
                     if fabricated.is_empty() {
-                        return Ok(json!({
-                            "status": "accepted",
-                            "note": "stage_run pass_token captured; the final fan-out closeout gate will recompute it from org_stage_completions."
-                        }));
+                        return Ok(Self::attach_submission_identity(
+                            json!({
+                                "status": "accepted",
+                                "note": "stage_run pass_token captured; the final fan-out closeout gate will recompute it from org_stage_completions."
+                            }),
+                            trusted_capture.as_ref(),
+                        ));
                     }
                     let available = self.available_real_ids().await;
-                    return Ok(json!({
-                        "status": "needs_fix",
-                        "reasons": [format!(
-                            "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
-                             The stage_run pass_token claim itself does not need evidence ids. Remove \
-                             the fabricated ids, or only keep ids you know are real. Available ids \
-                             for debugging: {available:?}."
-                        )],
-                        "fabricated_evidence_refs": fabricated,
-                        "available_evidence_ids": available,
-                        "note": "fix these and call submit_stage_deliverable again."
-                    }));
+                    return Ok(Self::attach_submission_identity(
+                        json!({
+                            "status": "needs_fix",
+                            "reasons": [format!(
+                                "cited evidence ids {fabricated:?} do not exist in the evidence ledger. \
+                                 The stage_run pass_token claim itself does not need evidence ids. Remove \
+                                 the fabricated ids, or only keep ids you know are real. Available ids \
+                                 for debugging: {available:?}."
+                            )],
+                            "fabricated_evidence_refs": fabricated,
+                            "available_evidence_ids": available,
+                            "note": "fix these and call submit_stage_deliverable again."
+                        }),
+                        trusted_capture.as_ref(),
+                    ));
                 }
                 let result =
                     validate_stage_gate_with_context(&deliverable, &spec, None, None, &ctx);
                 // Stash the canonical JSON regardless — the stage-close gate is
                 // authoritative; a structural block still informs the agent now.
-                if let Ok(json_str) = serde_json::to_string(&deliverable) {
-                    *self.last_deliverable.write().await = Some(json_str);
+                if trusted_capture.is_none() {
+                    if let Ok(json_str) = serde_json::to_string(&deliverable) {
+                        *self.last_deliverable.write().await = Some(json_str);
+                    }
                 }
                 if result.allowed {
                     if spec.expected_techniques.is_empty() && !deliverable.coverage.is_empty() {
                         let available = self.available_real_ids().await;
-                        return Ok(json!({
-                            "status": "needs_fix",
-                            "reasons": [
-                                "This stage declares NO expected techniques and runs no tools, so it has \
-                                 no coverage matrix. Resubmit with coverage: [] (remove the invented \
-                                 cells)."
-                            ],
-                            "available_evidence_ids": available,
-                            "note": "fix these and call submit_stage_deliverable again."
-                        }));
+                        return Ok(Self::attach_submission_identity(
+                            json!({
+                                "status": "needs_fix",
+                                "reasons": [
+                                    "This stage declares NO expected techniques and runs no tools, so it has \
+                                     no coverage matrix. Resubmit with coverage: [] (remove the invented \
+                                     cells)."
+                                ],
+                                "available_evidence_ids": available,
+                                "note": "fix these and call submit_stage_deliverable again."
+                            }),
+                            trusted_capture.as_ref(),
+                        ));
                     }
                     // P2 · validate-on-submit: structure passing is necessary but
                     // NOT sufficient. Cross-check evidence_refs against the real
@@ -1367,7 +1840,10 @@ impl Tool for SubmitStageDeliverableTool {
                                  and coverage cells, not `findings`."
                             ));
                         }
-                        return Ok(json!({ "status": "accepted", "note": note }));
+                        return Ok(Self::attach_submission_identity(
+                            json!({ "status": "accepted", "note": note }),
+                            trusted_capture.as_ref(),
+                        ));
                     }
                     // 乙 · fabricated ids are still rejected, but ids are not
                     // model-required fields. Prefer omission over another
@@ -1389,13 +1865,16 @@ impl Tool for SubmitStageDeliverableTool {
                              Never invent or copy placeholder ids."
                         )
                     };
-                    return Ok(json!({
-                        "status": "needs_fix",
-                        "reasons": [reason],
-                        "fabricated_evidence_refs": fabricated,
-                        "available_evidence_ids": available,
-                        "note": "fix these and call submit_stage_deliverable again."
-                    }));
+                    return Ok(Self::attach_submission_identity(
+                        json!({
+                            "status": "needs_fix",
+                            "reasons": [reason],
+                            "fabricated_evidence_refs": fabricated,
+                            "available_evidence_ids": available,
+                            "note": "fix these and call submit_stage_deliverable again."
+                        }),
+                        trusted_capture.as_ref(),
+                    ));
                 }
                 // Keep real ids available as debug context, but do not turn a
                 // structural block into an id-fill exercise. Missing coverage is
@@ -1429,21 +1908,41 @@ impl Tool for SubmitStageDeliverableTool {
                 if !coverage_gap_actions.is_empty() {
                     response["coverage_gap_actions"] = json!(coverage_gap_actions);
                 }
-                return Ok(response);
+                return Ok(Self::attach_submission_identity(
+                    response,
+                    trusted_capture.as_ref(),
+                ));
             }
         }
 
         // No active stage / spec unavailable: still stash; the gate hook decides.
-        if let Ok(json_str) = serde_json::to_string(&deliverable) {
-            *self.last_deliverable.write().await = Some(json_str);
+        if active.is_none() {
+            if self.runtime_memory_repo.is_some() {
+                return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                    code: "missing_active_stage",
+                }));
+            }
+            deliverable.stage_run_id = Uuid::new_v4();
         }
-        Ok(json!({ "status": "received" }))
+        if trusted_capture.is_none() {
+            if let Ok(json_str) = serde_json::to_string(&deliverable) {
+                *self.last_deliverable.write().await = Some(json_str);
+            }
+        }
+        Ok(Self::attach_submission_identity(
+            json!({ "status": "received" }),
+            trusted_capture.as_ref(),
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use golish_agent_kit::db_traits::{
+        CreateRuntimeOperation, CreatedRuntimeOperation, PersistedStageDeliverableSubmission,
+        ProjectScopeRegistration,
+    };
 
     type StageHandle = Arc<RwLock<Option<StageKind>>>;
     type SinkHandle = Arc<RwLock<Option<String>>>;
@@ -1470,6 +1969,202 @@ mod tests {
             "skipped_checks": [],
             "required_checks_done": []
         })
+    }
+
+    #[derive(Clone)]
+    struct TrustedSubmissionRepo {
+        contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract,
+        submission_id: Uuid,
+        writes: Arc<std::sync::Mutex<Vec<NewStageDeliverableSubmission>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl RuntimeMemoryRepository for TrustedSubmissionRepo {
+        async fn project_scope_register_first_open(
+            &self,
+            _canonical_path: &str,
+            _path_sha256: &str,
+        ) -> std::result::Result<ProjectScopeRegistration, RuntimeMemoryError> {
+            Err(RuntimeMemoryError::Unavailable)
+        }
+
+        async fn project_scope_rename(
+            &self,
+            _project_scope_id: Uuid,
+            _expected_old_path: &str,
+            _expected_row_version: i64,
+            _new_path: &str,
+            _new_path_sha256: &str,
+        ) -> std::result::Result<ProjectScopeRegistration, RuntimeMemoryError> {
+            Err(RuntimeMemoryError::Unavailable)
+        }
+
+        async fn create_runtime_operation(
+            &self,
+            _input: CreateRuntimeOperation,
+        ) -> std::result::Result<CreatedRuntimeOperation, RuntimeMemoryError> {
+            Err(RuntimeMemoryError::Unavailable)
+        }
+
+        async fn runtime_memory_contract_for_operation(
+            &self,
+            _operation_id: Uuid,
+        ) -> std::result::Result<
+            golish_agent_kit::runtime_memory::RuntimeMemoryContract,
+            RuntimeMemoryError,
+        > {
+            Ok(self.contract)
+        }
+
+        async fn insert_stage_deliverable_submission(
+            &self,
+            input: NewStageDeliverableSubmission,
+        ) -> std::result::Result<PersistedStageDeliverableSubmission, RuntimeMemoryError> {
+            self.writes
+                .lock()
+                .expect("trusted submission writes lock")
+                .push(input.clone());
+            Ok(PersistedStageDeliverableSubmission {
+                deliverable_submission_id: self.submission_id,
+                operation_id: input.operation_id,
+                stage_execution_id: input.stage_execution_id,
+                stage_run_unit_id: input.stage_run_unit_id,
+                worker_run_id: input.worker_run_id,
+                organization_id: input.organization_id,
+                tool_call_record_id: input.tool_call_record_id,
+                tool_request_id: input.tool_request_id,
+                stage_kind: input.stage_kind,
+                attempt_epoch: input.attempt_epoch,
+                lease_token: input.lease_token,
+                payload: serde_json::from_str(&input.canonical_deliverable_json)
+                    .expect("canonical submission JSON"),
+                payload_sha256: input.payload_sha256,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_uses_trusted_execution_and_persisted_tool_call_identity() {
+        let operation_id = Uuid::new_v4();
+        let stage_execution_id = Uuid::new_v4();
+        let tool_call_record_id = Uuid::new_v4();
+        let submission_id = Uuid::new_v4();
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let repo = Arc::new(TrustedSubmissionRepo {
+            contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract::DualWriteLegacyRead,
+            submission_id,
+            writes: Arc::clone(&writes),
+        });
+        let stage = Arc::new(RwLock::new(Some(StageKind::Scoping)));
+        let sink = Arc::new(RwLock::new(None));
+        let legacy_sink = sink.clone();
+        let operation_source = Arc::new(RwLock::new(Some(operation_id)));
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_operation_id_source(operation_source)
+            .with_runtime_memory_repository(repo);
+        let captured = tool.captured_submission_handle();
+        let context = golish_core::AgentToolContext {
+            request_id: "trusted-submit-request".to_string(),
+            tool_call_record_id: Some(tool_call_record_id),
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(stage_execution_id),
+            stage_run_unit_id: None,
+            organization_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+
+        let output = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.execute(valid_scoping_args(), Path::new(".")),
+        )
+        .await
+        .expect("trusted Scoping submission");
+        assert_eq!(output["status"], "accepted");
+        assert_eq!(
+            output["deliverable_submission_id"],
+            submission_id.to_string()
+        );
+        assert_eq!(output["stage_execution_id"], stage_execution_id.to_string());
+
+        {
+            let writes = writes.lock().expect("trusted submission writes");
+            assert_eq!(writes.len(), 1);
+            let write = &writes[0];
+            assert_eq!(write.operation_id, operation_id);
+            assert_eq!(write.stage_execution_id, stage_execution_id);
+            assert_eq!(write.tool_call_record_id, tool_call_record_id);
+            assert_eq!(write.tool_request_id, "trusted-submit-request");
+            assert!(write.canonical_deliverable_json.starts_with('{'));
+            assert!(!write.canonical_deliverable_json.contains(": "));
+            let canonical_payload =
+                serde_json::from_str::<Value>(&write.canonical_deliverable_json)
+                    .expect("canonical payload");
+            assert_eq!(
+                write.canonical_deliverable_json,
+                canonical_json(&canonical_payload),
+                "canonical payload must remain recursively key-sorted as fields evolve"
+            );
+            assert_eq!(
+                canonical_payload["stage_run_id"],
+                stage_execution_id.to_string()
+            );
+        }
+
+        let captured = captured
+            .read()
+            .await
+            .clone()
+            .expect("typed captured submission");
+        assert_eq!(captured.deliverable_submission_id, submission_id);
+        assert_eq!(captured.stage_execution_id, stage_execution_id);
+        assert_eq!(captured.stage_run_unit_id, None);
+        assert!(
+            legacy_sink.read().await.is_none(),
+            "V2 submission must not publish through the shared legacy sink"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_scoping_submission_may_start_without_a_unit() {
+        let operation_id = Uuid::new_v4();
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let repo = Arc::new(TrustedSubmissionRepo {
+            contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract::DualWriteV2Preferred,
+            submission_id: Uuid::new_v4(),
+            writes: Arc::clone(&writes),
+        });
+        let stage = Arc::new(RwLock::new(Some(StageKind::TargetIntel)));
+        let sink = Arc::new(RwLock::new(None));
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))))
+            .with_runtime_memory_repository(repo);
+        let context = golish_core::AgentToolContext {
+            request_id: "missing-unit".to_string(),
+            tool_call_record_id: Some(Uuid::new_v4()),
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: None,
+            organization_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let args = json!({
+            "stage_id": "target_intel",
+            "stage_run_id": Uuid::new_v4(),
+            "claims": []
+        });
+
+        let error =
+            golish_core::with_agent_tool_context(Some(context), tool.execute(args, Path::new(".")))
+                .await
+                .expect_err("post-Scoping submission without unit must fail closed");
+        assert!(error.to_string().contains("missing_stage_run_unit"));
+        assert!(writes.lock().expect("trusted submission writes").is_empty());
     }
 
     #[test]
@@ -1513,102 +2208,42 @@ mod tests {
         );
     }
 
-    /// P5.1 · a submitted deliverable carrying attack candidates persists them
-    /// through the evidence-repo seam (with a bound operation id). Recon stages
-    /// (no candidates) never touch the store.
-    #[tokio::test]
-    async fn submit_persists_attack_candidates_when_present() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        struct CandidateStoreMock {
-            persisted: Arc<AtomicUsize>,
-        }
-        #[async_trait::async_trait]
-        impl EvidenceLedgerQuery for CandidateStoreMock {
-            async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
-                Ok(HashSet::new())
-            }
-            async fn persist_attack_candidates(
-                &self,
-                _operation_id: &str,
-                _organization_id: Option<Uuid>,
-                candidates: &[AttackCandidate],
-            ) -> usize {
-                self.persisted.fetch_add(candidates.len(), Ordering::SeqCst);
-                candidates.len()
-            }
-        }
-
+    #[test]
+    fn candidate_decision_wire_excludes_trusted_identity_and_legacy_candidate_write() {
         let (stage, sink) = handles();
-        let persisted = Arc::new(AtomicUsize::new(0));
-        let op_src: Arc<RwLock<Option<Uuid>>> = Arc::new(RwLock::new(Some(Uuid::new_v4())));
-        let tool = SubmitStageDeliverableTool::new(stage, sink)
-            .with_evidence_repo(Arc::new(CandidateStoreMock {
-                persisted: Arc::clone(&persisted),
-            }))
-            .with_operation_id_source(op_src);
-
-        let args = json!({
-            "stage_id": "attack_candidate",
-            "stage_run_id": "3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
-            "claims": [],
-            "evidence_refs": [],
-            "findings": [],
-            "candidates": [{
-                "candidate_id": "3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
-                "target": "api.example.com",
-                "hypothesis": "IDOR on /orders/{id}",
-                "rationale": "sequential ids observed"
-            }]
-        });
-        let _ = tool.execute(args, Path::new(".")).await;
+        let schema = SubmitStageDeliverableTool::new(stage, sink).parameters();
+        assert!(schema["properties"].get("candidates").is_none());
+        assert_eq!(schema["properties"]["candidate_decisions"]["maxItems"], 100);
         assert_eq!(
-            persisted.load(Ordering::SeqCst),
-            1,
-            "one candidate must be persisted through the store seam"
+            schema["properties"]["candidate_decisions"]["items"]["additionalProperties"],
+            false
         );
-    }
-
-    /// A deliverable with no candidates (e.g. a recon stage) must not invoke the
-    /// candidate store at all — zero churn for the four info-gathering stages.
-    #[tokio::test]
-    async fn submit_without_candidates_skips_the_store() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        struct CountingStore {
-            calls: Arc<AtomicUsize>,
-        }
-        #[async_trait::async_trait]
-        impl EvidenceLedgerQuery for CountingStore {
-            async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
-                Ok(HashSet::new())
-            }
-            async fn persist_attack_candidates(
-                &self,
-                _operation_id: &str,
-                _organization_id: Option<Uuid>,
-                _candidates: &[AttackCandidate],
-            ) -> usize {
-                self.calls.fetch_add(1, Ordering::SeqCst);
-                0
-            }
-        }
-
-        let (stage, sink) = handles();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let op_src: Arc<RwLock<Option<Uuid>>> = Arc::new(RwLock::new(Some(Uuid::new_v4())));
-        let tool = SubmitStageDeliverableTool::new(stage, sink)
-            .with_evidence_repo(Arc::new(CountingStore {
-                calls: Arc::clone(&calls),
-            }))
-            .with_operation_id_source(op_src);
-
-        let _ = tool.execute(valid_scoping_args(), Path::new(".")).await;
+        let properties = &schema["properties"]["candidate_decisions"]["items"]["properties"];
+        assert_eq!(properties["work_item_key"]["maxLength"], 256);
+        assert_eq!(properties["hypothesis"]["maxLength"], 4096);
+        assert_eq!(properties["rationale"]["maxLength"], 8192);
+        assert_eq!(properties["evidence_refs"]["maxItems"], 64);
+        assert_eq!(properties["evidence_refs"]["uniqueItems"], true);
         assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "no candidates ⇒ the candidate store is never called"
+            properties["no_candidate_reason_code"]["pattern"],
+            "^[a-z0-9_]+$"
         );
+        for forbidden in [
+            "operation_id",
+            "scope_snapshot_id",
+            "organization_id",
+            "wave_run_id",
+            "wave_unit_id",
+            "stage_execution_id",
+            "stage_run_unit_id",
+            "deliverable_submission_id",
+            "execution_plan",
+        ] {
+            assert!(
+                properties.get(forbidden).is_none(),
+                "forbidden wire field {forbidden}"
+            );
+        }
     }
 
     // §8.1 — prose / malformed args cannot be "described": they fail to parse
@@ -2014,6 +2649,231 @@ mod tests {
         }
     }
 
+    struct VerificationTruthMock {
+        truth: Option<golish_agent_kit::harness::attack_execution::VerificationTruthSet>,
+    }
+
+    struct ReportingTruthMock {
+        truth: Option<golish_agent_kit::harness::ReportingGateTruth>,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for VerificationTruthMock {
+        async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(HashSet::new())
+        }
+
+        async fn verification_truth_for_operation(
+            &self,
+            _operation_id: Uuid,
+        ) -> Result<Option<golish_agent_kit::harness::attack_execution::VerificationTruthSet>>
+        {
+            Ok(self.truth.clone())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for ReportingTruthMock {
+        async fn existing_evidence_ids(&self, _ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(HashSet::new())
+        }
+
+        async fn reporting_truth_for_operation(
+            &self,
+            _operation_id: Uuid,
+        ) -> Result<Option<golish_agent_kit::harness::ReportingGateTruth>> {
+            Ok(self.truth.clone())
+        }
+    }
+
+    fn valid_reporting_truth(operation_id: Uuid) -> golish_agent_kit::harness::ReportingGateTruth {
+        let revision_id = Uuid::new_v4();
+        golish_agent_kit::harness::ReportingGateTruth {
+            operation_id,
+            report_id: Uuid::new_v4(),
+            current_revision_id: revision_id,
+            revision_id,
+            validation_status: "validated".to_string(),
+            publication_status: "unpublished".to_string(),
+            stored_source_set_hash: "a".repeat(64),
+            current_source_set_hash: "a".repeat(64),
+            source_snapshot_exact: true,
+            claims_citations_valid: true,
+            validation_attestation_valid: true,
+            cleanup_closeout_valid: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn reporting_preview_carries_current_db_truth() {
+        let operation_id = Uuid::new_v4();
+        let truth = valid_reporting_truth(operation_id);
+        let (stage, sink) = handles();
+        let tool = SubmitStageDeliverableTool::new(stage, sink).with_evidence_repo(Arc::new(
+            ReportingTruthMock {
+                truth: Some(truth.clone()),
+            },
+        ));
+        let context = golish_core::AgentToolContext {
+            request_id: "reporting-preview".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: None,
+            organization_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+
+        let gate_context = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.gate_context(StageKind::Reporting, true),
+        )
+        .await
+        .expect("reporting DB truth loads");
+        assert_eq!(gate_context.reporting_truth, Some(truth));
+    }
+
+    #[tokio::test]
+    async fn reporting_preview_rejects_foreign_operation_truth() {
+        let operation_id = Uuid::new_v4();
+        let (stage, sink) = handles();
+        let tool = SubmitStageDeliverableTool::new(stage, sink).with_evidence_repo(Arc::new(
+            ReportingTruthMock {
+                truth: Some(valid_reporting_truth(Uuid::new_v4())),
+            },
+        ));
+        let context = golish_core::AgentToolContext {
+            request_id: "reporting-preview-foreign".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: None,
+            organization_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+
+        let error = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.gate_context(StageKind::Reporting, true),
+        )
+        .await
+        .expect_err("foreign Reporting truth must fail closed");
+        assert!(error.contains("foreign operation"), "error={error}");
+    }
+
+    #[tokio::test]
+    async fn verification_preview_marks_v2_empty_snapshot_as_required_truth() {
+        let operation_id = Uuid::new_v4();
+        let (stage, sink) = handles();
+        let tool = SubmitStageDeliverableTool::new(stage, sink).with_evidence_repo(Arc::new(
+            VerificationTruthMock {
+                truth: Some(
+                    golish_agent_kit::harness::attack_execution::VerificationTruthSet {
+                        authority: golish_agent_kit::harness::attack_execution::VerificationTruthAuthority {
+                            operation_id,
+                            scope_snapshot_id: Uuid::new_v4(),
+                            wave_run_id: Uuid::new_v4(),
+                            expected_units: vec![golish_agent_kit::harness::attack_execution::VerificationUnitAuthority {
+                                wave_unit_id: Uuid::new_v4(),
+                                organization_id: Uuid::new_v4(),
+                            }],
+                        },
+                        snapshots: Vec::new(),
+                    },
+                ),
+            },
+        ));
+        let context = golish_core::AgentToolContext {
+            request_id: "verification-preview".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: None,
+            organization_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let gate_context = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.gate_context(StageKind::Verification, true),
+        )
+        .await
+        .expect("V2 query succeeded even though the exact snapshot set is empty");
+        assert!(gate_context.verification_truth_required);
+        assert_eq!(
+            gate_context
+                .verification_truth_snapshots
+                .as_ref()
+                .map(|truth| truth.snapshots.len()),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn verification_preview_rejects_foreign_operation_snapshot() {
+        use golish_agent_kit::harness::attack_execution::VerificationTruthSnapshot;
+
+        let operation_id = Uuid::new_v4();
+        let foreign = VerificationTruthSnapshot {
+            operation_id: Uuid::new_v4(),
+            scope_snapshot_id: Uuid::new_v4(),
+            wave_run_id: Uuid::new_v4(),
+            wave_unit_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            review_closed: true,
+            pending_work_items: 0,
+            approved_ever: 0,
+            attempts: Vec::new(),
+            residual_risks: Vec::new(),
+        };
+        let (stage, sink) = handles();
+        let tool = SubmitStageDeliverableTool::new(stage, sink).with_evidence_repo(Arc::new(
+            VerificationTruthMock {
+                truth: Some(
+                    golish_agent_kit::harness::attack_execution::VerificationTruthSet {
+                        authority: golish_agent_kit::harness::attack_execution::VerificationTruthAuthority {
+                            operation_id: foreign.operation_id,
+                            scope_snapshot_id: foreign.scope_snapshot_id,
+                            wave_run_id: foreign.wave_run_id,
+                            expected_units: vec![golish_agent_kit::harness::attack_execution::VerificationUnitAuthority {
+                                wave_unit_id: foreign.wave_unit_id,
+                                organization_id: foreign.organization_id,
+                            }],
+                        },
+                        snapshots: vec![foreign],
+                    },
+                ),
+            },
+        ));
+        let context = golish_core::AgentToolContext {
+            request_id: "verification-foreign-preview".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: None,
+            organization_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let error = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.gate_context(StageKind::Verification, true),
+        )
+        .await
+        .expect_err("foreign DB truth must fail closed before Gate evaluation");
+        assert!(error.contains("foreign operation snapshot"));
+    }
+
     #[test]
     fn backfills_required_checks_done_from_cited_http_probe_evidence() {
         let mut spec =
@@ -2029,6 +2889,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         let added = backfill_required_checks_done_from_kinds(
             &mut deliverable,
@@ -2071,6 +2932,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         let added = backfill_required_checks_done_from_kinds(
             &mut deliverable,
@@ -3480,6 +4342,7 @@ mod tests {
             required_checks_done: Vec::new(),
             coverage: Vec::new(),
             candidates: Vec::new(),
+            candidate_decisions: Vec::new(),
         };
         let spec = load_embedded_stage_spec(StageKind::Enumeration).unwrap();
         let result = validate_stage_gate_with_context(&deliverable, &spec, None, None, &ctx);
@@ -3653,6 +4516,38 @@ mod tests {
     // 2026-06-15-recon-stage-findings-suppression: a vulnerability stage
     // (vuln_triage, findings_allowed=true) RETAINS findings — drop only applies to
     // recon stages. Asserted on the stashed deliverable regardless of gate outcome.
+    #[test]
+    fn attack_stage_findings_policy_is_persisted_contract_aware() {
+        use golish_core::AttackExecutionContract::{
+            DualWriteReadLegacy, DualWriteReadV2Fallback, Legacy, V2Only,
+        };
+
+        for contract in [Legacy, DualWriteReadLegacy, DualWriteReadV2Fallback] {
+            assert!(findings_allowed_for_attack_contract(
+                StageKind::VulnTriage,
+                true,
+                contract
+            ));
+            assert!(findings_allowed_for_attack_contract(
+                StageKind::Verification,
+                true,
+                contract
+            ));
+        }
+        for stage in [
+            StageKind::VulnTriage,
+            StageKind::AttackCandidate,
+            StageKind::Verification,
+        ] {
+            assert!(!findings_allowed_for_attack_contract(stage, true, V2Only));
+        }
+        assert!(findings_allowed_for_attack_contract(
+            StageKind::Scoping,
+            true,
+            V2Only
+        ));
+    }
+
     #[tokio::test]
     async fn vuln_stage_keeps_findings() {
         let (stage, sink) = handles();

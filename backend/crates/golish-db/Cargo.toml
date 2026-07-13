@@ -8,6 +8,8 @@ description = "PostgreSQL-backed persistence layer for Golish platform"
 
 [dependencies]
 golish-core = { workspace = true }
+golish-memory-domain = { workspace = true }
+golish-reporting-domain = { workspace = true }
 golish-platform = { workspace = true }
 golish-pentest-domain = { workspace = true }
 

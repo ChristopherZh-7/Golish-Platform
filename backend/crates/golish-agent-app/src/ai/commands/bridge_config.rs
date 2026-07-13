@@ -3021,20 +3021,31 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AgentState) {
         std::sync::Arc::new(crate::ai::tracking_bridge::PgTrackingBackend::new(
             state.db_pool.clone(),
         ));
+    let repo_provider = std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+        state.db_pool.clone(),
+    ));
+    let runtime_memory: std::sync::Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository> =
+        repo_provider.clone();
     let chain_persistence: std::sync::Arc<dyn golish_sub_agents::SubAgentChainPersistence> =
-        std::sync::Arc::new(crate::ai::tracking_bridge::PgChainPersistence::new(
-            state.db_pool.clone(),
-        ));
+        std::sync::Arc::new(
+            crate::ai::tracking_bridge::PgChainPersistence::new(state.db_pool.clone())
+                .with_runtime_memory_repository(runtime_memory.clone()),
+        );
     let ready_gate = crate::ai::tracking_bridge::CoreDbReadyGate(state.db_ready.clone());
     bridge.set_db_backend(tracking_backend, ready_gate, chain_persistence);
+    bridge.set_runtime_memory_repository(runtime_memory);
 
     let graph_backend = std::sync::Arc::new(crate::ai::graph_bridge::GraphClientBackend::new(
         state.db_pool.clone(),
     ));
-    let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> =
-        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
-            state.db_pool.clone(),
-        ));
+    let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> = repo_provider;
+    let knowledge_context: std::sync::Arc<dyn golish_memory_app::ContextPackProvider> =
+        std::sync::Arc::new(
+            crate::ai::db_bridge::knowledge_context::PgKnowledgeContextAdapter::new(
+                state.db_pool.clone(),
+            )
+            .expect("fixed local-only ContextPack adapter configuration is valid"),
+        );
 
     bridge.apply_backends(golish_agent_bridge::BridgeBackends {
         indexer: Some(state.indexer_state.clone()),
@@ -3042,6 +3053,8 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AgentState) {
         settings: Some(state.settings_manager.clone()),
         graph: Some(graph_backend),
         db_repo: Some(db_repo),
+        knowledge_memory: Some(state.knowledge_memory.clone()),
+        knowledge_context: Some(knowledge_context),
         ..Default::default()
     });
 }
@@ -3202,15 +3215,26 @@ async fn register_pentest_tools(
         // P2 · give the tool a read-only evidence-ledger handle so it can run
         // validate-on-submit (reject fabricated evidence_refs immediately rather
         // than returning a misleading `accepted`).
+        let provider = std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+            state.db_pool.clone(),
+        ));
         let evidence_repo: std::sync::Arc<dyn crate::ai::harness_submit_tool::EvidenceLedgerQuery> =
-            std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
-                state.db_pool.clone(),
-            ));
+            provider.clone();
+        let runtime_memory_repo: std::sync::Arc<
+            dyn golish_agent_kit::db_traits::RuntimeMemoryRepository,
+        > = provider.clone();
+        let candidate_submit_tool = std::sync::Arc::new(
+            crate::ai::candidate_submit_tool::SubmitCandidateAttemptTool::new(
+                runtime_memory_repo.clone(),
+            ),
+        );
         let mut submit_tool = crate::ai::harness_submit_tool::SubmitStageDeliverableTool::new(
             bridge.harness_active_stage_handle(),
             bridge.harness_last_deliverable_handle(),
         )
         .with_evidence_repo(evidence_repo)
+        .with_runtime_memory_repository(runtime_memory_repo)
+        .with_captured_submission_sink(bridge.harness_captured_submission_handle())
         // Share the active engagement-org id so the submit-time gate preview also
         // projects the org-keyed DB business-table truth (ASN/CT/OSINT) — not just
         // the session-keyed command-path facts (DNS/WHOIS/SUBDOMAIN). Without this
@@ -3238,6 +3262,8 @@ async fn register_pentest_tools(
         let mut registry = bridge.tool_registry().write().await;
         tracing::info!("[harness] Registered tool: submit_stage_deliverable");
         registry.register_tool(tool);
+        tracing::info!("[harness] Registered tool: submit_candidate_attempt");
+        registry.register_tool(candidate_submit_tool);
     }
 
     // Observability (design 2026-06-05): self-service run introspection. Lets the
@@ -3920,5 +3946,17 @@ mod tests {
             background_evidence_tool_name("custom-tool --flag"),
             "custom-tool"
         );
+    }
+
+    #[test]
+    fn per_session_bridge_config_only_injects_memory_handle() {
+        let source = include_str!("bridge_config.rs");
+        assert!(source.contains("knowledge_memory: Some(state.knowledge_memory.clone())"));
+        let forbidden_start = ["memory_supervisor", ".start("].concat();
+        let forbidden_new = ["KnowledgeMemoryRuntime", "::new("].concat();
+        let forbidden_settings = ["KnowledgeMemoryRuntime", "::from_settings("].concat();
+        assert!(!source.contains(&forbidden_start));
+        assert!(!source.contains(&forbidden_new));
+        assert!(!source.contains(&forbidden_settings));
     }
 }

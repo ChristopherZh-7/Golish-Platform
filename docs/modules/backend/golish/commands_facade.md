@@ -22,6 +22,8 @@
 | 域文件（18 个） | 说明 |
 |---|---|
 | `ai` / `pentest` / `vuln_intel` / `findings` / `evidence` / `methodology`（实为各处） | agent/pentest/vuln 命令 |
+| `attack` | Candidate review list/decide/resume 与 Attempt list 四个 durable 命令 |
+| `reporting` | DB-authoritative build/read/history/artifact 与 explicit final publication 命令 |
 | `asset_intel` / `intel_providers` / `integrations` / `organization_recon` | recon 命令 |
 | `vault` / `wiki` / `sidecar` / `settings` / `indexer` / `mcp` / `git_pty` / `workspace` | 平台/工具命令 |
 
@@ -40,6 +42,7 @@
 
 - **AGENTS.md §2.2 / I4**：加命令只动两个文件（命令 home 模块 + 对应 facade 文件）；**禁止**直接在 `commands_registry.rs` 加 `use crate::foo::commands::*` glob。
 - facade glob 必须能解析到 `#[tauri::command]` 生成的 `__cmd__$name` 宏（macro_export 到 crate 根）。
+- authoritative temporal graph 命令当前经 `ai.rs` 暴露：`knowledge_graph_query_scoped` / `knowledge_graph_rebuild_scope`；不要与 legacy `kg_*` 混为同一授权语义。
 
 ## 测试入口
 

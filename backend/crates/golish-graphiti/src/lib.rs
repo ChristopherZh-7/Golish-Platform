@@ -31,8 +31,17 @@
 
 pub mod client;
 pub mod error;
+pub mod temporal_client;
 pub mod types;
 
 pub use client::GraphClient;
 pub use error::GraphError;
+pub use temporal_client::{
+    identity_hash, ApplyProjectionResult, GraphGeneration, GraphScopeKey, GraphVisibility,
+    ProjectionWriteDisposition, RebuildAttestation, ScopedGraphQuery, TemporalEntityProjection,
+    TemporalEntityType, TemporalGraphClient, TemporalGraphFact, TemporalGraphInvalidation,
+    TemporalGraphProjection, TemporalGraphQueryResult, TemporalGraphRelationFact,
+    TemporalLineageFact, TemporalLineageProjection, TemporalRelationLineageProjection,
+    TemporalRelationProjection, TemporalRelationType, TEMPORAL_GRAPH_SCHEMA_V1,
+};
 pub use types::{EntityType, GraphEntity, GraphQueryResult, GraphRelation, RelationType};

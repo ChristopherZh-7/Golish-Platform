@@ -23,6 +23,8 @@ use golish_agent_kit::tool_executors::{
 mod sub_agent_call;
 use self::sub_agent_call::execute_sub_agent_call;
 
+pub mod candidate_verification;
+
 // `pub(crate)` so `execution_mode::selection_apply` can pull the tool definition
 // (co-located with its handler) when exposing `stage_run` to the primary agent.
 pub(crate) mod stage_run_call;

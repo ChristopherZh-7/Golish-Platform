@@ -298,15 +298,32 @@ pub async fn sensitive_scan_apply_verdicts(
             if verdict == "true_positive" {
                 tp_count += 1;
                 let title = format!("Sensitive file: {}", row.probe_path);
-                let _ = sqlx::query(
-                    "INSERT INTO findings (title, sev, url, target, description, tool, project_path) \
-                     VALUES ($1, 'medium'::severity, $2, $3, $4, 'sensitive_scan', $5) \
-                     ON CONFLICT DO NOTHING",
+                let _ = golish_db::repo::findings::insert_legacy_with_executor(
+                    pool,
+                    golish_pentest_domain::FindingWriteContext::LegacyNonHarness,
+                    &golish_db::repo::findings::LegacyFindingWrite {
+                        id: Uuid::new_v4(),
+                        title,
+                        severity: "medium".to_string(),
+                        cvss: None,
+                        url: row.full_url.clone(),
+                        target: row.base_url.clone(),
+                        target_id: None,
+                        description: format!(
+                            "AI analysis: {}. Status: {}, Size: {}",
+                            reason, row.status_code, row.content_length
+                        ),
+                        steps: String::new(),
+                        remediation: String::new(),
+                        evidence: serde_json::json!([]),
+                        tool: "sensitive_scan".to_string(),
+                        template: String::new(),
+                        refs: serde_json::json!([]),
+                        source: "sensitive_scan".to_string(),
+                        project_path: project_path.clone(),
+                    },
                 )
-                .bind(&title).bind(&row.full_url).bind(&row.base_url)
-                .bind(format!("AI analysis: {}. Status: {}, Size: {}", reason, row.status_code, row.content_length))
-                .bind(project_path.as_deref())
-                .execute(pool).await;
+                .await;
             }
         }
     }

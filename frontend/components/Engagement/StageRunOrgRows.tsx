@@ -34,6 +34,8 @@ export type TechniqueState = "found" | "checked_empty" | "blocked" | "not_applic
 
 export interface StageRunRow {
   id: string;
+  /** Trusted operation identity from the harness trace; IPC reauthorizes it. */
+  operationId?: string;
   name: string;
   ownershipPercent: number | null;
   status: StageRunStatus;

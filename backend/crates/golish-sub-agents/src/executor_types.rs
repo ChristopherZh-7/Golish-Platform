@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,6 +50,97 @@ pub enum SubAgentChainError {
         chain_id: Option<uuid::Uuid>,
         reason: String,
     },
+    #[error("prebound stage worker {worker_run_id} is unavailable: {reason}")]
+    BoundWorkerUnavailable {
+        worker_run_id: uuid::Uuid,
+        reason: String,
+    },
+}
+
+/// Trusted V2 stage-worker chain identity returned only after the atomic
+/// claim-and-bind transaction commits.
+///
+/// The executor never derives any field here from model-visible arguments. The
+/// shared checkpoint counter is the CAS witness for chain checkpoints; the
+/// lease-loss flag is set by the runtime heartbeat/fencing supervisor and is
+/// checked before subsequent provider/tool work.
+#[derive(Clone)]
+pub struct BoundWorkerChainContext {
+    pub operation_id: uuid::Uuid,
+    pub stage_execution_id: uuid::Uuid,
+    pub organization_id: uuid::Uuid,
+    pub worker_lease: golish_core::WorkerLeaseContext,
+    /// Opaque Candidate identity for a prebound verifier WorkerRun. Generic
+    /// stage workers keep this `None`.
+    pub candidate_attempt: Option<golish_core::CandidateAttemptContextRef>,
+    pub chain_id: uuid::Uuid,
+    pub session_id: uuid::Uuid,
+    pub agent_type: String,
+    pub initial_chain: serde_json::Value,
+    /// `true` only for a freshly claimed worker whose objective was included in
+    /// the atomic initial chain. Resumed workers append the new objective after
+    /// loading their prior checkpoint.
+    pub initial_prompt_already_checkpointed: bool,
+    pub checkpoint_version: Arc<AtomicI64>,
+    pub checkpoint_body: Arc<std::sync::RwLock<serde_json::Value>>,
+    pub lease_lost: Arc<AtomicBool>,
+    /// Serializes heartbeat/checkpoint/tool-fence mutations so a legitimate
+    /// checkpoint-version advance cannot race a heartbeat using the prior CAS
+    /// witness and be misclassified as lease loss.
+    pub mutation_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Host-owned lifecycle fence for every regular worker tool call. V2
+    /// executors fail closed when the binding exists but this hook is absent.
+    pub tool_lifecycle: Option<Arc<dyn BoundWorkerToolLifecycle>>,
+}
+
+impl BoundWorkerChainContext {
+    pub fn current_checkpoint_version(&self) -> i64 {
+        self.checkpoint_version.load(Ordering::SeqCst)
+    }
+
+    pub fn lease_is_lost(&self) -> bool {
+        self.lease_lost.load(Ordering::SeqCst)
+    }
+
+    pub fn mark_lease_lost(&self) {
+        self.lease_lost.store(true, Ordering::SeqCst);
+    }
+
+    pub fn current_checkpoint_body(&self) -> serde_json::Value {
+        self.checkpoint_body
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn publish_checkpoint_body(&self, checkpoint: serde_json::Value) {
+        *self
+            .checkpoint_body
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = checkpoint;
+    }
+}
+
+/// Awaited tool-call lifecycle for a claimed V2 worker.
+///
+/// `begin` must durably create the generic tool-call record before setting the
+/// worker's active-tool marker. `finish` must clear that marker under the same
+/// lease/version fence before the result is allowed to land in model history.
+#[async_trait::async_trait]
+pub trait BoundWorkerToolLifecycle: Send + Sync {
+    async fn begin(
+        &self,
+        request_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<uuid::Uuid>;
+
+    async fn finish(
+        &self,
+        tool_call_record_id: uuid::Uuid,
+        success: bool,
+        result: &serde_json::Value,
+    ) -> anyhow::Result<()>;
 }
 
 /// Trait for providing tool definitions to the sub-agent executor.
@@ -150,6 +241,27 @@ pub trait SubAgentChainPersistence: Send + Sync {
         _agent_type: &str,
     ) -> anyhow::Result<Option<serde_json::Value>> {
         Ok(None)
+    }
+
+    /// Validate and load the checkpoint for a worker whose message-chain row
+    /// was already bound by the runtime-memory claim transaction.
+    async fn chain_load_bound_worker(
+        &self,
+        _bound: &BoundWorkerChainContext,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
+
+    /// Atomically checkpoint a prebound V2 worker under its exact lease/version
+    /// fence. Implementations must not fall back to a raw message-chain update.
+    async fn chain_checkpoint_bound_worker(
+        &self,
+        _bound: &BoundWorkerChainContext,
+        _chain_id: uuid::Uuid,
+        _chain_json: &serde_json::Value,
+        _expected_checkpoint_version: i64,
+    ) -> anyhow::Result<i64> {
+        anyhow::bail!("bound worker checkpoint persistence is unavailable")
     }
 
     async fn load_prompt_template_overrides(&self) -> Vec<(String, String)>;
@@ -1627,6 +1739,10 @@ pub struct SubAgentExecutorContext<'a> {
     /// Chain persistence backend for saving/restoring sub-agent conversation
     /// chains (PentAGI-style). Replaces the raw `sqlx::PgPool`.
     pub chain_persistence: Option<&'a Arc<dyn SubAgentChainPersistence>>,
+    /// Trusted V2 worker/chain binding. When present the executor must load and
+    /// checkpoint this exact chain; ordinary `chain_create`/latest-resume paths
+    /// are forbidden.
+    pub bound_worker_chain: Option<BoundWorkerChainContext>,
     /// Sub-agent registry for nested delegation (PentAGI hierarchical pattern).
     /// When set, agents with `delegatable_agents` can invoke other sub-agents.
     pub sub_agent_registry: Option<&'a Arc<RwLock<crate::definition::SubAgentRegistry>>>,

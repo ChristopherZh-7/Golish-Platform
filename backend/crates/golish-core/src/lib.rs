@@ -18,6 +18,7 @@
 pub mod agent_mode;
 pub mod agent_session;
 pub mod api_request_stats;
+pub mod attack_execution;
 pub mod events;
 pub mod message;
 pub mod runtime;
@@ -49,10 +50,14 @@ pub use agent_mode::AgentMode;
 pub use agent_session::{
     current_agent_session, current_agent_tool_context, current_agent_tool_output_sender,
     emit_current_agent_tool_output_chunk, with_agent_session, with_agent_tool_context,
-    with_agent_tool_output_sender, AgentToolContext,
+    with_agent_tool_output_sender, AgentToolContext, WorkerLeaseContext,
 };
 pub use api_request_stats::{
     ApiRequestStats, ApiRequestStatsSnapshot, ProviderRequestStatsSnapshot,
+};
+pub use attack_execution::{
+    check_candidate_tool_boundary, AttackExecutionContract, CandidateAttemptContextRef,
+    CandidateToolBoundaryError,
 };
 pub use event_emitter::{emit_opt, EventEmitter, EventEmitterHandle, NullEmitter};
 pub use events::*; // Re-export all event types

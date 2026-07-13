@@ -1,18 +1,29 @@
 {
   "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: objective_simulation. L5 red-team objective simulation (no real damage). Approval-gated. Phase A.",
+  "$comment": "C6/P6b: prepare cleanup-bound side effects atomically and execute only persisted, exact, unexpired operator approvals through a typed adapter.",
 
   "id": "objective_simulation",
   "kind": "objective_simulation",
   "risk_level": "critical",
+  "specialist": "post_exploit_operator",
 
   "requires_stages": ["objective_pathing"],
   "allowed_next_stages": ["cleanup"],
 
-  "allowed_tool_types": ["post-exploit"],
+  "allowed_tool_types": ["post_exploit_execute_action"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
+
+  "findings_allowed": false,
+
+  "post_exploit_policy": {
+    "p6a_only": false,
+    "allowed_side_effect_classes": ["none", "remote_state_mutation", "local_artifact_mutation"],
+    "requires_cleanup_kernel_for_side_effects": true,
+    "work_item_kind": "attack_path",
+    "canonical_rows": ["attack_paths", "post_exploit_actions", "objective_attempts", "audit_log", "knowledge_outbox_events"]
+  },
 
   "gate_rules": [
     {
@@ -29,13 +40,11 @@
     }
   ],
 
-  "min_invocations": {},
+  "min_invocations": {"post_exploit_execute_action": 1},
 
   "max_other_skips": 1,
 
-  "human_approval": {
-    "required_before": ["post_exploit", "exploit_validation"]
-  },
+  "human_approval": { "required_before": ["post_exploit_execute_action"] },
 
   "agent_continuity": "multi_session_relay",
 

@@ -28,10 +28,47 @@ pub(super) fn normalize_candidate(mut candidate: OrganizationCandidate) -> Organ
     if candidate.source.trim().is_empty() {
         candidate.source = "manual".to_string();
     }
+    if candidate.ownership_percent.is_none() {
+        candidate.ownership_percent = candidate
+            .evidence
+            .get("raw")
+            .and_then(|raw| raw.get("scale"))
+            .or_else(|| candidate.evidence.get("ownershipPercent"))
+            .or_else(|| candidate.evidence.get("ownership_percent"))
+            .and_then(|value| match value {
+                Value::String(value) => Some(value.trim().to_string()),
+                Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            })
+            .filter(|value| !value.is_empty());
+    }
     if candidate.created_at == 0 {
         candidate.created_at = now_ms();
     }
     candidate
+}
+
+/// Stable candidate projection for a child organization that already exists.
+/// The real organization id is explicit so a REUSE review never relies on the
+/// editable organization name to recover identity.
+pub(super) fn candidate_for_existing_child(
+    organization_id: Uuid,
+    name: &str,
+    created_at: u64,
+) -> OrganizationCandidate {
+    OrganizationCandidate {
+        id: format!("existing-org:{organization_id}"),
+        kind: OrganizationCandidateKind::Organization,
+        label: name.to_string(),
+        value: name.to_string(),
+        organization_id: Some(organization_id.to_string()),
+        ownership_percent: None,
+        source: "existing_org".to_string(),
+        confidence: 1.0,
+        status: "existing".to_string(),
+        evidence: json!({"organizationId": organization_id.to_string()}),
+        created_at,
+    }
 }
 
 pub(super) fn read_candidates_from_intel(intel: &Value) -> OrganizationCandidates {

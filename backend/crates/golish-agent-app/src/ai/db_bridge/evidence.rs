@@ -926,6 +926,24 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         self.recent_evidence_ids_impl(session_id, limit).await
     }
 
+    async fn cleanup_closeout_gate(
+        &self,
+        operation_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+    ) -> anyhow::Result<golish_agent_kit::db_traits::CleanupCloseoutGateSnapshot> {
+        use golish_cleanup_app::CleanupCloseoutPort;
+        let gate = golish_cleanup_app::PgCleanupRepository::new(self.pool.as_ref().clone())
+            .closeout_counts(operation_id, organization_id)
+            .await
+            .map_err(anyhow::Error::new)?;
+        Ok(golish_agent_kit::db_traits::CleanupCloseoutGateSnapshot {
+            missing_obligation_count: gate.missing_obligation_count,
+            nonterminal_obligation_count: gate.nonterminal_obligation_count,
+            undisclosed_residual_count: gate.undisclosed_residual_count,
+            invalid_terminal_truth_count: gate.invalid_terminal_truth_count,
+        })
+    }
+
     async fn evidence_kinds_for(
         &self,
         ids: &[i64],
@@ -1230,60 +1248,39 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             .await
     }
 
-    /// P5.1 (设计 2026-07-02-attack-stage §3.7): upsert the deliverable's attack
-    /// hypotheses into `attack_candidates`. Maps the harness [`AttackCandidate`]
-    /// DTO → `golish-db` write row (priority/disposition enums → their snake_case
-    /// db strings, `wave` u32→i32), then `upsert_by_hash` (idempotent dedupe on
-    /// `(operation_id, target, hypothesis_hash)`, org-isolated). A per-row failure
-    /// is non-fatal (warn + skip) so a DB blip never wedges the submit path.
-    async fn persist_attack_candidates(
+    async fn candidate_manifest_work_item_keys(
         &self,
-        operation_id: &str,
-        organization_id: Option<uuid::Uuid>,
-        candidates: &[golish_agent_kit::harness::AttackCandidate],
-    ) -> usize {
-        use golish_agent_kit::harness::{CandidateDisposition, CandidatePriority};
-        let priority_str = |p: &CandidatePriority| match p {
-            CandidatePriority::High => "high",
-            CandidatePriority::Medium => "medium",
-            CandidatePriority::Low => "low",
-        };
-        let disposition_str = |d: &CandidateDisposition| match d {
-            CandidateDisposition::Proposed => "proposed",
-            CandidateDisposition::Approved => "approved",
-            CandidateDisposition::Rejected => "rejected",
-            CandidateDisposition::Verified => "verified",
-            CandidateDisposition::Refuted => "refuted",
-            CandidateDisposition::Blocked => "blocked",
-        };
-        let mut stored = 0usize;
-        for c in candidates {
-            let write = golish_db::repo::attack_candidates::AttackCandidateWrite {
-                candidate_id: c.candidate_id,
-                operation_id: operation_id.to_string(),
+        operation_id: uuid::Uuid,
+        stage_run_unit_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(self
+            .attack_v2_candidate_manifest_for_unit_impl(
+                operation_id,
+                stage_run_unit_id,
                 organization_id,
-                target: c.target.clone(),
-                hypothesis: c.hypothesis.clone(),
-                technique: c.technique.clone(),
-                rationale: c.rationale.clone(),
-                prior_refs: c.prior_refs.clone(),
-                suggested_approach: c.suggested_approach.clone(),
-                priority: priority_str(&c.priority).to_string(),
-                wave: c.wave as i32,
-                parent_finding_id: c.parent_finding_id,
-                disposition: disposition_str(&c.disposition).to_string(),
-            };
-            match golish_db::repo::attack_candidates::upsert_by_hash(&self.pool, &write).await {
-                Ok(_) => stored += 1,
-                Err(e) => tracing::warn!(
-                    target: "harness::submit_tool",
-                    operation_id = %operation_id,
-                    error = %e,
-                    "attack_candidate upsert failed"
-                ),
-            }
-        }
-        stored
+            )
+            .await?
+            .work_items
+            .into_iter()
+            .map(|item| item.work_item_key)
+            .collect())
+    }
+
+    async fn verification_truth_for_operation(
+        &self,
+        operation_id: uuid::Uuid,
+    ) -> anyhow::Result<Option<golish_agent_kit::harness::attack_execution::VerificationTruthSet>>
+    {
+        self.attack_v2_verification_truth_for_operation_impl(operation_id, None)
+            .await
+    }
+
+    async fn reporting_truth_for_operation(
+        &self,
+        operation_id: uuid::Uuid,
+    ) -> anyhow::Result<Option<golish_agent_kit::harness::ReportingGateTruth>> {
+        super::reporting_gate::load_reporting_gate_truth(&self.pool, operation_id).await
     }
 }
 

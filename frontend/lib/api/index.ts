@@ -19,7 +19,9 @@ export { ApiError, getInflightCommands } from "./client";
 
 import * as ai from "./ai";
 import * as assetIntel from "./asset-intel";
+import * as attack from "./attack";
 import * as auditLog from "./audit-log";
+import * as cleanup from "./cleanup";
 import * as context from "./context";
 import * as conversationDb from "./conversation-db";
 import * as fileEditor from "./file-editor";
@@ -39,12 +41,14 @@ import * as outputParser from "./output-parser";
 import * as pentestBrowser from "./pentest-browser";
 import * as projects from "./projects";
 import * as pty from "./pty";
+import * as reporting from "./reporting";
 import * as security from "./security";
 import * as securityAnalysis from "./security-analysis";
 import * as settings from "./settings";
 import * as shell from "./shell";
 import * as sidecar from "./sidecar";
 import * as targets from "./targets";
+import * as temporalGraph from "./temporal-graph";
 import * as vault from "./vault";
 import * as vulnIntel from "./vuln-intel";
 import * as detachedWindow from "./window";
@@ -52,6 +56,7 @@ import * as wordlist from "./wordlist";
 
 export {
   pty,
+  attack,
   assetIntel,
   shell,
   files,
@@ -68,12 +73,14 @@ export {
   securityAnalysis,
   vulnIntel,
   conversationDb,
+  cleanup,
   findings,
   history,
   auditLog,
   modelRegistry,
   pentestBrowser,
   projects,
+  reporting,
   outputParser,
   detachedWindow,
   wordlist,
@@ -82,11 +89,13 @@ export {
   organizationRecon,
   methodology,
   targets,
+  temporalGraph,
   vault,
 };
 
 export const api = {
   pty,
+  attack,
   assetIntel,
   shell,
   files,
@@ -103,6 +112,7 @@ export const api = {
   securityAnalysis,
   vulnIntel,
   conversationDb,
+  cleanup,
   findings,
   history,
   auditLog,
@@ -117,5 +127,6 @@ export const api = {
   organizationRecon,
   methodology,
   targets,
+  temporalGraph,
   vault,
 } as const;

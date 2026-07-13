@@ -63,6 +63,19 @@ pub struct CliContext {
 
     /// Command-line arguments
     pub args: Args,
+
+    /// Same process-global Memory Fabric lifecycle used by desktop mode.
+    memory_supervisor: golish_agent_app::ai::db_bridge::knowledge_memory::KnowledgeMemoryRuntime,
+
+    /// Same DB-global Cleanup closeout worker used by desktop mode.
+    cleanup_closeout: golish_cleanup_app::CleanupCloseoutRuntime,
+
+    /// CLI-owned Reporting orphan blob GC lifecycle.
+    reporting_artifact_gc: crate::reporting_artifact_store::ReportArtifactGcRuntime,
+
+    /// Owned embedded database handle for ordinary headless CLI mode.
+    embedded_db: Option<golish_db::GolishDb>,
+    stop_embedded_db: bool,
 }
 
 impl CliContext {
@@ -96,9 +109,31 @@ impl CliContext {
         // Gracefully shutdown sidecar (waits for processor to flush pending events)
         self.sidecar_state.shutdown();
 
+        // Stop cleanup claims before stopping the invalidation projectors they
+        // depend on, then await the current projector batch.
+        self.cleanup_closeout
+            .shutdown()
+            .await
+            .map_err(|error| anyhow::anyhow!(error.code().to_string()))?;
+        self.reporting_artifact_gc.shutdown().await;
+        // before the DB pool/server can disappear underneath it.
+        self.memory_supervisor
+            .shutdown()
+            .await
+            .map_err(|error| anyhow::anyhow!(error.code().to_string()))?;
+
         // Shutdown the runtime
         if let Err(e) = self.runtime.shutdown().await {
             tracing::warn!("Runtime shutdown error: {}", e);
+        }
+
+        if let Some(mut db) = self.embedded_db {
+            if self.stop_embedded_db {
+                db.stop().await;
+            } else {
+                db.pool().close().await;
+                std::mem::forget(db);
+            }
         }
 
         Ok(())
@@ -203,6 +238,70 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         }
     }
 
+    // Ordinary headless CLI now owns the same DB-ready Memory Supervisor as
+    // desktop/stage-run. The constructor is side-effect free; workers start
+    // only after the readiness gate confirms migrations are available.
+    let db_config = golish_db::DbConfig::default();
+    let preexisting_pg_on_port =
+        std::net::TcpStream::connect(("127.0.0.1", db_config.port)).is_ok();
+    let (db_pool, db_ready) = crate::app::bootstrap::create_lazy_db_pool_with_config(&db_config);
+    let pg_handle_rx =
+        crate::app::bootstrap::spawn_embedded_pg_owned_with_config(db_ready.clone(), db_config);
+    let wait_gate = db_ready.clone();
+    if !wait_gate
+        .wait_timeout(std::time::Duration::from_secs(60))
+        .await
+        || !db_ready.is_ready()
+    {
+        anyhow::bail!("embedded PostgreSQL did not become ready for CLI memory services");
+    }
+    let mut embedded_db = pg_handle_rx
+        .await
+        .context("embedded PostgreSQL handle disappeared during CLI startup")?;
+    let cleanup_pool = db_pool.clone();
+    let memory_supervisor =
+        golish_agent_app::ai::db_bridge::knowledge_memory::KnowledgeMemoryRuntime::from_settings(
+            db_pool, &settings,
+        );
+    if let Err(error) = memory_supervisor.start().await {
+        if !preexisting_pg_on_port {
+            embedded_db.stop().await;
+        } else {
+            embedded_db.pool().close().await;
+            std::mem::forget(embedded_db);
+        }
+        return Err(anyhow::anyhow!(error.code().to_string()));
+    }
+    let cleanup_closeout = golish_cleanup_app::CleanupCloseoutRuntime::new(
+        cleanup_pool.clone(),
+        Arc::new(
+            golish_recon_app::organizations::DbBackedOrganizationArtifactCleaner::new(
+                cleanup_pool.clone(),
+            ),
+        ),
+        format!(
+            "cli-cleanup-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ),
+    )
+    .map_err(|error| anyhow::anyhow!(error.code().to_string()))?;
+    if let Err(error) = cleanup_closeout.start().await {
+        let _ = memory_supervisor.shutdown().await;
+        if !preexisting_pg_on_port {
+            embedded_db.stop().await;
+        } else {
+            embedded_db.pool().close().await;
+            std::mem::forget(embedded_db);
+        }
+        return Err(anyhow::anyhow!(error.code().to_string()));
+    }
+    let reporting_artifact_gc = crate::reporting_artifact_store::ReportArtifactGcRuntime::new(
+        cleanup_pool.clone(),
+        Arc::new(crate::reporting_artifact_store::ProjectReportArtifactStoreFactory),
+    );
+    reporting_artifact_gc.start();
+
     // Create event channel
     let (event_tx, event_rx) = mpsc::unbounded_channel::<RuntimeEvent>();
 
@@ -237,7 +336,7 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
 
     // Initialize the agent bridge and MCP manager. The interactive CLI runs as
     // a single anonymous session, so "cli" is its event/evidence identity.
-    let (bridge, mcp_manager) = initialize_agent(
+    let agent = initialize_agent(
         &workspace,
         &settings,
         args,
@@ -245,8 +344,24 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         indexer_state.clone(),
         sidecar_state.clone(),
         "cli",
+        Some(memory_supervisor.unit_of_work()),
     )
-    .await?;
+    .await;
+    let (bridge, mcp_manager) = match agent {
+        Ok(agent) => agent,
+        Err(error) => {
+            reporting_artifact_gc.shutdown().await;
+            let _ = cleanup_closeout.shutdown().await;
+            let _ = memory_supervisor.shutdown().await;
+            if !preexisting_pg_on_port {
+                embedded_db.stop().await;
+            } else {
+                embedded_db.pool().close().await;
+                std::mem::forget(embedded_db);
+            }
+            return Err(error);
+        }
+    };
 
     if args.verbose {
         eprintln!("[cli] Agent initialized successfully");
@@ -266,5 +381,10 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         sidecar_state,
         mcp_manager,
         args: args.clone(),
+        memory_supervisor,
+        cleanup_closeout,
+        reporting_artifact_gc,
+        embedded_db: Some(embedded_db),
+        stop_embedded_db: !preexisting_pg_on_port,
     })
 }

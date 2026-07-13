@@ -3,6 +3,14 @@ members = [
     "crates/golish",
     "crates/golish-cli-output",
     "crates/golish-core",
+    "crates/golish-memory-domain",
+    "crates/golish-memory-app",
+    "crates/golish-post-exploit-domain",
+    "crates/golish-post-exploit-app",
+    "crates/golish-cleanup-domain",
+    "crates/golish-cleanup-app",
+    "crates/golish-reporting-domain",
+    "crates/golish-reporting-app",
     "crates/golish-app-core",
     "crates/golish-vuln-app",
     "crates/golish-recon-app",
@@ -54,6 +62,12 @@ members = [
 # Default members for fast inner-loop development (excludes Tauri app)
 default-members = [
     "crates/golish-core",
+    "crates/golish-memory-domain",
+    "crates/golish-memory-app",
+    "crates/golish-post-exploit-domain",
+    "crates/golish-post-exploit-app",
+    "crates/golish-cleanup-domain",
+    "crates/golish-cleanup-app",
     "crates/golish-app-core",
     "crates/golish-vuln-app",
     "crates/golish-recon-app",
@@ -115,6 +129,14 @@ repository = "https://github.com/ChristopherZh-7/golish-platform"
 # Internal crates
 golish-cli-output = { path = "crates/golish-cli-output" }
 golish-core = { path = "crates/golish-core" }
+golish-memory-domain = { path = "crates/golish-memory-domain" }
+golish-memory-app = { path = "crates/golish-memory-app" }
+golish-post-exploit-domain = { path = "crates/golish-post-exploit-domain" }
+golish-post-exploit-app = { path = "crates/golish-post-exploit-app" }
+golish-cleanup-domain = { path = "crates/golish-cleanup-domain" }
+golish-cleanup-app = { path = "crates/golish-cleanup-app" }
+golish-reporting-domain = { path = "crates/golish-reporting-domain" }
+golish-reporting-app = { path = "crates/golish-reporting-app" }
 golish-app-core = { path = "crates/golish-app-core" }
 golish-vuln-app = { path = "crates/golish-vuln-app" }
 golish-recon-app = { path = "crates/golish-recon-app" }
@@ -290,10 +312,15 @@ serial_test = "3"
 
 # Dev profile: optimize for fast incremental builds
 [profile.dev]
+# This workspace is large enough that AI-driven check/test permutations make
+# Cargo's per-crate incremental snapshots grow without bound (119+ GiB seen
+# locally). Keep reusable dependency artifacts, but do not retain snapshots of
+# every intermediate source state.
+incremental = false
 # Faster linking on macOS
 split-debuginfo = "unpacked"
 # More parallelism during codegen
-codegen-units = 256
+codegen-units = 64
 
 # Optimize dependencies in dev mode (they don't change often)
 # This significantly speeds up runtime without hurting compile times

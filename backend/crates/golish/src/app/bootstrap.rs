@@ -314,8 +314,39 @@ pub(crate) fn setup_subsystems(app: &mut tauri::App) -> Result<(), Box<dyn std::
     {
         let mut db_gate = state.db_ready.clone();
         let db_handle = app_handle.clone();
+        let memory_supervisor = state.memory_supervisor.clone();
+        let cleanup_closeout = state.cleanup_closeout.clone();
+        let reporting_artifact_gc = state.reporting_artifact_gc.clone();
         async_runtime::spawn(async move {
             let ready = db_gate.wait().await;
+            if ready {
+                match memory_supervisor.start().await {
+                    Ok(outcome) => tracing::info!(
+                        ?outcome,
+                        owners = memory_supervisor.owner_count(),
+                        "process-global Memory Supervisor started after DB readiness"
+                    ),
+                    Err(error) => tracing::error!(
+                        error_code = error.code(),
+                        "failed to start process-global Memory Supervisor"
+                    ),
+                }
+                match cleanup_closeout.start().await {
+                    Ok(started) => tracing::info!(
+                        started,
+                        "DB-global Cleanup closeout worker started after DB readiness"
+                    ),
+                    Err(error) => tracing::error!(
+                        error_code = error.code(),
+                        "failed to start DB-global Cleanup closeout worker"
+                    ),
+                }
+                let started = reporting_artifact_gc.start();
+                tracing::info!(
+                    started,
+                    "Report artifact GC lifecycle started after DB readiness"
+                );
+            }
             let _ = db_handle.emit("db-ready", ready);
             if ready {
                 tracing::debug!("Emitted db-ready event to frontend");

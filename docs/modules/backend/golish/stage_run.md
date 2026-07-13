@@ -16,7 +16,7 @@
 
 ## 职责
 
-无 GUI bootstrap（lazy pool + spawn_embedded_pg + 就绪门 → `AppState::new` → `extract_agent_state`）→ `cli::initialize_agent(CliRuntime)` → `configure_bridge(None)`。fresh 路径调用 `TaskOrchestrator.run_stage`；exact resume 路径先做 selector/identity/chain scope 校验，取得 operation advisory claim，必要时 CAS 补首 stage 缺失的 `graph_flow`，再调用同 task 的 `TaskOrchestrator.resume`（绝不 `run_stage`）。`main.rs` 把两条路径都放到专用 32MiB 大栈线程。测试入口可显式传 `--ephemeral-db`，但 resume 与 ephemeral/fresh slice/seed 参数互斥。**`--include-subsidiaries` 的 fresh 子公司扇出（2026-06-14 方案 C / fleet Phase B）改走共享 scheduler；resume 只重驱选中的一个 operation，不重开 fleet。** 设计见 `docs/design/2026-06-06-headless-single-stage-runner.md`、`docs/design/2026-07-11-stage-run-cli-exact-resume.md`。
+无 GUI bootstrap（lazy pool + spawn_embedded_pg + 就绪门 → `AppState::new` → `extract_agent_state`）→ `cli::initialize_agent(CliRuntime)` → `configure_bridge(None)`。fresh 路径调用 `TaskOrchestrator.run_stage`；exact resume 路径先做 selector/identity/chain scope 校验，取得 operation advisory claim，必要时 CAS 补首 stage 缺失的 `graph_flow`，再调用同 task 的 `TaskOrchestrator.resume`（绝不 `run_stage`）。`main.rs` 把两条路径都放到专用 32MiB 大栈线程。测试入口可显式传 `--ephemeral-db`，但 resume 与 ephemeral/fresh slice/seed 参数互斥。**V2-writing contract 会在创建 operation 前一次性解析 CLI root/descendants/ownership threshold，并把 `CliFlags` decision + sealed snapshot 与唯一 task/operation/stage execution 原子提交；整个 frozen scope 只调用一次 `run_stage`。历史 per-org child-operation scheduler 仅保留给 `LegacyV1`，resume 也始终只重驱选中的同一 operation。** 设计见 `docs/design/2026-06-06-headless-single-stage-runner.md`、`docs/design/2026-07-11-stage-run-cli-exact-resume.md`。
 
 ## 公开接口
 
@@ -32,18 +32,21 @@
 | `--ephemeral-db` / `--keep-ephemeral-db` | stage-run 测试专用临时嵌入式 PG；默认清理，可显式保留 pgdata |
 | `--db-smoke-summary` | 停 PG 前打印 session/project/org 关键表计数，验证真实落库 |
 | `scripts/stage_smoke.py` / `just stage-smoke` | 包装真实 `golish --stage-run`，默认临时 DB，可选本地 HTTP fixture；脚本可显式传 `--provider` / `--model`，枚举 smoke 可用 `--route-probe-max-runtime-ms` / `--route-probe-max-requests` 控制 route_probe 前台预算 |
+| `scripts/run_tree.py --db` | 输出 rollout/frozen contract、scope decision/hash/members、execution/unit/worker lease+epoch+active tool+chain+checkpoint、submission/handoff、V2/legacy selected source，并标出 duplicate/cross-org/stale-tool anomaly |
 
 ## 关键文件
 
 | 文件 | 作用 |
 |---|---|
 | `mod.rs` | boot + seed + 事件消费 + orchestrate + format_report |
+| `runtime_v2.rs` | trusted CLI scope 一次冻结、relational fleet report 与 Scoping/specialist/root-only resume classifier |
+| `fleet.rs` / `scheduler.rs` | `LegacyV1` per-org child-operation compatibility adapter；V2-writing contract 在 production seam 与 regression test 双重禁止调用 |
 | `scripts/stage_smoke.py` | 真 stage smoke runner（临时 workspace/DB，本地 fixture，可接 `run_tree.py`） |
 | `justfile` (`stage-smoke`) | 脚本化入口：`just stage-smoke <profile> <to-stage> "<objective>"` |
 
 ## 依赖
 
-- crate 内 app（bootstrap）、cli（initialize_agent）、agent 栈、`engagement::{fleet_run（OrgFleetExecutor）, scheduler（run_fleet_scheduler）}`（子公司扇出共享调度）；`golish-agent-kit::harness`、嵌入式 PG
+- crate 内 app（bootstrap）、cli（initialize_agent）、agent 栈、`OrgFleetExecutor`/`run_fleet_scheduler`（仅 LegacyV1 child-operation fallback）；`golish-agent-kit::harness`、嵌入式 PG
 
 ## 注意事项 / 坑
 
@@ -61,8 +64,9 @@
   LLM context 推断新 target；type/scope/value 必须与 DB trusted snapshot 一致。
 - Scoping 未落 trusted seed 时必须阻塞，不得依靠 Target Intel `manage_targets`
   补种。`organizations.domains/app_domains/ip_ranges` 及 provider 数据都不能替代 CLI seed。
-- 每次 parent/child `orchestrate` 先获取该 bridge 的 universal top-level request token，再用 `BridgeAgentExecutor::from_request` 升级 Task；`run_stage` 返回后仍持 lease 清 harness sidechannels。fleet 继续串行，因此同 bridge child runs 逐个取得 fresh request-scoped retry budget。
-- **子公司扇出收敛（2026-06-14 · 方案 C）**：旧 step 6.5 手写 Rust per-child 循环 → `run_fleet_scheduler`；`orchestrate` 改 `pub(crate)` 供 `engagement::fleet_run::OrgFleetExecutor` 复用（CLI `emit_progress=false`，无单卡）。`engagement` 域暂无独立模块卡，fleet 驱动文档见上述 plan（follow-up：补 engagement 卡）。
+- V2-writing fresh CLI 只取得一次 universal top-level request token、只调用一次 `orchestrate`；全部 descendant Unit/Worker 共用同一个 operation 与 sealed snapshot。只有 `LegacyV1` parent/child fleet 才逐个取得 fresh request-scoped retry budget。
+- Fresh V2 `orchestrate` 以 CLI 已解析的真实 workspace canonical path 注册稳定 `project_scope_id`，再把 registration + trusted `CliRuntimeScope` 交给 `TaskOrchestrator::run_stage` 原子创建唯一 operation；exact resume 同样注册 current workspace 并与 frozen operation scope 对比，错 workspace直接拒绝。path 只作 provenance，不能用 basename/字符串猜测 operation ownership。
+- **LegacyV1 子公司扇出兼容（2026-06-14 · 方案 C）**：旧 step 6.5 手写 Rust per-child 循环 → `run_fleet_scheduler`；`run_legacy_child_operation_fleet` 与 `OrgFleetExecutor::run_org` 都检查 frozen contract，任一 V2-writing contract 都不会创建 child task/operation。
 - **逐子进度 eprintln（2026-06-14 收敛后补回中途可见性）**：调度器（IO-free 内核）新增第 4 个注入 trait `FleetProgress`，CLI 传 `engagement::fleet_run::CliFleetProgress{label:"subsidiary"}` → 每个子公司进 executor 前后打 `[stage-run] ── subsidiary i/N: 名 → running/PASS/BLOCK/FAIL ──`（恢复 T1 把手写循环换成 `run_fleet_scheduler` 后丢的那条逐子可见性）。GUI 单卡路径传 `NoopProgress`（进度走 `StageRunOrgProgress` 事件）。续跑跳过的 org 只 `on_org_done`（SKIP(done)）、不 `on_org_start`。i/N 由调度器静态 org 序提供（checklist 串行下即真实顺序）。
 - **session 四身份必须同值**：`initialize_agent(.., &session_id)`（event/evidence 写入）、`set_session_id`（终端）、`set_chat_session_id`（gate/refiner 查账本）、transcript 目录都用同一个 `stage-run-{uuid}`。2026-06-12 前 event 侧残留 `"cli"`，导致 evidence 落账后 gate/refiner 查不到（账本 facts=0、submit-only 锁不可达）。
 - **exact resume 不得重跑原命令**：fresh `--stage-run` 每次创建新 chat key/DB
@@ -82,12 +86,17 @@
   operation/expected ids 全匹配且 `completed_count=0`，CAS `jsonb_set` 新增
   `{state: default, next_node: current_stage}`，并验证所有 sibling 原样保留后再
   resume；已有 `graph_flow.state` 也必须先完整反序列化，不能只凭 JSON object 外形。
-- **startup reaper 与 flat checkpoint**：reaper 的 recoverable predicate 同时接受
+- **startup reaper 与 flat checkpoint**：`LegacyV1`/`DualWriteLegacyRead` 的 recoverable predicate 同时接受
   完整 `graph_flow` 或严格 flat first-stage checkpoint（profile/stage/run UUID、
   `completed_count=0`、非空 stage worker map）；后者会被 pause 为 `waiting` 而非
   fail。历史版本若已经写入固定 abandoned failed marker，exact resume 还必须显式
   `--repair-reaped-task`，在 advisory lock 下先 CAS 回 `waiting` 再补 graph；任何
-  其它 failed result 都 fail-closed。
+  其它 failed result 都 fail-closed。`DualWriteV2Preferred` 优先选择完整 relational
+  shape（只允许整条 legacy fallback），`V2Only` 只读 relational truth：Scoping
+  pre-freeze 无 snapshot/unit/worker；post-scope specialist 每 frozen org 一 Unit/Worker；
+  non-specialist 仅 root Unit、无 Worker。startup 同一事务先把 expired/no-tool worker
+  requeue、expired/active-tool worker 标 `recovery_required`，live lease 保持不动；
+  duplicate execution、stale active-tool 或任何 identity/shape 漂移都 fail closed。
 - **legacy chain task_id**：exact chain 必须匹配 chain id + DB session + specialist 且
   body 非空；`task_id=Some` 时还必须等于 operation。旧 stage-run chain 可能是
   `task_id=NULL`，由 guarded `operation_state.stage_run_workers` map 绑定 operation，

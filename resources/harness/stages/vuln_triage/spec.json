@@ -11,8 +11,15 @@
 
   "allowed_tool_types": ["vuln_run_formulaic_sweep"],
 
-  "$comment_formulaic": "Attack-stage split (design 2026-07-02): vuln_triage is redefined as the FORMULAIC SCAN stage — batch-run tool+dictionary/template techniques whose verdict is relatively objective (n-day PoC, sensitive dirs, weak creds, TLS, info leak, shallow IDOR/SQLi/XSS/cmd-injection tool sweeps). Reasoning-heavy classes (SSRF/SSTI/LFI/auth-bypass logic/business logic) move to the attack_candidate stage. specialist=vuln_scanner lets stage_run fan out per org; facts_from_db_truth + freshness_window mirror the info-gathering matrix paradigm.",
+  "$comment_formulaic": "Candidate V2 boundary: vuln_triage is the FORMULAIC OBSERVATION stage. It writes terminal technique_outcomes plus evidence only; it never writes Candidate or Finding rows. The exact final-sealed outcome manifest is consumed by attack_candidate, which reasons and lets the server derive immutable Candidate plans at final PASS.",
   "specialist": "vuln_scanner",
+  "runtime_memory": {
+    "schema_version": 2,
+    "unit_identity": "stage_execution_organization",
+    "scope_source": "frozen_operation_snapshot",
+    "requires_worker_lease": true,
+    "publishes_handoff_after_final_seal": true
+  },
   "coverage_axis": ["UNAUTH", "IDOR", "NDAY", "DIR", "WEAKPW", "TLS", "INFO"],
   "facts_from_db_truth": true,
   "freshness_window": true,
@@ -23,18 +30,15 @@
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
 
+  "$comment_findings_allowed": "Static true preserves the persisted legacy/dual deliverable contract. submit_stage_deliverable derives an effective false policy for V2Only operations; their formulaic stage remains observation-only and cannot author a Finding.",
+  "findings_allowed": true,
+
   "gate_rules": [
     {
       "op": "for_all",
       "over": "claims",
       "require": { "pred": "non_empty", "field": "evidence_ids" },
       "on_fail": { "reason": "claim evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_ids unless a real ledger id is explicitly available"] }
-    },
-    {
-      "op": "for_all",
-      "over": "findings",
-      "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "finding evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
     },
     {
       "op": "for_all",

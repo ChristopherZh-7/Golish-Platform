@@ -22,7 +22,8 @@ pub(super) use execution_planning::{
     build_reflector_prompt, build_vuln_scanner_prompt,
 };
 pub(super) use orchestration::{
-    build_browser_prompt, build_enricher_prompt, build_orchestrator_prompt,
+    build_attack_analyst_prompt, build_browser_prompt, build_candidate_verifier_prompt,
+    build_enricher_prompt, build_orchestrator_prompt, build_post_exploit_operator_prompt,
 };
 pub(super) use reporting::{
     build_refiner_prompt, build_reporter_prompt, build_researcher_prompt_fallback,

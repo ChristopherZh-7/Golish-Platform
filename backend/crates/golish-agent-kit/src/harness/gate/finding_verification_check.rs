@@ -65,6 +65,7 @@ mod tests {
             human_approval: None,
             agent_continuity: crate::harness::types::AgentContinuity::SingleSession,
             inherits_evidence_from: vec![],
+            post_exploit_policy: None,
             required_evidence_kinds: vec![],
             finding_verification: rule,
             min_findings: None,
@@ -72,6 +73,7 @@ mod tests {
             gate_rules: vec![],
             expected_techniques: vec![],
             specialist: None,
+            runtime_memory: None,
             coverage_axis: vec![],
             facts_from_db_truth: false,
             freshness_window: false,
@@ -106,6 +108,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         }
     }
 

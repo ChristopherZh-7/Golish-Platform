@@ -502,6 +502,7 @@ mod load_from_db_tests {
             _operation_id: Uuid,
             _profile: &str,
             _current_stage: &str,
+            _runtime_memory_contract: crate::runtime_memory::RuntimeMemoryContract,
         ) -> anyhow::Result<()> {
             unimplemented!("operation_state_insert not used by load_from_db tests")
         }

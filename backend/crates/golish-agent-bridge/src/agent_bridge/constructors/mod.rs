@@ -345,6 +345,9 @@ impl AgentBridge {
             services: BridgeServices {
                 db_tracker: None,
                 chain_persistence: None,
+                runtime_memory: None,
+                knowledge_memory: None,
+                knowledge_context: None,
                 indexer_state: None,
                 sidecar_state: None,
                 graph_backend: None,
@@ -395,6 +398,9 @@ impl AgentBridge {
             harness_active_authz: Arc::new(RwLock::new(None)),
             harness_active_org_id: Arc::new(RwLock::new(None)),
             harness_active_operation_id: Arc::new(RwLock::new(None)),
+            harness_active_stage_execution_id: Arc::new(RwLock::new(None)),
+            harness_active_stage_run_unit_id: Arc::new(RwLock::new(None)),
+            harness_active_worker_lease: Arc::new(RwLock::new(None)),
             stage_run_reentry_guard: Arc::new(crate::agentic_loop::StageRunReentryGuard::default()),
             session_request_slot,
             session_request_generation,
@@ -402,6 +408,7 @@ impl AgentBridge {
             harness_forced_tool: Arc::new(RwLock::new(None)),
             harness_profile: Arc::new(RwLock::new(None)),
             harness_last_deliverable: Arc::new(RwLock::new(None)),
+            harness_captured_submission: Arc::new(RwLock::new(None)),
             pending_plan_request: Arc::new(RwLock::new(None)),
         }
     }

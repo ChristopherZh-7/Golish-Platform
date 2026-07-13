@@ -164,6 +164,10 @@ pub fn validate_stage_gate_with_context(
                 .map(|s| s.expected_techniques.clone())
                 .filter(|t| !t.is_empty())
         }),
+        candidate_work_item_keys: ctx.candidate_work_item_keys.clone(),
+        verification_truth_required: ctx.verification_truth_required,
+        verification_truth_snapshots: ctx.verification_truth_snapshots.clone(),
+        reporting_truth: ctx.reporting_truth.clone(),
         // PR3 · 账本投影事实原样透传（None = 不启用投影）。
         evidence_facts: ctx.evidence_facts.clone(),
         // Source-query terminal facts原样透传（None = source_coverage 不消费）。
@@ -320,6 +324,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         let mut ctx = GateContext {
             in_scope_assets: Some(vec!["moresec.cn".to_string()]),
@@ -335,6 +340,10 @@ mod tests {
             ])),
             eas_completed_web_origins: Some(HashSet::from(["https://moresec.cn:443".to_string()])),
             expected_techniques: Some(vec!["GOLISH-EAS-WEB-FINGERPRINT".to_string()]),
+            candidate_work_item_keys: None,
+            verification_truth_required: false,
+            verification_truth_snapshots: None,
+            reporting_truth: None,
             evidence_facts: Some(vec![EvidenceFact {
                 asset: "https://moresec.cn:443".to_string(),
                 technique: "GOLISH-EAS-WEB-FINGERPRINT".to_string(),
@@ -394,6 +403,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
 
         // Baseline (skeleton = None) passes.
@@ -450,6 +460,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         assert!(
             !validate_stage_gate(&d, &spec, None).allowed,
@@ -517,6 +528,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         let base = validate_stage_gate(&deliverable, &spec, None);
         assert!(base.allowed, "baseline should pass: {:?}", base.reasons);
@@ -603,6 +615,7 @@ mod tests {
                 },
             ],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         let result = validate_stage_gate(&d, &spec, None);
         assert!(
@@ -641,6 +654,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         let result = validate_stage_gate(&d, &spec, None);
         assert!(
@@ -761,6 +775,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: full_vuln_triage_coverage(asset, eid),
             candidates: vec![],
+            candidate_decisions: vec![],
         }
     }
 
@@ -927,6 +942,7 @@ mod tests {
                 sampling_rationale: None,
             }],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
 
         // 无 skeleton：spec.expected_techniques 空 → coverage_complete no-op → allowed。

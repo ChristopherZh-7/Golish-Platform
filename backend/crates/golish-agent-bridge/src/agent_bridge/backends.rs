@@ -46,6 +46,13 @@ pub struct BridgeBackends {
     /// Forwarded into the live `db_tracker`; only takes effect if
     /// `set_db_backend` has already been called.
     pub db_repo: Option<Arc<dyn DbRepoProvider>>,
+    /// Canonical Memory Fabric transaction handle. This is shared with the
+    /// process-global projector owner; applying it never starts a worker.
+    pub knowledge_memory: Option<Arc<dyn golish_memory_app::KnowledgeUnitOfWork>>,
+    /// Exact-scope ContextPack provider. It re-resolves frozen operation
+    /// ownership for every request; bridge/runtime never receive a pool or a
+    /// constructible trusted authorization context.
+    pub knowledge_context: Option<Arc<dyn golish_memory_app::ContextPackProvider>>,
     /// Graphiti / knowledge-graph backend.
     pub graph: Option<Arc<dyn GraphKnowledgeBase>>,
     /// Text-embedding backend (semantic memory).
@@ -86,6 +93,12 @@ impl AgentBridge {
         // must have invoked `set_db_backend` first for them to stick.
         if let Some(x) = b.db_repo {
             self.set_db_repo(x);
+        }
+        if let Some(x) = b.knowledge_memory {
+            self.set_knowledge_memory(x);
+        }
+        if let Some(x) = b.knowledge_context {
+            self.set_knowledge_context(x);
         }
         if let Some(x) = b.embedder {
             self.set_embedder(x);

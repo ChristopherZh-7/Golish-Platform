@@ -10,6 +10,19 @@ use crate::harness::SourceQueryFact;
 
 use super::types::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttackV2ReviewBarrierView {
+    pub operation_id: Uuid,
+    pub wave_run_id: Uuid,
+    pub status: String,
+    pub resume_version: i64,
+    pub wave_unit_count: usize,
+    pub review_closed_unit_count: usize,
+    pub candidate_count: usize,
+    pub proposed_candidate_count: usize,
+    pub dispatch_is_stale: bool,
+}
+
 /// Real, persisted red_team scoping actions observed for a session (read from
 /// `tool_calls`). The scoping gate uses this to verify the model actually
 /// performed the unit-candidate review flow instead of merely asserting a
@@ -121,6 +134,25 @@ pub struct OrgScopeUnit {
     pub id: Uuid,
     pub name: String,
     pub parent_id: Option<Uuid>,
+}
+
+/// DB-authoritative Cleanup closeout counts. A deliverable never supplies
+/// these values; every non-zero count blocks Cleanup/Reporting progression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupCloseoutGateSnapshot {
+    pub missing_obligation_count: i64,
+    pub nonterminal_obligation_count: i64,
+    pub undisclosed_residual_count: i64,
+    pub invalid_terminal_truth_count: i64,
+}
+
+impl CleanupCloseoutGateSnapshot {
+    pub const fn allows_closeout(self) -> bool {
+        self.missing_obligation_count == 0
+            && self.nonterminal_obligation_count == 0
+            && self.undisclosed_residual_count == 0
+            && self.invalid_terminal_truth_count == 0
+    }
 }
 
 /// Provides all database repository operations that golish-ai needs.
@@ -275,6 +307,18 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<Vec<String>> {
         let _ = cutoff;
         self.in_scope_assets(org_id).await
+    }
+
+    /// Cleanup Gate truth. Default fails closed so a test double or alternate
+    /// backend cannot accidentally pass Cleanup without implementing the
+    /// canonical obligation/residual read.
+    async fn cleanup_closeout_gate(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<CleanupCloseoutGateSnapshot> {
+        let _ = (operation_id, organization_id);
+        anyhow::bail!("CLEANUP_CLOSEOUT_REPO_UNAVAILABLE")
     }
 
     /// P3 ③ seam: distinct `targets.type` values of the in-scope assets (org
@@ -489,6 +533,7 @@ pub trait DbRepoProvider: Send + Sync {
         operation_id: Uuid,
         profile: &str,
         current_stage: &str,
+        runtime_memory_contract: crate::runtime_memory::RuntimeMemoryContract,
     ) -> anyhow::Result<()>;
     async fn operation_state_get(
         &self,
@@ -1129,5 +1174,93 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
         let _ = organization_id;
         Ok(Vec::new())
+    }
+
+    // ── Candidate V2 manifest authority ────────────────────────────────
+
+    /// Atomically create/replay the exact WaveUnit entry manifest from the
+    /// upstream vuln_triage final-sealed handoff. Formulaic observations can
+    /// become only seeds/work-items; this contract has no Candidate/Finding
+    /// write surface. Missing implementations fail closed, never as empty work.
+    async fn attack_v2_seed_candidate_manifest(
+        &self,
+        input: crate::harness::attack_execution::SeedCandidateManifest,
+    ) -> anyhow::Result<crate::harness::attack_execution::CandidateManifestSnapshot> {
+        let _ = input;
+        anyhow::bail!("ATTACK_V2_REPO_UNAVAILABLE")
+    }
+
+    /// Load the immutable complete manifest for one trusted runtime Unit.
+    /// Returning an empty vector for an unavailable repository would let a
+    /// pending Candidate stage pass vacuously, so the default is an explicit
+    /// stable error code.
+    async fn attack_v2_candidate_manifest_for_unit(
+        &self,
+        operation_id: Uuid,
+        stage_run_unit_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<crate::harness::attack_execution::CandidateManifestSnapshot> {
+        let _ = (operation_id, stage_run_unit_id, organization_id);
+        anyhow::bail!("ATTACK_V2_REPO_UNAVAILABLE")
+    }
+
+    /// Server-only attack_candidate stage-entry materialization. The concrete
+    /// repository reloads the current Unit, exact upstream vuln_triage final
+    /// handoff, and its authoritative observation evidence before freezing the
+    /// complete manifest. No model DTO participates.
+    async fn attack_v2_seed_candidate_manifest_for_unit(
+        &self,
+        operation_id: Uuid,
+        stage_run_unit_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<crate::harness::attack_execution::CandidateManifestSnapshot> {
+        let _ = (operation_id, stage_run_unit_id, organization_id);
+        anyhow::bail!("ATTACK_V2_REPO_UNAVAILABLE")
+    }
+
+    /// Durable review barrier for the current exact Candidate wave. The app
+    /// implementation derives project/snapshot/wave/org ownership entirely
+    /// from DB state and also performs deterministic expiry/stale-dispatch
+    /// reconciliation. Missing implementations must stop stage routing.
+    async fn attack_v2_review_barrier_for_operation(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<AttackV2ReviewBarrierView> {
+        let _ = operation_id;
+        anyhow::bail!("ATTACK_V2_REVIEW_REPO_UNAVAILABLE")
+    }
+
+    /// Exact persisted Verification truth for the current V2 wave. `None` org
+    /// loads every frozen WaveUnit; callers must treat an empty result or any
+    /// error as unavailable truth, never as a no-candidate pass.
+    async fn attack_v2_verification_truth_for_operation(
+        &self,
+        operation_id: Uuid,
+        organization_id: Option<Uuid>,
+    ) -> anyhow::Result<Option<crate::harness::attack_execution::VerificationTruthSet>> {
+        let _ = (operation_id, organization_id);
+        anyhow::bail!("ATTACK_V2_VERIFICATION_TRUTH_UNAVAILABLE")
+    }
+
+    /// Reporting stage-entry seam. The concrete repository builds or reuses a
+    /// current validated revision from the complete canonical DB source set.
+    /// It never renders/finalizes an artifact. Missing implementations fail
+    /// closed so the terminal stage cannot pass from model prose.
+    async fn reporting_build_validated_revision(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<crate::harness::ReportingGateTruth> {
+        let _ = operation_id;
+        anyhow::bail!("REPORTING_TRUTH_REPO_UNAVAILABLE")
+    }
+
+    /// Re-read current Reporting truth immediately before Gate evaluation.
+    /// `None` means no current report/revision exists and must block.
+    async fn reporting_gate_truth(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<Option<crate::harness::ReportingGateTruth>> {
+        let _ = operation_id;
+        anyhow::bail!("REPORTING_TRUTH_REPO_UNAVAILABLE")
     }
 }

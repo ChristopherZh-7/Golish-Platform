@@ -1,9 +1,56 @@
 use crate::Result;
 use chrono::{DateTime, Utc};
-use sqlx::{FromRow, PgPool};
+use sqlx::{Executor, FromRow, PgPool, Postgres};
 use uuid::Uuid;
 
 use crate::models::{Finding, FindingStatus, Severity};
+use golish_pentest_domain::FindingWriteContext;
+
+fn reject_write_context(message: &str) -> crate::DbError {
+    crate::DbError::Other(anyhow::anyhow!(message.to_string()))
+}
+
+/// Resolve the immutable operation contract before a legacy writer starts its
+/// own transaction. V2-only harness operations cannot obtain legacy authority.
+pub async fn authorize_legacy_write(
+    pool: &PgPool,
+    context: FindingWriteContext,
+    operation_id: Option<Uuid>,
+) -> Result<FindingWriteContext> {
+    match (context, operation_id) {
+        (FindingWriteContext::HarnessLegacy, Some(operation_id)) => {
+            let contract: Option<String> = sqlx::query_scalar(
+                "SELECT attack_execution_contract FROM operation_state WHERE operation_id=$1",
+            )
+            .bind(operation_id)
+            .fetch_optional(pool)
+            .await?;
+            match contract.as_deref() {
+                Some("legacy" | "dual_write_read_legacy" | "dual_write_read_v2_fallback") => {
+                    Ok(context)
+                }
+                Some("v2_only") => Err(reject_write_context(
+                    "V2-only harness Finding writes require exact Candidate terminalization",
+                )),
+                Some(_) => Err(reject_write_context(
+                    "unknown attack execution contract cannot authorize Finding writes",
+                )),
+                None => Err(reject_write_context(
+                    "attributed harness operation is missing",
+                )),
+            }
+        }
+        (FindingWriteContext::LegacyNonHarness, None) | (FindingWriteContext::UserCrud, None) => {
+            Ok(context)
+        }
+        (FindingWriteContext::VerificationTerminalizer { .. }, _) => Err(reject_write_context(
+            "terminalizer authority is internal to the compound Candidate transaction",
+        )),
+        _ => Err(reject_write_context(
+            "Finding write context does not match operation attribution",
+        )),
+    }
+}
 
 /// Detailed projection of a finding row used by the Tauri command layer.
 /// Carries `sev`/`status` as text and the `target_id` column that the canonical
@@ -59,13 +106,180 @@ pub struct FindingUpsert<'a> {
     pub updated_at: f64,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct CandidateVerifiedFindingWrite {
+    pub id: Uuid,
+    pub title: String,
+    pub severity: String,
+    pub cvss: Option<f64>,
+    pub target_live_id: Option<Uuid>,
+    pub target_value_at_time: String,
+    pub description: String,
+    pub steps: String,
+    pub remediation: String,
+    pub evidence: serde_json::Value,
+    pub project_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LegacyFindingWrite {
+    pub id: Uuid,
+    pub title: String,
+    pub severity: String,
+    pub cvss: Option<f64>,
+    pub url: String,
+    pub target: String,
+    pub target_id: Option<Uuid>,
+    pub description: String,
+    pub steps: String,
+    pub remediation: String,
+    pub evidence: serde_json::Value,
+    pub tool: String,
+    pub template: String,
+    pub refs: serde_json::Value,
+    pub source: String,
+    pub project_path: Option<String>,
+}
+
+/// Central legacy/non-harness writer used while old persisted contracts remain
+/// readable. Candidate V2 callers cannot select the terminalizer context here.
+pub async fn insert_legacy_with_executor<'e, E>(
+    executor: E,
+    context: FindingWriteContext,
+    finding: &LegacyFindingWrite,
+) -> Result<Uuid>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    if matches!(
+        context,
+        FindingWriteContext::VerificationTerminalizer { .. }
+    ) {
+        return Err(reject_write_context(
+            "terminalizer must use the candidate_v2 compound Finding API",
+        ));
+    }
+    if finding.title.trim().is_empty()
+        || finding.description.trim().is_empty()
+        || !matches!(
+            finding.severity.as_str(),
+            "critical" | "high" | "medium" | "low" | "info"
+        )
+    {
+        return Err(reject_write_context("invalid legacy Finding projection"));
+    }
+    sqlx::query(
+        r#"INSERT INTO findings(
+               id,title,sev,cvss,url,target,target_id,description,steps,remediation,
+               evidence,tool,template,refs,source,project_path)
+           VALUES($1,$2,$3::severity,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+           ON CONFLICT(id) DO UPDATE SET
+             title=EXCLUDED.title,sev=EXCLUDED.sev,cvss=EXCLUDED.cvss,
+             url=EXCLUDED.url,target=EXCLUDED.target,
+             target_id=COALESCE(EXCLUDED.target_id,findings.target_id),
+             description=EXCLUDED.description,steps=EXCLUDED.steps,
+             remediation=EXCLUDED.remediation,evidence=EXCLUDED.evidence,
+             tool=EXCLUDED.tool,template=EXCLUDED.template,refs=EXCLUDED.refs,
+             source=EXCLUDED.source,updated_at=NOW()
+           WHERE findings.project_path IS NOT DISTINCT FROM EXCLUDED.project_path"#,
+    )
+    .bind(finding.id)
+    .bind(&finding.title)
+    .bind(&finding.severity)
+    .bind(finding.cvss)
+    .bind(&finding.url)
+    .bind(&finding.target)
+    .bind(finding.target_id)
+    .bind(&finding.description)
+    .bind(&finding.steps)
+    .bind(&finding.remediation)
+    .bind(&finding.evidence)
+    .bind(&finding.tool)
+    .bind(&finding.template)
+    .bind(&finding.refs)
+    .bind(&finding.source)
+    .bind(&finding.project_path)
+    .execute(executor)
+    .await?;
+    Ok(finding.id)
+}
+
+/// Insert the Finding projection built from an immutable, validator-approved
+/// CandidateAttempt result. The caller owns the surrounding terminalization
+/// transaction and lineage write.
+pub(super) async fn insert_verified_candidate_with_executor<'e, E>(
+    executor: E,
+    context: FindingWriteContext,
+    finding: &CandidateVerifiedFindingWrite,
+) -> Result<Uuid>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let FindingWriteContext::VerificationTerminalizer { attempt_id } = context else {
+        return Err(reject_write_context(
+            "candidate_v2 Finding writes require VerificationTerminalizer context",
+        ));
+    };
+    if attempt_id.is_nil() {
+        return Err(reject_write_context(
+            "candidate_v2 Finding terminalizer attempt_id is required",
+        ));
+    }
+    if finding.title.trim().is_empty()
+        || finding.target_value_at_time.trim().is_empty()
+        || finding.description.trim().is_empty()
+        || !matches!(
+            finding.severity.as_str(),
+            "critical" | "high" | "medium" | "low" | "info"
+        )
+        || finding
+            .cvss
+            .is_some_and(|score| !score.is_finite() || !(0.0..=10.0).contains(&score))
+        || !finding.evidence.is_array()
+    {
+        return Err(crate::DbError::Other(anyhow::anyhow!(
+            "invalid Candidate verified Finding projection"
+        )));
+    }
+    Ok(sqlx::query_scalar(
+        r#"INSERT INTO findings(
+               id,title,sev,cvss,url,target,target_id,description,steps,remediation,
+               evidence,status,source,project_path)
+           VALUES($1,$2,$3::severity,$4,$5,$5,$6,$7,$8,$9,$10,'confirmed',
+                  'candidate_v2',$11)
+           RETURNING id"#,
+    )
+    .bind(finding.id)
+    .bind(&finding.title)
+    .bind(&finding.severity)
+    .bind(finding.cvss)
+    .bind(&finding.target_value_at_time)
+    .bind(finding.target_live_id)
+    .bind(&finding.description)
+    .bind(&finding.steps)
+    .bind(&finding.remediation)
+    .bind(&finding.evidence)
+    .bind(&finding.project_path)
+    .fetch_one(executor)
+    .await?)
+}
+
 pub async fn create(
     pool: &PgPool,
+    context: FindingWriteContext,
     title: &str,
     sev: Severity,
     project_path: Option<&str>,
     source: &str,
 ) -> Result<Finding> {
+    if matches!(
+        context,
+        FindingWriteContext::VerificationTerminalizer { .. }
+    ) {
+        return Err(reject_write_context(
+            "terminalizer must use the candidate_v2 compound Finding API",
+        ));
+    }
     let row = sqlx::query_as::<_, Finding>(
         r#"INSERT INTO findings (title, sev, project_path, source)
            VALUES ($1, $2, $3, $4)
@@ -184,7 +398,19 @@ pub async fn list_detail_for_dedup(
 
 /// Upsert a finding (INSERT … ON CONFLICT (id) DO UPDATE), preserving the prior
 /// command-layer SQL including the `target_id` COALESCE-on-conflict behaviour.
-pub async fn upsert_full(pool: &PgPool, f: &FindingUpsert<'_>) -> Result<()> {
+pub async fn upsert_full(
+    pool: &PgPool,
+    context: FindingWriteContext,
+    f: &FindingUpsert<'_>,
+) -> Result<()> {
+    if matches!(
+        context,
+        FindingWriteContext::VerificationTerminalizer { .. }
+    ) {
+        return Err(reject_write_context(
+            "terminalizer must use the candidate_v2 compound Finding API",
+        ));
+    }
     sqlx::query(
         r#"INSERT INTO findings (id, title, sev, cvss, url, target, target_id, description, steps, remediation, tags, tool, template, refs, evidence, status, source, project_path, created_at, updated_at)
            VALUES ($1, $2, $3::severity, $4, $5, $6, $20, $7, $8, $9, $10, $11, $12, $13, $14, $15::finding_status, $16, $17,

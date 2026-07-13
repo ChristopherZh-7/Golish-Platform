@@ -178,12 +178,17 @@ impl DbTracker {
 
     pub fn maybe_store_tool_memory(
         &self,
+        context: super::policy::LegacyToolMemoryContext,
         tool_name: &str,
         args: &serde_json::Value,
         result_value: &serde_json::Value,
         success: bool,
     ) {
         use crate::db_traits::{self, StoreDecision, ToolcallStatus};
+
+        if !super::policy::should_store_legacy_tool_memory(context) {
+            return;
+        }
 
         let status = if success {
             ToolcallStatus::Finished

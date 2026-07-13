@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
+import type { OrganizationCandidate } from "@/lib/api/organizations";
 import {
   candidatesToUnitRows,
   detectTargetType,
@@ -12,40 +13,70 @@ import {
   ScopeReviewTable,
 } from "./ScopeReviewTable";
 
+function candidate(
+  id: string,
+  value: string,
+  evidence: unknown = {},
+  extra: Partial<OrganizationCandidate> = {}
+): OrganizationCandidate {
+  return {
+    id,
+    kind: "organization",
+    label: value,
+    value,
+    source: "test",
+    confidence: 1,
+    status: "needs_review",
+    evidence,
+    createdAt: 1,
+    ...extra,
+  };
+}
+
 describe("candidatesToUnitRows", () => {
-  it("maps org candidates to rows with ownership label and drops empties", () => {
+  it("maps org candidates to stable review rows and drops empties", () => {
     const rows = candidatesToUnitRows([
-      {
-        kind: "organization",
-        label: "n",
-        value: "平安银行股份有限公司",
-        evidence: { raw: { scale: "58%" } },
-      },
-      { kind: "organization", label: "n", value: "无比例公司", evidence: {} },
-      { kind: "organization", label: "n", value: "   " },
+      candidate("cand-bank", "平安银行股份有限公司", { raw: { scale: "58%" } }, {
+        organizationId: "org-bank",
+        ownershipPercent: "58%",
+      }),
+      candidate("cand-unknown", "无比例公司"),
+      candidate("cand-empty", "   "),
     ]);
     expect(rows).toHaveLength(2);
-    expect(rows[0].name).toBe("平安银行股份有限公司 (58%)");
-    expect(rows[1].name).toBe("无比例公司");
+    expect(rows[0]).toEqual({
+      reviewRowId: "candidate:cand-bank",
+      candidateId: "cand-bank",
+      organizationId: "org-bank",
+      name: "平安银行股份有限公司",
+      aliases: [],
+      domains: [],
+      ownershipPercent: "58%",
+      included: true,
+    });
+    expect(rows[1]).toEqual(
+      expect.objectContaining({
+        reviewRowId: "candidate:cand-unknown",
+        candidateId: "cand-unknown",
+        organizationId: null,
+        name: "无比例公司",
+        ownershipPercent: null,
+      })
+    );
   });
 
   it("drops below-threshold and unknown-ownership candidates when a threshold is given", () => {
     const rows = candidatesToUnitRows(
       [
-        { kind: "organization", label: "n", value: "平安银行", evidence: { raw: { scale: "58%" } } },
-        {
-          kind: "organization",
-          label: "n",
-          value: "平安好医生",
-          evidence: { raw: { scale: "39.41%" } },
-        },
-        { kind: "organization", label: "n", value: "无比例公司", evidence: {} },
-        { kind: "organization", label: "n", value: "平安证券", evidence: { raw: { scale: "100%" } } },
+        candidate("cand-bank", "平安银行", { raw: { scale: "58%" } }),
+        candidate("cand-doctor", "平安好医生", { raw: { scale: "39.41%" } }),
+        candidate("cand-unknown", "无比例公司"),
+        candidate("cand-securities", "平安证券", { raw: { scale: "100%" } }),
       ],
       51
     );
     // Only the ≥51% ones with a parseable scale survive — no hand-deletion.
-    expect(rows.map((r) => r.name)).toEqual(["平安银行 (58%)", "平安证券 (100%)"]);
+    expect(rows.map((r) => r.name)).toEqual(["平安银行", "平安证券"]);
   });
 });
 
@@ -132,6 +163,79 @@ describe("parseBulkRows", () => {
 });
 
 describe("ScopeReviewTable", () => {
+  it("preserves immutable candidate and organization ids while editing and toggling inclusion", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    render(
+      <ScopeReviewTable
+        kind="unit_review"
+        initial={[
+          {
+            reviewRowId: "candidate:cand-1",
+            candidateId: "cand-1",
+            organizationId: "org-1",
+            name: "Child A",
+            aliases: ["A"],
+            domains: ["a.example"],
+            ownershipPercent: "51%",
+            included: true,
+          },
+        ]}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+      />
+    );
+
+    await user.clear(screen.getByLabelText("Name for unit 1"));
+    await user.type(screen.getByLabelText("Name for unit 1"), "Child A Renamed");
+    await user.click(screen.getByRole("checkbox", { name: "Include Child A Renamed" }));
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(onConfirm).toHaveBeenCalledWith([
+      expect.objectContaining({
+        reviewRowId: "candidate:cand-1",
+        candidateId: "cand-1",
+        organizationId: "org-1",
+        name: "Child A Renamed",
+        included: false,
+      }),
+    ]);
+  });
+
+  it("assigns a stable review row id to a manually-added unit", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const randomUuid = vi
+      .spyOn(crypto, "randomUUID")
+      .mockReturnValue("11111111-2222-4333-8444-555555555555");
+    render(
+      <ScopeReviewTable
+        kind="unit_review"
+        initial={[]}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Add row" }));
+    const names = screen.getAllByLabelText(/Name for unit/);
+    await user.type(names[names.length - 1], "Manual Child");
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reviewRowId: "11111111-2222-4333-8444-555555555555",
+          candidateId: "",
+          organizationId: null,
+          name: "Manual Child",
+          included: true,
+        }),
+      ])
+    );
+    randomUuid.mockRestore();
+  });
+
   it("shows the free-text editor expanded by default with no grid", () => {
     render(
       <ScopeReviewTable kind="scope_review" initial={[]} onConfirm={vi.fn()} onSkip={vi.fn()} />

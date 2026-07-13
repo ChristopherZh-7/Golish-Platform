@@ -391,6 +391,8 @@ impl AgentBridge {
             graph_backend: self.services.graph_backend.clone(),
             sidecar_state: self.services.sidecar_state.as_ref(),
             chain_persistence: self.services.chain_persistence.clone(),
+            runtime_memory: self.services.runtime_memory.clone(),
+            knowledge_context: self.services.knowledge_context.clone(),
             plan_manager: &self.plan_manager,
             api_request_stats: &self.api_request_stats,
             additional_tool_definitions: {
@@ -413,6 +415,10 @@ impl AgentBridge {
             harness_org_id: *self.harness_active_org_id.read().await,
             harness_org_id_source: Some(self.harness_active_org_id.clone()),
             harness_operation_id: *self.harness_active_operation_id.read().await,
+            stage_execution_id: *self.harness_active_stage_execution_id.read().await,
+            stage_run_unit_id: *self.harness_active_stage_run_unit_id.read().await,
+            worker_lease: self.harness_active_worker_lease.read().await.clone(),
+            candidate_attempt: None,
             stage_run_reentry_guard: self.stage_run_reentry_guard.clone(),
             // 设计 2026-06-11 · targeted gate-repair pass: lock this run's
             // tool_choice to `submit_stage_deliverable`.

@@ -23,6 +23,7 @@
 
 pub mod ai;
 pub mod conversation_store;
+pub mod operator_principal;
 pub mod state;
 
 // Re-export app-core's `error` module + `runtime` adapters at the crate root so
@@ -30,4 +31,5 @@ pub mod state;
 // (GolishError + TauriRuntime live in golish-app-core) without editing each file.
 pub use golish_app_core::{error, runtime};
 
+pub use operator_principal::DbTrustedOperatorPrincipalProvider;
 pub use state::{ai_session_not_initialized_error, AgentState, AiState};

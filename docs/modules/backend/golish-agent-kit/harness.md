@@ -16,7 +16,11 @@
 
 ## 职责
 
+- 四个 Post-Exploit stage 在 C6/P6b cutover 后各只暴露一个 exact typed wrapper；Objective Simulation 的 side-effect prepare 必须绑定 cleanup obligation，execute 仍受 operator approval 与 production typed-adapter fail-closed 约束。
+
 落地 stage harness MVP（design Doc 1/2/3）。`stage_harness` 主入口（`for_stage` + `validate_gate`）；`operation_graph` 加载 base DAG + profile 投影 + `next_stages`；`intent_classifier` 确定性词库分类；`gate/` 6 个 check 调度；`sprint_contract` 生成 finding 数量范围。
+
+C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式标记为 untrusted data 的 prompt block；它不携带 ToolDefinition/ToolChoice/授权指令，不把 VaultRef 解引用，也拒绝 plaintext secret 与 prompt markup 注入。
 
 ## 公开接口
 
@@ -28,6 +32,10 @@
 | `gate`（schema/scope/contract/vacuous/freshness 6 check） | 确定性证据门 |
 | `SprintContract` + Generator / `pre_action_authorizer` | 契约 / 前置 authz |
 | `StageCapabilitySpec` / `StageCapabilitySuggestion` | stage-local capability registry；coverage/worklist/refiner 的能力级建议，旧 `suggested_tools` 只作兼容提示 |
+| `attack_execution::*` | Candidate V2 纯领域契约：exact manifest decision classifier、immutable execution plan/hash/risk、bounded acceptance、8 态 Attempt 状态机与 terminal result validator |
+| `ReportingGateTruth` / `validate_reporting_gate_truth` | C9 Reporting 的 DB-free Gate contract：current validated revision、完整 source-set、citation/attestation 与 Cleanup closeout |
+| `StageRuntimeContract` / `RuntimeUnitIdentity` / `RuntimeScopeSource` | `StageSpec.runtime_memory` 的 closed typed contract；当前仅 `target_intel` / `external_attack_surface` / `enumeration` / `vuln_triage` 精确声明 schema v2、`stage_execution_organization`、`frozen_operation_snapshot`、worker lease 与 final-seal handoff |
+| `render_context_pack_data` | 将已授权 ContextPack 渲染为 escaped、data-only、带 provenance/evidence 的 prompt block |
 
 ## 关键文件
 
@@ -35,12 +43,16 @@
 |---|---|
 | `stage_harness.rs` / `stage_transition.rs` | 主入口 / gate→下一 stage |
 | `operation_graph.rs` / `profile.rs` / `stage_spec.rs` | DAG 投影 / profile / stage 定义 |
+| `stage_runtime_contract.rs` | specialist Runtime Memory V2 的 declarative owner/scope/lease/final-seal contract；不选择 deployment rollout，也不替代 DB fence |
 | `operation_continuity.rs` | cross-session adoption 的 IO-free cursor math：按 reusable prefix 计算 entry stage + remaining DAG allowlist |
 | `gate/` | 6 个确定性 check + `rule_engine` gate op（含 `candidate_grounded` / `candidate_disposition_complete`，设计 2026-07-02） |
 | `chain_wave.rs` | attack_candidate⇄verification 波次循环的纯决策函数 `decide_chain_wave`（去重+燃料+链深收敛），DB-free、可单测；活体游标覆写接线在 graph-flow 层（待做） |
+| `attack_execution/` | Candidate V2 的 DB-free manifest/draft/acceptance DTO、exact-key completeness validator、bounded server classifier、foreground-only状态机、DB snapshot-only review barrier 决策、静态 technique/target-class→backend capability 配方与递归 key-sort SHA-256 hash；不拥有 lease/checkpoint |
+| `reporting_gate.rs` | Reporting current-revision/source/citation/validation/Cleanup 的纯确定性 Gate；不读取模型 prose、RAG/KG 或 artifact publication |
 | `evidence_facts.rs` | 从工具命令/输出派生 coverage facts（passive intel + EAS） |
-| `stage_capability.rs` | stage capability registry：把 coverage technique 映射到人类能力 id、runner kind、允许工具、风险与批量 hint |
+| `stage_capability.rs` | stage capability registry：把 coverage technique 映射到人类能力 id、runner kind、允许工具、风险与批量 hint；Candidate V2 对模型只暴露 ordinal wrapper，classifier recipe ids 留在后端，四个 Post-Exploit stage 各映射一个 backend wrapper |
 | `intent_classifier.rs` / `nl_slice.rs` / `sprint_contract.rs` / `pre_action_authorizer.rs` | 分类 / 终态 / 契约 / authz |
+| `knowledge_context.rs` | C7 prompt-safe ContextPack renderer；VaultRef 只保留 opaque reference |
 
 ## 依赖
 
@@ -49,6 +61,9 @@
 ## 注意事项 / 坑
 
 - **不变量 I7/I8**：gate 是**确定性规则**（schema/scope/contract/vacuous/freshness/DB truth），不能拿模型自报当通过；模型提交里的 `evidence_refs` / `evidence_ids` 只是可选 ledger 调试引用，不能作为必填交付字段。若模型写了 id，runtime 仍必须校验它真实存在，假 id 直接 `needs_fix`。
+- ContextPack 是 data，不是 authority：任何检索内容中的“调用工具/忽略 scope/扩大权限”文本都只能被转义后呈现，不能改变 pre-action authorizer、ToolChoice 或 Gate。
+- Candidate V2 已接 wire/Gate/final-seal/terminalizer：模型只能提交 bounded `CandidateDecisionDraft`，每个 server-frozen work item 必须恰好终态为 `candidate` 或 evidence-backed `no_candidate`；Candidate id、plan/hash/risk 与可信 operation/scope/org/submission 都由 server/DB 绑定。Attempt 固定为 `queued|running|submitted|verified|refuted|blocked|retryable_failed|abandoned`；`retryable_failed` 是旧 Attempt 终态，重试必须新建下一 ordinal，不能把旧行改回 queued。`verification_gate` 验证 server-owned `VerificationTruthAuthority(expected_units)` 与 exact snapshot 的双向全等，missing/extra/foreign/duplicate unit 都 fail closed；terminal Finding 只来自 proof-backed verified Attempt 的 compound terminalizer。lease/checkpoint 仍由 P1 WorkerRun 负责。
+- `review_barrier::decide_review_barrier` 只消费一次 exact DB snapshot；open/pending/dispatching/stale/resumed/terminal 分支均不读进程内 wake flag。TaskOrchestrator 在 `attack_candidate` gate 后必须回读该 seam，只有 `resumed|terminal` 才能进入 verification；读失败或 snapshot 不一致一律 hold。
 - `target_intel` 的 6 个 `GOLISH-INTEL-*` 覆盖列仍必核，但阶段不再暴露任何 scan-tool selector（`allowed_tool_types=[]`）：found 只能来自 `recon_map_assets` / `recon_lookup_whois` 等 registry/provider 工具落库后的 DB truth；缺 provider、无结果或不适用要走 `blocked` / `checked_empty` / `not_applicable` 终态，不能切 CLI fallback。
 - Scoping 不执行 DNS/WHOIS/HTTP/端口工作，也不暴露 `manage_targets`。可信 UI/CLI
   必须在 stage 前写入 exact seed；Red Team 可各做一次 `unit_review` / `scope_review`。
@@ -89,11 +104,15 @@
 - EAS 工具证据事实也在 `evidence_facts.rs` 派生：`httpx` / `nmap -sn` / `naabu` 会映射到对应 `GOLISH-EAS-*` technique；concrete IP/CIDR 的 LIVENESS gap 会优先建议 `eas_discover_ports`，端口扫描 completion 会同步写 PORT 与 LIVENESS outcome；`whatweb` 只派生 `GOLISH-EAS-WEB-FINGERPRINT`，不再派生 LIVENESS 或 SERVICE-FINGERPRINT。`GOLISH-EAS-LIVENESS` 对 URL endpoint 使用 gate-compatible join key（去 scheme/大小写但保留 port/path），不能把 `http://host:90` 的探活事实折叠为裸 `host`；`nmap` 的 DNS failure（stderr `Failed to resolve`）会成为 `error` terminal fact，避免同一 liveness gap 无限重试。
 - `external_attack_surface` 的 `stage_run_pass_token` claim 视为 Surface closeout 信号：它只在 orchestrator 按 per-org completion ledger 重算通过后才有效，避免 fan-out 阶段主 agent 只交 pass token 时被 `surface_coverage` 误拦；泛化的 `discovery` claim 仍不映射到 Surface。
 - fan-out 阶段的 pass-token closeout 必须按 scoping 绑定的 engagement root org subtree 核 `org_stage_completions`；只有没有 root 绑定时才允许 legacy 全库 org 口径。若 `operation_state.current_stage` 仍是该 fan-out stage，closeout 还必须要求 completion 晚于本次 `operation_state.stage_started_at`，防止旧 run 的 passed ledger 生成当前 stage 的 pass token。否则同一 embedded DB 里的 sibling/test org 或旧 completion 会把当前 operation 卡死。
+- `handoff_catalog` 是 final PASS 的 closed server catalog：允许 Organization/Target/TargetAsset/DNS/API/Directory/JS/Fingerprint/TechniqueOutcome/Finding，以及只用于 Candidate frozen manifest 的 `AttackCandidateWorkItem` key。`GateContextBuilder::build_with_canonical_source_hints` 把 server-derived key hints 与纯 Gate truth 分开返回；`build_server_final_seal`（不实现 model JSON `Deserialize`）绑定 exact runtime fence、submission、scope、deterministic Gate details 和可选 server-derived `CandidateAcceptance` 并生成 hash。acceptance 的 manifest/decision/plan/evidence 任一漂移都会改变 `seal_material_sha256`；DB 仍会在 final-seal 事务中回查 owner/timestamp/content hash/evidence，hint 本身永远不是 canonical truth。
 - `operation_continuity` 只做纯决策：输入 profile-projected DAG + `ContinuitySnapshot`，输出已 adopt 阶段、第一未满足 stage、remaining-stage allowlist。是否允许复用、是否询问用户、DB snapshot 怎么构建都在上层；不要把 DB 查询塞进 harness 纯模块。上层 continuity preflight 必须有 engagement root 才能把 scoping 标为 reusable。
 - stage tool whitelist 只约束真实扫描调用；`check_job` / `kill_job` / `list_jobs` / `wait_for_background_jobs` 是后台 job 控制面，必须 exempt，否则 submit barrier 报“后台任务仍在跑”后 worker 无法等待输出或检查明显卡死的 job。
 - `tool_taxonomy.rs` 把 Golish direct Enumeration tools（含 `enum_preflight_web_origins`）视为 scan taxonomy 成员；preflight 归 `recon/http` 但 stage 只用显式 tool-name selector，其他内容工具归 `recon/crawler` / `web/route-probe`。raw crawler CLI 不进 allow-list。
 - `stage_capability.rs` 是“AI 选能力，后端控配方”的元数据层：`target_intel` 只给 provider/read-only 能力，不暴露 scan CLI；EAS 把 LIVE/PORT/SERVICE/WEB-FINGERPRINT 分成 `BackendWrapper` 能力并建议 `eas_probe_http_liveness` / `eas_discover_ports` / `eas_fingerprint_services` / `eas_fingerprint_web_stack`，而不是让模型拼 httpx/naabu/masscan/nmap/whatweb 参数；`eas_fingerprint_web_stack` 固定 WhatWeb 配方并落 `fingerprints`，只挂 WEB-FINGERPRINT gap suggestion，不挂通用 SERVICE-FINGERPRINT，避免把 WhatWeb 错用到 SSH/MySQL/SMTP 等非 HTTP 服务。Enumeration 的 crawler supplement 也走 `BackendWrapper` 并建议 `enum_crawl_same_origin_urls`，其他内容枚举能力仍是 browser/js_extract/route_probe。`vuln_triage` 的 `vuln.run_formulaic_sweep` 也是 `BackendWrapper` 能力，只建议 `vuln_run_formulaic_sweep`；stage spec 的 `allowed_tool_types` 必须只允许这个 wrapper 名，底层 `nuclei` / `sqlmap` / `wpscan` recipe 由后端工具封装，不暴露给模型。不要把 ffuf/arjun、raw katana/pentest_run、raw nuclei/sqlmap 重新塞回阶段。新增能力必须同时满足 stage tool whitelist，并保留 `suggested_tools` 作为旧字段兼容。
-- **攻击段三阶段（设计 2026-07-02）**：`StageKind` 现有 13 变体，vuln 段 = `vuln_triage`（**公式化扫描**：specialist=vuln_scanner，10 类可机械批量跑技术，`found`→finding）→ `attack_candidate`（**新 StageKind**：推理合成 `AttackCandidate` 假设，无扫描工具，`candidate_grounded` gate 要求每条有 rationale，证据真实性由 backend ledger/DB truth 解决）→ `verification`（**真打**：`candidate_disposition_complete` gate 要求每个 approved candidate 达终态 verified/refuted/blocked）。DAG **保持无环**（无 `verification→attack_candidate` 回边）；a→b→c 波次回流由 `chain_wave` 在 graph-flow 层游标覆写实现（活体接线待做）。SSTI/SSRF/LFI/认证绕过/业务逻辑从 vuln_triage 移交 attack_candidate。`authoritative_found` 暂未对 vuln_triage 开启（nuclei/dir/weakpw/tls 的 technique_outcomes 写路径未覆盖，开了会永久 BLOCK；只开 `derive_from_evidence`）。
+- **攻击段三阶段（Candidate V2）**：`vuln_triage` 只写 10 类公式化 `technique_outcomes` + evidence（found/empty/blocked/not_applicable），禁止直接写 Candidate/Finding；`attack_candidate` 无扫描工具，只对 exact frozen manifest 提交 decision drafts，final Gate PASS 同事务接受 Candidate/no-candidate；`verification` 才执行经审批的 immutable plan 并产出 verified/refuted/blocked。DAG 保持无环，跨 wave 回流由外层 wave transaction 控制。
+- Candidate verifier pre-action 只允许 `verify_execute_candidate_action`、`list_recent_evidence`、`submit_candidate_attempt`；identity/background/raw runner/Finding writer 均在 DB side effect 前拒绝。唯一 wrapper 的模型参数只有非负 `action_ordinal`。
+- Reporting 的 `report_revision_validated` 只消费应用层重读的 `ReportingGateTruth`：revision 必须 current+validated，publication 只允许 `unpublished|final`，完整 source hash、claim/citation、validation attestation 与 Cleanup closeout 任一漂移即 BLOCK。Gate PASS 不等于 final publication，artifact/finalize 不在 stage seam。
+- Verification capability metadata 的 `writes` 是 server-owned terminal business effects（Attempt evidence/result、Finding lineage、FactDelta），不是模型 SQL grant；action journal 属于执行 wrapper，Finding/lineage 仍只由 compound terminalizer 写。
 - 设计见 `docs/design/2026-05-26-*` 与 `docs/design/2026-07-02-attack-stage-formulaic-candidate-exploit.md`；内层 harness 当前 deferred（见 AGENTS.md §6）。
 
 ## 测试入口

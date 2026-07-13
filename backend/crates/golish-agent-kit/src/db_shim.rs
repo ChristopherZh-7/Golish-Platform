@@ -102,9 +102,15 @@ pub mod operation_state {
         operation_id: Uuid,
         profile: &str,
         current_stage: &str,
+        runtime_memory_contract: crate::runtime_memory::RuntimeMemoryContract,
     ) -> anyhow::Result<()> {
-        repo.operation_state_insert(operation_id, profile, current_stage)
-            .await
+        repo.operation_state_insert(
+            operation_id,
+            profile,
+            current_stage,
+            runtime_memory_contract,
+        )
+        .await
     }
 
     pub async fn get(

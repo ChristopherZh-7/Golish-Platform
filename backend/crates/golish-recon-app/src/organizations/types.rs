@@ -47,14 +47,21 @@ pub enum OrganizationCandidateKind {
     Target,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct OrganizationCandidate {
-    #[serde(default)]
     pub id: String,
+    #[ts(type = "\"organization\" | \"target\"")]
     pub kind: OrganizationCandidateKind,
     pub label: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub organization_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ownership_percent: Option<String>,
     #[serde(default)]
     pub source: String,
     #[serde(default)]
@@ -62,16 +69,42 @@ pub struct OrganizationCandidate {
     #[serde(default)]
     pub status: String,
     #[serde(default)]
+    #[ts(type = "unknown")]
     pub evidence: Value,
     #[serde(default)]
+    #[ts(type = "number")]
     pub created_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct OrganizationCandidates {
     pub organizations: Vec<OrganizationCandidate>,
     pub targets: Vec<OrganizationCandidate>,
+}
+
+/// One stable human-review row for a candidate organization. Text fields remain
+/// editable, while the identity fields stay immutable throughout review.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
+pub struct UnitReviewDecisionRow {
+    pub review_row_id: String,
+    pub candidate_id: String,
+    pub organization_id: Option<String>,
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub domains: Vec<String>,
+    pub ownership_percent: Option<String>,
+    pub included: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
+pub struct UnitReviewSubmission {
+    pub rows: Vec<UnitReviewDecisionRow>,
 }
 
 /// 前端 PATCH 入参；每个字段 `Option` 表示「不传 = 不修改」。

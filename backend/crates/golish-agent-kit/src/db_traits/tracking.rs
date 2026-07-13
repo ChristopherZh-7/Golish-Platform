@@ -1,4 +1,4 @@
-//! Fire-and-forget recording and memory operations trait.
+//! Ordered tool-lifecycle and best-effort telemetry/memory operations trait.
 //!
 //! [`DbTrackingBackend`] abstracts all direct recording (tool calls, tokens,
 //! terminal output, search logs, audit, agent calls, messages, vecstore) and
@@ -10,6 +10,20 @@ use uuid::Uuid;
 
 use super::types::{BriefingPlan, MemoryHit, ScoredMemoryHit};
 
+/// Trusted, sqlx-free runtime identity stamped on a durable tool-call start.
+/// Optional fields encode the three database-approved shapes: execution-only,
+/// unit-bound, or fully worker-fenced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeToolIdentity {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Option<Uuid>,
+    pub worker_run_id: Option<Uuid>,
+    pub organization_id: Option<Uuid>,
+    pub attempt_epoch: Option<i64>,
+    pub lease_token: Option<Uuid>,
+}
+
 /// Backend for all fire-and-forget recording and memory operations.
 ///
 /// The application layer provides the concrete implementation.
@@ -17,24 +31,29 @@ use super::types::{BriefingPlan, MemoryHit, ScoredMemoryHit};
 /// every recording / memory method to it.
 #[async_trait]
 pub trait DbTrackingBackend: Send + Sync {
-    // ── Recording (fire-and-forget) ─────────────────────────────────────
+    // ── Ordered tool lifecycle ──────────────────────────────────────────
 
     async fn record_tool_call_start(
         &self,
         call_id: &str,
         session_id: Uuid,
+        task_id: Option<Uuid>,
+        subtask_id: Option<Uuid>,
         tool_name: &str,
         args: &serde_json::Value,
-    );
+        runtime: Option<&RuntimeToolIdentity>,
+    ) -> anyhow::Result<Uuid>;
 
     async fn record_tool_call_finish(
         &self,
-        call_id: &str,
+        record_id: Uuid,
         session_id: Uuid,
         status: &str,
         result: &str,
         duration_ms: i32,
-    );
+    ) -> anyhow::Result<()>;
+
+    // ── Recording (fire-and-forget) ─────────────────────────────────────
 
     async fn record_token_usage(
         &self,
@@ -227,5 +246,28 @@ pub trait DbTrackingBackend: Send + Sync {
     ) -> Option<DateTime<Utc>> {
         let _ = (organization_id, stage_kind);
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeToolIdentity;
+    use uuid::Uuid;
+
+    #[test]
+    fn runtime_tool_tracking_identity_carries_the_complete_worker_fence() {
+        let identity = RuntimeToolIdentity {
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            stage_run_unit_id: Some(Uuid::new_v4()),
+            worker_run_id: Some(Uuid::new_v4()),
+            organization_id: Some(Uuid::new_v4()),
+            attempt_epoch: Some(3),
+            lease_token: Some(Uuid::new_v4()),
+        };
+        assert!(identity.stage_run_unit_id.is_some());
+        assert!(identity.worker_run_id.is_some());
+        assert_eq!(identity.attempt_epoch, Some(3));
+        assert!(identity.lease_token.is_some());
     }
 }

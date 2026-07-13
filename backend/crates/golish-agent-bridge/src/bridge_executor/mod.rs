@@ -148,6 +148,7 @@ impl BridgeAgentExecutor {
             max_tokens_override: agent_def.max_tokens,
             top_p_override: agent_def.top_p,
             chain_persistence: self.bridge.services.chain_persistence.as_ref(),
+            bound_worker_chain: None,
             sub_agent_registry: Some(self.bridge.sub_agent_registry()),
             post_shell_hook: self.bridge.post_shell_hook.clone(),
             post_tool_result_hook: None,

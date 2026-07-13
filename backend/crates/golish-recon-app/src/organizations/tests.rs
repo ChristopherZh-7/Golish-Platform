@@ -1,4 +1,6 @@
-use super::candidates::{read_candidates_from_intel, upsert_candidates_into_intel};
+use super::candidates::{
+    candidate_for_existing_child, read_candidates_from_intel, upsert_candidates_into_intel,
+};
 use super::types::{OrganizationCandidate, OrganizationCandidateKind, OrganizationProfilePatch};
 use super::validation::{is_valid_asn, is_valid_cidr, is_valid_domain, validate_profile_patch};
 
@@ -131,6 +133,8 @@ fn candidate_upsert_dedupes_by_id_and_preserves_engagement() {
                 kind: OrganizationCandidateKind::Target,
                 label: "old updated".into(),
                 value: "old.example.com".into(),
+                organization_id: None,
+                ownership_percent: None,
                 source: "seed".into(),
                 confidence: 0.9,
                 status: "approved".into(),
@@ -142,6 +146,8 @@ fn candidate_upsert_dedupes_by_id_and_preserves_engagement() {
                 kind: OrganizationCandidateKind::Organization,
                 label: "Subsidiary A".into(),
                 value: "Subsidiary A".into(),
+                organization_id: None,
+                ownership_percent: None,
                 source: "enscan".into(),
                 confidence: 0.8,
                 status: "".into(),
@@ -161,4 +167,30 @@ fn candidate_upsert_dedupes_by_id_and_preserves_engagement() {
     assert_eq!(store.organizations.len(), 1);
     assert_eq!(store.organizations[0].status, "needs_review");
     assert!(store.organizations[0].id.starts_with("org:enscan:"));
+}
+
+#[test]
+fn organization_candidate_id_is_required_on_the_wire() {
+    let without_id = serde_json::json!({
+        "kind": "organization",
+        "label": "Child A",
+        "value": "Child A"
+    });
+    assert!(
+        serde_json::from_value::<OrganizationCandidate>(without_id).is_err(),
+        "candidate identity must not be synthesized while deserializing a review payload"
+    );
+}
+
+#[test]
+fn existing_child_candidate_carries_stable_candidate_and_org_ids() {
+    let child_id = uuid::Uuid::new_v4();
+    let candidate = candidate_for_existing_child(child_id, "Existing Child", 123);
+    assert_eq!(candidate.id, format!("existing-org:{child_id}"));
+    assert_eq!(
+        candidate.organization_id.as_deref(),
+        Some(child_id.to_string().as_str())
+    );
+    assert_eq!(candidate.value, "Existing Child");
+    assert_eq!(candidate.status, "existing");
 }

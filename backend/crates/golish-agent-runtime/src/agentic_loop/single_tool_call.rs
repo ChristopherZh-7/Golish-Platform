@@ -1,10 +1,12 @@
 use super::context::{
-    emit_to_frontend, AgenticLoopContext, LoopCaptureContext, ToolExecutionResult,
+    emit_to_frontend, retrieve_scoped_context_data, AgenticLoopContext, LoopCaptureContext,
+    ToolExecutionResult,
 };
 use super::helpers::handle_loop_detection;
 use super::llm_helpers::{runtime_supervisor_one_shot, summarize_tool_output};
 use super::tool_execution::execute_with_hitl_generic;
 use super::{normalize_run_pty_cmd_args, toolcall_fixer, SUMMARIZE_THRESHOLD_TOKENS};
+use golish_agent_kit::db_traits::RuntimeToolIdentity;
 use golish_agent_kit::loop_detection::ExecutionMonitorMode;
 use golish_agent_kit::system_hooks::{HookRegistry, PostToolContext};
 use golish_agent_kit::task_orchestrator::runtime_supervisor::{
@@ -19,6 +21,105 @@ use rig::completion::CompletionModel as RigCompletionModel;
 use rig::message::{Text, ToolCall, ToolResult, ToolResultContent, UserContent};
 use rig::one_or_many::OneOrMany;
 use serde_json::json;
+
+const RUNTIME_TOOL_TRACKING_REQUIRED: &str = "RUNTIME_TOOL_TRACKING_REQUIRED";
+
+fn legacy_tool_memory_context(
+    harness_stage_active: bool,
+    trusted_operation_active: bool,
+) -> golish_agent_kit::db_tracking::LegacyToolMemoryContext {
+    use golish_agent_kit::db_tracking::LegacyToolMemoryContext;
+
+    if harness_stage_active || trusted_operation_active {
+        LegacyToolMemoryContext::HarnessCustomerFact
+    } else {
+        LegacyToolMemoryContext::GeneralConversation
+    }
+}
+
+fn runtime_tool_identity(
+    ctx: &AgenticLoopContext<'_>,
+) -> Result<Option<RuntimeToolIdentity>, &'static str> {
+    runtime_tool_identity_from_parts(
+        ctx.harness_operation_id,
+        ctx.stage_execution_id,
+        ctx.stage_run_unit_id,
+        ctx.harness_org_id,
+        ctx.worker_lease.as_ref(),
+    )
+}
+
+fn runtime_tool_identity_from_parts(
+    operation_id: Option<uuid::Uuid>,
+    stage_execution_id: Option<uuid::Uuid>,
+    stage_run_unit_id: Option<uuid::Uuid>,
+    organization_id: Option<uuid::Uuid>,
+    worker_lease: Option<&golish_core::WorkerLeaseContext>,
+) -> Result<Option<RuntimeToolIdentity>, &'static str> {
+    let (operation_id, stage_execution_id) = match (operation_id, stage_execution_id) {
+        (None, None) => return Ok(None),
+        (Some(operation_id), Some(stage_execution_id)) => (operation_id, stage_execution_id),
+        _ => return Err("incomplete trusted operation/stage execution identity"),
+    };
+
+    let (worker_run_id, attempt_epoch, lease_token) = match worker_lease {
+        Some(lease) if stage_run_unit_id == Some(lease.stage_run_unit_id) => (
+            Some(lease.worker_run_id),
+            Some(lease.attempt_epoch),
+            Some(lease.lease_token),
+        ),
+        Some(_) => return Err("worker lease belongs to a different stage run unit"),
+        None => (None, None, None),
+    };
+
+    Ok(Some(RuntimeToolIdentity {
+        operation_id,
+        stage_execution_id,
+        stage_run_unit_id,
+        worker_run_id,
+        organization_id,
+        attempt_epoch,
+        lease_token,
+    }))
+}
+
+fn pre_dispatch_tracking_failure(
+    tool_id: &str,
+    tool_call_id: &str,
+    error: impl std::fmt::Display,
+) -> (UserContent, serde_json::Value) {
+    let value = json!({
+        "error": format!("runtime tool-call tracking failed before dispatch: {error}"),
+        "code": RUNTIME_TOOL_TRACKING_REQUIRED,
+    });
+    let content = UserContent::ToolResult(ToolResult {
+        id: tool_id.to_string(),
+        call_id: Some(tool_call_id.to_string()),
+        content: OneOrMany::one(ToolResultContent::Text(Text {
+            text: value.to_string(),
+        })),
+    });
+    (content, value)
+}
+
+fn pre_dispatch_authorization_failure(
+    tool_id: &str,
+    tool_call_id: &str,
+    error: &golish_agent_kit::harness::AuthorizationError,
+) -> (UserContent, serde_json::Value) {
+    let value = json!({
+        "error": error.to_string(),
+        "code": error.code(),
+    });
+    let content = UserContent::ToolResult(ToolResult {
+        id: tool_id.to_string(),
+        call_id: Some(tool_call_id.to_string()),
+        content: OneOrMany::one(ToolResultContent::Text(Text {
+            text: value.to_string(),
+        })),
+    });
+    (content, value)
+}
 
 fn runtime_supervisor_agent_path(sub_agent_context: &SubAgentContext) -> String {
     if sub_agent_context.depth == 0 {
@@ -132,6 +233,26 @@ where
         success = tracing::field::Empty,
     );
 
+    if let Err(error) = golish_agent_kit::harness::PreActionAuthorizer::check_candidate_tool_call(
+        ctx.candidate_attempt.as_ref(),
+        tool_name,
+        &tool_args,
+    ) {
+        let (content, value) = pre_dispatch_authorization_failure(&tool_id, &tool_call_id, &error);
+        tool_span.record("success", false);
+        tool_span.record("langfuse.observation.output", value.to_string());
+        let event = AiEvent::ToolResult {
+            tool_name: tool_name.clone(),
+            result: value,
+            success: false,
+            request_id: tool_id.clone(),
+            source: ToolSource::Main,
+        };
+        emit_to_frontend(ctx, event.clone());
+        capture_ctx.process(&event);
+        return (content, vec![]);
+    }
+
     // Check for loop detection
     let loop_result = {
         let mut detector = ctx.access.loop_detector.write().await;
@@ -168,24 +289,109 @@ where
         return (blocked_result, vec![]);
     }
 
-    // Start DB tracking for tool call timing
-    let db_guard = if let Some(tracker) = ctx.events.db_tracker {
-        Some(
+    // Runtime-aware stage tools require an awaited durable start row before the
+    // executor is entered. Ordinary chat keeps the historical best-effort
+    // telemetry seam, but an operation/stage identity may never execute with a
+    // missing tracker or a rejected DB fence.
+    let runtime_identity = match runtime_tool_identity(ctx) {
+        Ok(identity) => identity,
+        Err(error) => {
+            let (content, value) = pre_dispatch_tracking_failure(&tool_id, &tool_call_id, error);
+            tool_span.record("success", false);
+            tool_span.record("langfuse.observation.output", value.to_string());
+            let event = AiEvent::ToolResult {
+                tool_name: tool_name.clone(),
+                result: value,
+                success: false,
+                request_id: tool_id.clone(),
+                source: ToolSource::Main,
+            };
+            emit_to_frontend(ctx, event.clone());
+            capture_ctx.process(&event);
+            return (content, vec![]);
+        }
+    };
+    let db_guard = match (ctx.events.db_tracker, runtime_identity.as_ref()) {
+        (Some(tracker), Some(identity)) => match tracker
+            .start_tool_call_with_runtime(&tool_id, tool_name, &tool_args, Some(identity))
+            .await
+        {
+            Ok(guard) if guard.record_id.is_some() => Some(guard),
+            Ok(_) => {
+                let (content, value) = pre_dispatch_tracking_failure(
+                    &tool_id,
+                    &tool_call_id,
+                    "durable start returned no record id",
+                );
+                tool_span.record("success", false);
+                tool_span.record("langfuse.observation.output", value.to_string());
+                let event = AiEvent::ToolResult {
+                    tool_name: tool_name.clone(),
+                    result: value,
+                    success: false,
+                    request_id: tool_id.clone(),
+                    source: ToolSource::Main,
+                };
+                emit_to_frontend(ctx, event.clone());
+                capture_ctx.process(&event);
+                return (content, vec![]);
+            }
+            Err(error) => {
+                let (content, value) =
+                    pre_dispatch_tracking_failure(&tool_id, &tool_call_id, error);
+                tool_span.record("success", false);
+                tool_span.record("langfuse.observation.output", value.to_string());
+                let event = AiEvent::ToolResult {
+                    tool_name: tool_name.clone(),
+                    result: value,
+                    success: false,
+                    request_id: tool_id.clone(),
+                    source: ToolSource::Main,
+                };
+                emit_to_frontend(ctx, event.clone());
+                capture_ctx.process(&event);
+                return (content, vec![]);
+            }
+        },
+        (Some(tracker), None) => Some(
             tracker
                 .start_tool_call(&tool_id, tool_name, &tool_args)
                 .await,
-        )
-    } else {
-        None
+        ),
+        (None, Some(_)) => {
+            let (content, value) = pre_dispatch_tracking_failure(
+                &tool_id,
+                &tool_call_id,
+                "database tracker is unavailable",
+            );
+            tool_span.record("success", false);
+            tool_span.record("langfuse.observation.output", value.to_string());
+            let event = AiEvent::ToolResult {
+                tool_name: tool_name.clone(),
+                result: value,
+                success: false,
+                request_id: tool_id.clone(),
+                source: ToolSource::Main,
+            };
+            emit_to_frontend(ctx, event.clone());
+            capture_ctx.process(&event);
+            return (content, vec![]);
+        }
+        (None, None) => None,
     };
 
     // Execute tool with HITL approval check
     let tool_context = AgentToolContext {
         request_id: tool_id.clone(),
+        tool_call_record_id: db_guard.as_ref().and_then(|guard| guard.record_id),
         tool_name: tool_name.to_string(),
         source: ToolSource::Main,
         operation_id: ctx.harness_operation_id,
+        stage_execution_id: ctx.stage_execution_id,
+        stage_run_unit_id: ctx.stage_run_unit_id,
         organization_id: ctx.harness_org_id,
+        worker_lease: ctx.worker_lease.clone(),
+        candidate_attempt: ctx.candidate_attempt.clone(),
     };
     let mut result = golish_core::with_agent_tool_context(
         Some(tool_context.clone()),
@@ -210,7 +416,7 @@ where
 
     // Tool Call Auto-Fixer: if execution failed with a schema/argument error,
     // try a lightweight LLM call to repair the args and retry once.
-    if !result.success {
+    if !result.success && runtime_identity.is_none() {
         let error_text = result
             .value
             .get("error")
@@ -269,9 +475,25 @@ where
     // Finish DB tracking with result
     if let (Some(tracker), Some(guard)) = (ctx.events.db_tracker, db_guard) {
         let result_text = serde_json::to_string(&result.value).unwrap_or_default();
-        tracker
-            .finish_tool_call(guard, result.success, &result_text)
-            .await;
+        let finish_result = if runtime_identity.is_some() {
+            tracker
+                .finish_tool_call_checked(guard, result.success, &result_text)
+                .await
+        } else {
+            tracker
+                .finish_tool_call(guard, result.success, &result_text)
+                .await;
+            Ok(())
+        };
+        if let Err(error) = finish_result {
+            result = ToolExecutionResult {
+                value: json!({
+                    "error": format!("runtime tool-call finalization failed: {error}"),
+                    "code": "RUNTIME_TOOL_TRACKING_FINISH_FAILED",
+                }),
+                success: false,
+            };
+        }
 
         // Record search logs for web search tools
         if tool_name.starts_with("tavily_") || tool_name.starts_with("web_search") {
@@ -332,7 +554,16 @@ where
             };
 
         if !skip_memory {
-            tracker.maybe_store_tool_memory(tool_name, &tool_args, &result.value, result.success);
+            tracker.maybe_store_tool_memory(
+                legacy_tool_memory_context(
+                    ctx.harness_stage.is_some(),
+                    ctx.harness_operation_id.is_some(),
+                ),
+                tool_name,
+                &tool_args,
+                &result.value,
+                result.success,
+            );
         }
     }
 
@@ -388,6 +619,28 @@ where
                 repeated_tool,
                 repeat_count,
             );
+            let scoped_context = match retrieve_scoped_context_data(
+                ctx,
+                &sub_agent_context.original_request,
+                ctx.harness_org_id,
+                ctx.worker_lease.as_ref().map(|lease| lease.worker_run_id),
+            )
+            .await
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "harness::runtime_supervisor",
+                        %error,
+                        "scoped ContextPack unavailable; refusing legacy global fallback"
+                    );
+                    None
+                }
+            };
+            let supervisor_task = match scoped_context {
+                Some(context) => format!("{}\n\n{}", sub_agent_context.original_request, context),
+                None => sub_agent_context.original_request.clone(),
+            };
             let supervisor_ctx = RuntimeSupervisorContext {
                 stage: ctx.harness_stage,
                 agent_path: runtime_supervisor_agent_path(sub_agent_context),
@@ -396,7 +649,7 @@ where
                 } else {
                     format!("subagent_depth_{}", sub_agent_context.depth)
                 },
-                task: sub_agent_context.original_request.clone(),
+                task: supervisor_task,
                 trigger: "execution_monitor".to_string(),
                 repeated_tool: repeated_tool.clone(),
                 repeat_count,
@@ -533,4 +786,91 @@ where
     let hooks = hook_registry.run_post_tool_hooks(&post_ctx);
 
     (user_content, hooks)
+}
+
+#[cfg(test)]
+mod runtime_tracking_tests {
+    use super::*;
+    use golish_agent_kit::db_tracking::LegacyToolMemoryContext;
+    use golish_core::WorkerLeaseContext;
+
+    #[test]
+    fn trusted_harness_context_never_uses_legacy_tool_memory() {
+        assert_eq!(
+            legacy_tool_memory_context(true, false),
+            LegacyToolMemoryContext::HarnessCustomerFact
+        );
+        assert_eq!(
+            legacy_tool_memory_context(false, true),
+            LegacyToolMemoryContext::HarnessCustomerFact
+        );
+        assert_eq!(
+            legacy_tool_memory_context(false, false),
+            LegacyToolMemoryContext::GeneralConversation
+        );
+    }
+
+    #[test]
+    fn runtime_identity_requires_an_exact_operation_execution_pair() {
+        let operation_id = uuid::Uuid::new_v4();
+        assert!(
+            runtime_tool_identity_from_parts(Some(operation_id), None, None, None, None,).is_err()
+        );
+        assert!(runtime_tool_identity_from_parts(
+            None,
+            Some(uuid::Uuid::new_v4()),
+            None,
+            None,
+            None,
+        )
+        .is_err());
+        assert!(
+            runtime_tool_identity_from_parts(None, None, None, None, None)
+                .expect("ordinary chat identity")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn runtime_identity_carries_the_exact_worker_fence_and_rejects_cross_unit_lease() {
+        let unit_id = uuid::Uuid::new_v4();
+        let lease = WorkerLeaseContext {
+            worker_run_id: uuid::Uuid::new_v4(),
+            stage_run_unit_id: unit_id,
+            lease_token: uuid::Uuid::new_v4(),
+            attempt_epoch: 4,
+        };
+        let identity = runtime_tool_identity_from_parts(
+            Some(uuid::Uuid::new_v4()),
+            Some(uuid::Uuid::new_v4()),
+            Some(unit_id),
+            Some(uuid::Uuid::new_v4()),
+            Some(&lease),
+        )
+        .expect("consistent runtime identity")
+        .expect("runtime identity");
+        assert_eq!(identity.worker_run_id, Some(lease.worker_run_id));
+        assert_eq!(identity.attempt_epoch, Some(lease.attempt_epoch));
+        assert_eq!(identity.lease_token, Some(lease.lease_token));
+
+        assert!(runtime_tool_identity_from_parts(
+            Some(identity.operation_id),
+            Some(identity.stage_execution_id),
+            Some(uuid::Uuid::new_v4()),
+            identity.organization_id,
+            Some(&lease),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn tracking_failure_result_is_structured_for_pre_dispatch_short_circuit() {
+        let (content, value) =
+            pre_dispatch_tracking_failure("tool-1", "call-1", "database unavailable");
+        assert_eq!(value["code"], RUNTIME_TOOL_TRACKING_REQUIRED);
+        assert!(value["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("before dispatch")));
+        assert!(matches!(content, UserContent::ToolResult(_)));
+    }
 }

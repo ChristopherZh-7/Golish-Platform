@@ -8,10 +8,12 @@ import { TerminalInstanceManager } from "@/lib/terminal/TerminalInstanceManager"
 import { resetSessionSequence } from "@/services/ai-events/session-sequence";
 import type {
   AgentMode,
+  CandidateReviewHint,
   DetailViewMode,
   ExecutionMode,
   InputMode,
   RenderMode,
+  ReportingReadModelHint,
   Session,
   SessionMode,
   SessionStageRun,
@@ -314,6 +316,38 @@ export function createSessionCoreActions(
             state.sessions[sessionId].stageRuns[stageRun.requestId] = stageRun;
           }
         }
+      }),
+
+    setCandidateReviewHint: (
+      sessionId: string,
+      hint: Omit<CandidateReviewHint, "refreshVersion">
+    ) =>
+      set((state) => {
+        const session = state.sessions[sessionId];
+        if (!session) return;
+        session.candidateReviewHint = {
+          ...hint,
+          refreshVersion: (session.candidateReviewHint?.refreshVersion ?? 0) + 1,
+        };
+      }),
+
+    setReportingReadModelHint: (
+      sessionId: string,
+      hint: Omit<ReportingReadModelHint, "refreshVersion"> | null
+    ) =>
+      set((state) => {
+        const session = state.sessions[sessionId];
+        if (!session) return;
+        if (!hint) {
+          delete session.reportingReadModelHint;
+          return;
+        }
+        const previous = session.reportingReadModelHint;
+        session.reportingReadModelHint = {
+          operationId: hint.operationId,
+          refreshVersion:
+            previous?.operationId === hint.operationId ? previous.refreshVersion + 1 : 1,
+        };
       }),
 
     upsertStageRunRow: (

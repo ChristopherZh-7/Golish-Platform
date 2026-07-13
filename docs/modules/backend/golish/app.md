@@ -14,7 +14,7 @@
 
 ## 职责
 
-把原巨石 `run_gui` 拆成独立可读/可测的启动阶段：`bootstrap`（进程级 setup）、`tauri_app::configure_builder`（plugin/managed-state/lifecycle 装配）、`window_lifecycle::handle_run_event`、`menu`、`mcp_bootstrap`/`sidecar_bootstrap`、`workspace`。CLI/headless 可复用 bootstrap helper 而不拉 Tauri builder。
+把原巨石 `run_gui` 拆成独立可读/可测的启动阶段。DB-ready 后 exactly once 启动 Memory Supervisor、Cleanup DB-global worker 与 Reporting orphan-artifact GC；退出先停 Cleanup/Reporting workers，再 await projector batch，最后才停 pool。CLI/headless 复用同一生命周期顺序。
 
 ## 公开接口
 
@@ -40,7 +40,9 @@
 
 ## 注意事项 / 坑
 
-- **无新逻辑**：是 run_gui 的机械拆分；改启动顺序要兼顾 GUI（run_gui）与 headless（stage_run）两条路径都复用 bootstrap。
+- **组合根逻辑限定**：除 process lifecycle（如 DB-ready Memory Supervisor）外保持 run_gui 的机械拆分；改启动顺序要兼顾 GUI 与 headless/stage-run。
+- Memory Supervisor constructor 可在 AppState 创建时装配，但 `start` 必须等 `DbReadyGate=true`；`bridge_config` 不属于 process lifecycle，禁止在那里 spawn。
+- Reporting GC 的 referenced keys 只从 `report_revision_artifacts`/blob repo 读取；GC 文件 I/O 不进入 DB transaction，且 GUI `window_lifecycle` 必须显式 shutdown owner。
 
 ## 测试入口
 

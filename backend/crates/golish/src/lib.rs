@@ -36,6 +36,7 @@ mod models;
 mod pentest_tool_factory;
 mod projects;
 mod pty;
+pub mod reporting_artifact_store;
 pub mod runtime;
 mod settings;
 mod sidecar;

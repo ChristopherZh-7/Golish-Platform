@@ -49,6 +49,74 @@ async fn prepare_loaded_chain(
     Ok(messages)
 }
 
+async fn checkpoint_bound_chain_json(
+    persistence: &dyn SubAgentChainPersistence,
+    bound: &crate::executor_types::BoundWorkerChainContext,
+    chain_json: &serde_json::Value,
+) -> anyhow::Result<i64> {
+    let _mutation_guard = bound.mutation_lock.lock().await;
+    if bound.lease_is_lost() {
+        anyhow::bail!("worker lease was already lost")
+    }
+    let expected = bound.current_checkpoint_version();
+    let next = persistence
+        .chain_checkpoint_bound_worker(bound, bound.chain_id, chain_json, expected)
+        .await
+        .inspect_err(|_error| {
+            bound.mark_lease_lost();
+        })?;
+    anyhow::ensure!(
+        next == expected + 1,
+        "bound worker checkpoint version advanced unexpectedly: expected {}, got {next}",
+        expected + 1
+    );
+    bound
+        .checkpoint_version
+        .compare_exchange(
+            expected,
+            next,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .map_err(|actual| {
+            anyhow::anyhow!(
+                "bound worker checkpoint witness changed concurrently: expected {expected}, got {actual}"
+            )
+        })?;
+    bound.publish_checkpoint_body(chain_json.clone());
+    Ok(next)
+}
+
+async fn prepare_bound_loaded_chain(
+    persistence: &dyn SubAgentChainPersistence,
+    bound: &crate::executor_types::BoundWorkerChainContext,
+    stored_json: &serde_json::Value,
+) -> anyhow::Result<Vec<Message>> {
+    let messages = deserialize_chat_history(stored_json)
+        .map_err(|error| anyhow::anyhow!("stored bound-worker history is invalid: {error:#}"))?;
+    // A fresh claim may deliberately bind an empty provider-safe history; the
+    // objective is checkpointed immediately before the first provider call.
+    let (messages, stats) = compact_history_for_provider(messages)?;
+    let compacted_json = serialize_chat_history(&messages)?;
+    if &compacted_json != stored_json {
+        checkpoint_bound_chain_json(persistence, bound, &compacted_json)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to durably rewrite provider-safe bound-worker history: {error:#}"
+                )
+            })?;
+        tracing::info!(
+            chain_id = %bound.chain_id,
+            worker_run_id = %bound.worker_lease.worker_run_id,
+            before_bytes = stats.before_bytes,
+            after_bytes = stats.after_bytes,
+            "compacted bound-worker history before replay"
+        );
+    }
+    Ok(messages)
+}
+
 /// Resolve the chain for this delegation, honoring the AI-controlled
 /// `ctx.resume`:
 /// - `Some("<uuid>")` → continue THAT exact prior chain (replay its messages).
@@ -64,6 +132,64 @@ pub(super) async fn maybe_restore_chain(
     parent_context: &SubAgentContext,
     agent_id: &str,
 ) -> anyhow::Result<(Option<uuid::Uuid>, Vec<Message>)> {
+    if let Some(bound) = ctx.bound_worker_chain.as_ref() {
+        let persistence =
+            ctx.chain_persistence
+                .ok_or_else(|| SubAgentChainError::BoundWorkerUnavailable {
+                    worker_run_id: bound.worker_lease.worker_run_id,
+                    reason: "chain persistence backend is unavailable".to_string(),
+                })?;
+        if bound.agent_type != agent_id {
+            return Err(SubAgentChainError::BoundWorkerUnavailable {
+                worker_run_id: bound.worker_lease.worker_run_id,
+                reason: format!(
+                    "bound persistence agent '{}' does not match executor agent '{agent_id}'",
+                    bound.agent_type
+                ),
+            }
+            .into());
+        }
+        if ctx.persistence_session_id != Some(bound.session_id) {
+            return Err(SubAgentChainError::BoundWorkerUnavailable {
+                worker_run_id: bound.worker_lease.worker_run_id,
+                reason: "bound database session identity does not match executor session"
+                    .to_string(),
+            }
+            .into());
+        }
+        let json = match persistence.chain_load_bound_worker(bound).await {
+            Ok(Some(json)) => json,
+            Ok(None) => {
+                return Err(SubAgentChainError::BoundWorkerUnavailable {
+                    worker_run_id: bound.worker_lease.worker_run_id,
+                    reason: "bound worker or chain checkpoint was not found".to_string(),
+                }
+                .into())
+            }
+            Err(error) => {
+                bound.mark_lease_lost();
+                return Err(SubAgentChainError::BoundWorkerUnavailable {
+                    worker_run_id: bound.worker_lease.worker_run_id,
+                    reason: format!("bound worker load failed: {error:#}"),
+                }
+                .into());
+            }
+        };
+        let messages = prepare_bound_loaded_chain(persistence.as_ref(), bound, &json)
+            .await
+            .map_err(|error| SubAgentChainError::BoundWorkerUnavailable {
+                worker_run_id: bound.worker_lease.worker_run_id,
+                reason: error.to_string(),
+            })?;
+        tracing::info!(
+            chain_id = %bound.chain_id,
+            worker_run_id = %bound.worker_lease.worker_run_id,
+            prior_messages = messages.len(),
+            "resumed trusted prebound stage-worker chain"
+        );
+        return Ok((Some(bound.chain_id), messages));
+    }
+
     let requested_exact = ctx
         .resume
         .as_deref()
@@ -220,7 +346,17 @@ pub(super) async fn checkpoint_chain(
     chat_history: &[Message],
     agent_id: &str,
 ) -> anyhow::Result<Option<uuid::Uuid>> {
-    let (Some(persistence), Some(cid)) = (ctx.chain_persistence, chain_id) else {
+    let Some(cid) = chain_id else {
+        return Ok(None);
+    };
+    let Some(persistence) = ctx.chain_persistence else {
+        if let Some(bound) = ctx.bound_worker_chain.as_ref() {
+            return Err(SubAgentChainError::BoundWorkerUnavailable {
+                worker_run_id: bound.worker_lease.worker_run_id,
+                reason: "chain persistence backend is unavailable".to_string(),
+            }
+            .into());
+        }
         return Ok(None);
     };
 
@@ -239,14 +375,35 @@ pub(super) async fn checkpoint_chain(
             reason: format!("history serialization failed: {error:#}"),
         }
     })?;
-    persistence
-        .chain_update(cid, &chain_json)
-        .await
-        .map_err(|error| SubAgentChainError::FinalizeFailed {
-            chain_id: cid,
-            checkpointed_chain_id: None,
-            reason: format!("chain update failed: {error:#}"),
-        })?;
+    if let Some(bound) = ctx.bound_worker_chain.as_ref() {
+        if cid != bound.chain_id {
+            return Err(SubAgentChainError::FinalizeFailed {
+                chain_id: cid,
+                checkpointed_chain_id: None,
+                reason: format!(
+                    "executor chain does not match prebound chain {}",
+                    bound.chain_id
+                ),
+            }
+            .into());
+        }
+        checkpoint_bound_chain_json(persistence.as_ref(), bound, &chain_json)
+            .await
+            .map_err(|error| SubAgentChainError::FinalizeFailed {
+                chain_id: cid,
+                checkpointed_chain_id: None,
+                reason: format!("bound worker checkpoint failed: {error:#}"),
+            })?;
+    } else {
+        persistence
+            .chain_update(cid, &chain_json)
+            .await
+            .map_err(|error| SubAgentChainError::FinalizeFailed {
+                chain_id: cid,
+                checkpointed_chain_id: None,
+                reason: format!("chain update failed: {error:#}"),
+            })?;
+    }
     tracing::info!(
         "[sub-agent:{}] Checkpointed {} provider-safe messages to chain {} ({} -> {} bytes)",
         agent_id,
@@ -269,6 +426,13 @@ pub(super) async fn persist_chain(
     let (Some(persistence), Some(cid)) = (ctx.chain_persistence, durable_chain_id) else {
         return Ok(None);
     };
+
+    // V2 stage-worker usage/accounting will be folded into its compound
+    // lifecycle mutation. Do not escape the fence through the legacy raw usage
+    // update path.
+    if ctx.bound_worker_chain.is_some() {
+        return Ok(Some(cid));
+    }
 
     if let Err(e) = persistence
         .chain_update_usage(cid, 0, 0, 0, 0.0, 0.0, duration_ms as i32)
@@ -296,6 +460,7 @@ pub(super) fn append_durable_chain_marker(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
     use std::sync::{Arc, Mutex};
 
     use golish_core::events::AiEvent;
@@ -311,7 +476,8 @@ mod tests {
     };
     use crate::definition::SubAgentContext;
     use crate::executor_types::{
-        SubAgentChainError, SubAgentChainPersistence, SubAgentExecutorContext,
+        BoundWorkerChainContext, SubAgentChainError, SubAgentChainPersistence,
+        SubAgentExecutorContext,
     };
 
     enum ExactLoad {
@@ -337,6 +503,8 @@ mod tests {
         fail_update: bool,
         updates: Mutex<Vec<serde_json::Value>>,
         usage_updates: Mutex<Vec<i32>>,
+        bound_loads: Mutex<Vec<uuid::Uuid>>,
+        bound_checkpoints: Mutex<Vec<(uuid::Uuid, i64, serde_json::Value)>>,
     }
 
     impl RecordingChainPersistence {
@@ -352,6 +520,8 @@ mod tests {
                 fail_update: false,
                 updates: Mutex::new(Vec::new()),
                 usage_updates: Mutex::new(Vec::new()),
+                bound_loads: Mutex::new(Vec::new()),
+                bound_checkpoints: Mutex::new(Vec::new()),
             }
         }
     }
@@ -443,6 +613,32 @@ mod tests {
                 ExactLoad::Error => anyhow::bail!("synthetic exact chain load failure"),
                 ExactLoad::Present(value) => Ok(Some(value.clone())),
             }
+        }
+
+        async fn chain_load_bound_worker(
+            &self,
+            bound: &BoundWorkerChainContext,
+        ) -> anyhow::Result<Option<serde_json::Value>> {
+            self.bound_loads
+                .lock()
+                .expect("recording mutex")
+                .push(bound.worker_lease.worker_run_id);
+            Ok(Some(bound.initial_chain.clone()))
+        }
+
+        async fn chain_checkpoint_bound_worker(
+            &self,
+            bound: &BoundWorkerChainContext,
+            chain_id: uuid::Uuid,
+            chain_json: &serde_json::Value,
+            expected_checkpoint_version: i64,
+        ) -> anyhow::Result<i64> {
+            assert_eq!(chain_id, bound.chain_id);
+            self.bound_checkpoints
+                .lock()
+                .expect("recording mutex")
+                .push((chain_id, expected_checkpoint_version, chain_json.clone()));
+            Ok(expected_checkpoint_version + 1)
         }
 
         async fn load_prompt_template_overrides(&self) -> Vec<(String, String)> {
@@ -665,6 +861,7 @@ mod tests {
             max_tokens_override: None,
             top_p_override: None,
             chain_persistence: Some(&persistence),
+            bound_worker_chain: None,
             sub_agent_registry: None,
             post_shell_hook: None,
             resume,
@@ -726,6 +923,7 @@ mod tests {
             max_tokens_override: None,
             top_p_override: None,
             chain_persistence: Some(&persistence),
+            bound_worker_chain: None,
             sub_agent_registry: None,
             post_shell_hook: None,
             resume: None,
@@ -770,6 +968,7 @@ mod tests {
             max_tokens_override: None,
             top_p_override: None,
             chain_persistence: Some(&persistence),
+            bound_worker_chain: None,
             sub_agent_registry: None,
             post_shell_hook: None,
             resume: None,
@@ -784,6 +983,97 @@ mod tests {
             hide_tool_in_stage: None,
         };
         checkpoint_chain(&ctx, Some(chain_id), &history, "enumerator").await
+    }
+
+    #[tokio::test]
+    async fn bound_worker_uses_prebound_chain_and_compound_checkpoint() {
+        let chain_id = Uuid::new_v4();
+        let recording = Arc::new(RecordingChainPersistence::new(Uuid::new_v4()));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = Arc::new(RwLock::new(temp.path().to_path_buf()));
+        let registry = Arc::new(RwLock::new(
+            ToolRegistry::new(temp.path().to_path_buf()).await,
+        ));
+        let (event_tx, _event_rx) = mpsc::unbounded_channel::<AiEvent>();
+        let persistence: Arc<dyn SubAgentChainPersistence> = recording.clone();
+        let bound = BoundWorkerChainContext {
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            worker_lease: golish_core::WorkerLeaseContext {
+                worker_run_id: Uuid::new_v4(),
+                stage_run_unit_id: Uuid::new_v4(),
+                lease_token: Uuid::new_v4(),
+                attempt_epoch: 3,
+            },
+            candidate_attempt: None,
+            chain_id,
+            session_id: Uuid::new_v4(),
+            agent_type: "enumerator".to_string(),
+            initial_chain: serde_json::json!([]),
+            initial_prompt_already_checkpointed: false,
+            checkpoint_version: Arc::new(AtomicI64::new(7)),
+            checkpoint_body: Arc::new(std::sync::RwLock::new(serde_json::json!([]))),
+            lease_lost: Arc::new(AtomicBool::new(false)),
+            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            tool_lifecycle: None,
+        };
+        let ctx = SubAgentExecutorContext {
+            event_tx: &event_tx,
+            tool_registry: &registry,
+            workspace: &workspace,
+            provider_name: "test",
+            model_name: "test",
+            session_id: Some("stage-run-test"),
+            persistence_session_id: Some(bound.session_id),
+            transcript_base_dir: None,
+            api_request_stats: None,
+            cancelled: None,
+            briefing: None,
+            temperature_override: None,
+            max_tokens_override: None,
+            top_p_override: None,
+            chain_persistence: Some(&persistence),
+            bound_worker_chain: Some(bound.clone()),
+            sub_agent_registry: None,
+            post_shell_hook: None,
+            resume: Some(Uuid::new_v4().to_string()),
+            sub_tool_router: None,
+            active_org_id_source: None,
+            active_org_id_override: None,
+            operation_id: Some(bound.operation_id),
+            post_tool_result_hook: None,
+            tool_observer: None,
+            initial_submit_repair_mode: None,
+            stage_tool_guard: None,
+            hide_tool_in_stage: None,
+        };
+
+        let (restored_chain_id, prior) =
+            maybe_restore_chain(&ctx, &SubAgentContext::default(), "enumerator")
+                .await
+                .expect("trusted prebound worker loads without creating a chain");
+        assert_eq!(restored_chain_id, Some(chain_id));
+        assert!(prior.is_empty(), "an empty initial checkpoint is valid");
+        checkpoint_chain(&ctx, restored_chain_id, &test_history(), "enumerator")
+            .await
+            .expect("bound checkpoint uses compound persistence");
+
+        assert!(recording
+            .created_for_sessions
+            .lock()
+            .expect("recording mutex")
+            .is_empty());
+        assert!(recording
+            .updates
+            .lock()
+            .expect("recording mutex")
+            .is_empty());
+        assert_eq!(bound.checkpoint_version.load(Ordering::SeqCst), 8);
+        let checkpoints = recording.bound_checkpoints.lock().expect("recording mutex");
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].0, chain_id);
+        assert_eq!(checkpoints[0].1, 7);
     }
 
     #[tokio::test]

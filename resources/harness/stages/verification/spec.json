@@ -1,11 +1,10 @@
 {
   "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: verification. L4 controlled exploit validation. Approval-gated. Phase A.",
+  "$comment": "Verification V2 is gated only by exact persisted WaveUnit/CandidateAttempt truth. Legacy operations retain their persisted completion contract until Task 12 cutover.",
 
   "id": "verification",
   "kind": "verification",
   "risk_level": "critical",
-
   "requires_stages": ["vuln_triage"],
   "allowed_next_stages": ["access_validation", "reporting"],
 
@@ -31,38 +30,15 @@
     }
   ],
 
-  "$comment_p2": "P2 verification-gate SAMPLE — tune to taste. Evidence ids are optional model fields; verification evidence must be resolved from backend ledger/DB truth rather than requiring the model to hand-copy ids.",
-  "required_evidence_kinds": ["exploit_verified"],
-  "finding_verification": {
-    "min_severity": "high",
-    "require_evidence_kinds": ["poc", "exploit_verified"]
-  },
+  "$comment_p2": "The V2 gate ignores model findings, summary, memory/KG and spawned candidates. It requires a non-empty exact DB snapshot set; zero approved is valid only when every frozen work item is an evidence-backed no-candidate decision.",
+  "required_evidence_kinds": [],
 
-  "$comment_gate_rules": "DSL sample (design 2026-06-05). Declarative twin of finding_verification: every high+ finding must carry at least one evidence ref. Add more rules here to extend pass-criteria with zero Rust.",
+  "$comment_gate_rules": "candidate_disposition_complete is persisted-contract aware: V2 consumes VerificationTruthSnapshot only; legacy retains deliverable compatibility.",
   "gate_rules": [
-    {
-      "op": "for_all",
-      "over": "claims",
-      "require": { "pred": "non_empty", "field": "evidence_ids" },
-      "on_fail": { "reason": "claim evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_ids unless a real ledger id is explicitly available"] }
-    },
-    {
-      "op": "for_all",
-      "over": "findings",
-      "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "finding evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
-    },
-    {
-      "op": "for_all",
-      "over": "findings",
-      "where": { "pred": "severity_at_least", "min": "high" },
-      "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "verification finding evidence ids are optional; backend resolves proof from DB/ledger truth" }
-    },
     {
       "op": "candidate_disposition_complete",
       "require_evidence_for_verified": true,
-      "on_fail": { "reason": "every approved candidate must reach a terminal disposition (verified/refuted/blocked)", "hints": ["verified/refuted evidence is resolved from DB/ledger truth; do not hand-copy ids", "blocked \u2192 note the WAF/authz reason"] }
+      "on_fail": { "reason": "exact Verification DB truth is missing or an ever-approved Candidate lacks a valid terminal Attempt", "hints": ["run only the scheduler-bound candidate_verifier and submit_candidate_attempt", "verified requires exact proof evidence plus Finding lineage; refuted requires refutation evidence; blocked requires blocker evidence or a stable reason code"] }
     }
   ]
 }

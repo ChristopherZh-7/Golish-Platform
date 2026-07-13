@@ -9,11 +9,13 @@
 
 pub mod memory;
 pub mod repo;
+pub mod runtime_memory;
 pub mod tracking;
 pub mod types;
 
 pub use memory::*;
 pub use repo::*;
+pub use runtime_memory::*;
 pub use tracking::*;
 pub use types::*;
 

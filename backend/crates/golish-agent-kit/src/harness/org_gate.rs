@@ -672,6 +672,40 @@ pub async fn evaluate_org_stage_gate(
     if let Some(error) = current_wave_gate_error(current_wave, org_id, stage) {
         return GateResult::block(vec![error], Default::default());
     }
+    if stage == StageKind::Cleanup {
+        let (Some(operation_id), Some(organization_id)) = (operation_id, org_id) else {
+            return GateResult::block(
+                vec!["cleanup gate requires exact operation and organization identity".to_string()],
+                Default::default(),
+            );
+        };
+        let cleanup = match repo
+            .cleanup_closeout_gate(operation_id, organization_id)
+            .await
+        {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                return GateResult::block(
+                    vec![format!(
+                        "cleanup authoritative closeout query failed: {error}"
+                    )],
+                    Default::default(),
+                )
+            }
+        };
+        if !cleanup.allows_closeout() {
+            return GateResult::block(
+                vec![format!(
+                    "cleanup closeout blocked by DB truth: missing_obligations={}, nonterminal_obligations={}, undisclosed_residuals={}, invalid_terminal_truth={}",
+                    cleanup.missing_obligation_count,
+                    cleanup.nonterminal_obligation_count,
+                    cleanup.undisclosed_residual_count,
+                    cleanup.invalid_terminal_truth_count,
+                )],
+                Default::default(),
+            );
+        }
+    }
     let effective_cutoff = current_wave.map(|wave| wave.started_at).or(wave_cutoff);
     let effective_wave_cutoff = (spec.asset_wave_barrier || current_wave.is_some())
         .then_some(effective_cutoff)
@@ -2192,6 +2226,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         assert_eq!(extract_pass_token(&d).as_deref(), Some("deadbeef"));
     }
@@ -2209,6 +2244,7 @@ mod tests {
             required_checks_done: vec![],
             coverage: vec![],
             candidates: vec![],
+            candidate_decisions: vec![],
         };
         assert_eq!(extract_pass_token(&d), None);
         d.claims.push(StageClaim {
@@ -2328,6 +2364,7 @@ mod tests {
             required_checks_done: Vec::new(),
             coverage: vec![blocked(TECH_INTEL_WHOIS), blocked(TECH_INTEL_DNS)],
             candidates: Vec::new(),
+            candidate_decisions: Vec::new(),
         };
 
         let normalized = target_intel_deliverable_with_organization_aliases(

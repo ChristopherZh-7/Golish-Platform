@@ -43,11 +43,11 @@ pub struct StageAssetWaveWithItems {
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-struct WaveTargetCandidate {
-    target_id: Uuid,
-    asset_value: String,
-    asset_type: String,
-    source: Option<String>,
+pub(crate) struct WaveTargetCandidate {
+    pub(crate) target_id: Uuid,
+    pub(crate) asset_value: String,
+    pub(crate) asset_type: String,
+    pub(crate) source: Option<String>,
 }
 
 const WAVE_ROW_COLS: &str = "id, operation_id, organization_id, stage_kind, wave_index, status, started_at, completed_at, parent_wave_id, asset_hash";
@@ -170,7 +170,7 @@ fn effective_parent_wave_id(
     requested_parent_wave_id.or(latest_wave_id)
 }
 
-fn stable_asset_hash(candidates: &[WaveTargetCandidate]) -> String {
+pub(crate) fn stable_asset_hash(candidates: &[WaveTargetCandidate]) -> String {
     let mut parts: Vec<String> = candidates
         .iter()
         .map(|c| {
@@ -208,7 +208,10 @@ fn stable_wave_item_hash(items: &[StageAssetWaveItemRow]) -> String {
     stable_asset_hash(&candidates)
 }
 
-fn validate_wave_items(wave: &StageAssetWaveRow, items: &[StageAssetWaveItemRow]) -> Result<()> {
+pub(crate) fn validate_wave_items(
+    wave: &StageAssetWaveRow,
+    items: &[StageAssetWaveItemRow],
+) -> Result<()> {
     if items.is_empty() {
         return Err(anyhow::anyhow!(
             "running asset wave {} has no items; refusing denominator fallback",

@@ -1,7 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { listOrganizationCandidates } from "@/lib/api/organizations";
+import {
+  listOrganizationCandidates,
+  type OrganizationCandidate,
+} from "@/lib/api/organizations";
 import {
   ASK_HUMAN_COUNTDOWN_MS,
   AskHumanInline,
@@ -205,6 +208,26 @@ describe("parseReviewContext", () => {
 });
 
 describe("AskHumanInline unit_review (DB-sourced candidates)", () => {
+  function candidate(
+    id: string,
+    value: string,
+    evidence: unknown = {},
+    extra: Partial<OrganizationCandidate> = {}
+  ): OrganizationCandidate {
+    return {
+      id,
+      kind: "organization",
+      label: value,
+      value,
+      source: "test",
+      confidence: 1,
+      status: "needs_review",
+      evidence,
+      createdAt: 1,
+      ...extra,
+    };
+  }
+
   function reviewRequest(context: string): AskHumanState {
     return {
       requestId: "req-u",
@@ -219,13 +242,8 @@ describe("AskHumanInline unit_review (DB-sourced candidates)", () => {
   it("loads candidates from the DB by org id and seeds the table with ownership labels", async () => {
     vi.mocked(listOrganizationCandidates).mockResolvedValue({
       organizations: [
-        {
-          kind: "organization",
-          label: "n",
-          value: "平安银行股份有限公司",
-          evidence: { raw: { scale: "58%" } },
-        },
-        { kind: "organization", label: "n", value: "平安证券股份有限公司", evidence: {} },
+        candidate("cand-bank", "平安银行股份有限公司", { raw: { scale: "58%" } }),
+        candidate("cand-securities", "平安证券股份有限公司"),
       ],
       targets: [],
     });
@@ -238,14 +256,49 @@ describe("AskHumanInline unit_review (DB-sourced candidates)", () => {
       />
     );
 
-    await waitFor(() => {
-      expect(screen.getByLabelText("Bulk targets")).toHaveValue(
-        "平安银行股份有限公司 (58%)\n平安证券股份有限公司"
-      );
-    });
+    expect(await screen.findByLabelText("Name for unit 1")).toHaveValue("平安银行股份有限公司");
+    expect(screen.getByLabelText("Name for unit 2")).toHaveValue("平安证券股份有限公司");
+    expect(screen.getByText("58%")).toBeInTheDocument();
     expect(listOrganizationCandidates).toHaveBeenCalledWith(
       "11111111-2222-3333-4444-555555555555"
     );
+  });
+
+  it("submits stable unit identities in a UnitReviewSubmission envelope", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    vi.mocked(listOrganizationCandidates).mockResolvedValue({
+      organizations: [
+        candidate("cand-1", "Child A", {}, {
+          organizationId: "org-1",
+          ownershipPercent: "51%",
+        }),
+      ],
+      targets: [],
+    });
+
+    render(
+      <AskHumanInline
+        request={reviewRequest('{"organization_id":"11111111-2222-3333-4444-555555555555"}')}
+        onSubmit={onSubmit}
+        onSkip={vi.fn()}
+      />
+    );
+
+    await screen.findByLabelText("Name for unit 1");
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(onSubmit.mock.calls[0][0])).toEqual({
+      rows: [
+        expect.objectContaining({
+          reviewRowId: "candidate:cand-1",
+          candidateId: "cand-1",
+          organizationId: "org-1",
+          included: true,
+        }),
+      ],
+    });
   });
 
   it("does not hit the DB and seeds from the array when context is a candidate array", () => {
@@ -257,7 +310,7 @@ describe("AskHumanInline unit_review (DB-sourced candidates)", () => {
         onSkip={vi.fn()}
       />
     );
-    expect(screen.getByLabelText("Bulk targets")).toHaveValue("Acme Sub (51%)");
+    expect(screen.getByLabelText("Name for unit 1")).toHaveValue("Acme Sub (51%)");
     expect(listOrganizationCandidates).not.toHaveBeenCalled();
   });
 
@@ -268,12 +321,7 @@ describe("AskHumanInline unit_review (DB-sourced candidates)", () => {
     // and the table silently empties. The captured discover org id rescues it.
     vi.mocked(listOrganizationCandidates).mockResolvedValue({
       organizations: [
-        {
-          kind: "organization",
-          label: "n",
-          value: "平安银行股份有限公司",
-          evidence: { raw: { scale: "58%" } },
-        },
+        candidate("cand-bank", "平安银行股份有限公司", { raw: { scale: "58%" } }),
       ],
       targets: [],
     });
@@ -285,15 +333,14 @@ describe("AskHumanInline unit_review (DB-sourced candidates)", () => {
         fallbackOrgId={FALLBACK}
       />
     );
-    await waitFor(() => {
-      expect(screen.getByLabelText("Bulk targets")).toHaveValue("平安银行股份有限公司 (58%)");
-    });
+    expect(await screen.findByLabelText("Name for unit 1")).toHaveValue("平安银行股份有限公司");
+    expect(screen.getByText("58%")).toBeInTheDocument();
     expect(listOrganizationCandidates).toHaveBeenCalledWith(FALLBACK);
   });
 
   it("uses the discover org id when the context carries no org id at all", async () => {
     vi.mocked(listOrganizationCandidates).mockResolvedValue({
-      organizations: [{ kind: "organization", label: "n", value: "平安证券股份有限公司", evidence: {} }],
+      organizations: [candidate("cand-securities", "平安证券股份有限公司")],
       targets: [],
     });
     render(
@@ -304,9 +351,7 @@ describe("AskHumanInline unit_review (DB-sourced candidates)", () => {
         fallbackOrgId={FALLBACK}
       />
     );
-    await waitFor(() => {
-      expect(screen.getByLabelText("Bulk targets")).toHaveValue("平安证券股份有限公司");
-    });
+    expect(await screen.findByLabelText("Name for unit 1")).toHaveValue("平安证券股份有限公司");
     expect(listOrganizationCandidates).toHaveBeenCalledWith(FALLBACK);
   });
 
@@ -330,13 +375,8 @@ describe("AskHumanInline unit_review (DB-sourced candidates)", () => {
   it("hides sub-threshold subsidiaries in unit_review when a discovery threshold is set", async () => {
     vi.mocked(listOrganizationCandidates).mockResolvedValue({
       organizations: [
-        {
-          kind: "organization",
-          label: "n",
-          value: "平安银行股份有限公司",
-          evidence: { raw: { scale: "58%" } },
-        },
-        { kind: "organization", label: "n", value: "平安好医生", evidence: { raw: { scale: "39%" } } },
+        candidate("cand-bank", "平安银行股份有限公司", { raw: { scale: "58%" } }),
+        candidate("cand-doctor", "平安好医生", { raw: { scale: "39%" } }),
       ],
       targets: [],
     });
@@ -348,9 +388,8 @@ describe("AskHumanInline unit_review (DB-sourced candidates)", () => {
         minOwnershipPercent={51}
       />
     );
-    await waitFor(() => {
-      expect(screen.getByLabelText("Bulk targets")).toHaveValue("平安银行股份有限公司 (58%)");
-    });
+    expect(await screen.findByLabelText("Name for unit 1")).toHaveValue("平安银行股份有限公司");
+    expect(screen.queryByDisplayValue("平安好医生")).not.toBeInTheDocument();
   });
 
   it("does not use the discover fallback for scope_review (only unit_review)", () => {

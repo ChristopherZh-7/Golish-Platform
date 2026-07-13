@@ -227,6 +227,22 @@ pub(crate) fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunE
         api.prevent_exit();
         let handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
+            let cleanup_closeout = handle.state::<AppState>().cleanup_closeout.clone();
+            let reporting_artifact_gc = handle.state::<AppState>().reporting_artifact_gc.clone();
+            reporting_artifact_gc.shutdown().await;
+            if let Err(error) = cleanup_closeout.shutdown().await {
+                tracing::warn!(
+                    error_code = error.code(),
+                    "Cleanup closeout worker shutdown failed"
+                );
+            }
+            let memory_supervisor = handle.state::<AppState>().memory_supervisor.clone();
+            if let Err(error) = memory_supervisor.shutdown().await {
+                tracing::warn!(
+                    error_code = error.code(),
+                    "Memory Supervisor shutdown failed"
+                );
+            }
             persist_window_state_on_exit(&handle).await;
             handle.exit(0);
         });

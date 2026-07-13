@@ -122,37 +122,69 @@ struct ChecksumRepair {
     new_checksum: Vec<u8>,
 }
 
-/// Plan the only metadata repair that is safe without migration-specific schema
-/// knowledge: a checksum refresh for a row SQLx already recorded as successful,
-/// with the same version and description as the embedded migration.
+#[derive(Debug, Clone, Copy)]
+struct ChecksumRepairAllowance {
+    version: i64,
+    description: &'static str,
+    old_checksum: &'static [u8],
+    new_checksum: &'static [u8],
+}
+
+/// Checksum repair is a migration-specific emergency procedure, not a generic
+/// recovery strategy. Every entry must name the exact old and new SHA-384
+/// values after the corresponding schema postcondition has been audited.
 ///
-/// Missing rows are deliberately absent from this plan so the next SQLx run
-/// executes their SQL. Failed/dirty rows and description mismatches are also
-/// left untouched and therefore remain hard migration errors.
+/// The list is intentionally empty: the current persistent database has no
+/// checksum drift. In particular, runtime-memory migrations are immutable once
+/// successfully applied and must never be added here to hide a partial schema.
+const CHECKSUM_REPAIR_ALLOWLIST: &[ChecksumRepairAllowance] = &[];
+
+/// Plan only migration-specific checksum repairs whose exact old/new SHA-384
+/// pair is explicitly allowlisted after schema postconditions were audited.
+///
+/// Missing rows are deliberately absent so the next SQLx run executes their
+/// SQL. Failed/dirty rows and description mismatches remain hard migration
+/// errors. Any unallowlisted checksum drift fails closed; matching version and
+/// description alone is never permission to hide a partially applied schema.
 fn plan_checksum_repairs(
     records: &[MigrationMetadata],
     migrator: &sqlx::migrate::Migrator,
-) -> Vec<ChecksumRepair> {
-    migrator
+) -> Result<Vec<ChecksumRepair>> {
+    let mut repairs = Vec::new();
+    for migration in migrator
         .iter()
         .filter(|migration| !migration.migration_type.is_down_migration())
-        .filter_map(|migration| {
-            let record = records.iter().find(|record| {
-                record.version == migration.version
-                    && record.success
-                    && record.description == migration.description.as_ref()
-            })?;
-            if record.checksum == migration.checksum.as_ref() {
-                return None;
-            }
-            Some(ChecksumRepair {
-                version: record.version,
-                description: record.description.clone(),
-                old_checksum: record.checksum.clone(),
-                new_checksum: migration.checksum.to_vec(),
-            })
-        })
-        .collect()
+    {
+        let Some(record) = records.iter().find(|record| {
+            record.version == migration.version
+                && record.success
+                && record.description == migration.description.as_ref()
+        }) else {
+            continue;
+        };
+        if record.checksum == migration.checksum.as_ref() {
+            continue;
+        }
+        let Some(allowance) = CHECKSUM_REPAIR_ALLOWLIST.iter().find(|allowance| {
+            allowance.version == record.version
+                && allowance.description == record.description
+                && allowance.old_checksum == record.checksum
+                && allowance.new_checksum == migration.checksum.as_ref()
+        }) else {
+            anyhow::bail!(
+                "migration checksum drift for version {} ({}) is not explicitly allowlisted",
+                record.version,
+                record.description
+            );
+        };
+        repairs.push(ChecksumRepair {
+            version: allowance.version,
+            description: allowance.description.to_string(),
+            old_checksum: allowance.old_checksum.to_vec(),
+            new_checksum: allowance.new_checksum.to_vec(),
+        });
+    }
+    Ok(repairs)
 }
 
 /// Repair checksum metadata for migrations SQLx has already recorded as
@@ -180,7 +212,7 @@ async fn repair_migrations(
     .fetch_all(&mut *conn)
     .await?;
 
-    for repair in plan_checksum_repairs(&records, migrator) {
+    for repair in plan_checksum_repairs(&records, migrator)? {
         let updated = sqlx::query(
             r#"UPDATE _sqlx_migrations
                SET checksum = $1
@@ -334,12 +366,11 @@ mod tests {
         let old = migration(1, "old", "CREATE TABLE old_truth(id int)");
         let new = migration(2, "new", "CREATE TABLE new_truth(id int)");
         let migrator = migrator(vec![old.clone(), new.clone()]);
-        let mut records = vec![metadata(&old, true, b"legacy-checksum")];
+        let mut records = vec![metadata(&old, true, old.checksum.as_ref())];
 
-        let repairs = plan_checksum_repairs(&records, &migrator);
-        assert_eq!(repairs.len(), 1, "only the applied old row is repairable");
-        assert_eq!(repairs[0].version, old.version);
-        assert!(repairs.iter().all(|repair| repair.version != new.version));
+        let repairs = plan_checksum_repairs(&records, &migrator)
+            .expect("matching metadata needs no checksum repair");
+        assert!(repairs.is_empty());
         apply_repairs(&mut records, &repairs);
 
         let mut postconditions = HashSet::new();
@@ -359,7 +390,8 @@ mod tests {
         let migrator = migrator(vec![dirty.clone()]);
         let mut records = vec![metadata(&dirty, false, b"partial-checksum")];
 
-        let repairs = plan_checksum_repairs(&records, &migrator);
+        let repairs = plan_checksum_repairs(&records, &migrator)
+            .expect("dirty rows are not successful checksum candidates");
         assert!(repairs.is_empty());
         apply_repairs(&mut records, &repairs);
 
@@ -372,21 +404,18 @@ mod tests {
     }
 
     #[test]
-    fn successful_matching_metadata_repairs_only_the_checksum() {
-        let applied = migration(11, "stable description", "ALTER TABLE t ADD COLUMN c int");
+    fn changed_successful_foundation_checksum_is_not_repaired() {
+        let applied = migration(
+            20260712000001,
+            "runtime memory foundation",
+            "ALTER TABLE operation_state ADD COLUMN runtime_memory_contract text",
+        );
         let migrator = migrator(vec![applied.clone()]);
-        let mut records = vec![metadata(&applied, true, b"old-checksum")];
-        let before_version = records[0].version;
-        let before_description = records[0].description.clone();
+        let records = vec![metadata(&applied, true, b"old-prefix-checksum")];
 
-        let repairs = plan_checksum_repairs(&records, &migrator);
-        assert_eq!(repairs.len(), 1);
-        apply_repairs(&mut records, &repairs);
-
-        assert_eq!(records[0].version, before_version);
-        assert_eq!(records[0].description, before_description);
-        assert!(records[0].success);
-        assert_eq!(records[0].checksum, applied.checksum.as_ref());
+        let error = plan_checksum_repairs(&records, &migrator)
+            .expect_err("a changed successful foundation migration must fail closed");
+        assert!(error.to_string().contains("20260712000001"));
     }
 
     #[test]
@@ -396,6 +425,8 @@ mod tests {
         let mut record = metadata(&applied, true, b"old-checksum");
         record.description = "different description".to_string();
 
-        assert!(plan_checksum_repairs(&[record], &migrator).is_empty());
+        assert!(plan_checksum_repairs(&[record], &migrator)
+            .expect("description mismatch is not a checksum repair candidate")
+            .is_empty());
     }
 }

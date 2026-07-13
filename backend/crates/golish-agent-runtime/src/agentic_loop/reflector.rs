@@ -169,6 +169,7 @@ pub(crate) async fn maybe_run_reflector(
             max_tokens_override: reflector_def.max_tokens,
             top_p_override: reflector_def.top_p,
             chain_persistence: ctx.chain_persistence.as_ref(),
+            bound_worker_chain: None,
             sub_agent_registry: Some(ctx.sub_agent_registry),
             post_shell_hook: None,
             post_tool_result_hook: None,

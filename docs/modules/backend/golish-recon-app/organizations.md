@@ -15,14 +15,14 @@
 
 ## 职责
 
-组织 = 甲方资产情报库。命令面支持多级树（`parent_id`）+ 26 字段（8 基础 + 18 profile，对应前端 5-tab）。`types` wire 类型、`candidates` engagement 候选读写（被 asset_intel 用）、`validation` profile patch 校验。
+组织 = 甲方资产情报库。命令面支持多级树（`parent_id`）+ 26 字段（8 基础 + 18 profile，对应前端 5-tab）。`types` 是 ts-rs wire 类型源，包含 stable `OrganizationCandidate` / `UnitReviewDecisionRow` / `UnitReviewSubmission`；`candidates` 负责 engagement 候选读写与 existing-child stable projection；`validation` 负责 profile patch 校验。
 
 ## 公开接口
 
 | 符号 | 说明 |
 |---|---|
 | 组织 CRUD Tauri 命令 | 增删改查 + profile patch |
-| `types`（wire 类型） | 组织 DTO |
+| `types`（wire 类型） | 组织 DTO + ts-rs generated candidate/unit-review contracts |
 | `candidates`（`upsert_organization_candidates_for_org` / `OrganizationCandidates`） | engagement 候选 |
 | `validation` | profile patch 校验 |
 
@@ -31,7 +31,7 @@
 | 文件 | 作用 |
 |---|---|
 | `mod.rs` | 组织命令 |
-| `artifact_cleanup.rs` | 删除组织前清理 target-bound 本地 artifact / sitemap / operation 绑定 |
+| `artifact_cleanup.rs` | 只消费 committed deletion-job frozen snapshot，幂等清理 target-bound 本地 artifact / sitemap；不在 request transaction 做文件 I/O |
 | `types.rs` / `candidates.rs` / `validation.rs` | wire 类型 / 候选 / 校验 |
 
 ## 依赖
@@ -42,8 +42,9 @@
 
 - `grp` 字符串分级（§S1）兼容保留作回退；新 target 直接关联 `organization_id`。
 - 树形 `parent_id` 自引用：删/移组织注意级联与环检测。
-- 删除组织会先按 org 子树 target 引用解析 host，清理工作区内 target-bound `.golish/captures/<host>`、`.golish/analysis/<host>`、`sitemap_store` 中对应 entry，并清空指向该 org 子树的 `operation_state.engagement_org_id`；日志 / transcript / audit / finding 历史证据不在这里删除。
+- `organization_delete` 只经 Cleanup `OrganizationDeletionPort` 提交 active workspace witness 与 DB precheck/invalidation job；DB 从 server-owned project scope 冻结 canonical root，不信 target snapshot/caller path。不再直接删文件或 live rows。`DbBackedOrganizationArtifactCleaner` 对 canonical root/namespace/host dir 做 symlink-escape 检查，只消费 committed frozen snapshot；sitemap prune 使用 project-scoped JSON CAS 防并发丢数据，hard delete 由 DB-global Cleanup worker 的后续事务完成。
 - **不变量 I2**：组织 CRUD 验所有权（IDOR）。
+- `OrganizationCandidate.id` 是 wire 必填；已有 direct child 会在 `organization_candidates_list` 中合成为 `existing-org:<uuid>`，并显式携带 `organization_id`。editable name 不能用于恢复或重算身份。
 
 ## 测试入口
 

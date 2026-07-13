@@ -1,6 +1,6 @@
-import { ClipboardList, Upload } from "lucide-react";
+import { ClipboardList, Plus, Upload } from "lucide-react";
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
-import type { OrganizationCandidate } from "@/lib/api/organizations";
+import type { OrganizationCandidate, UnitReviewDecisionRow } from "@/lib/api/organizations";
 import { cn } from "@/lib/utils";
 
 export type ScopeReviewKind = "scope_review" | "unit_review";
@@ -13,6 +13,7 @@ export interface ScopeReviewHandle {
 
 /** A single editable row — a flat string map keyed by the active columns. */
 export type ScopeReviewRow = Record<string, string>;
+export type ScopeOrUnitReviewRow = ScopeReviewRow | UnitReviewDecisionRow;
 
 interface Column {
   key: string;
@@ -139,20 +140,96 @@ export function parseOwnershipPercent(raw: string | null | undefined): number | 
 export function candidatesToUnitRows(
   candidates: OrganizationCandidate[],
   minOwnershipPercent?: number | null
-): ScopeReviewRow[] {
-  const rows: ScopeReviewRow[] = [];
+): UnitReviewDecisionRow[] {
+  const rows: UnitReviewDecisionRow[] = [];
   for (const candidate of candidates) {
+    if (candidate.kind !== "organization") continue;
     const name = (candidate.value ?? "").trim();
     if (!name) continue;
     const raw = (candidate.evidence as { raw?: { scale?: string } } | undefined)?.raw;
-    const scale = raw?.scale?.trim();
+    const scale = candidate.ownershipPercent?.trim() || raw?.scale?.trim();
     if (minOwnershipPercent != null) {
       const pct = parseOwnershipPercent(scale);
       if (pct == null || pct < minOwnershipPercent) continue;
     }
-    rows.push({ name: scale ? `${name} (${scale})` : name, aliases: "", domains: "" });
+    rows.push({
+      reviewRowId: `candidate:${candidate.id}`,
+      candidateId: candidate.id,
+      organizationId: candidate.organizationId ?? null,
+      name,
+      aliases: [],
+      domains: [],
+      ownershipPercent: scale || null,
+      included: true,
+    });
   }
   return rows;
+}
+
+function stringList(raw: unknown): string[] {
+  if (Array.isArray(raw))
+    return raw
+      .map(String)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  if (typeof raw !== "string") return [];
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function manualUnitRow(name = ""): UnitReviewDecisionRow {
+  return {
+    reviewRowId: crypto.randomUUID(),
+    candidateId: "",
+    organizationId: null,
+    name,
+    aliases: [],
+    domains: [],
+    ownershipPercent: null,
+    included: true,
+  };
+}
+
+/** Normalize legacy names, candidate DTOs, or already-stable decision rows.
+ * Identity is assigned once here and is never recomputed from editable text. */
+export function normalizeUnitReviewRows(initial: unknown): UnitReviewDecisionRow[] {
+  if (!Array.isArray(initial)) return [];
+  return initial.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    const candidateId =
+      typeof row.candidateId === "string"
+        ? row.candidateId
+        : typeof row.id === "string"
+          ? row.id
+          : "";
+    const name =
+      typeof row.name === "string"
+        ? row.name.trim()
+        : typeof row.value === "string"
+          ? row.value.trim()
+          : "";
+    const reviewRowId =
+      typeof row.reviewRowId === "string" && row.reviewRowId.trim()
+        ? row.reviewRowId
+        : candidateId
+          ? `candidate:${candidateId}`
+          : crypto.randomUUID();
+    return [
+      {
+        reviewRowId,
+        candidateId,
+        organizationId: typeof row.organizationId === "string" ? row.organizationId : null,
+        name,
+        aliases: stringList(row.aliases),
+        domains: stringList(row.domains),
+        ownershipPercent: typeof row.ownershipPercent === "string" ? row.ownershipPercent : null,
+        included: typeof row.included === "boolean" ? row.included : true,
+      },
+    ];
+  });
 }
 
 export function parseBulkRows(kind: ScopeReviewKind, text: string): ScopeReviewRow[] {
@@ -214,17 +291,22 @@ export const ScopeReviewTable = forwardRef<
   {
     kind: ScopeReviewKind;
     initial: unknown;
-    onConfirm: (rows: ScopeReviewRow[]) => void;
+    onConfirm: (rows: ScopeOrUnitReviewRow[]) => void;
     onSkip: () => void;
   }
 >(function ScopeReviewTable({ kind, initial, onConfirm, onSkip }, ref) {
   const seededRowsRef = useRef(normalizeScopeRows(kind, initial));
   const seededBulkTextRef = useRef(initialBulkText(kind, initial));
   const [bulkText, setBulkText] = useState(() => seededBulkTextRef.current);
+  const [unitRows, setUnitRows] = useState(() => normalizeUnitReviewRows(initial));
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleConfirm = () => {
+    if (kind === "unit_review") {
+      onConfirm(unitRows.filter((row) => row.name.trim().length > 0));
+      return;
+    }
     // An unchanged scope-review is approval of the exact trusted rows that were
     // presented, including explicit type/scope=out. Re-parsing the value-only
     // textarea would silently turn every row into scope=in. Deliberate edits are
@@ -241,7 +323,12 @@ export const ScopeReviewTable = forwardRef<
   // user's latest edits (parsed from the textarea), identical to clicking
   // "Confirm". Re-created when the edited text changes so it never confirms a
   // stale snapshot.
-  useImperativeHandle(ref, () => ({ confirm: handleConfirm }), [kind, bulkText, onConfirm]);
+  useImperativeHandle(ref, () => ({ confirm: handleConfirm }), [
+    kind,
+    bulkText,
+    unitRows,
+    onConfirm,
+  ]);
 
   // Read dropped / picked text files into the textarea, appending so multiple
   // files (or a file plus a manual paste) accumulate rather than overwrite.
@@ -256,6 +343,119 @@ export const ScopeReviewTable = forwardRef<
       /* ignore unreadable files */
     }
   };
+
+  if (kind === "unit_review") {
+    return (
+      <div className="space-y-2">
+        <div className="rounded-md border border-border/40 bg-background/40">
+          <div className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-muted-foreground">
+            <ClipboardList className="w-3.5 h-3.5" />
+            Units / organizations
+          </div>
+          <div className="space-y-2 px-2 pb-2">
+            {unitRows.length === 0 && (
+              <p className="rounded border border-dashed border-border/50 px-2 py-3 text-center text-[11px] text-muted-foreground">
+                No candidate units yet. Add a row to review one manually.
+              </p>
+            )}
+            {unitRows.map((row, index) => (
+              <div
+                key={row.reviewRowId}
+                className="grid grid-cols-[auto_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 rounded border border-border/40 p-2"
+              >
+                <div className="flex flex-col items-center gap-1 pt-1">
+                  <input
+                    type="checkbox"
+                    aria-label={`Include ${row.name || `unit ${index + 1}`}`}
+                    checked={row.included}
+                    onChange={(event) =>
+                      setUnitRows((current) =>
+                        current.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, included: event.target.checked } : item
+                        )
+                      )
+                    }
+                  />
+                  {row.ownershipPercent && (
+                    <span className="text-[10px] text-muted-foreground">
+                      {row.ownershipPercent}
+                    </span>
+                  )}
+                </div>
+                <input
+                  aria-label={`Name for unit ${index + 1}`}
+                  value={row.name}
+                  onChange={(event) =>
+                    setUnitRows((current) =>
+                      current.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, name: event.target.value } : item
+                      )
+                    )
+                  }
+                  placeholder="Organization name"
+                  className="min-w-0 rounded border border-border/50 bg-background px-2 py-1 text-[12px] focus:border-accent focus:outline-none"
+                />
+                <input
+                  aria-label={`Aliases for unit ${index + 1}`}
+                  value={row.aliases.join(", ")}
+                  onChange={(event) =>
+                    setUnitRows((current) =>
+                      current.map((item, itemIndex) =>
+                        itemIndex === index
+                          ? { ...item, aliases: stringList(event.target.value) }
+                          : item
+                      )
+                    )
+                  }
+                  placeholder="Aliases"
+                  className="min-w-0 rounded border border-border/50 bg-background px-2 py-1 text-[12px] focus:border-accent focus:outline-none"
+                />
+                <input
+                  aria-label={`Domains for unit ${index + 1}`}
+                  value={row.domains.join(", ")}
+                  onChange={(event) =>
+                    setUnitRows((current) =>
+                      current.map((item, itemIndex) =>
+                        itemIndex === index
+                          ? { ...item, domains: stringList(event.target.value) }
+                          : item
+                      )
+                    )
+                  }
+                  placeholder="Domains"
+                  className="min-w-0 rounded border border-border/50 bg-background px-2 py-1 text-[12px] focus:border-accent focus:outline-none"
+                />
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => setUnitRows((current) => [...current, manualUnitRow()])}
+              className="flex items-center gap-1 rounded border border-border/50 px-2 py-1 text-[11px] text-muted-foreground hover:border-accent/40 hover:text-foreground"
+            >
+              <Plus className="h-3 w-3" />
+              Add row
+            </button>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={handleConfirm}
+            className="rounded-md bg-accent px-3 py-1 text-[11px] font-medium text-accent-foreground transition-colors hover:bg-accent/80"
+          >
+            Confirm
+          </button>
+          <button
+            type="button"
+            onClick={onSkip}
+            className="rounded-md border border-border/50 px-3 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50"
+          >
+            Skip
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-2">

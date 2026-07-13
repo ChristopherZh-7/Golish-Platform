@@ -12,6 +12,7 @@
 
 - 改 Task 编排各角色（Generator/Refiner/Reporter/Primary）如何调 LLM 时
 - 改用户意图分类（`classify_user_intent`/`UserIntent`）或 one-shot phase 完成逻辑时
+- 改 runtime-memory V2 的可信 stage/unit/worker 身份、worker lease/fence 或 knowledge context 注入时
 
 ## 职责
 
@@ -26,6 +27,22 @@
 | `AgentExecutor` impl（trait_impl） | 把 orchestrator 接到 bridge |
 | `classify_user_intent` / `UserIntent` | 用户意图分类 |
 | `truncate_to_char_boundary`（`pub(crate)`） | UTF-8 安全截断 |
+
+## Runtime-memory V2 可信句柄
+
+`BridgeAgentExecutor::execute_subtask` 不从模型文本或工具参数重建 runtime 身份。它把 orchestrator 给出的 `ExecutionContext` 交给 `AgentBridge::publish_active_execution_context`；后者先验证 `worker_lease.stage_run_unit_id == stage_run_unit_id`，再一次性发布下列 subtask-local 句柄：
+
+| 句柄 / 服务 | 来源与用途 |
+|---|---|
+| `harness_active_operation_id` | 可信 operation 身份；供 runtime tool 定位同一 operation |
+| `harness_active_stage_execution_id` | 可信 `stage_runs.id`；用于 tool attribution / final seal |
+| `harness_active_stage_run_unit_id` | 可信 per-org Unit；不得由模型选择或覆盖 |
+| `harness_active_worker_lease` | `WorkerLeaseContext { worker_run_id, stage_run_unit_id, lease_token, attempt_epoch }`；runtime repository 用它做 heartbeat、tool lifecycle 与提交 fencing |
+| `services.runtime_memory` | host 注入的 `RuntimeMemoryRepository`；负责 claim / heartbeat / checkpoint / final-seal 等持久化，不向模型暴露数据库句柄 |
+| `services.knowledge_context` | host 注入的 exact-scope `ContextPackProvider`；runtime 只传可信 operation/unit/worker identity hint 与查询，授权上下文始终封装在 provider 内 |
+| `services.knowledge_memory` | host 持有的 canonical `KnowledgeUnitOfWork`；与 process-global projector 共享，但 bridge 不启动第二个 projector worker，也不把 UoW 直接塞进每轮模型上下文 |
+
+`prepare.rs` 在构造 `AgenticLoopContext` 时复制上述 identity/lease，并注入 runtime repository 与 scoped ContextPack provider。isolated loop 无论成功还是报错，executor 都立即 `clear_active_subtask_context`；top-level request cleanup 还会再清一次作为 abort/unwind fallback，避免下一 subtask 继承旧 fence。
 
 ## 关键文件
 
@@ -51,6 +68,9 @@
 - bridge executor 的直接 sub-agent 兼容路径还要从 bridge DB tracker 注入 `SubAgentExecutorContext.persistence_session_id`。事件 session key 继续只做 tracing；headless `set_tracker_session_uuid` 绑定后的真实 UUID 才能归属和恢复 message chain。
 - GUI/CLI 生产入口先持有 universal top-level token，再用 `BridgeAgentExecutor::from_request` 升级 Task；Task/profile lead→orchestrator 传同一个 clone，不能调用 `new` 递归 acquire。token 首次 Task 初始化才重置 `StageRunReentryGuard`。
 - lease 由外层 request 与 executor 共同持有，因此 reflector passes、stage retries 和 subtasks 不重新 acquire、不会自锁，并共用同一个 guard；3 次真实 per-org BLOCK 用尽后不会再次派发。last clone 在 success/error/cancel/unwind 路径 Drop 后释放，下一条 continuation 才能 acquire 并沿 durable worker chain 获取 fresh 有界预算。
+- `TopLevelRequestLease` 是 bridge 单会话 single-flight 的 RAII owner；`WorkerLeaseContext` 是数据库 worker mutation fence。两者生命周期、token 与职责完全不同，不能互相替代。
+- runtime identity 的唯一可信入口是 orchestrator 构造的 `ExecutionContext`。任何新增 direct executor / resume 路径都必须保留 operation → stage execution → Unit → worker lease 的完整链，并在进入 loop 前通过一致性校验；禁止从 LLM submission、hidden arg 或 `DbTracker.session_uuid` 猜身份。
+- canonical knowledge 写入与 ContextPack 读取是两条不同端口：写入走 host-owned `KnowledgeUnitOfWork`，读取走 server-authorized `ContextPackProvider`。不要把 pool、可构造的 auth context 或 canonical UoW 暴露给 agent/runtime 查询参数。
 - Primary 进入 isolated loop 时必须用 `ExecutionContext.task_input` 填充 request-local `SubAgentContext.original_request`：headless CLI `-e` 与 GUI Task 都从这条共享 seam 进入 `stage_run` worker 的有界 operator-constraint 摘录。新 operation 使用 durable 初始请求；GUI resume 由 orchestrator 在不改写 durable `tasks.input` 的前提下送入本次非空 continuation/steering 文本，空 continuation 回退初始请求。不要把它写进 session preference，也不要用它重置 worker chain / reentry guard；它只是当前顶层请求的数据上下文。
 
 ## 测试入口

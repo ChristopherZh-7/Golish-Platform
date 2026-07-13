@@ -202,28 +202,43 @@ async fn store_nuclei_hit_guarded(
     authorization: &AuthorizedScanTarget,
     hit: &NucleiStoredHit<'_>,
 ) -> crate::ScanRunnerResult<()> {
+    let operation_id =
+        golish_core::current_agent_tool_context().and_then(|context| context.operation_id);
+    let requested_context = if operation_id.is_some() {
+        golish_pentest_domain::FindingWriteContext::HarnessLegacy
+    } else {
+        golish_pentest_domain::FindingWriteContext::LegacyNonHarness
+    };
+    let write_context =
+        golish_db::repo::findings::authorize_legacy_write(pool, requested_context, operation_id)
+            .await?;
     let mut tx = pool.begin().await?;
     golish_db::repo::scoped::lock_target_write_guard(&mut tx, &authorization.guard).await?;
 
-    sqlx::query_scalar::<_, Uuid>(
-        r#"INSERT INTO findings (id, target, target_id, title, severity, description, evidence, tool, source, project_path)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'nuclei', 'nuclei', $8)
-           ON CONFLICT (id) DO UPDATE SET
-               description = EXCLUDED.description,
-               evidence = EXCLUDED.evidence,
-               target_id = EXCLUDED.target_id
-           WHERE findings.project_path IS NOT DISTINCT FROM EXCLUDED.project_path
-           RETURNING id"#,
+    golish_db::repo::findings::insert_legacy_with_executor(
+        &mut *tx,
+        write_context,
+        &golish_db::repo::findings::LegacyFindingWrite {
+            id: hit.finding_id,
+            title: hit.title.to_string(),
+            severity: hit.severity.to_ascii_lowercase(),
+            cvss: None,
+            url: hit.matched_url.to_string(),
+            target: hit.matched_url.to_string(),
+            target_id: Some(authorization.guard.target_id),
+            description: hit.description.to_string(),
+            steps: String::new(),
+            remediation: String::new(),
+            evidence: hit.evidence.clone(),
+            tool: "nuclei".to_string(),
+            template: hit.template_id.to_string(),
+            refs: hit
+                .cve_id
+                .map_or_else(|| serde_json::json!([]), |cve| serde_json::json!([cve])),
+            source: "nuclei".to_string(),
+            project_path: Some(authorization.guard.project_path.clone()),
+        },
     )
-    .bind(hit.finding_id)
-    .bind(hit.matched_url)
-    .bind(authorization.guard.target_id)
-    .bind(hit.title)
-    .bind(hit.severity)
-    .bind(hit.description)
-    .bind(hit.evidence.to_string())
-    .bind(&authorization.guard.project_path)
-    .fetch_one(&mut *tx)
     .await?;
 
     sqlx::query_scalar::<_, Uuid>(

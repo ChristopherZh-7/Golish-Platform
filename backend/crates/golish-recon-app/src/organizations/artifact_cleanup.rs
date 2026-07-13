@@ -1,13 +1,63 @@
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use sqlx::PgPool;
 use url::Url;
 use uuid::Uuid;
 
+use golish_app_core::GolishError;
+use golish_cleanup_app::{
+    ArtifactCleanupFailure, ArtifactCleanupPlan, OrganizationArtifactCleaner,
+};
+
+#[derive(Clone)]
+pub struct DbBackedOrganizationArtifactCleaner {
+    pool: Arc<PgPool>,
+}
+
+impl DbBackedOrganizationArtifactCleaner {
+    pub fn new(pool: Arc<PgPool>) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl OrganizationArtifactCleaner for DbBackedOrganizationArtifactCleaner {
+    async fn cleanup(&self, plan: &ArtifactCleanupPlan) -> Result<(), ArtifactCleanupFailure> {
+        cleanup_frozen_artifacts(&self.pool, plan)
+            .await
+            .map_err(|error| ArtifactCleanupFailure {
+                code: "organization_artifact_cleanup_failed".to_string(),
+                message: error.to_string(),
+            })
+    }
+}
+
+#[allow(dead_code)] // retained only for the legacy guard regression test; production uses P7b request().
+pub(super) async fn ensure_runtime_scope_deletion_allowed(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<(), GolishError> {
+    reject_runtime_scope_history(
+        org_id,
+        golish_db::repo::operation_org_scope::history_exists_for_org_subtree(pool, org_id).await?,
+    )
+}
+
+fn reject_runtime_scope_history(org_id: Uuid, history_exists: bool) -> Result<(), GolishError> {
+    if history_exists {
+        return Err(GolishError::RuntimeScopeHistoryRequiresInvalidation(
+            org_id.to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)] // legacy one-shot seam; never called by organization_delete after P7b.
 pub(super) async fn cleanup_before_delete(pool: &PgPool, org_id: Uuid) -> Result<()> {
     let Some(org) = golish_db::repo::organizations::get_one(pool, org_id).await? else {
         return Ok(());
@@ -18,7 +68,7 @@ pub(super) async fn cleanup_before_delete(pool: &PgPool, org_id: Uuid) -> Result
     let hosts = hosts_from_values(refs.iter().map(String::as_str));
     let paths_removed = cleanup_host_artifact_dirs(&org.project_path, &hosts).await?;
     let sitemap_entries_removed =
-        prune_sitemap_hosts(pool, Some(org.project_path.as_str()), &hosts).await?;
+        prune_sitemap_hosts(pool, org.project_path.as_str(), &hosts).await?;
     let operation_bindings_cleared =
         golish_db::repo::operation_state::clear_engagement_org_for_subtree(pool, org_id).await?;
 
@@ -31,6 +81,29 @@ pub(super) async fn cleanup_before_delete(pool: &PgPool, org_id: Uuid) -> Result
         "organization delete cleaned target artifacts",
     );
 
+    Ok(())
+}
+
+/// Execute only from a committed deletion-job snapshot. The DB worker claim is
+/// committed before this function receives the plan, so filesystem I/O never
+/// overlaps the organization precheck/invalidation transaction.
+async fn cleanup_frozen_artifacts(pool: &PgPool, plan: &ArtifactCleanupPlan) -> Result<()> {
+    let hosts = hosts_from_values(
+        plan.targets
+            .iter()
+            .map(|target| target.target_value_at_time.as_str()),
+    );
+    let paths_removed = cleanup_host_artifact_dirs(&plan.project_path_at_time, &hosts).await?;
+    let sitemap_entries_removed =
+        prune_sitemap_hosts(pool, plan.project_path_at_time.as_str(), &hosts).await?;
+    tracing::info!(
+        deletion_job_id = %plan.job_id,
+        root_organization_id_at_time = %plan.root_organization_id_at_time,
+        target_count = plan.targets.len(),
+        paths_removed,
+        sitemap_entries_removed,
+        "organization deletion artifact snapshot cleaned idempotently",
+    );
     Ok(())
 }
 
@@ -105,33 +178,125 @@ fn normalize_host(raw: &str) -> Option<String> {
 }
 
 async fn cleanup_host_artifact_dirs(project_path: &str, hosts: &BTreeSet<String>) -> Result<usize> {
-    let Some(root) = safe_project_root(project_path) else {
-        return Ok(0);
-    };
+    let root = safe_project_root(project_path).await?;
+    let mut validated_paths = Vec::new();
+    for namespace_name in ["captures", "analysis"] {
+        let Some(namespace) = validated_artifact_namespace(&root, namespace_name).await? else {
+            continue;
+        };
+        for host in hosts {
+            let candidate = namespace.join(host_slug(host));
+            let Some(candidate) = validated_artifact_directory(&namespace, &candidate).await?
+            else {
+                continue;
+            };
+            validated_paths.push(candidate);
+        }
+    }
 
     let mut removed = 0;
-    for host in hosts {
-        let slug = host_slug(host);
-        let paths = [
-            root.join(".golish").join("captures").join(&slug),
-            root.join(".golish").join("analysis").join(&slug),
-        ];
-        for path in paths {
-            if remove_dir_if_present(&path).await? {
-                removed += 1;
-            }
+    for path in validated_paths {
+        if remove_dir_if_present(&path).await? {
+            removed += 1;
         }
     }
     Ok(removed)
 }
 
-fn safe_project_root(raw: &str) -> Option<PathBuf> {
+async fn safe_project_root(raw: &str) -> Result<PathBuf> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed == "." {
-        return None;
+        bail!("project root is empty or ambiguous");
     }
     let path = PathBuf::from(trimmed);
-    path.is_absolute().then_some(path)
+    if !path.is_absolute() {
+        bail!("project root must be an absolute canonical path");
+    }
+    let canonical = tokio::fs::canonicalize(&path).await.with_context(|| {
+        format!(
+            "project root is missing or inaccessible: {}",
+            path.display()
+        )
+    })?;
+    if canonical != path {
+        bail!(
+            "project root is not canonical: expected {}, resolved {}",
+            path.display(),
+            canonical.display()
+        );
+    }
+    let metadata = tokio::fs::metadata(&canonical)
+        .await
+        .with_context(|| format!("failed to inspect project root {}", canonical.display()))?;
+    if !metadata.is_dir() {
+        bail!("project root is not a directory: {}", canonical.display());
+    }
+    Ok(canonical)
+}
+
+async fn validated_artifact_namespace(root: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let path = root.join(".golish").join(name);
+    match tokio::fs::symlink_metadata(&path).await {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to inspect artifact namespace {}", path.display())
+            })
+        }
+    }
+    let canonical = tokio::fs::canonicalize(&path)
+        .await
+        .with_context(|| format!("failed to resolve artifact namespace {}", path.display()))?;
+    if !canonical.starts_with(root) {
+        bail!(
+            "artifact namespace escapes project root: {} -> {}",
+            path.display(),
+            canonical.display()
+        );
+    }
+    if !tokio::fs::metadata(&canonical).await?.is_dir() {
+        bail!(
+            "artifact namespace is not a directory: {}",
+            canonical.display()
+        );
+    }
+    Ok(Some(canonical))
+}
+
+async fn validated_artifact_directory(
+    namespace: &Path,
+    candidate: &Path,
+) -> Result<Option<PathBuf>> {
+    match tokio::fs::symlink_metadata(candidate).await {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect artifact directory {}",
+                    candidate.display()
+                )
+            })
+        }
+    }
+    let canonical = tokio::fs::canonicalize(candidate).await.with_context(|| {
+        format!(
+            "failed to resolve artifact directory {}",
+            candidate.display()
+        )
+    })?;
+    if !canonical.starts_with(namespace) {
+        bail!(
+            "artifact directory escapes its project namespace: {} -> {}",
+            candidate.display(),
+            canonical.display()
+        );
+    }
+    if !tokio::fs::metadata(&canonical).await?.is_dir() {
+        bail!("artifact path is not a directory: {}", canonical.display());
+    }
+    Ok(Some(canonical))
 }
 
 async fn remove_dir_if_present(path: &Path) -> Result<bool> {
@@ -144,33 +309,41 @@ async fn remove_dir_if_present(path: &Path) -> Result<bool> {
 
 async fn prune_sitemap_hosts(
     pool: &PgPool,
-    project_path: Option<&str>,
+    project_path: &str,
     hosts: &BTreeSet<String>,
 ) -> Result<usize> {
     if hosts.is_empty() {
         return Ok(0);
     }
 
-    let Some(mut data) =
-        golish_db::repo::sitemap_store::read_zap_sitemap(pool, project_path).await?
-    else {
-        return Ok(0);
-    };
-
-    let removed = prune_sitemap_data(&mut data, hosts);
-    if removed == 0 {
-        return Ok(0);
+    for _ in 0..16 {
+        let Some(mut data) =
+            golish_db::repo::sitemap_store::read_zap_sitemap(pool, Some(project_path)).await?
+        else {
+            return Ok(0);
+        };
+        let expected = data.clone();
+        let removed = prune_sitemap_data(&mut data, hosts);
+        if removed == 0 {
+            return Ok(0);
+        }
+        let has_entries = data
+            .get("entries")
+            .and_then(Value::as_object)
+            .is_some_and(|entries| !entries.is_empty());
+        let replacement = has_entries.then_some(&data);
+        if golish_db::repo::sitemap_store::compare_and_swap_zap_sitemap(
+            pool,
+            project_path,
+            &expected,
+            replacement,
+        )
+        .await?
+        {
+            return Ok(removed);
+        }
     }
-
-    golish_db::repo::sitemap_store::delete_zap_sitemap(pool, project_path).await?;
-    let has_entries = data
-        .get("entries")
-        .and_then(Value::as_object)
-        .is_some_and(|entries| !entries.is_empty());
-    if has_entries {
-        golish_db::repo::sitemap_store::upsert_zap_sitemap(pool, project_path, &data).await?;
-    }
-    Ok(removed)
+    bail!("sitemap prune concurrent update retry limit exceeded")
 }
 
 fn prune_sitemap_data(data: &mut Value, hosts: &BTreeSet<String>) -> usize {
@@ -216,6 +389,15 @@ fn host_slug(host: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn immutable_runtime_scope_history_returns_the_stable_delete_guard_code() {
+        let org_id = Uuid::new_v4();
+        let error = reject_runtime_scope_history(org_id, true)
+            .expect_err("immutable scope history must block live organization delete");
+        assert_eq!(error.code(), "runtime_scope_history_requires_invalidation");
+        assert!(reject_runtime_scope_history(org_id, false).is_ok());
+    }
 
     #[test]
     fn host_extraction_handles_urls_wildcards_ips_and_noise() {
@@ -267,11 +449,60 @@ mod tests {
         assert!(entries.contains_key("GET:https://other.example/app.js"));
     }
 
-    #[test]
-    fn safe_project_root_requires_absolute_workspace_path() {
-        assert!(safe_project_root("/tmp/workspace").is_some());
-        assert!(safe_project_root("").is_none());
-        assert!(safe_project_root(".").is_none());
-        assert!(safe_project_root("relative/workspace").is_none());
+    #[tokio::test]
+    async fn safe_project_root_requires_an_existing_canonical_workspace_path() {
+        let project = tempfile::tempdir().expect("temporary project root");
+        let canonical = tokio::fs::canonicalize(project.path())
+            .await
+            .expect("canonical temporary project root");
+        assert_eq!(
+            safe_project_root(canonical.to_str().expect("utf-8 project root"))
+                .await
+                .expect("canonical project root"),
+            canonical
+        );
+        assert!(safe_project_root("").await.is_err());
+        assert!(safe_project_root(".").await.is_err());
+        assert!(safe_project_root("relative/workspace").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn invalid_project_root_fails_closed_instead_of_reporting_zero_cleanup() {
+        let hosts = BTreeSet::from(["example.test".to_string()]);
+        let error = cleanup_host_artifact_dirs("relative/workspace", &hosts)
+            .await
+            .expect_err("an untrusted relative artifact root must be an explicit failure");
+        assert!(error.to_string().contains("project root"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn artifact_cleanup_rejects_symlink_escape_without_deleting_external_data() {
+        let project = tempfile::tempdir().expect("temporary project root");
+        let external = tempfile::tempdir().expect("temporary external root");
+        let external_host = external.path().join("example.test");
+        tokio::fs::create_dir_all(&external_host)
+            .await
+            .expect("create external host artifact");
+        tokio::fs::create_dir_all(project.path().join(".golish"))
+            .await
+            .expect("create project metadata directory");
+        std::os::unix::fs::symlink(external.path(), project.path().join(".golish/captures"))
+            .expect("link capture namespace outside project");
+
+        let hosts = BTreeSet::from(["example.test".to_string()]);
+        let canonical_project = tokio::fs::canonicalize(project.path())
+            .await
+            .expect("canonical project root");
+        cleanup_host_artifact_dirs(
+            canonical_project.to_str().expect("utf-8 project root"),
+            &hosts,
+        )
+        .await
+        .expect_err("a capture namespace symlink escape must fail closed");
+        assert!(
+            external_host.exists(),
+            "cleanup must not follow a project artifact symlink into external data"
+        );
     }
 }

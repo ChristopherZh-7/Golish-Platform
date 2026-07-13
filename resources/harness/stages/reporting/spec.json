@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: reporting. Terminal sink stage. Synthesize report from accumulated evidence. Phase A.",
+  "$comment": "Stage spec: reporting. Terminal sink stage. Server builds a canonical cited revision; publication remains explicit.",
 
   "id": "reporting",
   "kind": "reporting",
@@ -14,8 +14,18 @@
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
 
-  "$comment_gate_rules": "reporting synthesizes from inherited evidence; its only old required_check (evidence_non_empty) was a no-op covered by structural checks, so no semantic gate_rules.",
-  "gate_rules": [],
+  "$comment_gate_rules": "Reporting closes only on current DB-authoritative validation truth. Model prose, artifacts, and publication status cannot substitute for this attestation.",
+  "gate_rules": [
+    {
+      "op": "report_revision_validated",
+      "on_fail": {
+        "reason": "canonical report revision is missing, stale, uncited, or not validated",
+        "hints": [
+          "Rebuild the DB-authoritative report revision from current canonical sources; final publication is a separate operator action."
+        ]
+      }
+    }
+  ],
 
   "min_invocations": {},
 

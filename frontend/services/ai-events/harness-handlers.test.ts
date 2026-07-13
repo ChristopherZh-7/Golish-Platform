@@ -6,11 +6,17 @@ import { describe, expect, it, vi } from "vitest";
 import { handleHarnessTrace, stageRunRequestIdFromAgentRequestId } from "./harness-handlers";
 import type { EventHandlerContext } from "./types";
 
-function mockCtx(upsert: ReturnType<typeof vi.fn>): EventHandlerContext {
+function mockCtx(
+  upsert: ReturnType<typeof vi.fn>,
+  setCandidateReviewHint: ReturnType<typeof vi.fn> = vi.fn(),
+  setReportingReadModelHint: ReturnType<typeof vi.fn> = vi.fn()
+): EventHandlerContext {
   return {
     sessionId: "sess-1",
     getState: vi.fn(() => ({
       upsertStageRunRow: upsert,
+      setCandidateReviewHint,
+      setReportingReadModelHint,
     })) as unknown as EventHandlerContext["getState"],
     flushTextDeltas: vi.fn(),
     flushSessionDeltas: vi.fn(),
@@ -56,6 +62,7 @@ describe("handleHarnessTrace", () => {
     const [sid, row, meta] = upsert.mock.calls[0];
     expect(sid).toBe("sess-1");
     expect(row.id).toBe("org-1");
+    expect(row.operationId).toBe("op");
     expect(row.name).toBe("平安科技");
     expect(row.agentRequestId).toBe("op::org::org-1");
     expect(row.ownershipPercent).toBe(100);
@@ -90,6 +97,82 @@ describe("handleHarnessTrace", () => {
       mockCtx(upsert)
     );
     expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("stores Candidate review traces only as DB refresh hints", () => {
+    const upsert = vi.fn();
+    const setCandidateReviewHint = vi.fn();
+    handleHarnessTrace(
+      {
+        type: "harness_trace",
+        operation_id: "operation-1",
+        stage: "attack_candidate",
+        agent_path: "main",
+        kind: "candidate_review_required",
+        wave_run_id: "wave-1",
+        status: "resume_pending",
+        resume_version: 4,
+        candidate_count: 3,
+        proposed_candidate_count: 0,
+      } as HarnessEvent,
+      mockCtx(upsert, setCandidateReviewHint)
+    );
+
+    expect(upsert).not.toHaveBeenCalled();
+    expect(setCandidateReviewHint).toHaveBeenCalledWith("sess-1", {
+      operationId: "operation-1",
+      waveRunId: "wave-1",
+      status: "resume_pending",
+      resumeVersion: 4,
+    });
+  });
+
+  it.each(["gate_decision", "deliverable_submitted"] as const)(
+    "stores a Reporting %s trace only as a read-model refresh hint",
+    (kind) => {
+      const upsert = vi.fn();
+      const setReportingReadModelHint = vi.fn();
+      handleHarnessTrace(
+        {
+          type: "harness_trace",
+          operation_id: "operation-reporting-1",
+          stage: "reporting",
+          agent_path: "main",
+          kind,
+          ...(kind === "gate_decision"
+            ? { gate: "PASS", findings: 0 }
+            : {
+                status: "accepted",
+                cited_evidence_refs: [],
+                available_real_ids: [],
+              }),
+        } as HarnessEvent,
+        mockCtx(upsert, vi.fn(), setReportingReadModelHint)
+      );
+
+      expect(upsert).not.toHaveBeenCalled();
+      expect(setReportingReadModelHint).toHaveBeenCalledWith("sess-1", {
+        operationId: "operation-reporting-1",
+      });
+    }
+  );
+
+  it("does not create a Reporting hint from another stage's gate trace", () => {
+    const setReportingReadModelHint = vi.fn();
+    handleHarnessTrace(
+      {
+        type: "harness_trace",
+        operation_id: "operation-target-intel",
+        stage: "target_intel",
+        agent_path: "main",
+        kind: "gate_decision",
+        gate: "PASS",
+        findings: 0,
+      } as HarnessEvent,
+      mockCtx(vi.fn(), vi.fn(), setReportingReadModelHint)
+    );
+
+    expect(setReportingReadModelHint).not.toHaveBeenCalled();
   });
 
   it("clamps an unknown row status to pending", () => {

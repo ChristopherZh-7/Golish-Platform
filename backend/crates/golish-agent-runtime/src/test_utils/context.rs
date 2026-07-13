@@ -324,6 +324,8 @@ impl TestContext {
             graph_backend: None,
             sidecar_state: None,
             chain_persistence: None,
+            runtime_memory: None,
+            knowledge_context: None,
             plan_manager: &self.plan_manager,
             api_request_stats: &self.api_request_stats,
             additional_tool_definitions: vec![],
@@ -343,6 +345,10 @@ impl TestContext {
             harness_org_id: None,
             harness_org_id_source: None,
             harness_operation_id: None,
+            stage_execution_id: None,
+            stage_run_unit_id: None,
+            worker_lease: None,
+            candidate_attempt: None,
             stage_run_reentry_guard: Arc::new(StageRunReentryGuard::default()),
         }
     }

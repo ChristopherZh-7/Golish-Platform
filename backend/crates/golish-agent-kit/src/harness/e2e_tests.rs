@@ -73,6 +73,7 @@ fn happy_deliverable(stage_run_id: Uuid) -> ExternalAttackSurfaceDeliverable {
         ],
         coverage: vec![],
         candidates: vec![],
+        candidate_decisions: vec![],
     };
     // 1 subdomain + 1 http_service (覆盖 sprint_skeleton 的两类 expected_findings)
     d.findings.push(HarnessFinding {
@@ -205,6 +206,7 @@ fn e2e_vacuous_deliverable_is_blocked_with_recovery() {
         required_checks_done: vec![],
         coverage: vec![],
         candidates: vec![],
+        candidate_decisions: vec![],
     };
     let decision = harness.validate_gate(&d, None);
     assert!(!decision.allowed);

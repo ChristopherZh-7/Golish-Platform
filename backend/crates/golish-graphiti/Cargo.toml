@@ -12,6 +12,7 @@ description = "PostgreSQL-backed graph knowledge base for security entity/relati
 # turns the previously-implicit "shares golish-db's PG" coupling into a
 # compiler-visible edge and lets us consume its canonical `PgPool` type.
 golish-db = { workspace = true }
+golish-memory-domain = { workspace = true }
 
 # Async SQL toolkit. Kept workspace-aligned with golish-db so the two crates
 # never drift onto divergent sqlx feature sets while sharing one pool.
@@ -28,5 +29,11 @@ thiserror.workspace = true
 tracing.workspace = true
 
 # Utilities
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid.workspace = true
 chrono = { version = "0.4", features = ["serde"] }
+sha2.workspace = true
+
+[dev-dependencies]
+serial_test.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

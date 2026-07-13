@@ -194,8 +194,9 @@ mod tests {
 
     use async_trait::async_trait;
     use golish_agent_kit::harness::StageKind;
-    use golish_agent_kit::task_orchestrator::AgentExecutor;
+    use golish_agent_kit::task_orchestrator::{AgentExecutor, ExecutionContext};
     use golish_core::runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
+    use golish_core::WorkerLeaseContext;
 
     use crate::agentic_loop::StageRunReentryGuard;
     use crate::bridge_executor::BridgeAgentExecutor;
@@ -477,6 +478,15 @@ mod tests {
         let (_workspace, bridge) = real_bridge().await;
         let abandoned = bridge.begin_top_level_request().await.expect("A acquires");
         *bridge.harness_active_stage.write().await = Some(StageKind::Enumeration);
+        *bridge.harness_active_stage_execution_id.write().await =
+            Some(uuid::Uuid::from_u128(0x901));
+        *bridge.harness_active_stage_run_unit_id.write().await = Some(uuid::Uuid::from_u128(0x902));
+        *bridge.harness_active_worker_lease.write().await = Some(WorkerLeaseContext {
+            worker_run_id: uuid::Uuid::from_u128(0x903),
+            stage_run_unit_id: uuid::Uuid::from_u128(0x902),
+            lease_token: uuid::Uuid::from_u128(0x904),
+            attempt_epoch: 5,
+        });
         *bridge.harness_submit_only.write().await = true;
         *bridge.harness_forced_tool.write().await = Some("stage_run".to_string());
         *bridge.harness_last_deliverable.write().await = Some("stale".to_string());
@@ -491,6 +501,9 @@ mod tests {
 
         assert!(!bridge.is_cancelled());
         assert_eq!(*bridge.harness_active_stage.read().await, None);
+        assert_eq!(*bridge.harness_active_stage_execution_id.read().await, None);
+        assert_eq!(*bridge.harness_active_stage_run_unit_id.read().await, None);
+        assert_eq!(*bridge.harness_active_worker_lease.read().await, None);
         assert!(!*bridge.harness_submit_only.read().await);
         assert!(bridge.harness_forced_tool.read().await.is_none());
         assert!(bridge.harness_last_deliverable.read().await.is_none());
@@ -499,6 +512,106 @@ mod tests {
             .clear_top_level_request_state(&next)
             .await
             .expect("normal cleanup while owner is held");
+    }
+
+    #[tokio::test]
+    async fn trusted_runtime_identity_is_cleared_between_subtasks_and_top_level_requests() {
+        let (_workspace, bridge) = real_bridge().await;
+        let owner = bridge
+            .begin_top_level_request()
+            .await
+            .expect("request owns bridge");
+        let first_unit = uuid::Uuid::from_u128(0x801);
+        let first = ExecutionContext {
+            operation_id: Some(uuid::Uuid::from_u128(0x802)),
+            stage_execution_id: Some(uuid::Uuid::from_u128(0x803)),
+            stage_run_unit_id: Some(first_unit),
+            worker_lease: Some(WorkerLeaseContext {
+                worker_run_id: uuid::Uuid::from_u128(0x804),
+                stage_run_unit_id: first_unit,
+                lease_token: uuid::Uuid::from_u128(0x805),
+                attempt_epoch: 3,
+            }),
+            harness_stage: Some(StageKind::Enumeration),
+            harness_org_id: Some(uuid::Uuid::from_u128(0x806)),
+            ..Default::default()
+        };
+
+        bridge
+            .publish_active_execution_context(&first)
+            .await
+            .expect("publish first subtask identity");
+        assert_eq!(
+            *bridge.harness_active_stage_execution_id.read().await,
+            first.stage_execution_id
+        );
+        assert_eq!(
+            *bridge.harness_active_stage_run_unit_id.read().await,
+            first.stage_run_unit_id
+        );
+        assert_eq!(
+            *bridge.harness_active_worker_lease.read().await,
+            first.worker_lease
+        );
+        let loop_event_tx = bridge.get_or_create_event_tx();
+        let loop_context = bridge.build_loop_context(&loop_event_tx).await;
+        assert_eq!(loop_context.stage_execution_id, first.stage_execution_id);
+        assert_eq!(loop_context.stage_run_unit_id, first.stage_run_unit_id);
+        assert_eq!(loop_context.worker_lease, first.worker_lease);
+        drop(loop_context);
+
+        bridge.clear_active_subtask_context().await;
+        assert_eq!(*bridge.harness_active_stage.read().await, None);
+        assert_eq!(*bridge.harness_active_operation_id.read().await, None);
+        assert_eq!(*bridge.harness_active_org_id.read().await, None);
+        assert_eq!(*bridge.harness_active_stage_execution_id.read().await, None);
+        assert_eq!(*bridge.harness_active_stage_run_unit_id.read().await, None);
+        assert_eq!(*bridge.harness_active_worker_lease.read().await, None);
+
+        let mismatched = ExecutionContext {
+            stage_run_unit_id: Some(uuid::Uuid::from_u128(0x807)),
+            worker_lease: Some(WorkerLeaseContext {
+                worker_run_id: uuid::Uuid::from_u128(0x808),
+                stage_run_unit_id: uuid::Uuid::from_u128(0x809),
+                lease_token: uuid::Uuid::from_u128(0x80a),
+                attempt_epoch: 4,
+            }),
+            ..Default::default()
+        };
+        assert!(bridge
+            .publish_active_execution_context(&mismatched)
+            .await
+            .is_err());
+        assert_eq!(*bridge.harness_active_stage_run_unit_id.read().await, None);
+        assert_eq!(*bridge.harness_active_worker_lease.read().await, None);
+
+        let second = ExecutionContext {
+            operation_id: Some(uuid::Uuid::from_u128(0x811)),
+            stage_execution_id: Some(uuid::Uuid::from_u128(0x812)),
+            harness_stage: Some(StageKind::Verification),
+            harness_org_id: Some(uuid::Uuid::from_u128(0x813)),
+            ..Default::default()
+        };
+        bridge
+            .publish_active_execution_context(&second)
+            .await
+            .expect("publish second subtask identity");
+        assert_eq!(
+            *bridge.harness_active_stage_execution_id.read().await,
+            second.stage_execution_id
+        );
+        assert_ne!(second.stage_execution_id, first.stage_execution_id);
+
+        bridge
+            .clear_top_level_request_state(&owner)
+            .await
+            .expect("top-level cleanup");
+        assert_eq!(*bridge.harness_active_stage.read().await, None);
+        assert_eq!(*bridge.harness_active_operation_id.read().await, None);
+        assert_eq!(*bridge.harness_active_org_id.read().await, None);
+        assert_eq!(*bridge.harness_active_stage_execution_id.read().await, None);
+        assert_eq!(*bridge.harness_active_stage_run_unit_id.read().await, None);
+        assert_eq!(*bridge.harness_active_worker_lease.read().await, None);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

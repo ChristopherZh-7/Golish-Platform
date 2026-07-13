@@ -6,12 +6,14 @@
 //! `golish-agent-runtime`, `golish-agent-bridge`, `golish-prompts`,
 //! `golish-events`), mirroring exactly what the umbrella used to expose.
 
+pub mod candidate_submit_tool;
 pub mod commands;
 pub mod db_bridge;
 pub mod embedder_bridge;
 pub mod graph_bridge;
 pub mod harness_submit_tool;
 pub mod harness_trace_tool;
+pub mod knowledge_policy_adapter;
 pub mod llm_one_shot;
 pub mod session_bridge;
 pub mod sidecar_bridge;

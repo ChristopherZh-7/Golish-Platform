@@ -39,6 +39,8 @@ fn org_candidate_with_raw(name: &str, scale: &str, status: &str) -> Organization
         kind: OrganizationCandidateKind::Organization,
         label: name.into(),
         value: name.into(),
+        organization_id: None,
+        ownership_percent: None,
         source: "enscan-go".into(),
         confidence: 0.82,
         status: "needs_review".into(),

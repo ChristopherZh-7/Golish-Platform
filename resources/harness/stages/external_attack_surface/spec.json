@@ -98,6 +98,13 @@
 
   "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout \u00a73.2): specialist = the per-org sub-agent the stage_run tool fans out (EAS \u2192 prober, the ACTIVE surface-mapper split from Pentester, mirroring recon for target_intel); coverage_axis = the human-readable technique columns StageRunView renders per org row (one per expected technique: liveness / port / service-fingerprint / web-fingerprint).",
   "specialist": "prober",
+  "runtime_memory": {
+    "schema_version": 2,
+    "unit_identity": "stage_execution_organization",
+    "scope_source": "frozen_operation_snapshot",
+    "requires_worker_lease": true,
+    "publishes_handoff_after_final_seal": true
+  },
   "coverage_axis": ["LIVENESS", "PORT", "SERVICE", "WEB"],
 
   "$comment_min_invocations": "2026-06-25 EAS slim DB-truth closeout: no hard tool floor in the deliverable. Active work is proven by coverage_complete reading DB/ledger facts (targets liveness/ports, fingerprints, technique_outcomes). A required_checks_done/http_probe floor only reintroduces model hand-copying and blocks otherwise valid DB-truth runs.",

@@ -46,6 +46,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from uuid import UUID
 
 TRUNC = 100  # default arg/reason/prose truncation; --full disables
 DEFAULT_DB_URL = "postgres://golish:golish_local@localhost:15432/golish"
@@ -561,6 +562,15 @@ def run_db_diagnosis(session_dir: Path, db_url: str | None, trunc: int) -> list[
     if org_ids:
         out.append(f"  org_ids: {', '.join(org_ids)}")
 
+    out.extend(
+        _runtime_memory_lines(
+            q,
+            session_id=session_id,
+            candidate_operation_ids=session_operation_ids(session_dir),
+            trunc=trunc,
+        )
+    )
+
     session_start = None
     rows = q(
         "SELECT min(created_at), max(created_at), count(*) FROM audit_log WHERE session_id=%s",
@@ -808,6 +818,643 @@ def run_db_diagnosis(session_dir: Path, db_url: str | None, trunc: int) -> list[
             out.append(f"    {lead_type} [{status}]: {n}{flag}")
 
     conn.close()
+    return out
+
+
+def session_operation_ids(session_dir: Path) -> list[str]:
+    """Collect trusted-looking top-level operation/task UUIDs from transcripts.
+
+    DB discovery still joins the audit/session tables. These candidates cover
+    runs that failed before their first audit row without recursively trusting
+    model-authored tool arguments.
+    """
+    ids: set[str] = set()
+    transcript_paths = [session_dir / "transcript.json"]
+    subs_root = session_dir / "subagents"
+    if subs_root.is_dir():
+        transcript_paths.extend(subs_root.glob("*/transcript.json"))
+    for path in transcript_paths:
+        for event in _load_jsonl(path):
+            sources = [event]
+            detail = event.get("detail")
+            if event.get("type") == "harness_trace" and isinstance(detail, dict):
+                sources.append(detail)
+            for source in sources:
+                for key in ("operation_id", "harness_operation_id", "task_id"):
+                    value = source.get(key)
+                    if not isinstance(value, str):
+                        continue
+                    try:
+                        ids.add(str(UUID(value)))
+                    except ValueError:
+                        continue
+    return sorted(ids)
+
+
+def _runtime_records(rows: list[tuple] | None) -> tuple[list[dict], str | None]:
+    if rows and rows[0] and rows[0][0] == "ERR":
+        return [], str(rows[0][1]) if len(rows[0]) > 1 else "query failed"
+    records: list[dict] = []
+    for row in rows or []:
+        if row and isinstance(row[0], dict):
+            records.append(row[0])
+    return records, None
+
+
+def _compact_json(value: object, trunc: int) -> str:
+    try:
+        rendered = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        rendered = str(value)
+    return _short(rendered, trunc)
+
+
+def _has_legacy_checkpoint(state_blob: object) -> bool:
+    if not isinstance(state_blob, dict):
+        return False
+    graph_flow = state_blob.get("graph_flow")
+    if isinstance(graph_flow, dict):
+        state = graph_flow.get("state")
+        next_node = graph_flow.get("next_node")
+        if (
+            isinstance(state, dict)
+            and isinstance(state.get("seeded"), dict)
+            and isinstance(state.get("visited"), list)
+            and isinstance(state.get("applied"), dict)
+            and isinstance(next_node, str)
+            and bool(next_node.strip())
+        ):
+            return True
+    run_id = state_blob.get("current_stage_run_id")
+    try:
+        valid_run_id = isinstance(run_id, str) and UUID(run_id).int != 0
+    except ValueError:
+        valid_run_id = False
+    return bool(
+        isinstance(state_blob.get("profile"), str)
+        and state_blob["profile"].strip()
+        and isinstance(state_blob.get("current_stage"), str)
+        and state_blob["current_stage"].strip()
+        and valid_run_id
+        and isinstance(state_blob.get("queue_titles"), list)
+        and isinstance(state_blob.get("completed_count"), int)
+        and state_blob["completed_count"] >= 0
+    )
+
+
+def _runtime_memory_lines(
+    q,
+    session_id: str,
+    candidate_operation_ids: list[str],
+    trunc: int,
+) -> list[str]:
+    """Render Runtime Memory V2 state using an injected query function.
+
+    The injection seam keeps the diagnostic deterministic and fully testable
+    without PostgreSQL. Every SQL statement has a stable marker used only by
+    offline fixtures; production still executes ordinary read-only SELECTs.
+    """
+    out = ["  runtime memory V2:"]
+
+    rollout_rows = q(
+        """/* run_tree:runtime_rollout */
+        SELECT jsonb_build_object(
+            'contract', contract,
+            'contract_rank', contract_rank,
+            'row_version', row_version,
+            'updated_at', updated_at
+        )
+        FROM runtime_memory_rollout
+        WHERE singleton_id = 1"""
+    )
+    rollout, rollout_error = _runtime_records(rollout_rows)
+    if rollout_error:
+        out.append(f"    rollout: {rollout_error}")
+    elif rollout:
+        record = rollout[0]
+        out.append(
+            "    rollout: "
+            f"contract={record.get('contract')} rank={record.get('contract_rank')} "
+            f"row_version={record.get('row_version')} updated_at={record.get('updated_at')}"
+        )
+    else:
+        out.append("    rollout: (missing singleton) ⚠ anomaly: runtime rollout is undefined")
+
+    operation_rows = q(
+        """/* run_tree:runtime_operations */
+        SELECT jsonb_build_object(
+            'operation_id', os.operation_id,
+            'runtime_memory_contract', os.runtime_memory_contract,
+            'profile', os.profile,
+            'current_stage', os.current_stage,
+            'project_scope_id', os.project_scope_id,
+            'engagement_org_id', os.engagement_org_id,
+            'superseded_by', os.superseded_by,
+            'stage_started_at', os.stage_started_at,
+            'state_blob', os.state_blob
+        )
+        FROM operation_state AS os
+        WHERE os.operation_id = ANY(%s::uuid[])
+           OR EXISTS (
+                SELECT 1 FROM audit_log AS audit
+                WHERE audit.session_id = %s AND audit.run_id = os.operation_id
+           )
+           OR EXISTS (
+                SELECT 1 FROM tasks AS task
+                WHERE task.id = os.operation_id AND task.session_id::text = %s
+           )
+        ORDER BY os.stage_started_at DESC, os.operation_id""",
+        (candidate_operation_ids, session_id, session_id),
+    )
+    operations, operations_error = _runtime_records(operation_rows)
+    if operations_error:
+        out.append(f"    operations: {operations_error}")
+        return out
+    if not operations:
+        out.append("    operations: (none for this session)")
+        return out
+
+    for operation in operations:
+        operation_id = str(operation.get("operation_id"))
+        contract = str(operation.get("runtime_memory_contract") or "unknown")
+        current_stage = str(operation.get("current_stage") or "unknown")
+        state_blob = operation.get("state_blob")
+        legacy_present = _has_legacy_checkpoint(state_blob)
+        out.append(
+            f"    operation {operation_id}: contract={contract} "
+            f"profile={operation.get('profile')} current_stage={current_stage}"
+        )
+        out.append(
+            f"      project_scope={operation.get('project_scope_id')} "
+            f"engagement_org={operation.get('engagement_org_id')} "
+            f"stage_started_at={operation.get('stage_started_at')} "
+            f"superseded_by={operation.get('superseded_by')}"
+        )
+        out.append(
+            "      legacy_checkpoint_present=" + ("yes" if legacy_present else "no")
+        )
+        if operation.get("superseded_by") is not None:
+            out.append(
+                f"      ⚠ anomaly: operation is superseded by {operation.get('superseded_by')}"
+            )
+
+        def fetch_records(label: str, sql: str) -> list[dict]:
+            records, error = _runtime_records(q(sql, (operation_id,)))
+            if error:
+                out.append(f"      {label}: {error}")
+            return records
+
+        stage_executions = fetch_records(
+            "stage_executions",
+            """/* run_tree:stage_executions */
+            SELECT jsonb_build_object(
+                'id', run.id,
+                'stage_kind', run.stage_kind,
+                'status', run.status,
+                'started_at', run.started_at,
+                'completed_at', run.completed_at
+            )
+            FROM stage_runs AS run
+            WHERE run.operation_id = %s
+            ORDER BY run.started_at, run.id""",
+        )
+        active_executions = [
+            record for record in stage_executions if record.get("status") == "started"
+        ]
+        out.append(f"      stage_executions: exact_active={len(active_executions)}")
+        for execution in stage_executions:
+            out.append(
+                f"        id={execution.get('id')} stage={execution.get('stage_kind')} "
+                f"status={execution.get('status')} started_at={execution.get('started_at')} "
+                f"completed_at={execution.get('completed_at')}"
+            )
+        if not active_executions:
+            out.append("      ⚠ anomaly: missing active stage execution")
+        elif len(active_executions) > 1:
+            out.append(
+                "      ⚠ anomaly: multiple active stage executions "
+                + ", ".join(str(row.get("id")) for row in active_executions)
+            )
+        elif active_executions[0].get("stage_kind") != current_stage:
+            out.append(
+                "      ⚠ anomaly: operation cursor does not match exact active stage execution"
+            )
+        active_execution_id = (
+            str(active_executions[0].get("id")) if len(active_executions) == 1 else None
+        )
+
+        decisions = fetch_records(
+            "scope_decisions",
+            """/* run_tree:scope_decisions */
+            SELECT jsonb_build_object(
+                'id', decision.id,
+                'stage_execution_id', decision.stage_execution_id,
+                'root_organization_id', decision.root_organization_id,
+                'mode', decision.mode,
+                'decision_hash', decision.decision_hash,
+                'choice_tool_call_id', decision.choice_tool_call_id,
+                'proposal_tool_call_id', decision.proposal_tool_call_id,
+                'review_tool_call_id', decision.review_tool_call_id
+            )
+            FROM operation_scope_decisions AS decision
+            WHERE decision.operation_id = %s
+            ORDER BY decision.created_at, decision.id""",
+        )
+        if not decisions:
+            out.append("      scope_decisions: (none)")
+        for decision in decisions:
+            out.append(
+                f"      scope_decision id={decision.get('id')} "
+                f"stage_execution={decision.get('stage_execution_id')} "
+                f"root_org={decision.get('root_organization_id')} "
+                f"mode={decision.get('mode')} hash={decision.get('decision_hash')}"
+            )
+            out.append(
+                f"        choice={decision.get('choice_tool_call_id')} "
+                f"proposal={decision.get('proposal_tool_call_id')} "
+                f"review={decision.get('review_tool_call_id')}"
+            )
+
+        snapshots = fetch_records(
+            "scope_snapshots",
+            """/* run_tree:scope_snapshots */
+            SELECT jsonb_build_object(
+                'id', snapshot.id,
+                'scope_decision_id', snapshot.scope_decision_id,
+                'project_scope_id', snapshot.project_scope_id,
+                'project_path_at_freeze', snapshot.project_path_at_freeze,
+                'root_organization_id', snapshot.root_organization_id,
+                'mode', snapshot.mode,
+                'scope_hash', snapshot.scope_hash,
+                'schema_version', snapshot.schema_version,
+                'frozen_at', snapshot.frozen_at,
+                'sealed_at', snapshot.sealed_at
+            )
+            FROM operation_org_scope_snapshots AS snapshot
+            WHERE snapshot.operation_id = %s
+            ORDER BY snapshot.frozen_at, snapshot.id""",
+        )
+        if not snapshots:
+            out.append("      scope_snapshots: (none)")
+        for snapshot in snapshots:
+            out.append(
+                f"      scope_snapshot id={snapshot.get('id')} "
+                f"decision={snapshot.get('scope_decision_id')} "
+                f"project_scope={snapshot.get('project_scope_id')} "
+                f"root_org={snapshot.get('root_organization_id')} "
+                f"path={snapshot.get('project_path_at_freeze')}"
+            )
+            out.append(
+                f"        mode={snapshot.get('mode')} hash={snapshot.get('scope_hash')} "
+                f"schema={snapshot.get('schema_version')} "
+                f"sealed_at={snapshot.get('sealed_at')} frozen_at={snapshot.get('frozen_at')}"
+            )
+
+        scope_units = fetch_records(
+            "scope_units",
+            """/* run_tree:scope_units */
+            SELECT jsonb_build_object(
+                'snapshot_id', unit.snapshot_id,
+                'organization_id', unit.organization_id,
+                'parent_organization_id', unit.parent_organization_id,
+                'organization_name_at_freeze', unit.organization_name_at_freeze,
+                'role', unit.role,
+                'depth', unit.depth,
+                'ordinal', unit.ordinal,
+                'ownership_percent', unit.ownership_percent,
+                'decision_row_id', unit.decision_row_id,
+                'approval_source', unit.approval_source
+            )
+            FROM operation_org_scope_units AS unit
+            JOIN operation_org_scope_snapshots AS snapshot ON snapshot.id = unit.snapshot_id
+            WHERE snapshot.operation_id = %s
+            ORDER BY unit.snapshot_id, unit.ordinal, unit.organization_id""",
+        )
+        if not scope_units:
+            out.append("      scope_units: (none)")
+        for unit in scope_units:
+            out.append(
+                f"      scope_unit org={unit.get('organization_id')} "
+                f"parent={unit.get('parent_organization_id')} role={unit.get('role')} "
+                f"depth={unit.get('depth')} ordinal={unit.get('ordinal')} "
+                f"ownership={unit.get('ownership_percent')} name={unit.get('organization_name_at_freeze')}"
+            )
+            out.append(
+                f"        snapshot={unit.get('snapshot_id')} "
+                f"decision_row={unit.get('decision_row_id')} "
+                f"approval_source={_compact_json(unit.get('approval_source'), trunc)}"
+            )
+
+        stage_units = fetch_records(
+            "stage_units",
+            """/* run_tree:stage_units */
+            SELECT jsonb_build_object(
+                'id', unit.id,
+                'stage_execution_id', unit.stage_execution_id,
+                'scope_snapshot_id', unit.scope_snapshot_id,
+                'organization_id', unit.organization_id,
+                'stage_kind', unit.stage_kind,
+                'generation', unit.generation,
+                'specialist', unit.specialist,
+                'status', unit.status,
+                'gate_attempt', unit.gate_attempt,
+                'row_version', unit.row_version,
+                'started_at', unit.started_at,
+                'terminal_at', unit.terminal_at,
+                'scope_member', EXISTS (
+                    SELECT 1 FROM operation_org_scope_units AS member
+                    WHERE member.snapshot_id = unit.scope_snapshot_id
+                      AND member.organization_id = unit.organization_id
+                )
+            )
+            FROM stage_run_units AS unit
+            WHERE unit.operation_id = %s
+            ORDER BY unit.updated_at, unit.id""",
+        )
+        if not stage_units:
+            out.append("      stage_units: (none)")
+        for unit in stage_units:
+            out.append(
+                f"      stage_unit id={unit.get('id')} execution={unit.get('stage_execution_id')} "
+                f"snapshot={unit.get('scope_snapshot_id')} org={unit.get('organization_id')}"
+            )
+            out.append(
+                f"        stage={unit.get('stage_kind')} generation={unit.get('generation')} "
+                f"specialist={unit.get('specialist')} status={unit.get('status')} "
+                f"gate_attempt={unit.get('gate_attempt')} row_version={unit.get('row_version')}"
+            )
+            if not unit.get("scope_member"):
+                out.append(
+                    f"      ⚠ cross-org rejection: stage_unit={unit.get('id')} "
+                    f"org={unit.get('organization_id')} is not in snapshot={unit.get('scope_snapshot_id')}"
+                )
+            if (
+                active_execution_id
+                and unit.get("status") in {"queued", "running", "gate_blocked"}
+                and str(unit.get("stage_execution_id")) != active_execution_id
+            ):
+                out.append(
+                    f"      ⚠ anomaly: nonterminal stage unit {unit.get('id')} "
+                    "does not belong to the exact active execution"
+                )
+
+        workers = fetch_records(
+            "stage_workers",
+            """/* run_tree:stage_workers */
+            SELECT jsonb_build_object(
+                'id', worker.id,
+                'stage_execution_id', worker.stage_execution_id,
+                'stage_run_unit_id', worker.stage_run_unit_id,
+                'organization_id', worker.organization_id,
+                'worker_generation', worker.worker_generation,
+                'specialist', worker.specialist,
+                'work_item_kind', worker.work_item_kind,
+                'work_item_key', worker.work_item_key,
+                'agent_path', worker.agent_path,
+                'parent_request_id', worker.parent_request_id,
+                'message_chain_id', worker.message_chain_id,
+                'status', worker.status,
+                'gate_attempt', worker.gate_attempt,
+                'checkpoint', worker.checkpoint,
+                'checkpoint_version', worker.checkpoint_version,
+                'lease_token', worker.lease_token,
+                'lease_owner', worker.lease_owner,
+                'lease_acquired_at', worker.lease_acquired_at,
+                'lease_expires_at', worker.lease_expires_at,
+                'heartbeat_at', worker.heartbeat_at,
+                'attempt_epoch', worker.attempt_epoch,
+                'active_tool_call_id', worker.active_tool_call_id,
+                'active_tool_started_at', worker.active_tool_started_at,
+                'active_tool_name', tool.name,
+                'active_tool_status', tool.status,
+                'active_tool_request_id', tool.call_id,
+                'lease_expired', worker.lease_expires_at IS NOT NULL
+                    AND worker.lease_expires_at <= NOW(),
+                'unit_identity_matches', unit.id IS NOT NULL
+                    AND unit.operation_id = worker.operation_id
+                    AND unit.stage_execution_id = worker.stage_execution_id
+                    AND unit.organization_id = worker.organization_id,
+                'scope_member', member.organization_id IS NOT NULL
+            )
+            FROM stage_worker_runs AS worker
+            LEFT JOIN stage_run_units AS unit ON unit.id = worker.stage_run_unit_id
+            LEFT JOIN operation_org_scope_units AS member
+              ON member.snapshot_id = unit.scope_snapshot_id
+             AND member.organization_id = worker.organization_id
+            LEFT JOIN tool_calls AS tool ON tool.id = worker.active_tool_call_id
+            WHERE worker.operation_id = %s
+            ORDER BY worker.updated_at, worker.id""",
+        )
+        if not workers:
+            out.append("      stage_workers: (none)")
+        for worker in workers:
+            out.append(
+                f"      worker id={worker.get('id')} unit={worker.get('stage_run_unit_id')} "
+                f"execution={worker.get('stage_execution_id')} org={worker.get('organization_id')} "
+                f"generation={worker.get('worker_generation')}"
+            )
+            out.append(
+                f"        specialist={worker.get('specialist')} "
+                f"work_item={worker.get('work_item_kind')}:{worker.get('work_item_key')} "
+                f"status={worker.get('status')} gate_attempt={worker.get('gate_attempt')} "
+                f"agent_path={worker.get('agent_path')}"
+            )
+            out.append(
+                f"        lease token={worker.get('lease_token')} owner={worker.get('lease_owner')} "
+                f"epoch={worker.get('attempt_epoch')} expires={worker.get('lease_expires_at')} "
+                f"expired={'yes' if worker.get('lease_expired') else 'no'} "
+                f"heartbeat={worker.get('heartbeat_at')}"
+            )
+            if worker.get("active_tool_call_id") is not None:
+                out.append(
+                    f"        active_tool id={worker.get('active_tool_call_id')} "
+                    f"request={worker.get('active_tool_request_id')} "
+                    f"name={worker.get('active_tool_name')} status={worker.get('active_tool_status')} "
+                    f"started_at={worker.get('active_tool_started_at')}"
+                )
+                if worker.get("active_tool_name") is None or worker.get("active_tool_status") is None:
+                    out.append(
+                        f"      ⚠ anomaly: active tool row {worker.get('active_tool_call_id')} is missing"
+                    )
+                elif worker.get("active_tool_status") not in {"received", "running"}:
+                    out.append(
+                        f"      ⚠ anomaly: active tool {worker.get('active_tool_call_id')} "
+                        f"has terminal status {worker.get('active_tool_status')}"
+                    )
+            out.append(
+                f"        chain={worker.get('message_chain_id')} "
+                f"checkpoint_version={worker.get('checkpoint_version')} "
+                f"parent_request={worker.get('parent_request_id')}"
+            )
+            out.append(
+                f"        checkpoint={_compact_json(worker.get('checkpoint'), trunc)}"
+            )
+            if worker.get("status") == "recovery_required" or (
+                worker.get("lease_expired") and worker.get("active_tool_call_id") is not None
+            ):
+                recovery = "manual_required"
+            elif worker.get("lease_expired"):
+                recovery = "requeue_eligible"
+            elif worker.get("lease_token") is not None:
+                recovery = "wait_for_live_lease"
+            elif worker.get("status") in {"passed", "failed", "exhausted", "superseded"}:
+                recovery = "terminal"
+            else:
+                recovery = "unleased"
+            out.append(f"        recovery={recovery}")
+            if not worker.get("unit_identity_matches") or not worker.get("scope_member"):
+                out.append(
+                    f"      ⚠ cross-org rejection: worker={worker.get('id')} "
+                    f"org={worker.get('organization_id')} does not match its stage unit/scope"
+                )
+            if (
+                worker.get("lease_expired")
+                and worker.get("active_tool_call_id") is not None
+                and worker.get("status") != "recovery_required"
+            ):
+                out.append(
+                    "      ⚠ anomaly: expired lease with active tool is not recovery_required"
+                )
+
+        submissions = fetch_records(
+            "stage_submissions",
+            """/* run_tree:stage_submissions */
+            SELECT jsonb_build_object(
+                'id', submission.id,
+                'stage_execution_id', submission.stage_execution_id,
+                'stage_run_unit_id', submission.stage_run_unit_id,
+                'worker_run_id', submission.worker_run_id,
+                'organization_id', submission.organization_id,
+                'tool_call_record_id', submission.tool_call_record_id,
+                'tool_request_id', submission.tool_request_id,
+                'stage_kind', submission.stage_kind,
+                'attempt_epoch', submission.attempt_epoch,
+                'lease_token', submission.lease_token,
+                'payload_sha256', submission.payload_sha256,
+                'submitted_at', submission.submitted_at,
+                'scope_member', submission.organization_id IS NULL OR EXISTS (
+                    SELECT 1
+                    FROM stage_run_units AS unit
+                    JOIN operation_org_scope_units AS member
+                      ON member.snapshot_id = unit.scope_snapshot_id
+                     AND member.organization_id = submission.organization_id
+                    WHERE unit.id = submission.stage_run_unit_id
+                )
+            )
+            FROM stage_deliverable_submissions AS submission
+            WHERE submission.operation_id = %s
+            ORDER BY submission.submitted_at, submission.id""",
+        )
+        if not submissions:
+            out.append("      stage_submissions: (none)")
+        for submission in submissions:
+            out.append(
+                f"      submission id={submission.get('id')} "
+                f"execution={submission.get('stage_execution_id')} "
+                f"unit={submission.get('stage_run_unit_id')} "
+                f"worker={submission.get('worker_run_id')} org={submission.get('organization_id')}"
+            )
+            out.append(
+                f"        tool={submission.get('tool_call_record_id')}/"
+                f"{submission.get('tool_request_id')} stage={submission.get('stage_kind')} "
+                f"epoch={submission.get('attempt_epoch')} "
+                f"payload_sha256={submission.get('payload_sha256')} "
+                f"submitted_at={submission.get('submitted_at')}"
+            )
+            if not submission.get("scope_member"):
+                out.append(
+                    f"      ⚠ cross-org rejection: submission={submission.get('id')} "
+                    f"org={submission.get('organization_id')} is outside frozen scope"
+                )
+
+        handoffs = fetch_records(
+            "stage_handoffs",
+            """/* run_tree:stage_handoffs */
+            SELECT jsonb_build_object(
+                'id', handoff.id,
+                'organization_id', handoff.organization_id,
+                'scope_snapshot_id', handoff.scope_snapshot_id,
+                'from_stage_kind', handoff.from_stage_kind,
+                'stage_execution_id', handoff.stage_execution_id,
+                'source_stage_run_unit_id', handoff.source_stage_run_unit_id,
+                'deliverable_submission_id', handoff.deliverable_submission_id,
+                'scope_hash', handoff.scope_hash,
+                'payload_sha256', handoff.payload_sha256,
+                'evidence_ids', handoff.evidence_ids,
+                'unit_gate_decision_hash', handoff.unit_gate_decision_hash,
+                'aggregate_pass_token_hash', handoff.aggregate_pass_token_hash,
+                'gate_passed_at', handoff.gate_passed_at,
+                'invalidated_at', handoff.invalidated_at,
+                'scope_member', member.organization_id IS NOT NULL
+            )
+            FROM stage_handoffs AS handoff
+            LEFT JOIN operation_org_scope_units AS member
+              ON member.snapshot_id = handoff.scope_snapshot_id
+             AND member.organization_id = handoff.organization_id
+            WHERE handoff.operation_id = %s
+            ORDER BY handoff.gate_passed_at, handoff.id""",
+        )
+        if not handoffs:
+            out.append("      stage_handoffs: (none)")
+        for handoff in handoffs:
+            out.append(
+                f"      handoff id={handoff.get('id')} org={handoff.get('organization_id')} "
+                f"from_stage={handoff.get('from_stage_kind')} "
+                f"execution={handoff.get('stage_execution_id')} "
+                f"unit={handoff.get('source_stage_run_unit_id')} "
+                f"submission={handoff.get('deliverable_submission_id')}"
+            )
+            out.append(
+                f"        scope_hash={handoff.get('scope_hash')} "
+                f"payload_sha256={handoff.get('payload_sha256')} "
+                f"evidence_ids={handoff.get('evidence_ids')} "
+                f"invalidated_at={handoff.get('invalidated_at')}"
+            )
+            out.append(
+                f"        unit_gate_hash={handoff.get('unit_gate_decision_hash')} "
+                f"aggregate_pass_hash={handoff.get('aggregate_pass_token_hash')} "
+                f"gate_passed_at={handoff.get('gate_passed_at')}"
+            )
+            if not handoff.get("scope_member"):
+                out.append(
+                    f"      ⚠ cross-org rejection: handoff={handoff.get('id')} "
+                    f"org={handoff.get('organization_id')} is outside frozen scope"
+                )
+
+        snapshot_sealed = bool(snapshots) and all(
+            snapshot.get("sealed_at") is not None for snapshot in snapshots
+        )
+        current_units = [
+            unit
+            for unit in stage_units
+            if active_execution_id
+            and str(unit.get("stage_execution_id")) == active_execution_id
+            and bool(unit.get("scope_member"))
+        ]
+        v2_complete = len(active_executions) == 1 and (
+            current_stage == "scoping" or (snapshot_sealed and bool(current_units))
+        )
+        if contract == "legacy_v1":
+            selected_source, fallback = "legacy", "disabled"
+        elif contract == "dual_write_legacy_read":
+            selected_source, fallback = "legacy", "not_applicable"
+        elif contract == "dual_write_v2_preferred":
+            if v2_complete:
+                selected_source, fallback = "v2", "not_used"
+            elif legacy_present:
+                selected_source, fallback = "legacy_fallback", "used"
+            else:
+                selected_source, fallback = "unavailable", "attempted_but_missing"
+        elif contract == "v2_only":
+            selected_source, fallback = ("v2" if v2_complete else "unavailable"), "forbidden"
+        else:
+            selected_source, fallback = "unavailable", "unknown_contract"
+        out.append(
+            f"      selected_read_source={selected_source} legacy_fallback={fallback}"
+        )
+        if contract == "v2_only" and not v2_complete:
+            out.append("      ⚠ anomaly: v2_only operation has incomplete runtime state")
+
     return out
 
 

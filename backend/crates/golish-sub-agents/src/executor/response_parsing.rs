@@ -2249,6 +2249,52 @@ fn background_failure_runtime_correction(
 ///
 /// Emits `SubAgentToolRequest` / `SubAgentToolResult` events, writes to the
 /// transcript, runs the post-shell hook, and tracks file modifications.
+async fn begin_bound_worker_tool(
+    bound: Option<&crate::executor_types::BoundWorkerChainContext>,
+    request_id: &str,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> anyhow::Result<Option<uuid::Uuid>> {
+    let Some(bound) = bound else {
+        return Ok(None);
+    };
+    if bound.lease_is_lost() {
+        anyhow::bail!("worker lease was lost before the next tool")
+    }
+    let Some(lifecycle) = bound.tool_lifecycle.as_ref() else {
+        bound.mark_lease_lost();
+        anyhow::bail!("prebound V2 worker has no durable tool lifecycle backend")
+    };
+    lifecycle
+        .begin(request_id, tool_name, args)
+        .await
+        .map(Some)
+        .inspect_err(|_error| {
+            bound.mark_lease_lost();
+        })
+}
+
+async fn finish_bound_worker_tool(
+    bound: Option<&crate::executor_types::BoundWorkerChainContext>,
+    tool_call_record_id: Option<uuid::Uuid>,
+    success: bool,
+    result: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let (Some(bound), Some(tool_call_record_id)) = (bound, tool_call_record_id) else {
+        return Ok(());
+    };
+    let lifecycle = bound
+        .tool_lifecycle
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("bound worker tool lifecycle disappeared"))?;
+    lifecycle
+        .finish(tool_call_record_id, success, result)
+        .await
+        .inspect_err(|_error| {
+            bound.mark_lease_lost();
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn dispatch_tool_calls<M, P>(
     tool_calls: Vec<ToolCall>,
@@ -2283,6 +2329,13 @@ where
 
     for tool_call in tool_calls {
         let tool_name = &tool_call.function.name;
+        if ctx
+            .bound_worker_chain
+            .as_ref()
+            .is_some_and(|bound| bound.lease_is_lost())
+        {
+            hard_supervisor_active = true;
+        }
         if cancellation_requested(ctx.cancelled) {
             tracing::info!(
                 "[sub-agent:{}] cancelled before tool call '{}'",
@@ -2445,7 +2498,13 @@ where
                 });
             }
 
-            let delegate_result = if let Some(registry) = ctx.sub_agent_registry {
+            let delegate_result = if ctx.bound_worker_chain.is_some() {
+                serde_json::json!({
+                    "success": false,
+                    "error": "nested delegation is disabled for a prebound V2 stage worker; the exact worker lease may have only one executor",
+                    "code": "BOUND_WORKER_NESTED_DELEGATION_BLOCKED",
+                })
+            } else if let Some(registry) = ctx.sub_agent_registry {
                 let reg = registry.read().await;
                 if let Some(delegate_def) = reg.get(delegate_id) {
                     let delegate_def = delegate_def.clone();
@@ -2470,6 +2529,7 @@ where
                         max_tokens_override: delegate_def.max_tokens,
                         top_p_override: delegate_def.top_p,
                         chain_persistence: ctx.chain_persistence,
+                        bound_worker_chain: ctx.bound_worker_chain.clone(),
                         sub_agent_registry: ctx.sub_agent_registry,
                         post_shell_hook: ctx.post_shell_hook.clone(),
                         post_tool_result_hook: ctx.post_tool_result_hook.clone(),
@@ -2606,204 +2666,268 @@ where
         );
         let _tool_guard = tool_span.enter();
 
+        let candidate = ctx
+            .bound_worker_chain
+            .as_ref()
+            .and_then(|bound| bound.candidate_attempt.as_ref());
+        let mut lifecycle_start_error =
+            golish_core::check_candidate_tool_boundary(candidate, tool_name, &tool_args)
+                .err()
+                .map(|error| {
+                    serde_json::json!({
+                        "error": error.to_string(),
+                        "code": error.code(),
+                    })
+                });
+        let lifecycle_record_id = if lifecycle_start_error.is_some() {
+            None
+        } else {
+            match begin_bound_worker_tool(
+                ctx.bound_worker_chain.as_ref(),
+                &tool_id,
+                tool_name,
+                &tool_args,
+            )
+            .await
+            {
+                Ok(record_id) => record_id,
+                Err(error) => {
+                    lifecycle_start_error = Some(serde_json::json!({
+                        "error": format!("worker tool dispatch fence failed: {error}"),
+                        "code": "WORKER_TOOL_FENCE_BEGIN_FAILED",
+                    }));
+                    None
+                }
+            }
+        };
+
         let tool_timeout = idle_timeout.unwrap_or(tool_fallback_timeout);
         let use_outer_tool_timeout = use_sub_agent_outer_tool_timeout(tool_name);
-        let tool_result = tokio::select! {
-            _ = wait_for_cancelled(ctx.cancelled) => {
-                tracing::info!(
-                    "[sub-agent:{}] cancelled while waiting for tool '{}'",
-                    agent_id,
-                    tool_name
-                );
-                return ToolDispatchResult {
-                    tool_results,
-                    barrier_hit,
-                    barrier_response,
-                    stage_block_signature: last_block_sig,
-                    submit_repair_update: submit_repair_update_seen,
-                    cancelled: true,
-                };
-            }
-            result = async {
-                let tool_fut = async {
-            if let Some(blocked) = effective_submit_repair_mode
-                .as_ref()
-                .and_then(|mode| mode.block_result_with_args(tool_name, &tool_args))
-            {
-                tracing::warn!(
-                    target: "harness::submit_repair",
-                    agent_id = %agent_id,
-                    tool = %tool_name,
-                    "sub-agent tool call BLOCKED by submit repair mode"
-                );
-                return (blocked, false);
-            }
-            // Stage boundary (forbidden-only): block a tool whose RESOLVED
-            // capability is forbidden in the active harness stage BEFORE running
-            // it (e.g. `dig` via pentest_run in scoping). The synthetic error
-            // flows through the normal result path so the model gets actionable
-            // feedback. See docs/design/2026-06-02-stage-tool-whitelist-enforcement.md.
-            if let Some(reason) = ctx
-                .stage_tool_guard
-                .as_ref()
-                .and_then(|guard| guard(tool_name, &tool_args).err())
-            {
-                tracing::warn!(
-                    target: "harness::stage_guard",
-                    tool = %tool_name,
-                    reason = %reason,
-                    "sub-agent tool call BLOCKED by stage boundary"
-                );
-                return (
-                    serde_json::json!({ "error": reason, "blocked_by_stage": true }),
-                    false,
-                );
-            }
-            if tool_name == "web_fetch" {
-                tool_provider
-                    .execute_web_fetch_tool(tool_name, &tool_args)
-                    .await
-            } else if let Some(result) = tool_provider
-                .execute_memory_tool(tool_name, &tool_args)
-                .await
-            {
-                result
-            } else if let Some(result) = tool_provider
-                .execute_knowledge_base_tool(tool_name, &tool_args)
-                .await
-            {
-                result
-            } else if tool_name == "run_pty_cmd" || tool_name == "run_command" {
-                let command = tool_args
-                    .get("command")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("");
-                let cwd = tool_args.get("cwd").and_then(|c| c.as_str());
-                let timeout_secs = tool_args
-                    .get("timeout")
-                    .and_then(|t| t.as_u64())
-                    .unwrap_or(120);
-                let workspace = ctx.workspace.read().await;
-
-                let (chunk_tx, mut chunk_rx) =
-                    tokio::sync::mpsc::channel::<golish_shell_exec::OutputChunk>(64);
-
-                let event_tx = ctx.event_tx.clone();
-                let chunk_request_id = request_id.clone();
-                let chunk_tool_name = tool_name.to_string();
-                let chunk_agent_id = agent_id.to_string();
-                let chunk_agent_name = agent_def.name.clone();
-                tokio::spawn(async move {
-                    while let Some(chunk) = chunk_rx.recv().await {
-                        let _ = event_tx.send(AiEvent::ToolOutputChunk {
-                            request_id: chunk_request_id.clone(),
-                            tool_name: chunk_tool_name.clone(),
-                            chunk: chunk.data,
-                            stream: chunk.stream.as_str().to_string(),
-                            source: ToolSource::SubAgent {
-                                agent_id: chunk_agent_id.clone(),
-                                agent_name: chunk_agent_name.clone(),
-                            },
-                        });
-                    }
-                });
-
-                match golish_shell_exec::execute_streaming(
-                    command,
-                    cwd,
-                    timeout_secs,
-                    &workspace,
-                    None,
-                    chunk_tx,
-                )
-                .await
-                {
-                    Ok(r) => {
-                        let ok = r.exit_code == 0;
-                        let mut v = serde_json::json!({
-                            "stdout": r.stdout,
-                            "stderr": r.stderr,
-                            "exit_code": r.exit_code,
-                            "command": command,
-                        });
-                        if let Some(c) = cwd {
-                            v["cwd"] = serde_json::json!(c);
-                        }
-                        if !ok {
-                            let err_detail = if r.stderr.is_empty() {
-                                &r.stdout
-                            } else {
-                                &r.stderr
-                            };
-                            v["error"] = serde_json::json!(format!(
-                                "Command exited with code {}: {}",
-                                r.exit_code, err_detail
-                            ));
-                        }
-                        if r.timed_out {
-                            v["timeout"] = serde_json::json!(true);
-                        }
-                        (v, ok)
-                    }
-                    Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
+        let tool_result = if let Some(error) = lifecycle_start_error {
+            Ok((error, false))
+        } else {
+            tokio::select! {
+                _ = wait_for_cancelled(ctx.cancelled) => {
+                    tracing::info!(
+                        "[sub-agent:{}] cancelled while waiting for tool '{}'",
+                        agent_id,
+                        tool_name
+                    );
+                    return ToolDispatchResult {
+                        tool_results,
+                        barrier_hit,
+                        barrier_response,
+                        stage_block_signature: last_block_sig,
+                        submit_repair_update: submit_repair_update_seen,
+                        cancelled: true,
+                    };
                 }
-            } else {
-                let tool_context = golish_core::AgentToolContext {
-                    request_id: request_id.clone(),
-                    tool_name: tool_name.to_string(),
-                    source: ToolSource::SubAgent {
-                        agent_id: agent_id.to_string(),
-                        agent_name: agent_def.name.clone(),
-                    },
-                    operation_id: ctx.operation_id,
-                    organization_id: ctx.active_org_id_override,
-                };
-                golish_core::with_agent_session(
-                    ctx.session_id.map(str::to_string),
-                    golish_core::with_agent_tool_context(
-                        Some(tool_context),
-                        golish_core::with_agent_tool_output_sender(
-                            Some(ctx.event_tx.clone()),
-                            async {
-                                // Try the injected router first (security/graph tools that live
-                                // outside the ToolRegistry); fall through to the registry.
-                                let routed = match &ctx.sub_tool_router {
-                                    Some(router) => {
-                                        router(tool_name.to_string(), tool_args.clone()).await
-                                    }
-                                    None => None,
+                result = async {
+                    let tool_fut = async {
+                if let Some(blocked) = effective_submit_repair_mode
+                    .as_ref()
+                    .and_then(|mode| mode.block_result_with_args(tool_name, &tool_args))
+                {
+                    tracing::warn!(
+                        target: "harness::submit_repair",
+                        agent_id = %agent_id,
+                        tool = %tool_name,
+                        "sub-agent tool call BLOCKED by submit repair mode"
+                    );
+                    return (blocked, false);
+                }
+                // Stage boundary (forbidden-only): block a tool whose RESOLVED
+                // capability is forbidden in the active harness stage BEFORE running
+                // it (e.g. `dig` via pentest_run in scoping). The synthetic error
+                // flows through the normal result path so the model gets actionable
+                // feedback. See docs/design/2026-06-02-stage-tool-whitelist-enforcement.md.
+                if let Some(reason) = ctx
+                    .stage_tool_guard
+                    .as_ref()
+                    .and_then(|guard| guard(tool_name, &tool_args).err())
+                {
+                    tracing::warn!(
+                        target: "harness::stage_guard",
+                        tool = %tool_name,
+                        reason = %reason,
+                        "sub-agent tool call BLOCKED by stage boundary"
+                    );
+                    return (
+                        serde_json::json!({ "error": reason, "blocked_by_stage": true }),
+                        false,
+                    );
+                }
+                if tool_name == "web_fetch" {
+                    tool_provider
+                        .execute_web_fetch_tool(tool_name, &tool_args)
+                        .await
+                } else if let Some(result) = tool_provider
+                    .execute_memory_tool(tool_name, &tool_args)
+                    .await
+                {
+                    result
+                } else if let Some(result) = tool_provider
+                    .execute_knowledge_base_tool(tool_name, &tool_args)
+                    .await
+                {
+                    result
+                } else if tool_name == "run_pty_cmd" || tool_name == "run_command" {
+                    let command = tool_args
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("");
+                    let cwd = tool_args.get("cwd").and_then(|c| c.as_str());
+                    let timeout_secs = tool_args
+                        .get("timeout")
+                        .and_then(|t| t.as_u64())
+                        .unwrap_or(120);
+                    let workspace = ctx.workspace.read().await;
+
+                    let (chunk_tx, mut chunk_rx) =
+                        tokio::sync::mpsc::channel::<golish_shell_exec::OutputChunk>(64);
+
+                    let event_tx = ctx.event_tx.clone();
+                    let chunk_request_id = request_id.clone();
+                    let chunk_tool_name = tool_name.to_string();
+                    let chunk_agent_id = agent_id.to_string();
+                    let chunk_agent_name = agent_def.name.clone();
+                    tokio::spawn(async move {
+                        while let Some(chunk) = chunk_rx.recv().await {
+                            let _ = event_tx.send(AiEvent::ToolOutputChunk {
+                                request_id: chunk_request_id.clone(),
+                                tool_name: chunk_tool_name.clone(),
+                                chunk: chunk.data,
+                                stream: chunk.stream.as_str().to_string(),
+                                source: ToolSource::SubAgent {
+                                    agent_id: chunk_agent_id.clone(),
+                                    agent_name: chunk_agent_name.clone(),
+                                },
+                            });
+                        }
+                    });
+
+                    match golish_shell_exec::execute_streaming(
+                        command,
+                        cwd,
+                        timeout_secs,
+                        &workspace,
+                        None,
+                        chunk_tx,
+                    )
+                    .await
+                    {
+                        Ok(r) => {
+                            let ok = r.exit_code == 0;
+                            let mut v = serde_json::json!({
+                                "stdout": r.stdout,
+                                "stderr": r.stderr,
+                                "exit_code": r.exit_code,
+                                "command": command,
+                            });
+                            if let Some(c) = cwd {
+                                v["cwd"] = serde_json::json!(c);
+                            }
+                            if !ok {
+                                let err_detail = if r.stderr.is_empty() {
+                                    &r.stdout
+                                } else {
+                                    &r.stderr
                                 };
-                                match routed {
-                                    Some((value, success)) => (value, success),
-                                    None => {
-                                        match execute_registry_tool_with_active_org(
-                                            ctx,
-                                            tool_name,
-                                            tool_args.clone(),
-                                        )
-                                        .await
-                                        {
-                                            Ok(v) => registry_tool_outcome(v),
-                                            Err(e) => (
-                                                serde_json::json!({ "error": e.to_string() }),
-                                                false,
-                                            ),
+                                v["error"] = serde_json::json!(format!(
+                                    "Command exited with code {}: {}",
+                                    r.exit_code, err_detail
+                                ));
+                            }
+                            if r.timed_out {
+                                v["timeout"] = serde_json::json!(true);
+                            }
+                            (v, ok)
+                        }
+                        Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
+                    }
+                } else {
+                    let tool_context = golish_core::AgentToolContext {
+                        request_id: request_id.clone(),
+                        tool_call_record_id: lifecycle_record_id,
+                        tool_name: tool_name.to_string(),
+                        source: ToolSource::SubAgent {
+                            agent_id: agent_id.to_string(),
+                            agent_name: agent_def.name.clone(),
+                        },
+                        operation_id: ctx
+                            .bound_worker_chain
+                            .as_ref()
+                            .map(|bound| bound.operation_id)
+                            .or(ctx.operation_id),
+                        stage_execution_id: ctx
+                            .bound_worker_chain
+                            .as_ref()
+                            .map(|bound| bound.stage_execution_id),
+                        stage_run_unit_id: ctx
+                            .bound_worker_chain
+                            .as_ref()
+                            .map(|bound| bound.worker_lease.stage_run_unit_id),
+                        organization_id: ctx
+                            .bound_worker_chain
+                            .as_ref()
+                            .map(|bound| bound.organization_id)
+                            .or(ctx.active_org_id_override),
+                        worker_lease: ctx
+                            .bound_worker_chain
+                            .as_ref()
+                            .map(|bound| bound.worker_lease.clone()),
+                        candidate_attempt: ctx
+                            .bound_worker_chain
+                            .as_ref()
+                            .and_then(|bound| bound.candidate_attempt.clone()),
+                    };
+                    golish_core::with_agent_session(
+                        ctx.session_id.map(str::to_string),
+                        golish_core::with_agent_tool_context(
+                            Some(tool_context),
+                            golish_core::with_agent_tool_output_sender(
+                                Some(ctx.event_tx.clone()),
+                                async {
+                                    // Try the injected router first (security/graph tools that live
+                                    // outside the ToolRegistry); fall through to the registry.
+                                    let routed = match &ctx.sub_tool_router {
+                                        Some(router) => {
+                                            router(tool_name.to_string(), tool_args.clone()).await
+                                        }
+                                        None => None,
+                                    };
+                                    match routed {
+                                        Some((value, success)) => (value, success),
+                                        None => {
+                                            match execute_registry_tool_with_active_org(
+                                                ctx,
+                                                tool_name,
+                                                tool_args.clone(),
+                                            )
+                                            .await
+                                            {
+                                                Ok(v) => registry_tool_outcome(v),
+                                                Err(e) => (
+                                                    serde_json::json!({ "error": e.to_string() }),
+                                                    false,
+                                                ),
+                                            }
                                         }
                                     }
-                                }
-                            },
+                                },
+                            ),
                         ),
-                    ),
-                )
-                .await
-            }
-                };
-                if use_outer_tool_timeout {
-                    tokio::time::timeout(tool_timeout, tool_fut).await
-                } else {
-                    Ok(tool_fut.await)
+                    )
+                    .await
                 }
-            } => result,
+                    };
+                    if use_outer_tool_timeout {
+                        tokio::time::timeout(tool_timeout, tool_fut).await
+                    } else {
+                        Ok(tool_fut.await)
+                    }
+                } => result,
+            }
         };
 
         let (mut result_value, mut success) = match tool_result {
@@ -2824,17 +2948,46 @@ where
             }
         };
 
-        if let Some(hook) = ctx.post_tool_result_hook.as_ref() {
-            let hook = Arc::clone(hook);
-            let (hooked_value, hooked_success) = hook(
-                tool_name.to_string(),
-                tool_args.clone(),
-                result_value,
-                success,
-            )
-            .await;
-            result_value = hooked_value;
-            success = hooked_success;
+        let lifecycle_landing_ok =
+            if ctx.bound_worker_chain.is_some() && lifecycle_record_id.is_none() {
+                false
+            } else if ctx.bound_worker_chain.is_some() {
+                match finish_bound_worker_tool(
+                    ctx.bound_worker_chain.as_ref(),
+                    lifecycle_record_id,
+                    success,
+                    &result_value,
+                )
+                .await
+                {
+                    Ok(()) => true,
+                    Err(error) => {
+                        result_value = serde_json::json!({
+                            "error": format!("worker tool result fence failed: {error}"),
+                            "code": "WORKER_TOOL_FENCE_FINISH_FAILED",
+                            "stale_result_rejected": true,
+                        });
+                        success = false;
+                        false
+                    }
+                }
+            } else {
+                ctx.bound_worker_chain.is_none()
+            };
+
+        if lifecycle_landing_ok {
+            if let Some(hook) = ctx.post_tool_result_hook.as_ref() {
+                let hook = Arc::clone(hook);
+                let (hooked_value, hooked_success) = hook(
+                    tool_name.to_string(),
+                    tool_args.clone(),
+                    result_value,
+                    success,
+                )
+                .await;
+                result_value = hooked_value;
+                success = hooked_success;
+            }
         }
 
         // Q3 ③ · stage-annotate `pentest_list_tools` so this worker sees, per
@@ -2899,10 +3052,16 @@ where
         );
         if stage_submission_accepted(tool_name, &result_value) {
             barrier_hit = true;
-            barrier_response = Some(
-                "Stage deliverable accepted; returning control to the stage orchestrator."
+            barrier_response = Some(match result_value
+                .get("deliverable_submission_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some(submission_id) => format!(
+                    "Stage deliverable accepted; returning control to the stage orchestrator.\n\n[deliverable_submission_id: {submission_id}]"
+                ),
+                None => "Stage deliverable accepted without a durable submission id; returning control to the stage orchestrator."
                     .to_string(),
-            );
+            });
             tracing::info!(
                 target: "harness::submit_tool",
                 agent_id = %agent_id,
@@ -3097,27 +3256,131 @@ fn inject_harness_org_id_arg(
 mod tests {
     use super::{
         annotate_list_tools_with_guard, background_failure_runtime_correction,
-        execute_registry_tool_with_active_org, inject_harness_org_id_arg,
-        model_visible_tool_result, refine_eas_web_repair_mode_from_worklist, registry_tool_outcome,
-        stage_submission_accepted, structured_storage_hook_payload,
-        submit_coverage_gap_repair_mode_from_reasons, submit_needs_fix_runtime_correction,
-        submit_repair_mode_from_submit_result, submit_repair_update,
-        submit_repair_update_after_tool_result, tool_result_for_history,
+        begin_bound_worker_tool, execute_registry_tool_with_active_org, finish_bound_worker_tool,
+        inject_harness_org_id_arg, model_visible_tool_result,
+        refine_eas_web_repair_mode_from_worklist, registry_tool_outcome, stage_submission_accepted,
+        structured_storage_hook_payload, submit_coverage_gap_repair_mode_from_reasons,
+        submit_needs_fix_runtime_correction, submit_repair_mode_from_submit_result,
+        submit_repair_update, submit_repair_update_after_tool_result, tool_result_for_history,
         update_submit_repair_mode_in_batch, use_sub_agent_outer_tool_timeout,
         SubmitRepairModeUpdate, MAX_ROUTE_PROBE_MODEL_BATCH_BYTES,
         MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
     };
-    use crate::SubmitRepairKind;
+    use crate::{BoundWorkerChainContext, BoundWorkerToolLifecycle, SubmitRepairKind};
     use golish_core::Tool;
     use golish_tools::ToolRegistry;
     use rig::message::{ToolCall, ToolFunction, UserContent};
     use std::path::Path;
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicI64};
+    use std::sync::{Arc, RwLock as StdRwLock};
     use tokio::sync::{mpsc, Mutex, RwLock};
     use uuid::Uuid;
 
     struct ObserveActiveOrgTool {
         active_org_id: Arc<RwLock<Option<Uuid>>>,
+    }
+
+    struct FailingWorkerLifecycle {
+        fail_begin: bool,
+        fail_finish: bool,
+        record_id: Uuid,
+    }
+
+    #[async_trait::async_trait]
+    impl BoundWorkerToolLifecycle for FailingWorkerLifecycle {
+        async fn begin(
+            &self,
+            _request_id: &str,
+            _tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> anyhow::Result<Uuid> {
+            if self.fail_begin {
+                anyhow::bail!("synthetic lease loss before tool")
+            }
+            Ok(self.record_id)
+        }
+
+        async fn finish(
+            &self,
+            _tool_call_record_id: Uuid,
+            _success: bool,
+            _result: &serde_json::Value,
+        ) -> anyhow::Result<()> {
+            if self.fail_finish {
+                anyhow::bail!("synthetic stale result landing")
+            }
+            Ok(())
+        }
+    }
+
+    fn bound_worker_with_lifecycle(
+        lifecycle: Arc<dyn BoundWorkerToolLifecycle>,
+    ) -> BoundWorkerChainContext {
+        BoundWorkerChainContext {
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            worker_lease: golish_core::WorkerLeaseContext {
+                worker_run_id: Uuid::new_v4(),
+                stage_run_unit_id: Uuid::new_v4(),
+                lease_token: Uuid::new_v4(),
+                attempt_epoch: 1,
+            },
+            candidate_attempt: None,
+            chain_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            agent_type: "recon".to_string(),
+            initial_chain: serde_json::json!([]),
+            initial_prompt_already_checkpointed: false,
+            checkpoint_version: Arc::new(AtomicI64::new(0)),
+            checkpoint_body: Arc::new(StdRwLock::new(serde_json::json!([]))),
+            lease_lost: Arc::new(AtomicBool::new(false)),
+            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            tool_lifecycle: Some(lifecycle),
+        }
+    }
+
+    #[tokio::test]
+    async fn lease_loss_blocks_next_tool_and_stale_landing() {
+        let begin_lost = bound_worker_with_lifecycle(Arc::new(FailingWorkerLifecycle {
+            fail_begin: true,
+            fail_finish: false,
+            record_id: Uuid::new_v4(),
+        }));
+        assert!(begin_bound_worker_tool(
+            Some(&begin_lost),
+            "request-1",
+            "unknown_side_effect_tool",
+            &serde_json::json!({}),
+        )
+        .await
+        .is_err());
+        assert!(begin_lost.lease_is_lost());
+
+        let record_id = Uuid::new_v4();
+        let stale_landing = bound_worker_with_lifecycle(Arc::new(FailingWorkerLifecycle {
+            fail_begin: false,
+            fail_finish: true,
+            record_id,
+        }));
+        let started = begin_bound_worker_tool(
+            Some(&stale_landing),
+            "request-2",
+            "unknown_side_effect_tool",
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("durable begin succeeds");
+        assert_eq!(started, Some(record_id));
+        assert!(finish_bound_worker_tool(
+            Some(&stale_landing),
+            started,
+            true,
+            &serde_json::json!({"side_effect": "completed"}),
+        )
+        .await
+        .is_err());
+        assert!(stale_landing.lease_is_lost());
     }
 
     #[test]
@@ -3227,6 +3490,7 @@ mod tests {
             max_tokens_override: None,
             top_p_override: None,
             chain_persistence: None,
+            bound_worker_chain: None,
             sub_agent_registry: None,
             post_shell_hook: None,
             resume: None,
@@ -3289,6 +3553,7 @@ mod tests {
             max_tokens_override: None,
             top_p_override: None,
             chain_persistence: None,
+            bound_worker_chain: None,
             sub_agent_registry: None,
             post_shell_hook: None,
             resume: None,

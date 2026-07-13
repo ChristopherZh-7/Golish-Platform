@@ -80,6 +80,63 @@ REPO_OWNER: dict[str, str] = {
     "prompt_templates": "agent",
     "vector_store_logs": "agent",
     "search_logs": "agent",
+    "runtime_memory_rollout": "agent",
+    "project_scopes": "agent",
+    "operation_scope_decisions": "agent",
+    "operation_org_scope": "agent",
+    "stage_run_units": "agent",
+    "stage_worker_runs": "agent",
+    "stage_deliverable_submissions": "agent",
+    "canonical_fact_refs": "agent",
+    "stage_handoffs": "agent",
+    "runtime_memory_tx": "agent",
+    "stage_episodes": "agent",
+    "knowledge_assertions": "agent",
+    "knowledge_documents": "agent",
+    "knowledge_embeddings": "agent",
+    "knowledge_outbox": "agent",
+    "knowledge_graph": "agent",
+    "operator_principals": "agent",
+    # Candidate V2 runtime/harness state. The agent service owns immutable
+    # manifest materialization, final-seal acceptance, lanes and attempts;
+    # pentest owns human review and Finding terminal lineage.
+    "attack_candidate_seeds": "agent",
+    "attack_candidate_work_items": "agent",
+    "attack_candidates": "agent",
+    "attack_execution_lanes": "agent",
+    "attack_execution_rollout": "agent",
+    "attack_fact_deltas": "agent",
+    "attack_waves": "agent",
+    "candidate_attempts": "agent",
+    "verification_truth": "agent",
+    "attack_candidate_approvals": "pentest",
+    "finding_lineage": "pentest",
+    # Post-Exploit C4/P6a canonical spine. The dedicated app crate owns these
+    # repos; access to runtime scope/evidence is encapsulated inside repo
+    # compound methods rather than issued as command-layer SQL.
+    "foothold_candidates": "post_exploit",
+    "footholds": "post_exploit",
+    "internal_asset_observations": "post_exploit",
+    "attack_paths": "post_exploit",
+    "post_exploit_actions": "post_exploit",
+    "post_exploit_approvals": "post_exploit",
+    "objective_attempts": "post_exploit",
+    # Cleanup P7a retained obligation/attempt/absence/waiver ledger.
+    "cleanup_obligations": "cleanup",
+    "cleanup_attempts": "cleanup",
+    "cleanup_absence_checks": "cleanup",
+    "cleanup_waivers": "cleanup",
+    "organization_deletion_jobs": "cleanup",
+    # Reporting owns immutable report aggregates, frozen source manifests,
+    # cited claims and content-addressed artifact references.
+    "reports": "reporting",
+    "report_revisions": "reporting",
+    "report_sections": "reporting",
+    "report_claims": "reporting",
+    "report_claim_citations": "reporting",
+    "report_source_manifest": "reporting",
+    "report_artifact_blobs": "reporting",
+    "report_revision_artifacts": "reporting",
     # platform — vault / notes / os logs
     "vault": "platform",
     "notes": "platform",
@@ -148,6 +205,11 @@ DOMAIN_RULES: list[tuple[str, str]] = [
 # means you introduced the corresponding *Port (see design doc §6 S1-2).
 ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     {
+        # Cleanup C5/C8 consumes the C0 server-owned principal and the C6
+        # post-exploit runtime authorizer behind its own application port. The
+        # model-facing pentest adapter never reaches either repo directly.
+        ("golish-cleanup-app/ports.rs", "operator_principals"),
+        ("golish-cleanup-app/ports.rs", "post_exploit_actions"),
         # agent command surface extracted to the golish-agent-app crate
         # (crate-per-service M4-proper); keys are crate-prefixed (see SOURCE_ROOTS).
         # The db_bridge implements golish-agent-kit's DbRepoProvider, reading
@@ -197,6 +259,8 @@ RAW_SQL_ALLOWLIST: frozenset[str] = frozenset(
         "golish-agent-app/ai/tracking_bridge/chain.rs",
         "golish-agent-app/ai/tracking_bridge/memory.rs",
         "golish-agent-app/ai/tracking_bridge/records.rs",
+        # C9 planned read-only adapter for frozen scope/source projections.
+        "golish-agent-app/ai/db_bridge/reporting.rs",
         "golish-agent-app/conversation_store/batch.rs",
         "golish-agent-app/conversation_store/mod.rs",
         "projects/commands.rs",
@@ -236,6 +300,9 @@ RAW_SQL_ALLOWLIST: frozenset[str] = frozenset(
 REPO_USE_RE = re.compile(r"golish_db::repo::([a-z_][a-z0-9_]*)")
 RAW_SQL_RE = re.compile(r"\bsqlx::query")
 PUB_MOD_RE = re.compile(r"^pub mod ([a-z_][a-z0-9_]*);", re.MULTILINE)
+FINDING_INSERT_RE = re.compile(
+    r"\binsert\s+into\s+(?:public\.)?findings\b", re.IGNORECASE
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "backend" / "crates" / "golish" / "src"
@@ -255,12 +322,27 @@ SOURCE_ROOTS: list[tuple[str, str | None]] = [
     ("golish-pentest-app", "pentest"),
     ("golish-agent-app", "agent"),
     ("golish-platform-app", "platform"),
+    ("golish-post-exploit-app", "post_exploit"),
+    ("golish-cleanup-app", "cleanup"),
+    ("golish-reporting-app", "reporting"),
     # app-core houses the shared VaultReadPort + PgVaultAdapter (sunk in M3 so the
     # pentest app can use them without depending on golish). Scan it with
     # path-relative domains so the adapter's golish_db::repo::vault call stays
     # guarded — `ports/platform/vault.rs` maps to platform via DOMAIN_RULES.
     ("golish-app-core", None),
 ]
+
+# Candidate V2 has one production Finding authority. Legacy, scanner and
+# command-layer callers must enter through this repository, while the exact
+# CandidateAttempt terminalizer owns the compound Finding + lineage write.
+# Migrations and test fixtures may seed rows directly; no other production
+# source may contain a raw INSERT, even if it is not part of SOURCE_ROOTS.
+FINDING_INSERT_ALLOWED: frozenset[str] = frozenset(
+    {
+        "backend/crates/golish-db/src/repo/findings.rs",
+        "backend/crates/golish-db/src/repo/finding_lineage.rs",
+    }
+)
 
 
 def domain_of(rel: str) -> str | None:
@@ -317,10 +399,42 @@ def scan() -> tuple[list[str], list[str], set[tuple[str, str]], set[str]]:
     return own_viol, raw_viol, emit_own, emit_raw
 
 
+def scan_finding_insertions(root: Path = ROOT) -> list[str]:
+    violations: list[str] = []
+    crates = root / "backend" / "crates"
+    for path in sorted(crates.rglob("*")):
+        if not path.is_file() or path.suffix not in {".rs", ".sql"}:
+            continue
+        rel = path.relative_to(root).as_posix()
+        parts = set(path.relative_to(crates).parts)
+        if parts.intersection({"migrations", "tests", "fixtures"}):
+            continue
+        if rel in FINDING_INSERT_ALLOWED:
+            continue
+        if FINDING_INSERT_RE.search(path.read_text()):
+            violations.append(
+                f"{rel}: raw INSERT INTO findings bypasses the guarded Finding repository"
+            )
+    return violations
+
+
 def main() -> int:
     if not SRC.is_dir() or not REPO_MOD.is_file():
         print(f"[repo-ownership] ERROR: paths not found ({SRC} / {REPO_MOD})", file=sys.stderr)
         return 2
+
+    finding_writes = scan_finding_insertions()
+    if "--finding-writes-only" in sys.argv:
+        if not finding_writes:
+            print("[repo-ownership] OK Finding write authority clean")
+            return 0
+        print(
+            f"[repo-ownership] FAIL {len(finding_writes)} Finding write authority violation(s):",
+            file=sys.stderr,
+        )
+        for violation in finding_writes:
+            print(f"  - {violation}", file=sys.stderr)
+        return 1
 
     own, raw, emit_own, emit_raw = scan()
     for r in sorted(declared_repos() - set(REPO_OWNER) - SHARED_REPOS):
@@ -335,14 +449,15 @@ def main() -> int:
             print(f'        "{rel}",')
         return 0
 
-    if not own and not raw:
+    if not own and not raw and not finding_writes:
         print("[repo-ownership] OK clean")
         return 0
     print(
-        f"[repo-ownership] FAIL {len(own)} ownership + {len(raw)} raw-sql violation(s):",
+        f"[repo-ownership] FAIL {len(own)} ownership + {len(raw)} raw-sql + "
+        f"{len(finding_writes)} Finding-write violation(s):",
         file=sys.stderr,
     )
-    for v in own + raw:
+    for v in own + raw + finding_writes:
         print(f"  - {v}", file=sys.stderr)
     return 1
 

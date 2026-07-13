@@ -192,35 +192,12 @@ async fn should_resume_existing_task_operation(
     session_id: &str,
     prompt: &str,
 ) -> anyhow::Result<bool> {
-    use anyhow::Context;
-    use golish_db::{models::NewSession, repo::sessions};
-
     let task_input = extract_user_message_from_wrapped_prompt(prompt);
     if !looks_like_resume_operation_prompt(task_input) {
         return Ok(false);
     }
-
-    let session_row = sessions::upsert_by_chat_key(
-        &state.db_pool,
-        session_id,
-        NewSession {
-            title: Some(truncate_for_title(task_input, 80)),
-            workspace_path: None,
-            workspace_label: None,
-            model: Some(bridge.model_name().to_string()),
-            provider: Some(bridge.provider_name().to_string()),
-            project_path: None,
-        },
-    )
-    .await
-    .context("Failed to upsert session row for task resume preflight")?;
-
-    Ok(
-        golish_db::repo::tasks::latest_resumable_by_session(&state.db_pool, session_row.id)
-            .await
-            .context("Failed to query latest resumable task")?
-            .is_some(),
-    )
+    super::operation_resume::has_resumable_task_for_session(state, bridge, session_id, task_input)
+        .await
 }
 
 /// Run Task mode orchestration (PentAGI-style).
@@ -308,10 +285,14 @@ async fn execute_task_mode_with_continuity(
     });
 
     let start_time = std::time::Instant::now();
-    let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> =
-        std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
-            state.db_pool.clone(),
-        ));
+    let provider = std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+        state.db_pool.clone(),
+    ));
+    let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> = provider.clone();
+    let runtime_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository> =
+        provider;
+    let db_repo_for_scope_authorization = db_repo.clone();
+    let runtime_repo_for_scope_authorization = runtime_repo.clone();
     let profile_override = bridge.get_harness_profile().await;
     let profile_id = profile_override
         .clone()
@@ -337,7 +318,7 @@ async fn execute_task_mode_with_continuity(
             }
         },
     };
-    let mut orchestrator = TaskOrchestrator::new(db_repo, uuid_session_id, event_tx);
+    let mut orchestrator = TaskOrchestrator::new(db_repo, runtime_repo, uuid_session_id, event_tx);
     orchestrator.set_profile_override(profile_override.clone());
     // Scope evidence-ledger lookups to THIS chat session so gate repair
     // corrections can name the operation's real evidence ids (the string
@@ -389,6 +370,17 @@ async fn execute_task_mode_with_continuity(
     }
     orchestrator.set_continuity_adoption(continuity_adoption);
 
+    let workspace = bridge.workspace().read().await.clone();
+    let (canonical_path, path_sha256) =
+        golish_agent_kit::runtime_memory::canonical_workspace_identity(&workspace)
+            .map_err(anyhow::Error::new)
+            .context("Resolve trusted workspace identity for runtime operation")?;
+    let current_project_scope = runtime_repo_for_scope_authorization
+        .project_scope_register_first_open(&canonical_path, &path_sha256)
+        .await
+        .map_err(anyhow::Error::new)
+        .context("Register trusted project scope for runtime operation")?;
+
     let result = match resumable {
         Some(task) => {
             tracing::info!(
@@ -404,9 +396,19 @@ async fn execute_task_mode_with_continuity(
                 );
                 orchestrator.set_force_stage_run_on_resume_once(true);
             }
+            super::operation_resume::authorize_operation_resume(
+                db_repo_for_scope_authorization.as_ref(),
+                task.id,
+                &current_project_scope,
+            )
+            .await?;
             orchestrator.resume(task.id, task_input, &executor).await
         }
-        None => orchestrator.run(task_input, &executor).await,
+        None => {
+            orchestrator
+                .run(task_input, current_project_scope, &executor)
+                .await
+        }
     };
 
     // The executor (and outer GUI request) still hold ownership here. Clear the

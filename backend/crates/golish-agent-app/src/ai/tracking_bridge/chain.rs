@@ -5,6 +5,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use golish_agent_kit::db_traits::{
+    AgentType, CheckpointBoundWorkerChain, LoadBoundWorkerChain, RuntimeMemoryRepository,
+    RuntimeWorkerFence, RuntimeWorkerStatus,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -15,11 +19,43 @@ const LOAD_CHAIN_BY_ID_SQL: &str = "SELECT chain FROM message_chains \
 
 pub struct PgChainPersistence {
     pool: Arc<PgPool>,
+    runtime_memory: Option<Arc<dyn RuntimeMemoryRepository>>,
 }
 
 impl PgChainPersistence {
     pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            runtime_memory: None,
+        }
+    }
+
+    pub fn with_runtime_memory_repository(
+        mut self,
+        repository: Arc<dyn RuntimeMemoryRepository>,
+    ) -> Self {
+        self.runtime_memory = Some(repository);
+        self
+    }
+}
+
+fn persistence_agent_type(agent_id: &str) -> anyhow::Result<AgentType> {
+    match agent_id.trim() {
+        "primary" => Ok(AgentType::Primary),
+        "coder" => Ok(AgentType::Coder),
+        "searcher" => Ok(AgentType::Searcher),
+        "memorist" => Ok(AgentType::Memorist),
+        "reporter" => Ok(AgentType::Reporter),
+        "adviser" => Ok(AgentType::Adviser),
+        "reflector" => Ok(AgentType::Reflector),
+        "enricher" => Ok(AgentType::Enricher),
+        "installer" => Ok(AgentType::Installer),
+        // Stage specialists are server-owned pentest workers even when their
+        // prompt-level ids are more specific than the persisted DB enum.
+        "pentester" | "recon" | "prober" | "enumerator" | "vuln_scanner" => {
+            Ok(AgentType::Pentester)
+        }
+        other => anyhow::bail!("unsupported bound-worker persistence agent '{other}'"),
     }
 }
 
@@ -126,6 +162,76 @@ impl golish_sub_agents::SubAgentChainPersistence for PgChainPersistence {
         Ok(row.and_then(|(chain,)| chain))
     }
 
+    async fn chain_load_bound_worker(
+        &self,
+        bound: &golish_sub_agents::BoundWorkerChainContext,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        let repository = self.runtime_memory.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("runtime-memory repository is unavailable for bound worker load")
+        })?;
+        let loaded = repository
+            .load_bound_worker_chain(LoadBoundWorkerChain {
+                operation_id: bound.operation_id,
+                stage_execution_id: bound.stage_execution_id,
+                stage_run_unit_id: bound.worker_lease.stage_run_unit_id,
+                worker_run_id: bound.worker_lease.worker_run_id,
+                message_chain_id: bound.chain_id,
+                session_id: bound.session_id,
+                agent: persistence_agent_type(&bound.agent_type)?,
+            })
+            .await?;
+        anyhow::ensure!(
+            loaded.worker.lease_token == Some(bound.worker_lease.lease_token)
+                && loaded.worker.attempt_epoch == bound.worker_lease.attempt_epoch,
+            "bound worker load returned a different lease fence"
+        );
+        anyhow::ensure!(
+            loaded.worker.status == RuntimeWorkerStatus::Running
+                && loaded
+                    .worker
+                    .lease_expires_at
+                    .is_some_and(|expires_at| expires_at > chrono::Utc::now()),
+            "bound worker load returned a non-running or expired lease"
+        );
+        anyhow::ensure!(
+            loaded.worker.checkpoint_version == bound.current_checkpoint_version(),
+            "bound worker load returned checkpoint version {}, expected {}",
+            loaded.worker.checkpoint_version,
+            bound.current_checkpoint_version()
+        );
+        Ok(Some(loaded.chain))
+    }
+
+    async fn chain_checkpoint_bound_worker(
+        &self,
+        bound: &golish_sub_agents::BoundWorkerChainContext,
+        chain_id: Uuid,
+        chain_json: &serde_json::Value,
+        expected_checkpoint_version: i64,
+    ) -> anyhow::Result<i64> {
+        anyhow::ensure!(chain_id == bound.chain_id, "bound chain identity mismatch");
+        let repository = self.runtime_memory.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("runtime-memory repository is unavailable for bound checkpoint")
+        })?;
+        let worker = repository
+            .checkpoint_bound_worker_chain(CheckpointBoundWorkerChain {
+                fence: RuntimeWorkerFence {
+                    operation_id: bound.operation_id,
+                    stage_execution_id: bound.stage_execution_id,
+                    stage_run_unit_id: bound.worker_lease.stage_run_unit_id,
+                    worker_run_id: bound.worker_lease.worker_run_id,
+                    lease_token: bound.worker_lease.lease_token,
+                    attempt_epoch: bound.worker_lease.attempt_epoch,
+                    expected_checkpoint_version,
+                },
+                message_chain_id: chain_id,
+                chain: chain_json.clone(),
+                checkpoint: chain_json.clone(),
+            })
+            .await?;
+        Ok(worker.checkpoint_version)
+    }
+
     async fn load_prompt_template_overrides(&self) -> Vec<(String, String)> {
         sqlx::query_as::<_, (String, String)>(
             "SELECT template_name, content FROM prompt_templates WHERE is_active = true",
@@ -138,7 +244,8 @@ impl golish_sub_agents::SubAgentChainPersistence for PgChainPersistence {
 
 #[cfg(test)]
 mod tests {
-    use super::{LOAD_CHAIN_BY_ID_SQL, UPDATE_CHAIN_SQL};
+    use super::{persistence_agent_type, LOAD_CHAIN_BY_ID_SQL, UPDATE_CHAIN_SQL};
+    use golish_agent_kit::db_traits::AgentType;
 
     #[test]
     fn exact_chain_load_is_scoped_to_id_session_and_agent() {
@@ -150,5 +257,16 @@ mod tests {
     #[test]
     fn chain_update_sql_targets_one_exact_id() {
         assert!(UPDATE_CHAIN_SQL.contains("WHERE id = $2"));
+    }
+
+    #[test]
+    fn chain_bound_worker_maps_stage_specialists_to_persisted_pentester_type() {
+        for specialist in ["recon", "prober", "enumerator", "vuln_scanner"] {
+            assert_eq!(
+                persistence_agent_type(specialist).expect("known specialist"),
+                AgentType::Pentester
+            );
+        }
+        assert!(persistence_agent_type("model_invented_agent").is_err());
     }
 }

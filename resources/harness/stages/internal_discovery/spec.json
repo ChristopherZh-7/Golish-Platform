@@ -1,18 +1,29 @@
 {
   "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: internal_discovery. L5 red-team internal recon after foothold. Approval-gated. Phase A.",
+  "$comment": "C6/P6b: consume exact active Foothold work items and persist typed internal observations through one lease-fenced canonical-fact wrapper.",
 
   "id": "internal_discovery",
   "kind": "internal_discovery",
   "risk_level": "critical",
+  "specialist": "post_exploit_operator",
 
   "requires_stages": ["access_validation"],
   "allowed_next_stages": ["objective_pathing"],
 
-  "allowed_tool_types": ["post-exploit", "recon/port-scan", "network/tunnel"],
+  "allowed_tool_types": ["post_exploit_record_internal_observation"],
 
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
+
+  "findings_allowed": false,
+
+  "post_exploit_policy": {
+    "p6a_only": false,
+    "allowed_side_effect_classes": ["none"],
+    "requires_cleanup_kernel_for_side_effects": true,
+    "work_item_kind": "foothold",
+    "canonical_rows": ["footholds", "internal_asset_observations", "audit_log"]
+  },
 
   "gate_rules": [
     {
@@ -29,13 +40,11 @@
     }
   ],
 
-  "min_invocations": {},
+  "min_invocations": {"post_exploit_record_internal_observation": 1},
 
   "max_other_skips": 1,
 
-  "human_approval": {
-    "required_before": ["post_exploit", "exploit_validation"]
-  },
+  "human_approval": { "required_before": [] },
 
   "agent_continuity": "multi_session_relay",
 

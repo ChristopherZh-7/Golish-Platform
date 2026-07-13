@@ -1,6 +1,6 @@
 # golish-agent-runtime
 
-> **一句话职责**：**高层 agent runtime**（Layer 4b）——流式 tool-call loop（`run_agentic_loop*`）、sub-agent 派发、上下文压缩（compaction）、evals 评测 harness、mock test_utils。
+> **一句话职责**：**高层 agent runtime**（Layer 4b）——流式 tool-call loop、sub-agent 派发、exact-scope ContextPack 注入、上下文压缩、eval harness 与 test_utils。
 
 - **类型**：crate（Layer 4b · agent 高层）
 - **路径**：`backend/crates/golish-agent-runtime/`
@@ -25,17 +25,19 @@
 |---|---|
 | `run_agentic_loop` / `_generic` / `_unified` | 流式 tool-call loop 入口 |
 | `AgenticLoopConfig` / `AgenticLoopContext` | loop 配置与上下文 |
+| `retrieve_scoped_context_data` | active harness 的 operation/execution/unit/org/stage identity 组装与 ContextPack provider 调用；输出 data-only block |
 | `LoopLlmRefs` / `LoopEventRefs` / `LoopCaptureContext` / `LoopAccessControl` | loop 依赖注入引用束 |
 | `maybe_compact` / `apply_compaction` / `CompactionResult` | 上下文压缩 |
 | `get_transcript_dir(_for)` / `get_artifacts_dir(_for)` / `get_summaries_dir(_for)` | 产物目录解析 |
 | `McpToolExecutor` / `OutputClassifier` / `PostShellHook` / `TerminalErrorEmitted` | 工具执行/分类/钩子 |
 | `StageRunReentryGuard` | 顶层 Task 请求内的 stage-run retry-exhaustion 断路器；新用户请求重置 |
+| V2 worker runtime | frozen-scope seed、exact claim/prebound chain、10s/30s heartbeat、tool/chain fencing；PASS 只允许 final-seal seam 发布 |
 | sub-agent persistence identity wiring | 事件 `session_id` 与 `DbTracker::session_uuid()` 分离；后者用于 message-chain create/resume |
 | `eval_support` / `test_utils`（feature `test-utils`） | 评测 harness / 共享 mock |
 
 ## 依赖
 
-- **内部**：`golish-agent-kit`（核心下层）、`golish-core`、`golish-context`、`golish-events`、`golish-llm-providers`、`golish-settings`、`golish-tools`、`golish-sub-agents`、`golish-prompts`、`golish-indexer`、`golish-json-repair`
+- **内部**：`golish-agent-kit`（核心下层）、`golish-memory-app`、`golish-memory-domain`、`golish-core`、`golish-context`、`golish-events`、`golish-llm-providers`、`golish-settings`、`golish-tools`、`golish-sub-agents`、`golish-prompts`、`golish-indexer`、`golish-json-repair`
 - **外部**：`rig-core`、`rig-anthropic-vertex`、`rig-openai-responses`、`tokenx-rs`
 
 ## 被谁依赖 / 改动影响面
@@ -62,12 +64,14 @@
 - 与 `golish-agent-kit` 是**有意分家**（A2，编译预算）：底层在 kit，loop 在此。
 - `test-utils` feature 才会编 `test_utils`（并拉 `tempfile`、传递给 `golish-agent-kit/test-utils`）；普通 release 不付出成本。
 - crate 级 `#![allow(too_many_arguments)]`：loop 主体按设计透传宽 context。
+- active harness 的 scoped ContextPack 缺 identity/provider 或 retrieval 失败时只能省略/报错；不得把 legacy global memories/wiki 重新注入 customer operation。非-harness 普通 sub-agent 的 legacy briefing 不因此改变。
 - main-agent tool execution 会把 `event_tx` 通过 `golish_core::with_agent_tool_output_sender` 绑定到当前 `AgentToolContext`，并把 `AgenticLoopContext.harness_operation_id` 作为可信 stage-attempt id 注入；这样 bridge tools 既能发 `tool_output_chunk`，也无需接受模型伪造的 operation id。新增绕过 `single_tool_call` 的执行路径时，要同步包上 tool context + output sender。
 - `sub_agent_call.rs` 构造的每个 `SubAgentExecutorContext`（override model、override fallback、normal model）都必须透传同一 `harness_operation_id`；Reflector 和 bridge 的直接 sub-agent 兼容路径也要显式传递或置空。nested delegate 继续继承父 worker 的 operation id，不能生成新的 stage-attempt identity。
 - `SubAgentExecutorContext.session_id` 只用于 Langfuse/transcript 事件路由，可能是 `stage-run-*` 等非 UUID 文本键；message-chain persistence 必须另传 `DbTracker::session_uuid()` 到 `persistence_session_id`。不得再解析或改写事件键来猜 DB session；否则 capacity continuation 会丢失精确 worker chain。
 - sub-agent chain 错误必须以稳定 typed kind 进入 `sub_agent_call` 结果：`restore_exact` 仅在已有同一 chain id 时允许有界同链 retry，`create_fresh` 可在工具尚未执行时重试，`restore_latest` / `finalize` 直接 fail closed。尤其 finalize 失败表示 worker 已可能产生外部副作用，不能落入普通 gate retry 再派 fresh worker。
 - sub-agent 返回 `success=false` 时，runtime 的 tool result 与 `sub_agent_dispatches` 生命周期都必须记失败；不能因 Rust 外层是 `Ok(SubAgentResult)` 就把 provider stream error、timeout 或显式失败标为 completed。
 - `stage_run` 和 `sub_agent_call` 共享同一个 per-org `agent_path` checkpoint；`submit_stage_deliverable needs_fix` 里的 `SubmitRepairMode.coverage_gap_actions` 必须被 `stage_run` 接住并继续持久化，否则取消/重跑后会退化成泛化的 “without StageDeliverable” BLOCK，repair mode 就丢失精确 target/technique 工具清单。
+- V2-writing operation 的 stage worker lifecycle 只调用 `RuntimeMemoryRepository` compound APIs；禁止把 generic message-chain update、worker checkpoint、Unit transition 拼成顺序写。GateBlocked/Exhausted 可由 worker+Unit compound finish 落地，Passed 必须等待 handoff/org-completion final seal 同事务完成。
 - 大型 Enumeration worklist 可能超过 Enumerator 单段 40 iterations；worker 无 deliverable 返回时，`stage_run` 会读取同源 DB coverage snapshot，只有 pending/error/partial 数量继续下降时才续同一精确 worker chain，最多两次。ready 但未 submit 只允许一次 submit-only continuation；停滞、取消或预算耗尽进入既有 request-scoped breaker，不能无限重开。
 - `stage_run_call::build_org_objective` 会把本次 Task 的 `SubAgentContext.original_request` 作为**有界、JSON 引用、低优先级**的 operator-constraint 摘录传给 specialist worker（最多 4096 Unicode 字符，超长保留首尾并显式标记截断）。该文本只可收紧现有执行方式（如 read-only、批次、已知不可达 exact origin、禁止某 producer），绝不能变成新的授权源：stage / authoritative org subtree / DB scope / exact-origin denominator / StageSpec tool boundary / evidence+gate contract 仍由 Rust 侧固定，冲突文字必须忽略。
 

@@ -23,6 +23,7 @@ owns 项目生命周期与 on-disk 目录结构。应用层提供薄 `#[tauri::c
 | `ProjectConfig` | 项目配置 struct |
 | `create_project` 系列：`load_project` / `save_project` / `delete_project` / `list_projects` / `load_workspace` / `save_workspace` | CRUD |
 | `PentestProjectConfig`（`file_storage`） | on-disk 文件管理 |
+| `ReservedReportArtifact`（`file_storage`） | 跨 Unix/Windows 的 content-addressed report blob + publication 期 per-key advisory-lock reservation；Drop 才释放 |
 
 ## 依赖
 
@@ -46,6 +47,7 @@ owns 项目生命周期与 on-disk 目录结构。应用层提供薄 `#[tauri::c
 
 - 磁盘结构在 `{project_root}/.golish/`（captures/tool output/evidence/scripts/analysis）；与 `~/.golish/projects/<slug>/` 的项目注册区分。
 - `ProjectConfig` 跨 IPC 给前端，注意 ts-rs 同步（I5）。
+- Report artifact 路径在 Unix 以 dirfd/`*at` 固定，在 Windows 以 retained capability handle 固定；两端都拒绝 symlink/reparse ancestor，并以 hard-link 实现 atomic put-if-absent。Windows 普通/lock handle 不共享 delete，hash 后及 promotion 返回前复核 name→handle identity/content，orphan 删除走 verified-handle disposition。
 
 ## 测试入口
 

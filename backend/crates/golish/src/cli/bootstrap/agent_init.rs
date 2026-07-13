@@ -33,6 +33,7 @@ pub(crate) async fn initialize_agent(
     indexer_state: Arc<IndexerState>,
     sidecar_state: Arc<SidecarState>,
     event_session_id: &str,
+    knowledge_memory: Option<Arc<dyn golish_memory_app::KnowledgeUnitOfWork>>,
 ) -> Result<(AgentBridge, Option<Arc<golish_mcp::McpManager>>)> {
     // Resolve provider: CLI arg > settings > default
     let provider = args
@@ -237,6 +238,9 @@ pub(crate) async fn initialize_agent(
     };
 
     // Inject dependencies (same as init_ai_agent command in Tauri)
+    if let Some(knowledge_memory) = knowledge_memory {
+        bridge.set_knowledge_memory(knowledge_memory);
+    }
     bridge.set_indexer_state(indexer_state);
     let sidecar_backend: std::sync::Arc<
         dyn golish_agent_kit::sidecar_trait::SessionCaptureBackend,

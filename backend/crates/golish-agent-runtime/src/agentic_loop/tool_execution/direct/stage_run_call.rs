@@ -23,22 +23,38 @@
 //! shared harness side-channels / conversation history / cancel flag); K-
 //! concurrency via `JoinSet` is a follow-up that keeps the per-org isolation.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicI64};
+use std::sync::{Arc, RwLock as StdRwLock};
 
 use anyhow::Result;
-use rig::completion::CompletionModel as RigCompletionModel;
+use rig::completion::{CompletionModel as RigCompletionModel, Message};
+use rig::message::{Text, UserContent};
+use rig::one_or_many::OneOrMany;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use golish_agent_kit::db_traits::{OrgScopeUnit, StageAssetWaveView};
+use golish_agent_kit::db_traits::{
+    AgentType, ClaimWorkerAndBindChain, CloseWaveGatePass, ClosedWaveGatePass, DbRepoProvider,
+    FinishWorkerAttempt, LoadInheritedStageHandoffs, LoadWorkerCheckpoint, OrgScopeUnit,
+    RuntimeExpiredWorkerDisposition, RuntimeMemoryRepository, RuntimeStageHandoffView,
+    RuntimeStageUnitStatus, RuntimeWorkerFence, RuntimeWorkerStatus, SeedStageRuntime,
+    SeededStageRuntime, StageAssetWaveView, TerminalizeCandidateAttempt,
+};
+use golish_agent_kit::harness::handoff_catalog::{
+    MAX_CANONICAL_REFS, MAX_EVIDENCE_IDS, MAX_TYPED_CLAIMS,
+};
 use golish_agent_kit::harness::org_gate::{
     completion_is_fresh_for_stage, decide_org_verdict, fanout_completion_scope_ids,
     stage_pass_token, STAGE_COMPLETION_TTL_SECS, STAGE_RUN_PASS_TOKEN_KIND,
 };
 use golish_agent_kit::harness::{
-    allowed_tool_names, capabilities_for_stage, evaluate_org_stage_gate, load_embedded_stage_spec,
-    stage_methodology_md, CoverageStatus, HarnessRecoveryActions, OrgVerdict, StageDeliverable,
-    StageKind,
+    allowed_tool_names, build_server_final_seal, capabilities_for_stage, evaluate_org_stage_gate,
+    load_embedded_stage_spec, stage_methodology_md, CanonicalFactKey, CoverageStatus,
+    HarnessRecoveryActions, InheritsEvidenceFrom, OrgVerdict, ServerFinalSealInput,
+    StageDeliverable, StageKind, TypedHandoffClaim,
 };
+use golish_agent_kit::runtime_memory::{RuntimeMemoryContract, RuntimeMemoryWriteStrategy};
 use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
     agent_run_from_state_blob, state_blob_with_agent_run, state_blob_without_agent_run,
     AgentRunCheckpoint, AgentRunStatus, RuntimeCorrectionCheckpoint, ToolCheckpoint,
@@ -48,12 +64,17 @@ use golish_agent_kit::task_orchestrator::stage_refiner::{
     refine_gate_block, RefinerContext, RepairDirective,
 };
 use golish_core::events::{AiEvent, HarnessTraceKind};
+use golish_core::AttackExecutionContract;
 use golish_sub_agents::{
-    submit_coverage_gap_repair_mode_from_reasons, SubAgentContext, SubmitRepairMode,
+    submit_coverage_gap_repair_mode_from_reasons, BoundWorkerChainContext,
+    BoundWorkerToolLifecycle, SubAgentContext, SubmitRepairMode,
 };
 
+use super::super::super::worker_lease::{WorkerLeaseSupervisor, WORKER_LEASE_TTL_SECS};
+use super::super::super::worker_tool_lifecycle::RuntimeWorkerToolLifecycle;
 use super::super::super::{AgenticLoopContext, StageRunReentryGuard, ToolExecutionResult};
-use super::sub_agent_call::execute_sub_agent_call;
+use super::candidate_verification::claim_candidate_verifier;
+use super::sub_agent_call::{execute_sub_agent_call, execute_sub_agent_call_with_bound};
 
 /// One per-org unit the fan-out runs the stage specialist against.
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +82,1333 @@ struct OrgUnit {
     id: String,
     name: String,
     ownership_percent: Option<f64>,
+}
+
+struct ClaimedV2StageWorker {
+    bound: BoundWorkerChainContext,
+    supervisor: WorkerLeaseSupervisor,
+}
+
+fn stage_worker_agent_type(specialist: &str) -> Option<AgentType> {
+    match specialist.trim() {
+        "reporter" => Some(AgentType::Reporter),
+        "recon" | "prober" | "enumerator" | "vuln_scanner" | "attack_analyst"
+        | "candidate_verifier" | "pentester" => Some(AgentType::Pentester),
+        _ => None,
+    }
+}
+
+fn candidate_v2_stage_run_enabled(
+    stage: StageKind,
+    runtime_contract: RuntimeMemoryContract,
+    attack_contract: AttackExecutionContract,
+) -> bool {
+    matches!(stage, StageKind::AttackCandidate | StageKind::Verification)
+        && runtime_contract == RuntimeMemoryContract::V2Only
+        && attack_contract.executes_v2_verifier()
+}
+
+fn effective_stage_run_specialist(
+    stage: StageKind,
+    configured: Option<&str>,
+    contracts: Option<(RuntimeMemoryContract, AttackExecutionContract)>,
+) -> Option<String> {
+    let configured = configured
+        .map(str::trim)
+        .filter(|specialist| !specialist.is_empty())
+        .map(ToOwned::to_owned);
+    let v2_enabled = contracts
+        .is_some_and(|(runtime, attack)| candidate_v2_stage_run_enabled(stage, runtime, attack));
+    match stage {
+        StageKind::Verification => v2_enabled.then(|| "candidate_verifier".to_string()),
+        StageKind::AttackCandidate if v2_enabled => Some("attack_analyst".to_string()),
+        _ => configured,
+    }
+}
+
+fn serialized_initial_worker_chain(objective: &str) -> anyhow::Result<Value> {
+    serde_json::to_value(vec![Message::User {
+        content: OneOrMany::one(UserContent::Text(Text {
+            text: objective.to_string(),
+        })),
+    }])
+    .map_err(Into::into)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunningWorkerResumeAction {
+    WaitForLiveLease,
+    ReapExpired,
+}
+
+fn running_worker_resume_action(
+    worker: &golish_agent_kit::db_traits::RuntimeWorkerView,
+    now: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<RunningWorkerResumeAction> {
+    anyhow::ensure!(
+        worker.status == RuntimeWorkerStatus::Running,
+        "worker {} is not running",
+        worker.id
+    );
+    let expires_at = worker
+        .lease_expires_at
+        .ok_or_else(|| anyhow::anyhow!("running worker {} has no lease expiry", worker.id))?;
+    anyhow::ensure!(
+        worker.lease_token.is_some() && worker.lease_owner.is_some(),
+        "running worker {} has an incomplete lease",
+        worker.id
+    );
+    Ok(if expires_at > now {
+        RunningWorkerResumeAction::WaitForLiveLease
+    } else {
+        RunningWorkerResumeAction::ReapExpired
+    })
+}
+
+const PENDING_V2_FINAL_SEAL_KEY: &str = "pending_v2_final_seal";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct V2AuthoritativeSealCell {
+    asset: String,
+    technique: String,
+    state: String,
+    evidence_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct V2AuthoritativeSealWave {
+    id: uuid::Uuid,
+    wave_index: i32,
+    asset_count: usize,
+    asset_hash: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct V2CoverageSealMaterial {
+    cells: Vec<V2AuthoritativeSealCell>,
+    waves: Vec<V2AuthoritativeSealWave>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct V2CandidateSealMaterial {
+    manifest: golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot,
+    acceptance: golish_agent_kit::harness::attack_execution::CandidateAcceptance,
+}
+
+/// Stage-specific, server-owned final-seal material. Coverage snapshots are a
+/// valid source only for the four current information stages. Candidate uses
+/// its immutable manifest and classified terminal decisions; future
+/// Verification must add its own DB-attempt snapshot variant rather than pass
+/// through an empty coverage shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum V2AuthoritativeSealMaterial {
+    InformationCoverage(V2CoverageSealMaterial),
+    AttackCandidate(Box<V2CandidateSealMaterial>),
+}
+
+impl Default for V2AuthoritativeSealMaterial {
+    fn default() -> Self {
+        Self::InformationCoverage(V2CoverageSealMaterial::default())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct V2PendingFinalSealCheckpoint {
+    deliverable_submission_id: uuid::Uuid,
+    material: V2AuthoritativeSealMaterial,
+}
+
+fn final_seal_evidence_ids(
+    deliverable: &StageDeliverable,
+    material: &V2AuthoritativeSealMaterial,
+) -> Vec<i64> {
+    let mut ids = match material {
+        V2AuthoritativeSealMaterial::InformationCoverage(material) => deliverable
+            .evidence_refs
+            .iter()
+            .chain(
+                deliverable
+                    .claims
+                    .iter()
+                    .flat_map(|claim| claim.evidence_ids.iter()),
+            )
+            .chain(
+                deliverable
+                    .findings
+                    .iter()
+                    .flat_map(|finding| finding.evidence_refs.iter()),
+            )
+            .map(|id| id.as_i64())
+            .chain(
+                material
+                    .cells
+                    .iter()
+                    .flat_map(|cell| cell.evidence_ids.iter().copied()),
+            )
+            .filter(|id| *id > 0)
+            .collect::<Vec<_>>(),
+        V2AuthoritativeSealMaterial::AttackCandidate(material) => material
+            .acceptance
+            .candidates
+            .iter()
+            .flat_map(|decision| decision.evidence_ids.iter().copied())
+            .chain(
+                material
+                    .acceptance
+                    .no_candidate_decisions
+                    .iter()
+                    .flat_map(|decision| decision.evidence_ids.iter().copied()),
+            )
+            .filter(|id| *id > 0)
+            .collect::<Vec<_>>(),
+    };
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+fn deterministic_typed_handoff_claims(
+    deliverable: &StageDeliverable,
+    included_evidence_ids: &BTreeSet<i64>,
+) -> (Vec<TypedHandoffClaim>, usize) {
+    let mut claims = deliverable
+        .claims
+        .iter()
+        .filter_map(|claim| {
+            let mut evidence_ids = claim
+                .evidence_ids
+                .iter()
+                .map(|id| id.as_i64())
+                .filter(|id| included_evidence_ids.contains(id))
+                .collect::<Vec<_>>();
+            evidence_ids.sort_unstable();
+            evidence_ids.dedup();
+            (!evidence_ids.is_empty()).then(|| TypedHandoffClaim {
+                kind: claim.kind.clone(),
+                payload: json!({
+                    "subject": claim.subject,
+                    "summary": claim.summary,
+                    "technique": claim.technique,
+                    "evidence_ids": evidence_ids,
+                }),
+            })
+        })
+        .chain(deliverable.findings.iter().filter_map(|finding| {
+            let mut evidence_ids = finding
+                .evidence_refs
+                .iter()
+                .map(|id| id.as_i64())
+                .filter(|id| included_evidence_ids.contains(id))
+                .collect::<Vec<_>>();
+            evidence_ids.sort_unstable();
+            evidence_ids.dedup();
+            (!evidence_ids.is_empty()).then(|| TypedHandoffClaim {
+                kind: "finding".to_string(),
+                payload: json!({
+                    "finding_id": finding.finding_id,
+                    "finding_kind": finding.kind,
+                    "subject": finding.subject,
+                    "severity": finding.severity,
+                    "technique": finding.technique,
+                    "evidence_ids": evidence_ids,
+                }),
+            })
+        }))
+        .collect::<Vec<_>>();
+    claims.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.payload.to_string().cmp(&right.payload.to_string()))
+    });
+    claims.dedup();
+    let total = claims.len();
+    claims.truncate(MAX_TYPED_CLAIMS);
+    (claims, total)
+}
+
+fn deterministic_candidate_handoff_claims(
+    material: &V2CandidateSealMaterial,
+    included_evidence_ids: &BTreeSet<i64>,
+) -> anyhow::Result<(Vec<TypedHandoffClaim>, usize)> {
+    let mut claims = material
+        .acceptance
+        .candidates
+        .iter()
+        .map(|decision| {
+            anyhow::ensure!(
+                decision
+                    .evidence_ids
+                    .iter()
+                    .all(|id| included_evidence_ids.contains(id)),
+                "Candidate terminal claim evidence was truncated or lost"
+            );
+            Ok(TypedHandoffClaim {
+                kind: "attack_candidate_decision".to_string(),
+                payload: json!({
+                    "candidate_id": decision.candidate_id,
+                    "work_item_id": decision.work_item_id,
+                    "hypothesis": decision.hypothesis,
+                    "technique": decision.technique,
+                    "rationale": decision.rationale,
+                    "candidate_plan_hash": decision.candidate_plan_hash,
+                    "risk_class": decision.risk_class,
+                    "evidence_ids": decision.evidence_ids,
+                }),
+            })
+        })
+        .chain(
+            material
+                .acceptance
+                .no_candidate_decisions
+                .iter()
+                .map(|decision| {
+                    anyhow::ensure!(
+                        decision
+                            .evidence_ids
+                            .iter()
+                            .all(|id| included_evidence_ids.contains(id)),
+                        "no_candidate terminal claim evidence was truncated or lost"
+                    );
+                    Ok(TypedHandoffClaim {
+                        kind: "attack_no_candidate_decision".to_string(),
+                        payload: json!({
+                            "work_item_id": decision.work_item_id,
+                            "reason_code": decision.reason_code,
+                            "detail": decision.detail,
+                            "evidence_ids": decision.evidence_ids,
+                        }),
+                    })
+                }),
+        )
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    claims.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.payload.to_string().cmp(&right.payload.to_string()))
+    });
+    let total = claims.len();
+    anyhow::ensure!(
+        total <= MAX_TYPED_CLAIMS,
+        "Candidate terminal claim count exceeds the bounded handoff catalog"
+    );
+    Ok((claims, total))
+}
+
+fn authoritative_seal_material_from_snapshot(
+    snapshot: &Value,
+    stage: StageKind,
+    organization_id: uuid::Uuid,
+    wave: Option<&StageAssetWaveView>,
+) -> anyhow::Result<V2AuthoritativeSealMaterial> {
+    anyhow::ensure!(
+        matches!(
+            stage,
+            StageKind::TargetIntel
+                | StageKind::ExternalAttackSurface
+                | StageKind::Enumeration
+                | StageKind::VulnTriage
+        ),
+        "stage {} has no coverage-snapshot final-seal contract",
+        stage.as_str()
+    );
+    anyhow::ensure!(
+        snapshot.get("stage").and_then(Value::as_str) == Some(stage.as_str()),
+        "authoritative coverage snapshot stage mismatch"
+    );
+    anyhow::ensure!(
+        snapshot
+            .get("organization_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == organization_id.to_string()),
+        "authoritative coverage snapshot organization mismatch"
+    );
+    let expected_techniques = load_embedded_stage_spec(stage)?
+        .expected_techniques
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let assets = snapshot
+        .get("assets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("authoritative coverage snapshot has no asset rows"))?;
+    let mut cells = Vec::new();
+    for asset in assets {
+        let asset_value = asset
+            .get("value")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("authoritative coverage asset has no value"))?;
+        let coverage = asset
+            .get("coverage")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("authoritative coverage asset has no cells"))?;
+        for cell in coverage {
+            let state = cell
+                .get("state")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("authoritative coverage cell has no state"))?;
+            if state == "next_wave_pending" {
+                continue;
+            }
+            anyhow::ensure!(
+                matches!(
+                    state,
+                    "found" | "checked_empty" | "blocked" | "not_applicable"
+                ),
+                "authoritative coverage snapshot contains non-terminal cell {asset_value} x {} ({state})",
+                cell.get("technique")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+            );
+            let technique = cell
+                .get("technique")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("authoritative coverage cell has no technique"))?;
+            anyhow::ensure!(
+                expected_techniques.contains(technique),
+                "authoritative coverage snapshot contains out-of-contract technique {technique}"
+            );
+            let mut evidence_ids = cell
+                .get("evidence_refs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_i64)
+                .filter(|id| *id > 0)
+                .collect::<Vec<_>>();
+            evidence_ids.sort_unstable();
+            evidence_ids.dedup();
+            cells.push(V2AuthoritativeSealCell {
+                asset: asset_value.to_string(),
+                technique: technique.to_string(),
+                state: state.to_string(),
+                evidence_ids,
+            });
+        }
+    }
+    cells.sort_by(|left, right| {
+        left.asset
+            .cmp(&right.asset)
+            .then_with(|| left.technique.cmp(&right.technique))
+    });
+    for pair in cells.windows(2) {
+        anyhow::ensure!(
+            pair[0].asset != pair[1].asset || pair[0].technique != pair[1].technique,
+            "authoritative coverage snapshot contains duplicate cells"
+        );
+    }
+    anyhow::ensure!(
+        expected_techniques.is_empty() || !cells.is_empty(),
+        "authoritative coverage snapshot contains no terminal cells"
+    );
+    let waves = wave
+        .map(|wave| {
+            vec![V2AuthoritativeSealWave {
+                id: wave.id,
+                wave_index: wave.wave_index,
+                asset_count: wave.asset_values.len(),
+                asset_hash: wave.asset_hash.clone(),
+            }]
+        })
+        .unwrap_or_default();
+    Ok(V2AuthoritativeSealMaterial::InformationCoverage(
+        V2CoverageSealMaterial { cells, waves },
+    ))
+}
+
+async fn authoritative_candidate_seal_material(
+    repository: &dyn DbRepoProvider,
+    seeded: &SeededStageRuntime,
+    deliverable: &StageDeliverable,
+) -> anyhow::Result<V2AuthoritativeSealMaterial> {
+    anyhow::ensure!(
+        seeded.unit.stage_kind == StageKind::AttackCandidate.as_str(),
+        "Candidate final-seal material requested for a non-candidate Unit"
+    );
+    let manifest = repository
+        .attack_v2_candidate_manifest_for_unit(
+            seeded.unit.operation_id,
+            seeded.unit.id,
+            seeded.unit.organization_id,
+        )
+        .await?;
+    anyhow::ensure!(
+        manifest.operation_id == seeded.unit.operation_id
+            && manifest.scope_snapshot_id == seeded.unit.scope_snapshot_id
+            && manifest.organization_id == seeded.unit.organization_id
+            && manifest.wave_unit_id != uuid::Uuid::nil()
+            && manifest.wave_run_id != uuid::Uuid::nil()
+            && !manifest.manifest_hash.trim().is_empty()
+            && !manifest.work_items.is_empty(),
+        "Candidate manifest identity or frozen attestation mismatch"
+    );
+    let acceptance = golish_agent_kit::harness::attack_execution::build_candidate_acceptance(
+        &manifest,
+        &deliverable.candidate_decisions,
+    )?;
+    anyhow::ensure!(
+        acceptance.wave_run_id == manifest.wave_run_id
+            && acceptance.wave_unit_id == manifest.wave_unit_id
+            && acceptance.manifest_hash == manifest.manifest_hash
+            && acceptance.expected_work_item_ids.len() == manifest.work_items.len(),
+        "Candidate acceptance drifted from its frozen manifest"
+    );
+    Ok(V2AuthoritativeSealMaterial::AttackCandidate(Box::new(
+        V2CandidateSealMaterial {
+            manifest,
+            acceptance,
+        },
+    )))
+}
+
+fn merge_authoritative_seal_material(
+    previous: Option<V2AuthoritativeSealMaterial>,
+    current: V2AuthoritativeSealMaterial,
+) -> anyhow::Result<V2AuthoritativeSealMaterial> {
+    let (previous_cells, previous_waves) = match previous {
+        None => (Vec::new(), Vec::new()),
+        Some(V2AuthoritativeSealMaterial::InformationCoverage(material)) => {
+            (material.cells, material.waves)
+        }
+        Some(V2AuthoritativeSealMaterial::AttackCandidate(_)) => {
+            anyhow::bail!("Candidate final-seal material cannot enter a coverage wave merge")
+        }
+    };
+    let V2AuthoritativeSealMaterial::InformationCoverage(current) = current else {
+        anyhow::bail!("non-coverage final-seal material cannot enter a coverage wave merge")
+    };
+    let mut cells = BTreeMap::<(String, String), V2AuthoritativeSealCell>::new();
+    for cell in previous_cells.into_iter().chain(current.cells) {
+        let key = (cell.asset.clone(), cell.technique.clone());
+        if let Some(existing) = cells.get_mut(&key) {
+            anyhow::ensure!(
+                existing.state == cell.state,
+                "authoritative coverage changed terminal state for {} x {}",
+                cell.asset,
+                cell.technique
+            );
+            existing.evidence_ids.extend(cell.evidence_ids);
+            existing.evidence_ids.sort_unstable();
+            existing.evidence_ids.dedup();
+        } else {
+            cells.insert(key, cell);
+        }
+    }
+    let mut waves = BTreeMap::<i32, V2AuthoritativeSealWave>::new();
+    for wave in previous_waves.into_iter().chain(current.waves) {
+        if let Some(existing) = waves.get(&wave.wave_index) {
+            anyhow::ensure!(existing == &wave, "authoritative wave identity changed");
+        } else {
+            waves.insert(wave.wave_index, wave);
+        }
+    }
+    Ok(V2AuthoritativeSealMaterial::InformationCoverage(
+        V2CoverageSealMaterial {
+            cells: cells.into_values().collect(),
+            waves: waves.into_values().collect(),
+        },
+    ))
+}
+
+fn pending_v2_final_seal_checkpoint(
+    unit: &golish_agent_kit::db_traits::RuntimeStageUnitView,
+) -> anyhow::Result<Option<V2PendingFinalSealCheckpoint>> {
+    unit.pass_watermark
+        .get(PENDING_V2_FINAL_SEAL_KEY)
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn pending_v2_final_seal_watermark(
+    deliverable_submission_id: uuid::Uuid,
+    material: &V2AuthoritativeSealMaterial,
+) -> Value {
+    json!({
+        PENDING_V2_FINAL_SEAL_KEY: V2PendingFinalSealCheckpoint {
+            deliverable_submission_id,
+            material: material.clone(),
+        }
+    })
+}
+
+fn deterministic_coverage_watermark(
+    stage: StageKind,
+    organization_id: uuid::Uuid,
+    material: &V2AuthoritativeSealMaterial,
+    canonical_ref_total: usize,
+    canonical_ref_included: usize,
+    typed_claim_total: usize,
+    typed_claim_included: usize,
+    evidence_id_total: usize,
+    evidence_id_included: usize,
+) -> Value {
+    match material {
+        V2AuthoritativeSealMaterial::InformationCoverage(material) => {
+            let assets = material
+                .cells
+                .iter()
+                .map(|cell| cell.asset.clone())
+                .collect::<BTreeSet<_>>();
+            let techniques = material
+                .cells
+                .iter()
+                .map(|cell| cell.technique.clone())
+                .collect::<BTreeSet<_>>();
+            let found = material
+                .cells
+                .iter()
+                .filter(|cell| cell.state == "found")
+                .count();
+            let checked_empty = material
+                .cells
+                .iter()
+                .filter(|cell| cell.state == "checked_empty")
+                .count();
+            let blocked = material
+                .cells
+                .iter()
+                .filter(|cell| cell.state == "blocked")
+                .count();
+            let not_applicable = material
+                .cells
+                .iter()
+                .filter(|cell| cell.state == "not_applicable")
+                .count();
+            let wave_asset_count = material
+                .waves
+                .iter()
+                .map(|wave| wave.asset_count)
+                .sum::<usize>();
+            json!({
+                "kind": "information_coverage_v1",
+                "stage": stage.as_str(),
+                "organization_id": organization_id,
+                "terminal_cells": material.cells.len(),
+                "found": found,
+                "checked_empty": checked_empty,
+                "blocked": blocked,
+                "not_applicable": not_applicable,
+                "canonical_ref_total": canonical_ref_total,
+                "canonical_ref_included": canonical_ref_included,
+                "canonical_ref_truncated": canonical_ref_included < canonical_ref_total,
+                "typed_claim_total": typed_claim_total,
+                "typed_claim_included": typed_claim_included,
+                "typed_claim_truncated": typed_claim_included < typed_claim_total,
+                "evidence_id_total": evidence_id_total,
+                "evidence_id_included": evidence_id_included,
+                "evidence_id_truncated": evidence_id_included < evidence_id_total,
+                "assets": assets.into_iter().collect::<Vec<_>>(),
+                "techniques": techniques.into_iter().collect::<Vec<_>>(),
+                "waves": material.waves,
+                "wave_count": material.waves.len(),
+                "wave_asset_count": wave_asset_count,
+            })
+        }
+        V2AuthoritativeSealMaterial::AttackCandidate(material) => {
+            let mut expected_work_item_ids = material.acceptance.expected_work_item_ids.clone();
+            expected_work_item_ids.sort_unstable();
+            let mut candidate_ids = material
+                .acceptance
+                .candidates
+                .iter()
+                .map(|decision| decision.candidate_id)
+                .collect::<Vec<_>>();
+            candidate_ids.sort_unstable();
+            let mut no_candidate_work_item_ids = material
+                .acceptance
+                .no_candidate_decisions
+                .iter()
+                .map(|decision| decision.work_item_id)
+                .collect::<Vec<_>>();
+            no_candidate_work_item_ids.sort_unstable();
+            let mut decision_evidence_ids = material
+                .acceptance
+                .candidates
+                .iter()
+                .flat_map(|decision| decision.evidence_ids.iter().copied())
+                .chain(
+                    material
+                        .acceptance
+                        .no_candidate_decisions
+                        .iter()
+                        .flat_map(|decision| decision.evidence_ids.iter().copied()),
+                )
+                .collect::<Vec<_>>();
+            decision_evidence_ids.sort_unstable();
+            decision_evidence_ids.dedup();
+            json!({
+                "kind": "candidate_manifest_v1",
+                "stage": stage.as_str(),
+                "organization_id": organization_id,
+                "wave_run_id": material.acceptance.wave_run_id,
+                "wave_unit_id": material.acceptance.wave_unit_id,
+                "manifest_hash": material.acceptance.manifest_hash,
+                "expected_work_item_ids": expected_work_item_ids,
+                "candidate_ids": candidate_ids,
+                "no_candidate_work_item_ids": no_candidate_work_item_ids,
+                "decision_evidence_ids": decision_evidence_ids,
+                "terminal_count": material.acceptance.candidates.len()
+                    + material.acceptance.no_candidate_decisions.len(),
+                "canonical_ref_total": canonical_ref_total,
+                "canonical_ref_included": canonical_ref_included,
+                "canonical_ref_truncated": canonical_ref_included < canonical_ref_total,
+                "typed_claim_total": typed_claim_total,
+                "typed_claim_included": typed_claim_included,
+                "typed_claim_truncated": typed_claim_included < typed_claim_total,
+                "evidence_id_total": evidence_id_total,
+                "evidence_id_included": evidence_id_included,
+                "evidence_id_truncated": evidence_id_included < evidence_id_total,
+            })
+        }
+    }
+}
+
+fn deterministic_canonical_fact_keys(
+    operation_id: uuid::Uuid,
+    organization_id: uuid::Uuid,
+    material: &V2AuthoritativeSealMaterial,
+    deliverable: &StageDeliverable,
+) -> anyhow::Result<(Vec<CanonicalFactKey>, usize)> {
+    let run_id = operation_id.to_string();
+    let keys = match material {
+        V2AuthoritativeSealMaterial::InformationCoverage(material) => material
+            .cells
+            .iter()
+            .map(|cell| CanonicalFactKey::TechniqueOutcome {
+                organization_id,
+                run_id: run_id.clone(),
+                asset: cell.asset.clone(),
+                technique: cell.technique.clone(),
+            })
+            .chain(
+                deliverable
+                    .findings
+                    .iter()
+                    .map(|finding| CanonicalFactKey::Finding {
+                        finding_id: finding.finding_id,
+                    }),
+            )
+            .collect::<Vec<_>>(),
+        V2AuthoritativeSealMaterial::AttackCandidate(material) => material
+            .acceptance
+            .expected_work_item_ids
+            .iter()
+            .copied()
+            .map(|work_item_id| CanonicalFactKey::AttackCandidateWorkItem { work_item_id })
+            .collect::<Vec<_>>(),
+    };
+    let mut keyed = keys
+        .into_iter()
+        .map(|key| Ok((serde_json::to_string(&key)?, key)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    keyed.sort_by(|left, right| left.0.cmp(&right.0));
+    keyed.dedup_by(|left, right| left.0 == right.0);
+    let total = keyed.len();
+    if matches!(material, V2AuthoritativeSealMaterial::AttackCandidate(_)) {
+        anyhow::ensure!(
+            total <= MAX_CANONICAL_REFS,
+            "Candidate manifest exceeds the bounded canonical handoff catalog"
+        );
+    }
+    let keys = keyed
+        .into_iter()
+        .take(MAX_CANONICAL_REFS)
+        .map(|(_, key)| key)
+        .collect();
+    Ok((keys, total))
+}
+
+fn build_v2_final_seal(
+    seeded: &SeededStageRuntime,
+    bound: &BoundWorkerChainContext,
+    deliverable_submission_id: uuid::Uuid,
+    deliverable: &StageDeliverable,
+    material: &V2AuthoritativeSealMaterial,
+    stage: StageKind,
+    authoritative_gate: bool,
+) -> anyhow::Result<golish_agent_kit::db_traits::FinalizeUnitPass> {
+    anyhow::ensure!(
+        authoritative_gate,
+        "V2 PASS requires the authoritative DB org gate"
+    );
+    anyhow::ensure!(
+        seeded.unit.operation_id == bound.operation_id
+            && seeded.unit.stage_execution_id == bound.stage_execution_id
+            && seeded.unit.id == bound.worker_lease.stage_run_unit_id
+            && seeded.unit.organization_id == bound.organization_id
+            && seeded.worker.id == bound.worker_lease.worker_run_id
+            && seeded.worker.attempt_epoch == bound.worker_lease.attempt_epoch,
+        "V2 final seal runtime identity mismatch"
+    );
+    anyhow::ensure!(
+        seeded.unit.stage_kind == stage.as_str(),
+        "V2 final seal stage mismatch"
+    );
+    let (canonical_fact_keys, canonical_ref_total) = deterministic_canonical_fact_keys(
+        seeded.unit.operation_id,
+        seeded.unit.organization_id,
+        material,
+        deliverable,
+    )?;
+    let canonical_ref_included = canonical_fact_keys.len();
+    let mut evidence_ids = final_seal_evidence_ids(deliverable, material);
+    let evidence_id_total = evidence_ids.len();
+    if matches!(material, V2AuthoritativeSealMaterial::AttackCandidate(_)) {
+        anyhow::ensure!(
+            evidence_id_total <= MAX_EVIDENCE_IDS,
+            "Candidate decision evidence exceeds the bounded handoff catalog"
+        );
+    }
+    evidence_ids.truncate(MAX_EVIDENCE_IDS);
+    let evidence_id_included = evidence_ids.len();
+    let included_evidence_ids = evidence_ids.iter().copied().collect::<BTreeSet<_>>();
+    let (typed_claims, typed_claim_total) = match material {
+        V2AuthoritativeSealMaterial::InformationCoverage(_) => {
+            deterministic_typed_handoff_claims(deliverable, &included_evidence_ids)
+        }
+        V2AuthoritativeSealMaterial::AttackCandidate(material) => {
+            deterministic_candidate_handoff_claims(material, &included_evidence_ids)?
+        }
+    };
+    let typed_claim_included = typed_claims.len();
+    let coverage_watermark = deterministic_coverage_watermark(
+        stage,
+        seeded.unit.organization_id,
+        material,
+        canonical_ref_total,
+        canonical_ref_included,
+        typed_claim_total,
+        typed_claim_included,
+        evidence_id_total,
+        evidence_id_included,
+    );
+    build_server_final_seal(ServerFinalSealInput {
+        fence: RuntimeWorkerFence {
+            operation_id: bound.operation_id,
+            stage_execution_id: bound.stage_execution_id,
+            stage_run_unit_id: bound.worker_lease.stage_run_unit_id,
+            worker_run_id: bound.worker_lease.worker_run_id,
+            lease_token: bound.worker_lease.lease_token,
+            attempt_epoch: bound.worker_lease.attempt_epoch,
+            expected_checkpoint_version: bound.current_checkpoint_version(),
+        },
+        deliverable_submission_id,
+        expected_unit_row_version: seeded.unit.row_version,
+        scope_hash: seeded.scope_hash.clone(),
+        aggregate_pass_token_hash: None,
+        canonical_fact_keys,
+        typed_claims,
+        coverage_watermark,
+        evidence_ids,
+        terminal_checkpoint: bound.current_checkpoint_body(),
+        deterministic_gate_details: json!({
+            "source": "authoritative_org_gate",
+            "stage": stage.as_str(),
+            "organization_id": seeded.unit.organization_id,
+            "deliverable_stage_run_id": deliverable.stage_run_id,
+        }),
+        candidate_acceptance: match material {
+            V2AuthoritativeSealMaterial::InformationCoverage(_) => None,
+            V2AuthoritativeSealMaterial::AttackCandidate(material) => {
+                Some(material.acceptance.clone())
+            }
+        },
+    })
+    .map_err(Into::into)
+}
+
+async fn build_v2_final_seal_with_stage_extensions(
+    gate_repository: &dyn DbRepoProvider,
+    seeded: &SeededStageRuntime,
+    bound: &BoundWorkerChainContext,
+    deliverable_submission_id: uuid::Uuid,
+    deliverable: &StageDeliverable,
+    material: &V2AuthoritativeSealMaterial,
+    stage: StageKind,
+    authoritative_gate: bool,
+) -> anyhow::Result<golish_agent_kit::db_traits::FinalizeUnitPass> {
+    let request = build_v2_final_seal(
+        seeded,
+        bound,
+        deliverable_submission_id,
+        deliverable,
+        material,
+        stage,
+        authoritative_gate,
+    )?;
+    // Keep the repository parameter at the call boundary: final-seal callers
+    // must already have used it to build the stage-specific authoritative
+    // material. Candidate acceptance is now inside the hashed seal input and
+    // must never be attached after the Gate hash is computed.
+    let _ = gate_repository;
+    Ok(request)
+}
+
+const MAX_INHERITED_HANDOFF_CONTEXT_BYTES: usize = 32 * 1024;
+const MAX_INHERITED_VALUES: usize = 128;
+const MAX_INHERITED_VALUE_BYTES: usize = 4 * 1024;
+
+fn bounded_json_values(values: impl IntoIterator<Item = Value>) -> Vec<Value> {
+    values
+        .into_iter()
+        .filter(|value| {
+            serde_json::to_vec(value)
+                .is_ok_and(|encoded| encoded.len() <= MAX_INHERITED_VALUE_BYTES)
+        })
+        .take(MAX_INHERITED_VALUES)
+        .collect()
+}
+
+fn technique_evidence_kinds(technique: &str) -> &'static [&'static str] {
+    match technique {
+        "GOLISH-INTEL-DNS" => &["dns_a"],
+        "GOLISH-INTEL-WHOIS" => &["whois"],
+        "GOLISH-INTEL-ASN" => &["asn"],
+        "GOLISH-INTEL-CT" | "GOLISH-INTEL-SUBDOMAIN" => &["subdomain"],
+        "GOLISH-INTEL-OSINT" => &["osint"],
+        "GOLISH-EAS-LIVENESS" => &["http_service"],
+        "GOLISH-EAS-PORT" => &["open_port"],
+        "GOLISH-EAS-SERVICE-FINGERPRINT" => &["fingerprint"],
+        "GOLISH-EAS-WEB-FINGERPRINT" => &["http_service", "fingerprint"],
+        "GOLISH-ENUM-JS" => &["js_asset"],
+        "GOLISH-ENUM-DIR" => &["dir_entry"],
+        "GOLISH-ENUM-PARAM" => &["parameter"],
+        "GOLISH-ENUM-JSAPI" => &["api_endpoint"],
+        "WSTG-INPV-05" | "WSTG-INPV-01" | "WSTG-INPV-12" | "WSTG-ATHZ-04" | "WSTG-ATHN-02"
+        | "WSTG-SESS-02" | "WSTG-CONF-05" | "WSTG-CRYP-03" | "WSTG-INFO" | "GOLISH-NDAY" => {
+            &["vuln_finding"]
+        }
+        _ => &[],
+    }
+}
+
+fn canonical_ref_evidence_kinds(value: &Value) -> &'static [&'static str] {
+    match value
+        .get("key")
+        .and_then(|key| key.get("kind"))
+        .and_then(Value::as_str)
+    {
+        Some("dns_record") => &["dns_a"],
+        Some("fingerprint") => &["fingerprint"],
+        Some("api_endpoint") => &["api_endpoint"],
+        Some("directory_entry") => &["dir_entry"],
+        Some("finding") => &["vuln_finding"],
+        Some("technique_outcome") => value
+            .get("key")
+            .and_then(|key| key.get("technique"))
+            .and_then(Value::as_str)
+            .map(technique_evidence_kinds)
+            .unwrap_or(&[]),
+        _ => &[],
+    }
+}
+
+fn bounded_inherited_handoff_section(
+    operation_id: uuid::Uuid,
+    organization_id: uuid::Uuid,
+    inherits: &[InheritsEvidenceFrom],
+    handoffs: &[RuntimeStageHandoffView],
+) -> anyhow::Result<Option<String>> {
+    if inherits.is_empty() || handoffs.is_empty() {
+        return Ok(None);
+    }
+    let allowed = inherits
+        .iter()
+        .map(|inherit| {
+            (
+                inherit.stage_kind.as_str().to_string(),
+                inherit
+                    .evidence_kinds
+                    .iter()
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut sorted = handoffs.to_vec();
+    sorted.sort_by(|left, right| {
+        left.from_stage_kind
+            .cmp(&right.from_stage_kind)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut entries = Vec::new();
+    for handoff in sorted {
+        anyhow::ensure!(
+            handoff.operation_id == operation_id && handoff.organization_id == organization_id,
+            "inherited handoff owner mismatch"
+        );
+        let Some(evidence_kinds) = allowed.get(&handoff.from_stage_kind) else {
+            continue;
+        };
+        let typed_claims = bounded_json_values(
+            handoff
+                .payload
+                .get("typed_claims")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|claim| {
+                    claim
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| evidence_kinds.contains(kind))
+                })
+                .cloned(),
+        );
+        let canonical_fact_refs = bounded_json_values(
+            handoff
+                .payload
+                .get("canonical_fact_refs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|canonical_ref| {
+                    canonical_ref_evidence_kinds(canonical_ref)
+                        .iter()
+                        .any(|kind| evidence_kinds.contains(*kind))
+                })
+                .cloned(),
+        );
+        if typed_claims.is_empty() && canonical_fact_refs.is_empty() {
+            continue;
+        }
+        entries.push(json!({
+            "from_stage_kind": handoff.from_stage_kind,
+            "handoff_id": handoff.id,
+            "payload_sha256": handoff.payload_sha256,
+            "gate_passed_at": handoff.gate_passed_at,
+            "allowed_evidence_kinds": evidence_kinds,
+            "typed_claims": typed_claims,
+            "canonical_fact_refs": canonical_fact_refs,
+        }));
+    }
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let mut truncated = false;
+    loop {
+        let payload = json!({
+            "source": "final_sealed_stage_handoffs",
+            "operation_id": operation_id,
+            "organization_id": organization_id,
+            "truncated": truncated,
+            "entries": entries,
+        });
+        let encoded = serde_json::to_string(&payload)?;
+        let prefix =
+            "INHERITED FINAL-SEALED HANDOFF (SERVER CONTEXT ONLY; NOT CURRENT GATE TRUTH):\n";
+        if prefix.len() + encoded.len() <= MAX_INHERITED_HANDOFF_CONTEXT_BYTES {
+            return Ok(Some(format!("{prefix}{encoded}")));
+        }
+        if entries.pop().is_none() {
+            return Ok(None);
+        }
+        truncated = true;
+    }
+}
+
+async fn load_v2_inherited_handoff_section(
+    repository: &Arc<dyn RuntimeMemoryRepository>,
+    seeded: &SeededStageRuntime,
+    inherits: &[InheritsEvidenceFrom],
+) -> anyhow::Result<Option<String>> {
+    if inherits.is_empty() {
+        return Ok(None);
+    }
+    let source_stage_kinds = inherits
+        .iter()
+        .map(|inherit| inherit.stage_kind.as_str().to_string())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let handoffs = repository
+        .load_inherited_stage_handoffs(LoadInheritedStageHandoffs {
+            operation_id: seeded.unit.operation_id,
+            organization_id: seeded.unit.organization_id,
+            source_stage_kinds,
+        })
+        .await?;
+    bounded_inherited_handoff_section(
+        seeded.unit.operation_id,
+        seeded.unit.organization_id,
+        inherits,
+        &handoffs,
+    )
+}
+
+async fn claim_v2_stage_worker(
+    repository: Arc<dyn RuntimeMemoryRepository>,
+    tracker: golish_agent_kit::db_tracking::DbTracker,
+    seeded: &mut SeededStageRuntime,
+    specialist: &str,
+    objective: &str,
+    parent_request_id: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> anyhow::Result<ClaimedV2StageWorker> {
+    if seeded.worker.status == RuntimeWorkerStatus::Running {
+        match running_worker_resume_action(&seeded.worker, chrono::Utc::now())? {
+            RunningWorkerResumeAction::WaitForLiveLease => {
+                anyhow::bail!(
+                    "worker {} still has a live lease through {}; wait without provider dispatch",
+                    seeded.worker.id,
+                    seeded
+                        .worker
+                        .lease_expires_at
+                        .expect("validated running worker lease expiry")
+                );
+            }
+            RunningWorkerResumeAction::ReapExpired => {}
+        }
+        let reaped = repository
+            .reap_expired_worker(LoadWorkerCheckpoint {
+                operation_id: seeded.worker.operation_id,
+                stage_execution_id: seeded.worker.stage_execution_id,
+                stage_run_unit_id: seeded.worker.stage_run_unit_id,
+                worker_run_id: seeded.worker.id,
+            })
+            .await?;
+        seeded.worker = reaped.worker;
+        if reaped.disposition == RuntimeExpiredWorkerDisposition::RecoveryRequired {
+            anyhow::bail!(
+                "expired worker {} had an active tool and requires manual recovery",
+                seeded.worker.id
+            );
+        }
+    }
+    anyhow::ensure!(
+        matches!(
+            seeded.worker.status,
+            RuntimeWorkerStatus::Queued
+                | RuntimeWorkerStatus::GateBlocked
+                | RuntimeWorkerStatus::WaitingBackground
+        ),
+        "worker {} is not claimable from status {:?}",
+        seeded.worker.id,
+        seeded.worker.status
+    );
+    anyhow::ensure!(
+        matches!(
+            seeded.unit.status,
+            RuntimeStageUnitStatus::Queued
+                | RuntimeStageUnitStatus::Running
+                | RuntimeStageUnitStatus::GateBlocked
+        ),
+        "stage unit {} is not claimable from status {:?}",
+        seeded.unit.id,
+        seeded.unit.status
+    );
+    let agent = stage_worker_agent_type(specialist)
+        .ok_or_else(|| anyhow::anyhow!("unsupported V2 stage specialist '{specialist}'"))?;
+    let initial_chain = serialized_initial_worker_chain(objective)?;
+    let fresh_chain = seeded.worker.message_chain_id.is_none();
+    let claimed = repository
+        .claim_worker_and_bind_chain(ClaimWorkerAndBindChain {
+            operation_id: seeded.unit.operation_id,
+            stage_execution_id: seeded.unit.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            worker_run_id: seeded.worker.id,
+            expected_unit_status: seeded.unit.status,
+            expected_unit_row_version: seeded.unit.row_version,
+            expected_worker_status: seeded.worker.status,
+            expected_attempt_epoch: seeded.worker.attempt_epoch,
+            session_id: tracker.session_uuid(),
+            subtask_id: None,
+            agent,
+            model: Some(model_name.to_string()),
+            provider: Some(provider_name.to_string()),
+            parent_chain_id: None,
+            lease_owner: format!("stage_run:{parent_request_id}"),
+            lease_seconds: WORKER_LEASE_TTL_SECS,
+            initial_chain: initial_chain.clone(),
+            initial_checkpoint: initial_chain,
+        })
+        .await?;
+    anyhow::ensure!(
+        claimed.unit.organization_id == seeded.unit.organization_id
+            && claimed.worker.organization_id == seeded.unit.organization_id,
+        "claimed worker organization does not match frozen unit"
+    );
+    seeded.unit = claimed.unit.clone();
+    seeded.worker = claimed.worker.clone();
+    let lease_token = claimed
+        .worker
+        .lease_token
+        .ok_or_else(|| anyhow::anyhow!("claimed worker has no lease token"))?;
+    let mut bound = BoundWorkerChainContext {
+        operation_id: claimed.worker.operation_id,
+        stage_execution_id: claimed.worker.stage_execution_id,
+        organization_id: claimed.worker.organization_id,
+        worker_lease: golish_core::WorkerLeaseContext {
+            worker_run_id: claimed.worker.id,
+            stage_run_unit_id: claimed.worker.stage_run_unit_id,
+            lease_token,
+            attempt_epoch: claimed.worker.attempt_epoch,
+        },
+        candidate_attempt: None,
+        chain_id: claimed.message_chain_id,
+        session_id: tracker.session_uuid(),
+        agent_type: specialist.to_string(),
+        initial_chain: claimed.worker.checkpoint.clone(),
+        initial_prompt_already_checkpointed: fresh_chain,
+        checkpoint_version: Arc::new(AtomicI64::new(claimed.worker.checkpoint_version)),
+        checkpoint_body: Arc::new(StdRwLock::new(claimed.worker.checkpoint.clone())),
+        lease_lost: Arc::new(AtomicBool::new(false)),
+        mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+        tool_lifecycle: None,
+    };
+    let lifecycle: Arc<dyn BoundWorkerToolLifecycle> = Arc::new(RuntimeWorkerToolLifecycle::new(
+        tracker,
+        repository.clone(),
+        bound.clone(),
+    ));
+    bound.tool_lifecycle = Some(lifecycle);
+    let supervisor = WorkerLeaseSupervisor::start(repository, bound.clone());
+    Ok(ClaimedV2StageWorker { bound, supervisor })
+}
+
+async fn finish_v2_stage_worker(
+    repository: &Arc<dyn RuntimeMemoryRepository>,
+    seeded: &mut SeededStageRuntime,
+    bound: &BoundWorkerChainContext,
+    next_status: RuntimeWorkerStatus,
+) -> anyhow::Result<()> {
+    let next_unit_status = match next_status {
+        RuntimeWorkerStatus::GateBlocked => RuntimeStageUnitStatus::GateBlocked,
+        RuntimeWorkerStatus::Exhausted => RuntimeStageUnitStatus::Exhausted,
+        RuntimeWorkerStatus::Superseded => RuntimeStageUnitStatus::Superseded,
+        _ => anyhow::bail!("invalid terminal V2 worker status {next_status:?}"),
+    };
+    let _mutation_guard = bound.mutation_lock.lock().await;
+    anyhow::ensure!(
+        !bound.lease_is_lost(),
+        "worker lease was lost before final landing"
+    );
+    let finished = repository
+        .finish_worker_attempt(FinishWorkerAttempt {
+            fence: RuntimeWorkerFence {
+                operation_id: bound.operation_id,
+                stage_execution_id: bound.stage_execution_id,
+                stage_run_unit_id: bound.worker_lease.stage_run_unit_id,
+                worker_run_id: bound.worker_lease.worker_run_id,
+                lease_token: bound.worker_lease.lease_token,
+                attempt_epoch: bound.worker_lease.attempt_epoch,
+                expected_checkpoint_version: bound.current_checkpoint_version(),
+            },
+            expected_status: RuntimeWorkerStatus::Running,
+            next_status,
+            expected_unit_status: RuntimeStageUnitStatus::Running,
+            expected_unit_row_version: seeded.unit.row_version,
+            next_unit_status,
+            checkpoint: bound.current_checkpoint_body(),
+            evidence_watermark: None,
+        })
+        .await
+        .inspect_err(|_error| {
+            bound.mark_lease_lost();
+        })?;
+    seeded.unit = finished.unit;
+    seeded.worker = finished.worker;
+    Ok(())
+}
+
+async fn finalize_v2_stage_pass(
+    repository: &Arc<dyn RuntimeMemoryRepository>,
+    gate_repository: &dyn DbRepoProvider,
+    seeded: &mut SeededStageRuntime,
+    bound: &BoundWorkerChainContext,
+    deliverable_submission_id: uuid::Uuid,
+    deliverable: &StageDeliverable,
+    material: &V2AuthoritativeSealMaterial,
+    stage: StageKind,
+    authoritative_gate: bool,
+) -> anyhow::Result<bool> {
+    let _mutation_guard = bound.mutation_lock.lock().await;
+    anyhow::ensure!(
+        !bound.lease_is_lost(),
+        "worker lease was lost before atomic final seal"
+    );
+    let request = build_v2_final_seal_with_stage_extensions(
+        gate_repository,
+        seeded,
+        bound,
+        deliverable_submission_id,
+        deliverable,
+        material,
+        stage,
+        authoritative_gate,
+    )
+    .await?;
+    let finalized = repository
+        .finalize_unit_pass(request)
+        .await
+        .inspect_err(|_error| bound.mark_lease_lost())?;
+    seeded.unit = finalized.unit;
+    seeded.worker = finalized.worker;
+    Ok(finalized.replayed)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn close_v2_wave_gate_pass(
+    repository: &Arc<dyn RuntimeMemoryRepository>,
+    gate_repository: &dyn DbRepoProvider,
+    seeded: &SeededStageRuntime,
+    bound: &BoundWorkerChainContext,
+    wave: &StageAssetWaveView,
+    deliverable_submission_id: uuid::Uuid,
+    deliverable: &StageDeliverable,
+    material: &V2AuthoritativeSealMaterial,
+    stage: StageKind,
+    authoritative_gate: bool,
+) -> anyhow::Result<ClosedWaveGatePass> {
+    let _mutation_guard = bound.mutation_lock.lock().await;
+    anyhow::ensure!(
+        !bound.lease_is_lost(),
+        "worker lease was lost before compound wave close"
+    );
+    let final_seal = build_v2_final_seal_with_stage_extensions(
+        gate_repository,
+        seeded,
+        bound,
+        deliverable_submission_id,
+        deliverable,
+        material,
+        stage,
+        authoritative_gate,
+    )
+    .await?;
+    repository
+        .close_wave_gate_pass(CloseWaveGatePass {
+            final_seal,
+            wave_id: wave.id,
+            next_wave_limit: MAX_STAGE_ASSET_WAVE_ASSETS,
+            continuation_pass_watermark: pending_v2_final_seal_watermark(
+                deliverable_submission_id,
+                material,
+            ),
+        })
+        .await
+        .inspect_err(|_error| bound.mark_lease_lost())
+        .map_err(Into::into)
+}
+
+struct PendingV2FinalSeal {
+    unit: OrgUnit,
+    org_request_id: String,
+    seeded: SeededStageRuntime,
+    bound: BoundWorkerChainContext,
+    _supervisor: WorkerLeaseSupervisor,
+    deliverable_submission_id: uuid::Uuid,
+    deliverable: StageDeliverable,
+    material: V2AuthoritativeSealMaterial,
+    wave: StageAssetWaveView,
+    authoritative_gate: bool,
+    passed_note: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1177,6 +2525,14 @@ fn parse_sub_agent_session_id(response: &str) -> Option<uuid::Uuid> {
     uuid::Uuid::parse_str(id).ok()
 }
 
+fn local_deliverable_submission_id(result: &ToolExecutionResult) -> Option<uuid::Uuid> {
+    let response = result.value.get("response").and_then(Value::as_str)?;
+    let marker = "[deliverable_submission_id:";
+    let start = response.rfind(marker)? + marker.len();
+    let id = response[start..].split(']').next()?.trim();
+    uuid::Uuid::parse_str(id).ok()
+}
+
 fn sub_agent_chain_id_from_result(result: &ToolExecutionResult) -> Option<uuid::Uuid> {
     result
         .value
@@ -1973,6 +3329,111 @@ fn stage_run_gate_repair_directive(
     })
 }
 
+async fn execute_candidate_verification_scheduler<M>(
+    ctx: &AgenticLoopContext<'_>,
+    model: &M,
+    context: &SubAgentContext,
+    tool_id: &str,
+    units: &[OrgUnit],
+    runtime_by_org: &HashMap<String, SeededStageRuntime>,
+) -> Result<ToolExecutionResult>
+where
+    M: RigCompletionModel + Sync,
+{
+    let repository = ctx
+        .runtime_memory
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Candidate V2 scheduler requires runtime memory"))?;
+    let tracker = ctx
+        .events
+        .db_tracker
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Candidate V2 scheduler requires durable tracking"))?;
+    let mut attempted = 0usize;
+    for unit in units {
+        let Some(seeded) = runtime_by_org.get(&unit.id) else {
+            continue;
+        };
+        loop {
+            let request_id = format!("{tool_id}::candidate::{}::{attempted}", unit.id);
+            let Some(claimed) = claim_candidate_verifier(
+                repository.clone(),
+                tracker.clone(),
+                seeded.unit.operation_id,
+                seeded.unit.stage_execution_id,
+                seeded.unit.id,
+                seeded.unit.organization_id,
+                &request_id,
+            )
+            .await?
+            else {
+                break;
+            };
+            attempted += 1;
+            let candidate = claimed
+                .bound
+                .candidate_attempt
+                .as_ref()
+                .expect("Candidate scheduler always binds opaque attempt context")
+                .clone();
+            let sub_args = json!({
+                "task": format!(
+                    "Verify the scheduler-bound CandidateAttempt. Execute only approved action ordinals through verify_execute_candidate_action, inspect recent evidence, then call submit_candidate_attempt. Opaque attempt id: {}.",
+                    candidate.attempt_id
+                )
+            });
+            let result = execute_sub_agent_call_with_bound(
+                "sub_agent_candidate_verifier",
+                &sub_args,
+                ctx,
+                model,
+                context,
+                &request_id,
+                Some(claimed.bound.clone()),
+            )
+            .await;
+            let _terminalization_guard = claimed.bound.mutation_lock.lock().await;
+            let terminal = repository
+                .terminalize_candidate_attempt(TerminalizeCandidateAttempt {
+                    candidate_attempt: candidate.clone(),
+                    fence: RuntimeWorkerFence {
+                        operation_id: claimed.bound.operation_id,
+                        stage_execution_id: claimed.bound.stage_execution_id,
+                        stage_run_unit_id: claimed.bound.worker_lease.stage_run_unit_id,
+                        worker_run_id: claimed.bound.worker_lease.worker_run_id,
+                        lease_token: claimed.bound.worker_lease.lease_token,
+                        attempt_epoch: claimed.bound.worker_lease.attempt_epoch,
+                        expected_checkpoint_version: claimed.bound.current_checkpoint_version(),
+                    },
+                    organization_id: claimed.bound.organization_id,
+                })
+                .await;
+            let terminal = terminal.map_err(|error| {
+                anyhow::anyhow!(
+                    "Candidate verifier did not produce a valid exact terminal submission: {error}"
+                )
+            })?;
+            tracing::info!(
+                attempt_id = %terminal.attempt_id,
+                disposition = %terminal.disposition,
+                finding_id = ?terminal.finding_id,
+                replayed = terminal.replayed,
+                verifier_success = matches!(&result, Ok(value) if value.success),
+                "Candidate Attempt terminalized from persisted exact result"
+            );
+        }
+    }
+    Ok(ToolExecutionResult {
+        value: json!({
+            "passed": true,
+            "provider_dispatched": attempted > 0,
+            "candidate_attempts_claimed": attempted,
+            "terminalization": "persisted_exact_candidate_attempts",
+        }),
+        success: true,
+    })
+}
+
 /// Handle the `stage_run` tool call: per-org serial specialist fan-out.
 pub(super) async fn execute_stage_run<M>(
     tool_args: &Value,
@@ -2011,7 +3472,61 @@ where
             });
         }
     };
-    let Some(specialist) = spec.specialist.clone().filter(|s| !s.is_empty()) else {
+    let persisted_runtime_contract = if let (Some(operation_id), Some(runtime_memory)) =
+        (ctx.harness_operation_id, ctx.runtime_memory.as_ref())
+    {
+        match runtime_memory
+            .runtime_memory_contract_for_operation(operation_id)
+            .await
+        {
+            Ok(contract) => Some(contract),
+            Err(error) => {
+                return Ok(ToolExecutionResult {
+                    value: json!({
+                        "error": format!("stage_run could not read frozen runtime-memory contract: {error}"),
+                        "passed": false,
+                        "provider_dispatched": false,
+                    }),
+                    success: false,
+                });
+            }
+        }
+    } else {
+        None
+    };
+    let persisted_attack_contract = if matches!(
+        stage,
+        StageKind::AttackCandidate | StageKind::Verification
+    ) {
+        if let (Some(operation_id), Some(runtime_memory)) =
+            (ctx.harness_operation_id, ctx.runtime_memory.as_ref())
+        {
+            match runtime_memory
+                .attack_execution_contract_for_operation(operation_id)
+                .await
+            {
+                Ok(contract) => Some(contract),
+                Err(error) => {
+                    return Ok(ToolExecutionResult {
+                        value: json!({
+                            "error": format!("stage_run could not read frozen attack-execution contract: {error}"),
+                            "passed": false,
+                            "provider_dispatched": false,
+                        }),
+                        success: false,
+                    });
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let candidate_contracts = persisted_runtime_contract.zip(persisted_attack_contract);
+    let Some(specialist) =
+        effective_stage_run_specialist(stage, spec.specialist.as_deref(), candidate_contracts)
+    else {
         return Ok(ToolExecutionResult {
             value: json!({
                 "error": format!(
@@ -2032,60 +3547,217 @@ where
     // authoritative fan-out set. Continuation/repair turns are especially prone
     // to reconstructing an incomplete org list from memory; `stage_run` must not
     // let that silently skip a subsidiary and all of its assets.
-    let mut units = parse_org_units(tool_args);
-    let requested_org_count = units.len();
+    let requested_units = parse_org_units(tool_args);
+    let requested_org_count = requested_units.len();
+    let mut units = requested_units.clone();
     let mut scope_source = "tool_args".to_string();
     let mut auto_added_orgs: Vec<String> = Vec::new();
     let mut rejected_orgs: Vec<String> = Vec::new();
+    let mut v2_runtime_by_org: HashMap<String, SeededStageRuntime> = HashMap::new();
+
+    // Any contract that writes V2 derives its complete fan-out solely from the
+    // frozen scope snapshot. Model org arguments are retained only for audit
+    // metadata; they cannot add or remove a worker.
+    if let (Some(operation_id), Some(runtime_memory), Some(contract)) = (
+        ctx.harness_operation_id,
+        ctx.runtime_memory.as_ref(),
+        persisted_runtime_contract,
+    ) {
+        let writes_v2_stage_runtime =
+            if matches!(stage, StageKind::AttackCandidate | StageKind::Verification) {
+                persisted_attack_contract.is_some_and(|attack_contract| {
+                    candidate_v2_stage_run_enabled(stage, contract, attack_contract)
+                })
+            } else {
+                contract.policy().write != RuntimeMemoryWriteStrategy::LegacyOnly
+            };
+        if writes_v2_stage_runtime {
+            let Some(stage_execution_id) = ctx.stage_execution_id else {
+                return Ok(ToolExecutionResult {
+                    value: json!({
+                        "error": "V2 stage_run requires the exact active stage execution id",
+                        "passed": false,
+                        "provider_dispatched": false,
+                    }),
+                    success: false,
+                });
+            };
+            if ctx.events.db_tracker.is_none() || ctx.chain_persistence.is_none() {
+                return Ok(ToolExecutionResult {
+                    value: json!({
+                        "error": "V2 stage_run requires durable tracker and bound-chain persistence backends",
+                        "passed": false,
+                        "provider_dispatched": false,
+                    }),
+                    success: false,
+                });
+            }
+            let seeded = match runtime_memory
+                .seed_stage_runtime(SeedStageRuntime {
+                    operation_id,
+                    stage_execution_id,
+                    stage_kind: stage.as_str().to_string(),
+                    unit_generation: 1,
+                    specialist: specialist.clone(),
+                    worker_generation: 1,
+                    work_item_kind: "organization".to_string(),
+                    work_item_key: stage.as_str().to_string(),
+                    agent_path_prefix: format!("main>stage_run:{}", stage.as_str()),
+                })
+                .await
+            {
+                Ok(seeded) if !seeded.is_empty() => seeded,
+                Ok(_) => {
+                    return Ok(ToolExecutionResult {
+                        value: json!({
+                            "error": "frozen V2 scope contains no stage units",
+                            "passed": false,
+                            "provider_dispatched": false,
+                        }),
+                        success: false,
+                    });
+                }
+                Err(error) => {
+                    return Ok(ToolExecutionResult {
+                        value: json!({
+                            "error": format!("V2 stage runtime seed failed before provider dispatch: {error}"),
+                            "passed": false,
+                            "provider_dispatched": false,
+                        }),
+                        success: false,
+                    });
+                }
+            };
+            if stage == StageKind::AttackCandidate {
+                let Some(repo) = ctx.events.db_tracker.and_then(|tracker| tracker.repo()) else {
+                    return Ok(ToolExecutionResult {
+                        value: json!({
+                            "error": "attack_candidate V2 entry requires the trusted Candidate manifest repository",
+                            "passed": false,
+                            "provider_dispatched": false,
+                        }),
+                        success: false,
+                    });
+                };
+                for runtime in &seeded {
+                    if let Err(error) = repo
+                        .attack_v2_seed_candidate_manifest_for_unit(
+                            operation_id,
+                            runtime.unit.id,
+                            runtime.unit.organization_id,
+                        )
+                        .await
+                    {
+                        return Ok(ToolExecutionResult {
+                            value: json!({
+                                "error": format!(
+                                    "attack_candidate exact manifest seed failed before provider dispatch: {error}"
+                                ),
+                                "organization_id": runtime.unit.organization_id,
+                                "passed": false,
+                                "provider_dispatched": false,
+                            }),
+                            success: false,
+                        });
+                    }
+                }
+            }
+            let requested_ids = requested_units
+                .iter()
+                .map(|unit| unit.id.as_str())
+                .collect::<HashSet<_>>();
+            let frozen_ids = seeded
+                .iter()
+                .map(|seeded| seeded.unit.organization_id.to_string())
+                .collect::<HashSet<_>>();
+            rejected_orgs = requested_units
+                .iter()
+                .filter(|unit| !frozen_ids.contains(&unit.id))
+                .map(|unit| unit.name.clone())
+                .collect();
+            units = seeded
+                .iter()
+                .map(|seeded| OrgUnit {
+                    id: seeded.unit.organization_id.to_string(),
+                    name: seeded.organization_name.clone(),
+                    ownership_percent: None,
+                })
+                .collect();
+            auto_added_orgs = units
+                .iter()
+                .filter(|unit| !requested_ids.contains(unit.id.as_str()))
+                .map(|unit| unit.name.clone())
+                .collect();
+            v2_runtime_by_org = seeded
+                .into_iter()
+                .map(|seeded| (seeded.unit.organization_id.to_string(), seeded))
+                .collect();
+            scope_source = "frozen_operation_org_scope".to_string();
+        }
+    }
+
+    if stage == StageKind::Verification && !v2_runtime_by_org.is_empty() {
+        return execute_candidate_verification_scheduler(
+            ctx,
+            model,
+            context,
+            tool_id,
+            &units,
+            &v2_runtime_by_org,
+        )
+        .await;
+    }
 
     // 2b. Engagement-org isolation (设计 2026-06-15-engagement-org-isolation):
     // confine AND complete the fan-out to the scoping-confirmed root org's
     // subtree (root + subsidiaries). Drop requested orgs outside it and add any
     // DB subtree orgs the model omitted.
-    if let Some(root) = ctx.harness_org_id {
-        if let Some(repo) = ctx.events.db_tracker.and_then(|t| t.repo()) {
-            match repo.org_subtree_units(root).await {
-                Ok(authoritative) if !authoritative.is_empty() => {
-                    let before = units.len();
-                    let authoritative = authoritative
-                        .into_iter()
-                        .map(org_unit_from_scope_unit)
-                        .collect();
-                    let (merged, added, rejected) =
-                        merge_with_authoritative_subtree(units, authoritative);
-                    units = merged;
-                    auto_added_orgs = added;
-                    rejected_orgs = rejected;
-                    scope_source = "engagement_org_subtree".to_string();
-                    if !rejected_orgs.is_empty() {
+    if v2_runtime_by_org.is_empty() {
+        if let Some(root) = ctx.harness_org_id {
+            if let Some(repo) = ctx.events.db_tracker.and_then(|t| t.repo()) {
+                match repo.org_subtree_units(root).await {
+                    Ok(authoritative) if !authoritative.is_empty() => {
+                        let before = units.len();
+                        let authoritative = authoritative
+                            .into_iter()
+                            .map(org_unit_from_scope_unit)
+                            .collect();
+                        let (merged, added, rejected) =
+                            merge_with_authoritative_subtree(units, authoritative);
+                        units = merged;
+                        auto_added_orgs = added;
+                        rejected_orgs = rejected;
+                        scope_source = "engagement_org_subtree".to_string();
+                        if !rejected_orgs.is_empty() {
+                            tracing::warn!(
+                                target: "harness::stage_run",
+                                root_org = %root,
+                                rejected = ?rejected_orgs,
+                                "stage_run dropped {}/{} requested org(s) outside the engagement org subtree",
+                                rejected_orgs.len(),
+                                before
+                            );
+                        }
+                        if !auto_added_orgs.is_empty() {
+                            tracing::info!(
+                                target: "harness::stage_run",
+                                root_org = %root,
+                                requested_orgs = before,
+                                total_orgs = units.len(),
+                                auto_added = ?auto_added_orgs,
+                                "stage_run filled missing requested org(s) from the engagement org subtree"
+                            );
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
                         tracing::warn!(
                             target: "harness::stage_run",
                             root_org = %root,
-                            rejected = ?rejected_orgs,
-                            "stage_run dropped {}/{} requested org(s) outside the engagement org subtree",
-                            rejected_orgs.len(),
-                            before
+                            error = %error,
+                            "stage_run could not read engagement org subtree; falling back to requested orgs"
                         );
                     }
-                    if !auto_added_orgs.is_empty() {
-                        tracing::info!(
-                            target: "harness::stage_run",
-                            root_org = %root,
-                            requested_orgs = before,
-                            total_orgs = units.len(),
-                            auto_added = ?auto_added_orgs,
-                            "stage_run filled missing requested org(s) from the engagement org subtree"
-                        );
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(
-                        target: "harness::stage_run",
-                        root_org = %root,
-                        error = %error,
-                        "stage_run could not read engagement org subtree; falling back to requested orgs"
-                    );
                 }
             }
         }
@@ -2110,7 +3782,18 @@ where
     let mut passed_count = 0usize;
     let mut retry_budget_exhausted = false;
     let mut completed_wave_by_org: HashMap<String, uuid::Uuid> = HashMap::new();
-    let resume_skip_not_before = active_stage_skip_floor(ctx, stage).await;
+    let mut pending_v2_final_seals: Vec<PendingV2FinalSeal> = Vec::new();
+    let v2_stage_run = !v2_runtime_by_org.is_empty();
+    let v2_passed_ids = v2_runtime_by_org
+        .iter()
+        .filter(|(_, seeded)| seeded.unit.status == RuntimeStageUnitStatus::Passed)
+        .map(|(org_id, _)| org_id.clone())
+        .collect::<HashSet<_>>();
+    let resume_skip_not_before = if v2_runtime_by_org.is_empty() {
+        active_stage_skip_floor(ctx, stage).await
+    } else {
+        None
+    };
     if let Some(floor) = resume_skip_not_before {
         tracing::info!(
             target: "harness::stage_run",
@@ -2121,11 +3804,13 @@ where
     }
 
     let mut resume_skips: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
-    for unit in &units {
-        if let Some(passed_at) =
-            resume_skip_passed_at(ctx, stage, unit, resume_skip_not_before).await
-        {
-            resume_skips.insert(unit.id.clone(), passed_at);
+    if v2_runtime_by_org.is_empty() {
+        for unit in &units {
+            if let Some(passed_at) =
+                resume_skip_passed_at(ctx, stage, unit, resume_skip_not_before).await
+            {
+                resume_skips.insert(unit.id.clone(), passed_at);
+            }
         }
     }
 
@@ -2138,23 +3823,28 @@ where
     for unit in &units {
         let org_request_id = format!("{tool_id}::org::{}", unit.id);
         let passed_at = resume_skips.get(&unit.id);
+        let v2_passed = v2_passed_ids.contains(&unit.id);
         emit_org_progress(
             ctx,
             stage,
             unit,
             &org_request_id,
-            if passed_at.is_some() {
+            if passed_at.is_some() || v2_passed {
                 "passed"
             } else {
                 "queued"
             },
-            passed_at.map(|passed_at| {
-                format!(
-                    "已完成于 {} · 跳过重跑（{}d 内已通过本阶段）",
-                    passed_at.format("%Y-%m-%d %H:%M UTC"),
-                    STAGE_COMPLETION_TTL_SECS / 86_400
-                )
-            }),
+            if v2_passed {
+                Some("V2 frozen unit already passed · skipped exact worker replay".to_string())
+            } else {
+                passed_at.map(|passed_at| {
+                    format!(
+                        "已完成于 {} · 跳过重跑（{}d 内已通过本阶段）",
+                        passed_at.format("%Y-%m-%d %H:%M UTC"),
+                        STAGE_COMPLETION_TTL_SECS / 86_400
+                    )
+                })
+            },
             0,
             &stage_label,
             &role_label,
@@ -2169,15 +3859,36 @@ where
         // collapse them into one). The UI links the org row to this id via the
         // `agent_request_id` field on the StageRunOrgProgress event.
         let org_request_id = format!("{tool_id}::org::{}", unit.id);
+        if v2_passed_ids.contains(&unit.id) {
+            passed_count += 1;
+            continue;
+        }
+        let mut v2_runtime = v2_runtime_by_org.remove(&unit.id);
         let agent_path = stage_run_agent_path(stage, unit, &specialist);
         let passed_at = resume_skips.get(&unit.id).copied();
         let current_wave = if spec.asset_wave_barrier {
-            match (passed_at, resume_skip_not_before) {
-                (Some(_), _) => current_running_stage_asset_wave(ctx, stage, unit).await,
-                (None, Some(started_at)) => {
-                    prepare_stage_asset_wave(ctx, stage, unit, started_at).await
+            if v2_runtime.is_some() {
+                match current_running_stage_asset_wave(ctx, stage, unit).await {
+                    Ok(Some(wave)) => Ok(Some(wave)),
+                    Ok(None) => match active_stage_skip_floor(ctx, stage).await {
+                        Some(started_at) => {
+                            prepare_stage_asset_wave(ctx, stage, unit, started_at).await
+                        }
+                        None => Err(
+                            "V2 wave-aware stage has no authoritative stage-start watermark"
+                                .to_string(),
+                        ),
+                    },
+                    Err(reason) => Err(reason),
                 }
-                (None, None) => Ok(None),
+            } else {
+                match (passed_at, resume_skip_not_before) {
+                    (Some(_), _) => current_running_stage_asset_wave(ctx, stage, unit).await,
+                    (None, Some(started_at)) => {
+                        prepare_stage_asset_wave(ctx, stage, unit, started_at).await
+                    }
+                    (None, None) => Ok(None),
+                }
             }
         } else {
             Ok(None)
@@ -2205,6 +3916,30 @@ where
                 continue;
             }
         };
+        if spec.asset_wave_barrier && v2_runtime.is_some() && current_wave.is_none() {
+            let reason =
+                "V2 wave-aware stage has no exact durable asset wave; refusing provider dispatch"
+                    .to_string();
+            emit_org_progress(
+                ctx,
+                stage,
+                unit,
+                &org_request_id,
+                "blocked",
+                Some(reason.clone()),
+                0,
+                &stage_label,
+                &role_label,
+                &coverage_axis,
+            );
+            gaps.push(json!({
+                "org_id": unit.id,
+                "org_name": unit.name,
+                "detail": reason,
+                "provider_dispatched": false,
+            }));
+            continue;
+        }
 
         // Resume-skip: if this org already passed THIS stage within the TTL
         // window, count it covered and DON'T re-dispatch the specialist — the
@@ -2254,6 +3989,45 @@ where
             }
         }
 
+        let inherited_handoff_section = match (ctx.runtime_memory.as_ref(), v2_runtime.as_ref()) {
+            (Some(repository), Some(seeded)) => {
+                match load_v2_inherited_handoff_section(
+                    repository,
+                    seeded,
+                    &spec.inherits_evidence_from,
+                )
+                .await
+                {
+                    Ok(section) => section,
+                    Err(error) => {
+                        let reason = format!(
+                            "V2 inherited final-sealed handoff read failed before provider dispatch: {error}"
+                        );
+                        emit_org_progress(
+                            ctx,
+                            stage,
+                            unit,
+                            &org_request_id,
+                            "blocked",
+                            Some(reason.clone()),
+                            0,
+                            &stage_label,
+                            &role_label,
+                            &coverage_axis,
+                        );
+                        gaps.push(json!({
+                            "org_id": unit.id,
+                            "org_name": unit.name,
+                            "detail": reason,
+                            "provider_dispatched": false,
+                        }));
+                        continue;
+                    }
+                }
+            }
+            _ => None,
+        };
+
         // Phase 2 闸1·A-lite: run this org's dispatch→gate inside a bounded retry
         // loop. A BLOCK re-dispatches the SAME specialist with the gate's reasons as
         // feedback — the already-collected evidence stays in the ledger and the gate
@@ -2261,17 +4035,25 @@ where
         // gaps. Only a PASS counts + writes the ledger; exhausting the attempts
         // records a gap for the main agent's gap-closure loop. The no-DB fallback
         // path uses max_attempts=1 so eval/headless never retries.
-        let restored_retry = load_stage_run_agent_checkpoint(ctx, &agent_path)
-            .await
-            .and_then(|checkpoint| {
-                pending_stage_run_retry_from_checkpoint(&checkpoint, MAX_ORG_GATE_ATTEMPTS)
-            });
+        let restored_retry = if v2_runtime.is_none() {
+            load_stage_run_agent_checkpoint(ctx, &agent_path)
+                .await
+                .and_then(|checkpoint| {
+                    pending_stage_run_retry_from_checkpoint(&checkpoint, MAX_ORG_GATE_ATTEMPTS)
+                })
+        } else {
+            None
+        };
         let mut attempt = restored_retry
             .as_ref()
             .map(|(completed_attempt, _)| *completed_attempt)
             .unwrap_or(0);
         let mut feedback: Option<String> = restored_retry.map(|(_, feedback)| feedback);
-        let mut resume_chain_id = load_stage_run_worker_chain(ctx, stage, unit, &specialist).await;
+        let mut resume_chain_id = if v2_runtime.is_none() {
+            load_stage_run_worker_chain(ctx, stage, unit, &specialist).await
+        } else {
+            None
+        };
         let mut worklist_continuations_used = 0usize;
         let mut submit_only_continuation_used = false;
         let repo = ctx.events.db_tracker.and_then(|tracker| tracker.repo());
@@ -2353,70 +4135,199 @@ where
                     }
                     None => base,
                 };
+                let base = match inherited_handoff_section.as_ref() {
+                    Some(section) => format!("{base}\n\n{section}"),
+                    None => base,
+                };
                 match &feedback {
                     Some(fb) => format!("{base}\n\n{fb}"),
                     None => base,
                 }
             };
             let mut sub_args = json!({ "task": objective });
-            if let Some(chain_id) = resume_chain_id {
-                sub_args["resume"] = json!(chain_id.to_string());
+            if v2_runtime.is_none() {
+                if let Some(chain_id) = resume_chain_id {
+                    sub_args["resume"] = json!(chain_id.to_string());
+                }
             }
-            let result = execute_sub_agent_call(
-                &sub_agent_tool,
-                &sub_args,
-                ctx,
-                model,
-                context,
-                &org_request_id,
-            )
-            .await;
+            let mut v2_bound: Option<BoundWorkerChainContext> = None;
+            let mut v2_supervisor: Option<WorkerLeaseSupervisor> = None;
+            let mut v2_authoritative_material: Option<V2AuthoritativeSealMaterial> = None;
+            let result = if let Some(seeded) = v2_runtime.as_mut() {
+                let Some(runtime_memory) = ctx.runtime_memory.as_ref() else {
+                    unreachable!("V2 runtime seed requires a runtime-memory repository")
+                };
+                let Some(tracker) = ctx.events.db_tracker.cloned() else {
+                    unreachable!("V2 runtime seed requires a DB tracker")
+                };
+                let claimed = match claim_v2_stage_worker(
+                    runtime_memory.clone(),
+                    tracker,
+                    seeded,
+                    &specialist,
+                    &objective,
+                    &org_request_id,
+                    ctx.llm.provider_name,
+                    ctx.llm.model_name,
+                )
+                .await
+                {
+                    Ok(claimed) => claimed,
+                    Err(error) => {
+                        let reason = format!(
+                            "V2 worker claim/bind failed before provider dispatch: {error}"
+                        );
+                        emit_org_progress(
+                            ctx,
+                            stage,
+                            unit,
+                            &org_request_id,
+                            "blocked",
+                            Some(reason.clone()),
+                            0,
+                            &stage_label,
+                            &role_label,
+                            &coverage_axis,
+                        );
+                        gaps.push(json!({
+                            "org_id": unit.id,
+                            "org_name": unit.name,
+                            "detail": reason,
+                            "provider_dispatched": false,
+                        }));
+                        break;
+                    }
+                };
+                resume_chain_id = Some(claimed.bound.chain_id);
+                v2_bound = Some(claimed.bound.clone());
+                v2_supervisor = Some(claimed.supervisor);
+                let result = execute_sub_agent_call_with_bound(
+                    &sub_agent_tool,
+                    &sub_args,
+                    ctx,
+                    model,
+                    context,
+                    &org_request_id,
+                    Some(claimed.bound),
+                )
+                .await;
+                result
+            } else {
+                execute_sub_agent_call(
+                    &sub_agent_tool,
+                    &sub_args,
+                    ctx,
+                    model,
+                    context,
+                    &org_request_id,
+                )
+                .await
+            };
 
             let sub_ok = matches!(&result, Ok(r) if r.success);
             let worker_chain_failure_policy =
                 stage_run_worker_chain_failure_policy(&result, resume_chain_id);
-            let carried_submit_repair_mode = load_stage_run_agent_checkpoint(ctx, &agent_path)
-                .await
-                .and_then(|checkpoint| {
-                    serde_json::from_value::<SubmitRepairMode>(checkpoint.submit_repair_mode?).ok()
-                });
-            if let Ok(result) = &result {
-                if let Some(chain_id) = sub_agent_chain_id_from_result(result) {
-                    resume_chain_id = Some(chain_id);
-                    persist_stage_run_worker_chain(
-                        ctx,
-                        stage,
-                        unit,
-                        &specialist,
-                        &org_request_id,
-                        chain_id,
-                    )
-                    .await;
+            let carried_submit_repair_mode = if v2_runtime.is_none() {
+                load_stage_run_agent_checkpoint(ctx, &agent_path)
+                    .await
+                    .and_then(|checkpoint| {
+                        serde_json::from_value::<SubmitRepairMode>(checkpoint.submit_repair_mode?)
+                            .ok()
+                    })
+            } else {
+                None
+            };
+            if v2_runtime.is_none() {
+                if let Ok(result) = &result {
+                    if let Some(chain_id) = sub_agent_chain_id_from_result(result) {
+                        resume_chain_id = Some(chain_id);
+                        persist_stage_run_worker_chain(
+                            ctx,
+                            stage,
+                            unit,
+                            &specialist,
+                            &org_request_id,
+                            chain_id,
+                        )
+                        .await;
+                    }
                 }
             }
-            persist_stage_run_agent_checkpoint(
-                ctx,
-                build_stage_run_agent_checkpoint(StageRunCheckpointInput {
-                    operation_id: stage_run_operation_id(ctx),
-                    stage,
-                    agent_path: &agent_path,
-                    attempt,
-                    org_request_id: &org_request_id,
-                    sub_agent_tool: &sub_agent_tool,
-                    chain_id: resume_chain_id,
-                    status: AgentRunStatus::ToolCompleted,
-                    pending_gate_correction: None,
-                    correction_kind: None,
-                    submit_repair_mode: carried_submit_repair_mode.clone(),
-                    repair_directive: None,
-                }),
-            )
-            .await;
+            if v2_runtime.is_none() {
+                persist_stage_run_agent_checkpoint(
+                    ctx,
+                    build_stage_run_agent_checkpoint(StageRunCheckpointInput {
+                        operation_id: stage_run_operation_id(ctx),
+                        stage,
+                        agent_path: &agent_path,
+                        attempt,
+                        org_request_id: &org_request_id,
+                        sub_agent_tool: &sub_agent_tool,
+                        chain_id: resume_chain_id,
+                        status: AgentRunStatus::ToolCompleted,
+                        pending_gate_correction: None,
+                        correction_kind: None,
+                        submit_repair_mode: carried_submit_repair_mode.clone(),
+                        repair_directive: None,
+                    }),
+                )
+                .await;
+            }
 
-            // Take THIS org's own deliverable: serial execution means the
-            // side-channel slot currently holds this org's last submit.
-            let org_deliverable: Option<StageDeliverable> =
-                match ctx.harness_deliverable_sink.as_ref() {
+            // V2 consumes only this worker result's durable submission id and
+            // reloads its canonical payload under exact operation/execution
+            // identity. The shared last-deliverable slot remains legacy-only.
+            let v2_deliverable_submission_id = v2_bound.as_ref().and_then(|_| {
+                result
+                    .as_ref()
+                    .ok()
+                    .and_then(local_deliverable_submission_id)
+            });
+            let org_deliverable: Option<StageDeliverable> = if let Some(bound) = v2_bound.as_ref() {
+                match (v2_deliverable_submission_id, ctx.runtime_memory.as_ref()) {
+                    (Some(submission_id), Some(runtime_memory)) => {
+                        match runtime_memory
+                            .load_stage_deliverable_submission(
+                                submission_id,
+                                bound.operation_id,
+                                bound.stage_execution_id,
+                            )
+                            .await
+                        {
+                            Ok(Some(submission))
+                                if submission.stage_run_unit_id
+                                    == Some(bound.worker_lease.stage_run_unit_id)
+                                    && submission.worker_run_id
+                                        == Some(bound.worker_lease.worker_run_id)
+                                    && submission.organization_id
+                                        == Some(bound.organization_id) =>
+                            {
+                                serde_json::from_value::<StageDeliverable>(submission.payload).ok()
+                            }
+                            Ok(Some(_)) => {
+                                tracing::warn!(
+                                    target: "harness::stage_run",
+                                    submission_id = %submission_id,
+                                    "V2 local stage submission belongs to a different worker/unit"
+                                );
+                                None
+                            }
+                            Ok(None) => None,
+                            Err(error) => {
+                                tracing::warn!(
+                                    target: "harness::stage_run",
+                                    submission_id = %submission_id,
+                                    error = %error,
+                                    "V2 local stage submission reload failed"
+                                );
+                                None
+                            }
+                        }
+                    }
+                    _ => None,
+                }
+            } else {
+                let deliverable = match ctx.harness_deliverable_sink.as_ref() {
                     Some(sink) => sink
                         .read()
                         .await
@@ -2424,10 +4335,11 @@ where
                         .and_then(|s| serde_json::from_str::<StageDeliverable>(s).ok()),
                     None => None,
                 };
-            // Clear after taking so the next attempt/org cannot reuse this residue.
-            if let Some(sink) = ctx.harness_deliverable_sink.as_ref() {
-                *sink.write().await = None;
-            }
+                if let Some(sink) = ctx.harness_deliverable_sink.as_ref() {
+                    *sink.write().await = None;
+                }
+                deliverable
+            };
 
             let cancelled = ctx
                 .cancelled
@@ -2583,6 +4495,30 @@ where
                         // Capacity continuation is not a gate retry: keep the
                         // current gate-attempt index while resuming the exact
                         // same worker chain under its separate bounded budget.
+                        if let (Some(runtime_memory), Some(seeded), Some(bound)) = (
+                            ctx.runtime_memory.as_ref(),
+                            v2_runtime.as_mut(),
+                            v2_bound.as_ref(),
+                        ) {
+                            if let Err(error) = finish_v2_stage_worker(
+                                runtime_memory,
+                                seeded,
+                                bound,
+                                RuntimeWorkerStatus::GateBlocked,
+                            )
+                            .await
+                            {
+                                let reason = format!(
+                                    "V2 capacity checkpoint failed before exact-chain continuation: {error}"
+                                );
+                                gaps.push(json!({
+                                    "org_id": unit.id,
+                                    "org_name": unit.name,
+                                    "detail": reason,
+                                }));
+                                break;
+                            }
+                        }
                         attempt = attempt.saturating_sub(1);
                         continue;
                     }
@@ -2610,10 +4546,16 @@ where
                         if let (Some(repo), Some(organization_id), Some(deliverable)) =
                             (repo, organization_id, org_deliverable.as_ref())
                         {
+                            let operation_run_id = v2_runtime
+                                .as_ref()
+                                .map(|seeded| seeded.unit.operation_id.to_string());
+                            let terminal_run_id = operation_run_id
+                                .as_deref()
+                                .unwrap_or_else(|| ctx.events.session_id.unwrap_or(""));
                             if let Err(error) = materialize_passed_gate_terminal_outcomes(
                                 repo,
                                 organization_id,
-                                ctx.events.session_id.unwrap_or(""),
+                                terminal_run_id,
                                 stage,
                                 worklist_started_at,
                                 current_wave.as_ref(),
@@ -2653,11 +4595,249 @@ where
                             }
                         }
                     }
-                    clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
-                    let mut passed_note = None;
-                    if let Some(wave) = current_wave.take() {
-                        let completed_wave_id = wave.id;
-                        if let Err(reason) = complete_stage_asset_wave(ctx, &wave).await {
+                    if let Some(seeded) = v2_runtime.as_ref() {
+                        let material_result = async {
+                            anyhow::ensure!(
+                                from_gate,
+                                "V2 final seal requires the authoritative DB org gate"
+                            );
+                            let repo = repo.ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "V2 final seal requires the authoritative DB coverage repository"
+                                )
+                            })?;
+                            match stage {
+                                StageKind::TargetIntel
+                                | StageKind::ExternalAttackSurface
+                                | StageKind::Enumeration
+                                | StageKind::VulnTriage => {
+                                    let run_id = seeded.unit.operation_id.to_string();
+                                    let snapshot = repo
+                                        .stage_asset_coverage_for_operation(
+                                            Some(seeded.unit.operation_id),
+                                            seeded.unit.organization_id,
+                                            stage.as_str(),
+                                            Some(&run_id),
+                                            worklist_started_at,
+                                            current_wave
+                                                .as_ref()
+                                                .map(|wave| wave.target_ids.clone()),
+                                            current_wave
+                                                .as_ref()
+                                                .map(|wave| wave.asset_values.clone()),
+                                        )
+                                        .await?;
+                                    let current = authoritative_seal_material_from_snapshot(
+                                        &snapshot,
+                                        stage,
+                                        seeded.unit.organization_id,
+                                        current_wave.as_ref(),
+                                    )?;
+                                    let previous =
+                                        pending_v2_final_seal_checkpoint(&seeded.unit)?
+                                            .map(|checkpoint| checkpoint.material);
+                                    merge_authoritative_seal_material(previous, current)
+                                }
+                                StageKind::AttackCandidate => {
+                                    anyhow::ensure!(
+                                        pending_v2_final_seal_checkpoint(&seeded.unit)?.is_none(),
+                                        "Candidate Unit cannot resume a coverage-wave final seal"
+                                    );
+                                    let deliverable = org_deliverable.as_ref().ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "Candidate Gate PASS has no exact worker deliverable"
+                                        )
+                                    })?;
+                                    authoritative_candidate_seal_material(
+                                        repo,
+                                        seeded,
+                                        deliverable,
+                                    )
+                                    .await
+                                }
+                                StageKind::Verification => anyhow::bail!(
+                                    "Verification V2 final seal requires an authoritative DB attempt snapshot"
+                                ),
+                                _ => anyhow::bail!(
+                                    "stage {} has no authoritative V2 final-seal material contract",
+                                    stage.as_str()
+                                ),
+                            }
+                        }
+                        .await;
+                        match material_result {
+                            Ok(material) => v2_authoritative_material = Some(material),
+                            Err(error) => {
+                                let reason = format!(
+                                    "V2 authoritative Gate passed, but server coverage aggregation failed; PASS was withheld: {error}"
+                                );
+                                emit_org_progress(
+                                    ctx,
+                                    stage,
+                                    unit,
+                                    &org_request_id,
+                                    "blocked",
+                                    Some(reason.clone()),
+                                    0,
+                                    &stage_label,
+                                    &role_label,
+                                    &coverage_axis,
+                                );
+                                gaps.push(json!({
+                                    "org_id": unit.id,
+                                    "org_name": unit.name,
+                                    "detail": reason,
+                                }));
+                                break;
+                            }
+                        }
+                    }
+                    let passed_wave = current_wave.take();
+                    let passed_note = passed_wave.as_ref().map(|wave| {
+                        format!(
+                            "asset batch #{} passed; newly discovered assets will be queued as a supplemental stage_run wave",
+                            wave.wave_index + 1
+                        )
+                    });
+                    // Legacy wave close keeps its existing repository path. V2
+                    // must defer wave completion to the compound
+                    // complete+pause/final-seal transaction below.
+                    if v2_runtime.is_none() {
+                        if let Some(wave) = passed_wave.as_ref() {
+                            let completed_wave_id = wave.id;
+                            if let Err(reason) = complete_stage_asset_wave(ctx, wave).await {
+                                emit_org_progress(
+                                    ctx,
+                                    stage,
+                                    unit,
+                                    &org_request_id,
+                                    "blocked",
+                                    Some(reason.clone()),
+                                    0,
+                                    &stage_label,
+                                    &role_label,
+                                    &coverage_axis,
+                                );
+                                gaps.push(json!({
+                                    "org_id": unit.id,
+                                    "org_name": unit.name,
+                                    "detail": reason
+                                }));
+                                break;
+                            }
+                            completed_wave_by_org.insert(unit.id.clone(), completed_wave_id);
+                        }
+                    }
+                    if v2_runtime.is_some() {
+                        let Some(runtime_memory) = ctx.runtime_memory.as_ref() else {
+                            unreachable!("V2 runtime seed requires a runtime-memory repository")
+                        };
+                        let Some(deliverable_submission_id) = v2_deliverable_submission_id else {
+                            gaps.push(json!({
+                                "org_id": unit.id,
+                                "org_name": unit.name,
+                                "detail": "V2 authoritative Gate PASS has no trusted local deliverable submission id",
+                            }));
+                            break;
+                        };
+                        let Some(deliverable) = org_deliverable.as_ref() else {
+                            gaps.push(json!({
+                                "org_id": unit.id,
+                                "org_name": unit.name,
+                                "detail": "V2 authoritative Gate PASS has no exact worker deliverable",
+                            }));
+                            break;
+                        };
+                        let Some(material) = v2_authoritative_material.take() else {
+                            gaps.push(json!({
+                                "org_id": unit.id,
+                                "org_name": unit.name,
+                                "detail": "V2 authoritative Gate PASS has no stage-specific server seal material",
+                            }));
+                            break;
+                        };
+                        if spec.asset_wave_barrier {
+                            let Some(wave) = passed_wave else {
+                                gaps.push(json!({
+                                    "org_id": unit.id,
+                                    "org_name": unit.name,
+                                    "detail": "V2 wave-aware Gate PASS has no exact running wave",
+                                }));
+                                break;
+                            };
+                            let (Some(seeded), Some(bound), Some(supervisor)) =
+                                (v2_runtime.take(), v2_bound.take(), v2_supervisor.take())
+                            else {
+                                gaps.push(json!({
+                                    "org_id": unit.id,
+                                    "org_name": unit.name,
+                                    "detail": "V2 Gate PASS lost its bound worker identity before the global delta barrier",
+                                }));
+                                break;
+                            };
+                            pending_v2_final_seals.push(PendingV2FinalSeal {
+                                unit: unit.clone(),
+                                org_request_id: org_request_id.clone(),
+                                seeded,
+                                bound,
+                                _supervisor: supervisor,
+                                deliverable_submission_id,
+                                deliverable: deliverable.clone(),
+                                material,
+                                wave,
+                                authoritative_gate: from_gate,
+                                passed_note,
+                            });
+                            emit_org_progress(
+                                ctx,
+                                stage,
+                                unit,
+                                &org_request_id,
+                                "running",
+                                Some(
+                                    "authoritative org Gate passed; holding the live worker lease until the global delta barrier closes"
+                                        .to_string(),
+                                ),
+                                0,
+                                &stage_label,
+                                &role_label,
+                                &coverage_axis,
+                            );
+                            break;
+                        }
+                        let (Some(seeded), Some(bound)) = (v2_runtime.as_mut(), v2_bound.as_ref())
+                        else {
+                            gaps.push(json!({
+                                "org_id": unit.id,
+                                "org_name": unit.name,
+                                "detail": "V2 Gate PASS lost its bound worker identity before atomic final seal",
+                            }));
+                            break;
+                        };
+                        let Some(gate_repository) = repo else {
+                            gaps.push(json!({
+                                "org_id": unit.id,
+                                "org_name": unit.name,
+                                "detail": "V2 Gate PASS lost the authoritative repository before atomic final seal",
+                            }));
+                            break;
+                        };
+                        if let Err(error) = finalize_v2_stage_pass(
+                            runtime_memory,
+                            gate_repository,
+                            seeded,
+                            bound,
+                            deliverable_submission_id,
+                            deliverable,
+                            &material,
+                            stage,
+                            from_gate,
+                        )
+                        .await
+                        {
+                            let reason = format!(
+                                "V2 authoritative Gate passed, but atomic final seal failed; PASS was withheld without GateBlocked landing: {error}"
+                            );
                             emit_org_progress(
                                 ctx,
                                 stage,
@@ -2673,16 +4853,28 @@ where
                             gaps.push(json!({
                                 "org_id": unit.id,
                                 "org_name": unit.name,
-                                "detail": reason
+                                "detail": reason,
                             }));
                             break;
                         }
-                        completed_wave_by_org.insert(unit.id.clone(), completed_wave_id);
-                        passed_note = Some(format!(
-                            "asset batch #{} passed; newly discovered assets will be queued as a supplemental stage_run wave",
-                            wave.wave_index + 1
-                        ));
+                        clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
+                        passed_count += 1;
+                        emit_org_progress(
+                            ctx,
+                            stage,
+                            unit,
+                            &org_request_id,
+                            "passed",
+                            passed_note,
+                            0,
+                            &stage_label,
+                            &role_label,
+                            &coverage_axis,
+                        );
+                        break;
                     }
+
+                    clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
                     passed_count += 1;
                     // Wave-aware stages publish their completion only inside the
                     // atomic final-candidate barrier below. Writing it here would
@@ -2747,34 +4939,72 @@ where
                     if let Some(directive) = repair_directive.as_ref() {
                         emit_stage_refiner_decision(ctx, stage, &agent_path, directive);
                     }
-                    persist_stage_run_agent_checkpoint(
-                        ctx,
-                        build_stage_run_agent_checkpoint(StageRunCheckpointInput {
-                            operation_id: stage_run_operation_id(ctx),
-                            stage,
-                            agent_path: &agent_path,
-                            attempt,
-                            org_request_id: &org_request_id,
-                            sub_agent_tool: &sub_agent_tool,
-                            chain_id: resume_chain_id,
-                            status: AgentRunStatus::GateBlocked,
-                            pending_gate_correction: Some(next_feedback.clone()),
-                            correction_kind: Some("per_org_gate_retry"),
-                            submit_repair_mode,
-                            repair_directive,
-                        }),
-                    )
-                    .await;
+                    if let (Some(runtime_memory), Some(seeded), Some(bound)) = (
+                        ctx.runtime_memory.as_ref(),
+                        v2_runtime.as_mut(),
+                        v2_bound.as_ref(),
+                    ) {
+                        if let Err(error) = finish_v2_stage_worker(
+                            runtime_memory,
+                            seeded,
+                            bound,
+                            RuntimeWorkerStatus::GateBlocked,
+                        )
+                        .await
+                        {
+                            gaps.push(json!({
+                                "org_id": unit.id,
+                                "org_name": unit.name,
+                                "detail": format!("V2 gate-blocked landing failed: {error}"),
+                            }));
+                            break;
+                        }
+                    } else {
+                        persist_stage_run_agent_checkpoint(
+                            ctx,
+                            build_stage_run_agent_checkpoint(StageRunCheckpointInput {
+                                operation_id: stage_run_operation_id(ctx),
+                                stage,
+                                agent_path: &agent_path,
+                                attempt,
+                                org_request_id: &org_request_id,
+                                sub_agent_tool: &sub_agent_tool,
+                                chain_id: resume_chain_id,
+                                status: AgentRunStatus::GateBlocked,
+                                pending_gate_correction: Some(next_feedback.clone()),
+                                correction_kind: Some("per_org_gate_retry"),
+                                submit_repair_mode,
+                                repair_directive,
+                            }),
+                        )
+                        .await;
+                    }
                     feedback = Some(next_feedback);
                     continue;
                 }
                 OrgAttemptOutcome::Exhausted { reasons } => {
                     retry_budget_exhausted = true;
                     ctx.stage_run_reentry_guard.mark_exhausted(stage);
-                    clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
+                    let v2_finish_error = if let (Some(runtime_memory), Some(seeded), Some(bound)) = (
+                        ctx.runtime_memory.as_ref(),
+                        v2_runtime.as_mut(),
+                        v2_bound.as_ref(),
+                    ) {
+                        finish_v2_stage_worker(
+                            runtime_memory,
+                            seeded,
+                            bound,
+                            RuntimeWorkerStatus::Exhausted,
+                        )
+                        .await
+                        .err()
+                    } else {
+                        clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
+                        None
+                    };
                     // Prefer the gate's own reasons; fall back to the sub-agent's
                     // response/error when the block came from the success-flag path.
-                    let detail = if reasons.is_empty() {
+                    let mut detail = if reasons.is_empty() {
                         match &result {
                             Ok(r) => r
                                 .value
@@ -2788,6 +5018,9 @@ where
                     } else {
                         reasons.join("; ").chars().take(300).collect::<String>()
                     };
+                    if let Some(error) = v2_finish_error {
+                        detail.push_str(&format!("; V2 exhausted landing also failed: {error}"));
+                    }
                     emit_org_progress(
                         ctx,
                         stage,
@@ -2815,7 +5048,7 @@ where
     // wave as its own denominator; queued batches intentionally withhold the
     // close token.
     let mut expansion_batches = Vec::new();
-    if gaps.is_empty() && spec.asset_wave_barrier {
+    if !v2_stage_run && gaps.is_empty() && spec.asset_wave_barrier {
         match queue_global_delta_asset_batches(ctx, stage, &units, &completed_wave_by_org).await {
             Ok(queued) => expansion_batches = queued,
             Err(reason) => {
@@ -2824,6 +5057,113 @@ where
                     "org_name": "global_delta_expansion",
                     "detail": reason
                 }));
+            }
+        }
+    }
+    if !pending_v2_final_seals.is_empty() {
+        let Some(runtime_memory) = ctx.runtime_memory.as_ref() else {
+            unreachable!("pending V2 final seals require a runtime-memory repository")
+        };
+        if ctx
+            .events
+            .db_tracker
+            .and_then(|tracker| tracker.repo())
+            .is_none()
+        {
+            gaps.push(json!({
+                "org_id": null,
+                "org_name": "v2_wave_close",
+                "detail": "V2 compound wave close requires the authoritative DB repository",
+            }));
+            // Keep every supervisor alive until this deterministic failure is
+            // recorded; their leases then expire/reap instead of landing in a
+            // false GateBlocked state.
+            pending_v2_final_seals.clear();
+        }
+        if let Some(gate_repository) = ctx.events.db_tracker.and_then(|tracker| tracker.repo()) {
+            for pending in pending_v2_final_seals.drain(..) {
+                match close_v2_wave_gate_pass(
+                    runtime_memory,
+                    gate_repository,
+                    &pending.seeded,
+                    &pending.bound,
+                    &pending.wave,
+                    pending.deliverable_submission_id,
+                    &pending.deliverable,
+                    &pending.material,
+                    stage,
+                    pending.authoritative_gate,
+                )
+                .await
+                {
+                    Ok(ClosedWaveGatePass::WaitingBackground {
+                        unit: _,
+                        worker: _,
+                        next_wave,
+                    }) => {
+                        expansion_batches.push(QueuedStageAssetBatch {
+                            org_id: pending.unit.id.clone(),
+                            org_name: pending.unit.name.clone(),
+                            wave_index: next_wave.wave_index,
+                            asset_count: next_wave.asset_values.len(),
+                            asset_values: next_wave.asset_values,
+                        });
+                        emit_org_progress(
+                        ctx,
+                        stage,
+                        &pending.unit,
+                        &pending.org_request_id,
+                        "queued",
+                        Some(
+                            "authoritative org Gate passed; exact wave completed and Worker parked in WaitingBackground with a supplemental wave in the same transaction"
+                                .to_string(),
+                        ),
+                        0,
+                        &stage_label,
+                        &role_label,
+                        &coverage_axis,
+                        );
+                    }
+                    Ok(ClosedWaveGatePass::Finalized(_finalized)) => {
+                        let agent_path = stage_run_agent_path(stage, &pending.unit, &specialist);
+                        clear_stage_run_agent_checkpoint(ctx, &agent_path).await;
+                        passed_count += 1;
+                        emit_org_progress(
+                            ctx,
+                            stage,
+                            &pending.unit,
+                            &pending.org_request_id,
+                            "passed",
+                            pending.passed_note,
+                            0,
+                            &stage_label,
+                            &role_label,
+                            &coverage_axis,
+                        );
+                    }
+                    Err(error) => {
+                        let reason = format!(
+                            "V2 authoritative Gate passed, but compound wave completion/pause-or-final-seal failed; no partial completion was published: {error}"
+                        );
+                        emit_org_progress(
+                            ctx,
+                            stage,
+                            &pending.unit,
+                            &pending.org_request_id,
+                            "blocked",
+                            Some(reason.clone()),
+                            0,
+                            &stage_label,
+                            &role_label,
+                            &coverage_axis,
+                        );
+                        gaps.push(json!({
+                            "org_id": pending.unit.id,
+                            "org_name": pending.unit.name,
+                            "detail": reason,
+                        }));
+                    }
+                }
             }
         }
     }
@@ -3642,6 +5982,99 @@ mod tests {
     }
 
     #[test]
+    fn candidate_verification_scheduler_requires_both_immutable_v2_contracts() {
+        use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
+        use golish_core::AttackExecutionContract;
+
+        assert!(candidate_v2_stage_run_enabled(
+            StageKind::Verification,
+            RuntimeMemoryContract::V2Only,
+            AttackExecutionContract::V2Only,
+        ));
+        for runtime in RuntimeMemoryContract::ALL {
+            for attack in AttackExecutionContract::ALL {
+                if runtime == RuntimeMemoryContract::V2Only
+                    && attack == AttackExecutionContract::V2Only
+                {
+                    continue;
+                }
+                assert!(
+                    !candidate_v2_stage_run_enabled(StageKind::Verification, runtime, attack),
+                    "Verification must stay on its legacy path for runtime={} attack={}",
+                    runtime.as_str(),
+                    attack.as_str(),
+                );
+            }
+        }
+        assert!(candidate_v2_stage_run_enabled(
+            StageKind::AttackCandidate,
+            RuntimeMemoryContract::V2Only,
+            AttackExecutionContract::V2Only,
+        ));
+    }
+
+    #[test]
+    fn candidate_verifier_is_an_additive_v2_specialist_not_a_legacy_stage_default() {
+        use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
+        use golish_core::AttackExecutionContract;
+
+        let verification = load_embedded_stage_spec(StageKind::Verification).unwrap();
+        assert_eq!(verification.specialist, None);
+        assert_eq!(
+            effective_stage_run_specialist(
+                StageKind::Verification,
+                verification.specialist.as_deref(),
+                Some((
+                    RuntimeMemoryContract::V2Only,
+                    AttackExecutionContract::V2Only
+                )),
+            )
+            .as_deref(),
+            Some("candidate_verifier")
+        );
+        assert_eq!(
+            effective_stage_run_specialist(
+                StageKind::Verification,
+                verification.specialist.as_deref(),
+                Some((
+                    RuntimeMemoryContract::DualWriteV2Preferred,
+                    AttackExecutionContract::DualWriteReadV2Fallback,
+                )),
+            ),
+            None
+        );
+        assert_eq!(
+            effective_stage_run_specialist(
+                StageKind::AttackCandidate,
+                Some("analyst"),
+                Some((
+                    RuntimeMemoryContract::V2Only,
+                    AttackExecutionContract::V2Only
+                )),
+            )
+            .as_deref(),
+            Some("attack_analyst")
+        );
+        assert_eq!(
+            effective_stage_run_specialist(
+                StageKind::AttackCandidate,
+                Some("analyst"),
+                Some((
+                    RuntimeMemoryContract::V2Only,
+                    AttackExecutionContract::DualWriteReadV2Fallback,
+                )),
+            )
+            .as_deref(),
+            Some("analyst")
+        );
+        assert_eq!(
+            stage_worker_agent_type("attack_analyst"),
+            Some(AgentType::Pentester),
+            "the effective V2 specialist must be claimable by the durable worker scheduler"
+        );
+    }
+
+    #[test]
     fn tool_definition_stops_same_request_reentry_after_budget_exhaustion() {
         let def = stage_run_tool_definition();
 
@@ -3798,6 +6231,9 @@ mod tests {
             operation_id: uuid::Uuid::new_v4(),
             profile: "assessment".to_string(),
             current_stage: "target_intel".to_string(),
+            runtime_memory_contract:
+                golish_agent_kit::runtime_memory::RuntimeMemoryContract::LegacyV1,
+            project_scope_id: None,
             engagement_org_id: None,
             state_blob: json!({}),
             stage_started_at: floor,
@@ -3820,6 +6256,485 @@ mod tests {
 
         assert_eq!(parse_sub_agent_session_id(&response), Some(id));
         assert_eq!(parse_sub_agent_session_id("done"), None);
+    }
+
+    #[test]
+    fn v2_stage_run_reads_only_the_local_worker_submission_id() {
+        let submission_id = uuid::Uuid::new_v4();
+        let result = ToolExecutionResult {
+            value: json!({
+                "response": format!(
+                    "Stage deliverable accepted.\n\n[deliverable_submission_id: {submission_id}]"
+                )
+            }),
+            success: true,
+        };
+        assert_eq!(
+            local_deliverable_submission_id(&result),
+            Some(submission_id)
+        );
+
+        let unrelated = ToolExecutionResult {
+            value: json!({"response": "accepted without this worker's durable id"}),
+            success: true,
+        };
+        assert_eq!(local_deliverable_submission_id(&unrelated), None);
+    }
+
+    fn running_worker_with_expiry(
+        lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> golish_agent_kit::db_traits::RuntimeWorkerView {
+        golish_agent_kit::db_traits::RuntimeWorkerView {
+            id: uuid::Uuid::new_v4(),
+            operation_id: uuid::Uuid::new_v4(),
+            stage_execution_id: uuid::Uuid::new_v4(),
+            stage_run_unit_id: uuid::Uuid::new_v4(),
+            organization_id: uuid::Uuid::new_v4(),
+            worker_generation: 1,
+            specialist: "recon".to_string(),
+            work_item_kind: "organization".to_string(),
+            work_item_key: "target_intel".to_string(),
+            agent_path: "main>stage_run:target_intel".to_string(),
+            parent_request_id: None,
+            message_chain_id: Some(uuid::Uuid::new_v4()),
+            status: RuntimeWorkerStatus::Running,
+            gate_attempt: 0,
+            checkpoint: json!([]),
+            checkpoint_version: 1,
+            lease_token: Some(uuid::Uuid::new_v4()),
+            lease_owner: Some("other-request".to_string()),
+            lease_expires_at: Some(lease_expires_at),
+            heartbeat_at: Some(chrono::Utc::now()),
+            attempt_epoch: 1,
+            active_tool_call_id: None,
+            active_tool_started_at: None,
+            evidence_watermark: None,
+        }
+    }
+
+    #[test]
+    fn live_running_worker_waits_without_reaper_or_provider_dispatch() {
+        let now = chrono::Utc::now();
+        let live = running_worker_with_expiry(now + chrono::Duration::minutes(1));
+        assert_eq!(
+            running_worker_resume_action(&live, now).unwrap(),
+            RunningWorkerResumeAction::WaitForLiveLease
+        );
+        let expired = running_worker_with_expiry(now - chrono::Duration::seconds(1));
+        assert_eq!(
+            running_worker_resume_action(&expired, now).unwrap(),
+            RunningWorkerResumeAction::ReapExpired
+        );
+    }
+
+    #[test]
+    fn v2_final_seal_material_is_deterministic_and_server_bound() {
+        let operation_id = uuid::Uuid::new_v4();
+        let stage_execution_id = uuid::Uuid::new_v4();
+        let unit_id = uuid::Uuid::new_v4();
+        let worker_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let lease_token = uuid::Uuid::new_v4();
+        let finding_id = uuid::Uuid::new_v4();
+        let submission_id = uuid::Uuid::new_v4();
+        let mut worker =
+            running_worker_with_expiry(chrono::Utc::now() + chrono::Duration::minutes(1));
+        worker.id = worker_id;
+        worker.operation_id = operation_id;
+        worker.stage_execution_id = stage_execution_id;
+        worker.stage_run_unit_id = unit_id;
+        worker.organization_id = organization_id;
+        worker.attempt_epoch = 2;
+        worker.lease_token = Some(lease_token);
+        worker.checkpoint_version = 7;
+        worker.checkpoint = json!({"turn": 3});
+        let seeded = SeededStageRuntime {
+            unit: golish_agent_kit::db_traits::RuntimeStageUnitView {
+                id: unit_id,
+                operation_id,
+                stage_execution_id,
+                scope_snapshot_id: uuid::Uuid::new_v4(),
+                organization_id,
+                stage_kind: "target_intel".to_string(),
+                generation: 1,
+                specialist: Some("recon".to_string()),
+                status: RuntimeStageUnitStatus::Running,
+                gate_attempt: 0,
+                pass_watermark: json!({}),
+                row_version: 4,
+            },
+            worker,
+            organization_name: "ACME".to_string(),
+            scope_hash: "scope-sha".to_string(),
+        };
+        let bound = BoundWorkerChainContext {
+            operation_id,
+            stage_execution_id,
+            organization_id,
+            worker_lease: golish_core::WorkerLeaseContext {
+                worker_run_id: worker_id,
+                stage_run_unit_id: unit_id,
+                lease_token,
+                attempt_epoch: 2,
+            },
+            candidate_attempt: None,
+            chain_id: uuid::Uuid::new_v4(),
+            session_id: uuid::Uuid::new_v4(),
+            agent_type: "recon".to_string(),
+            initial_chain: json!([]),
+            initial_prompt_already_checkpointed: true,
+            checkpoint_version: Arc::new(AtomicI64::new(7)),
+            checkpoint_body: Arc::new(StdRwLock::new(json!({"turn": 3}))),
+            lease_lost: Arc::new(AtomicBool::new(false)),
+            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            tool_lifecycle: None,
+        };
+        let deliverable: StageDeliverable = serde_json::from_value(json!({
+            "stage_id": "target_intel",
+            "stage_run_id": stage_execution_id,
+            "claims": [{
+                "kind": "intel_complete",
+                "subject": "ACME",
+                "summary": "complete",
+                "evidence_ids": [9, 7]
+            }],
+            "evidence_refs": [8],
+            "findings": [{
+                "finding_id": finding_id,
+                "kind": "exposure",
+                "subject": "a.example",
+                "severity": "low",
+                "evidence_refs": [9]
+            }],
+            "coverage": [],
+            "skipped_checks": [],
+            "required_checks_done": []
+        }))
+        .unwrap();
+        let seal = build_v2_final_seal(
+            &seeded,
+            &bound,
+            submission_id,
+            &deliverable,
+            &V2AuthoritativeSealMaterial::default(),
+            StageKind::TargetIntel,
+            true,
+        )
+        .expect("server builds final seal");
+        assert_eq!(seal.scope_hash, "scope-sha");
+        assert_eq!(seal.expected_unit_row_version, 4);
+        assert_eq!(seal.evidence_ids, vec![7, 8, 9]);
+        assert_eq!(
+            seal.canonical_fact_keys,
+            vec![golish_agent_kit::harness::CanonicalFactKey::Finding { finding_id }]
+        );
+        assert_eq!(seal.fence.worker_run_id, worker_id);
+        assert_eq!(seal.deliverable_submission_id, submission_id);
+        assert!(seal.typed_claims.iter().all(|claim| {
+            claim
+                .get("payload")
+                .and_then(|payload| payload.get("evidence_ids"))
+                .and_then(Value::as_array)
+                .is_some_and(|ids| {
+                    !ids.is_empty()
+                        && ids.iter().all(|id| {
+                            id.as_i64()
+                                .is_some_and(|id| seal.evidence_ids.contains(&id))
+                        })
+                })
+        }));
+    }
+
+    #[test]
+    fn v2_canonical_technique_outcome_sample_is_stable_and_bounded() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let coverage = (0..300)
+            .rev()
+            .map(|index| {
+                json!({
+                    "asset": format!("https://host-{index:03}.example"),
+                    "technique": "GOLISH-ENUM-DIR",
+                    "status": "checked_empty",
+                    "evidence_refs": [7]
+                })
+            })
+            .collect::<Vec<_>>();
+        let deliverable: StageDeliverable = serde_json::from_value(json!({
+            "stage_id": "enumeration",
+            "stage_run_id": uuid::Uuid::new_v4(),
+            "claims": [],
+            "evidence_refs": [],
+            "findings": [],
+            "coverage": coverage,
+            "skipped_checks": [],
+            "required_checks_done": []
+        }))
+        .unwrap();
+        let material = V2AuthoritativeSealMaterial::InformationCoverage(V2CoverageSealMaterial {
+            cells: deliverable
+                .coverage
+                .iter()
+                .map(|cell| V2AuthoritativeSealCell {
+                    asset: cell.asset.clone(),
+                    technique: cell.technique.clone(),
+                    state: "checked_empty".to_string(),
+                    evidence_ids: vec![7],
+                })
+                .collect(),
+            waves: Vec::new(),
+        });
+        let (keys, total) = deterministic_canonical_fact_keys(
+            operation_id,
+            organization_id,
+            &material,
+            &deliverable,
+        )
+        .unwrap();
+        assert_eq!(total, 300);
+        assert_eq!(keys.len(), MAX_CANONICAL_REFS);
+        assert!(keys.iter().all(|key| matches!(
+            key,
+            CanonicalFactKey::TechniqueOutcome {
+                organization_id: owner,
+                run_id,
+                technique,
+                ..
+            } if *owner == organization_id
+                && run_id == &operation_id.to_string()
+                && technique == "GOLISH-ENUM-DIR"
+        )));
+
+        let mut reversed_material = material.clone();
+        let V2AuthoritativeSealMaterial::InformationCoverage(reversed_coverage) =
+            &mut reversed_material
+        else {
+            unreachable!()
+        };
+        reversed_coverage.cells.reverse();
+        assert_eq!(
+            keys,
+            deterministic_canonical_fact_keys(
+                operation_id,
+                organization_id,
+                &reversed_material,
+                &deliverable,
+            )
+            .unwrap()
+            .0
+        );
+        let watermark = deterministic_coverage_watermark(
+            StageKind::Enumeration,
+            organization_id,
+            &material,
+            total,
+            keys.len(),
+            0,
+            0,
+            1,
+            1,
+        );
+        assert_eq!(watermark["canonical_ref_total"], 300);
+        assert_eq!(watermark["canonical_ref_included"], MAX_CANONICAL_REFS);
+        assert_eq!(watermark["canonical_ref_truncated"], true);
+    }
+
+    #[test]
+    fn v2_authoritative_seal_material_accumulates_two_exact_waves() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let first = StageAssetWaveView {
+            id: uuid::Uuid::new_v4(),
+            operation_id,
+            organization_id,
+            stage_kind: "enumeration".to_string(),
+            wave_index: 0,
+            started_at: chrono::Utc::now(),
+            parent_wave_id: None,
+            asset_hash: "wave-0".to_string(),
+            target_ids: vec![uuid::Uuid::new_v4()],
+            asset_values: vec!["https://one.example".to_string()],
+        };
+        let second = StageAssetWaveView {
+            id: uuid::Uuid::new_v4(),
+            operation_id,
+            organization_id,
+            stage_kind: "enumeration".to_string(),
+            wave_index: 1,
+            started_at: chrono::Utc::now(),
+            parent_wave_id: Some(first.id),
+            asset_hash: "wave-1".to_string(),
+            target_ids: vec![uuid::Uuid::new_v4()],
+            asset_values: vec!["https://two.example".to_string()],
+        };
+        let snapshot = |asset: &str, evidence_id: i64| {
+            json!({
+                "stage": "enumeration",
+                "organization_id": organization_id,
+                "assets": [{
+                    "value": asset,
+                    "coverage": [
+                        {
+                            "technique": "GOLISH-ENUM-DIR",
+                            "state": "checked_empty",
+                            "evidence_refs": [evidence_id]
+                        },
+                        {
+                            "technique": "GOLISH-ENUM-JS",
+                            "state": "next_wave_pending",
+                            "evidence_refs": []
+                        }
+                    ]
+                }]
+            })
+        };
+        let wave_zero = authoritative_seal_material_from_snapshot(
+            &snapshot("https://one.example", 7),
+            StageKind::Enumeration,
+            organization_id,
+            Some(&first),
+        )
+        .unwrap();
+        let wave_one = authoritative_seal_material_from_snapshot(
+            &snapshot("https://two.example", 9),
+            StageKind::Enumeration,
+            organization_id,
+            Some(&second),
+        )
+        .unwrap();
+        let merged = merge_authoritative_seal_material(Some(wave_zero), wave_one).unwrap();
+        let V2AuthoritativeSealMaterial::InformationCoverage(coverage) = &merged else {
+            panic!("expected information coverage material")
+        };
+        assert_eq!(coverage.cells.len(), 2);
+        assert_eq!(
+            coverage
+                .waves
+                .iter()
+                .map(|wave| wave.id)
+                .collect::<Vec<_>>(),
+            vec![first.id, second.id]
+        );
+        assert_eq!(
+            coverage
+                .cells
+                .iter()
+                .flat_map(|cell| cell.evidence_ids.iter().copied())
+                .collect::<Vec<_>>(),
+            vec![7, 9]
+        );
+        let watermark = deterministic_coverage_watermark(
+            StageKind::Enumeration,
+            organization_id,
+            &merged,
+            2,
+            2,
+            0,
+            0,
+            2,
+            2,
+        );
+        assert_eq!(watermark["wave_count"], 2);
+        assert_eq!(watermark["wave_asset_count"], 2);
+        assert_eq!(watermark["terminal_cells"], 2);
+    }
+
+    #[test]
+    fn v2_handoff_technique_taxonomy_covers_the_four_current_stage_contracts() {
+        for stage in [
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+            StageKind::Enumeration,
+            StageKind::VulnTriage,
+        ] {
+            let spec = load_embedded_stage_spec(stage).unwrap();
+            for technique in spec.expected_techniques {
+                assert!(
+                    !technique_evidence_kinds(&technique).is_empty(),
+                    "{stage:?} technique {technique} must have a closed handoff evidence-kind mapping"
+                );
+            }
+        }
+        assert!(technique_evidence_kinds("MODEL-INVENTED-TECHNIQUE").is_empty());
+    }
+
+    #[test]
+    fn inherited_handoff_section_filters_source_and_evidence_kind_and_rejects_foreign_owner() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let handoff = golish_agent_kit::db_traits::RuntimeStageHandoffView {
+            id: uuid::Uuid::new_v4(),
+            operation_id,
+            organization_id,
+            scope_snapshot_id: uuid::Uuid::new_v4(),
+            from_stage_kind: "target_intel".to_string(),
+            stage_execution_id: uuid::Uuid::new_v4(),
+            source_stage_run_unit_id: uuid::Uuid::new_v4(),
+            deliverable_submission_id: uuid::Uuid::new_v4(),
+            scope_hash: "scope-sha".to_string(),
+            payload: json!({
+                "typed_claims": [
+                    {"kind": "dns_a", "payload": {"host": "a.example"}},
+                    {"kind": "secret", "payload": {"value": "must-not-inherit"}}
+                ],
+                "canonical_fact_refs": [
+                    {
+                        "key": {
+                            "kind": "technique_outcome",
+                            "organization_id": organization_id,
+                            "run_id": operation_id,
+                            "asset": "a.example",
+                            "technique": "GOLISH-INTEL-DNS"
+                        }
+                    },
+                    {
+                        "key": {
+                            "kind": "technique_outcome",
+                            "organization_id": organization_id,
+                            "run_id": operation_id,
+                            "asset": "a.example",
+                            "technique": "MODEL-INVENTED-TECHNIQUE"
+                        }
+                    }
+                ]
+            }),
+            payload_sha256: "a".repeat(64),
+            evidence_ids: vec![7],
+            coverage_watermark: json!({"cells": 1}),
+            unit_gate_decision_hash: "b".repeat(64),
+            aggregate_pass_token_hash: None,
+            gate_passed_at: chrono::Utc::now(),
+            schema_version: 1,
+        };
+        let inherits = vec![golish_agent_kit::harness::InheritsEvidenceFrom {
+            stage_kind: StageKind::TargetIntel,
+            evidence_kinds: vec!["dns_a".to_string()],
+        }];
+        let section = bounded_inherited_handoff_section(
+            operation_id,
+            organization_id,
+            &inherits,
+            std::slice::from_ref(&handoff),
+        )
+        .unwrap()
+        .expect("allowed inherited section");
+        assert!(section.contains("SERVER CONTEXT ONLY"));
+        assert!(section.contains("dns_a"));
+        assert!(section.contains("GOLISH-INTEL-DNS"));
+        assert!(!section.contains("must-not-inherit"));
+        assert!(!section.contains("MODEL-INVENTED-TECHNIQUE"));
+
+        let foreign = golish_agent_kit::db_traits::RuntimeStageHandoffView {
+            operation_id: uuid::Uuid::new_v4(),
+            ..handoff
+        };
+        assert!(bounded_inherited_handoff_section(
+            operation_id,
+            organization_id,
+            &inherits,
+            &[foreign]
+        )
+        .is_err());
     }
 
     #[test]

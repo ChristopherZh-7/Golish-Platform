@@ -792,7 +792,9 @@ export function TargetGroupedView({
         .replace("{{targetCount}}", String(targetCount));
       if (!confirm(confirmMsg)) return;
       try {
-        await orgsApi.deleteOrganization(id);
+        const projectPath = getProjectPath();
+        if (!projectPath) throw new Error("No active project is selected");
+        await orgsApi.deleteOrganization({ id, projectPath });
         await refreshOrgs();
         // Targets are cascade-deleted server-side; reload them so the UI drops
         // the removed rows instead of leaving them stale.

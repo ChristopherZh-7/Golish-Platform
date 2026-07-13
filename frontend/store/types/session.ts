@@ -62,6 +62,28 @@ export interface SessionStageRun {
   requestId?: string;
 }
 
+/**
+ * Refresh-only hint emitted by Candidate review harness traces. The review
+ * panel always reloads authoritative decisions/barrier state through IPC.
+ */
+export interface CandidateReviewHint {
+  operationId: string;
+  waveRunId: string;
+  status: string;
+  resumeVersion: number;
+  refreshVersion: number;
+}
+
+/**
+ * Refresh-only pointer from a Reporting harness trace. The report component
+ * must reload the authoritative read model through IPC; no report content or
+ * gate truth is stored here.
+ */
+export interface ReportingReadModelHint {
+  operationId: string;
+  refreshVersion: number;
+}
+
 export interface InteractiveModeState {
   active: boolean;
   command: string | null;
@@ -118,5 +140,7 @@ export interface Session {
    * requestId instead of one session-wide mutable slot.
    */
   stageRuns?: Record<string, SessionStageRun>;
+  candidateReviewHint?: CandidateReviewHint;
+  reportingReadModelHint?: ReportingReadModelHint;
   interactiveMode?: InteractiveModeState | null;
 }

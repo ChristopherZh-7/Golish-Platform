@@ -1,5 +1,5 @@
 use crate::Result;
-use sqlx::PgPool;
+use sqlx::{Executor, PgPool, Postgres};
 use uuid::Uuid;
 
 use crate::models::{AgentType, MessageChain};
@@ -13,6 +13,24 @@ pub async fn create(
     model: Option<&str>,
     provider: Option<&str>,
 ) -> Result<MessageChain> {
+    create_with_executor(
+        pool, session_id, task_id, subtask_id, agent, model, provider,
+    )
+    .await
+}
+
+pub async fn create_with_executor<'e, E>(
+    executor: E,
+    session_id: Uuid,
+    task_id: Option<Uuid>,
+    subtask_id: Option<Uuid>,
+    agent: AgentType,
+    model: Option<&str>,
+    provider: Option<&str>,
+) -> Result<MessageChain>
+where
+    E: Executor<'e, Database = Postgres>,
+{
     let row = sqlx::query_as::<_, MessageChain>(
         r#"INSERT INTO message_chains (session_id, task_id, subtask_id, agent, model, provider)
            VALUES ($1, $2, $3, $4, $5, $6)
@@ -24,7 +42,41 @@ pub async fn create(
     .bind(agent)
     .bind(model)
     .bind(provider)
-    .fetch_one(pool)
+    .fetch_one(executor)
+    .await?;
+    Ok(row)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn create_bound_with_executor<'e, E>(
+    executor: E,
+    id: Uuid,
+    session_id: Uuid,
+    operation_id: Uuid,
+    subtask_id: Option<Uuid>,
+    agent: AgentType,
+    model: Option<&str>,
+    provider: Option<&str>,
+    chain: &serde_json::Value,
+) -> Result<MessageChain>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let row = sqlx::query_as::<_, MessageChain>(
+        r#"INSERT INTO message_chains (
+               id, session_id, task_id, subtask_id, agent, model, provider, chain
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           RETURNING *"#,
+    )
+    .bind(id)
+    .bind(session_id)
+    .bind(operation_id)
+    .bind(subtask_id)
+    .bind(agent)
+    .bind(model)
+    .bind(provider)
+    .bind(chain)
+    .fetch_one(executor)
     .await?;
     Ok(row)
 }
@@ -36,6 +88,30 @@ pub async fn update_chain(pool: &PgPool, id: Uuid, chain: &serde_json::Value) ->
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Update the exact chain already bound to one runtime operation. The caller
+/// owns the surrounding worker-fenced transaction; a zero-row CAS is never a
+/// durable checkpoint success.
+pub async fn update_bound_chain_cas_with_executor<'e, E>(
+    executor: E,
+    id: Uuid,
+    operation_id: Uuid,
+    chain: &serde_json::Value,
+) -> Result<u64>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let rows = sqlx::query(
+        "UPDATE message_chains SET chain=$3, updated_at=NOW() WHERE id=$1 AND task_id=$2",
+    )
+    .bind(id)
+    .bind(operation_id)
+    .bind(chain)
+    .execute(executor)
+    .await?
+    .rows_affected();
+    Ok(rows)
 }
 
 pub async fn update_usage(
