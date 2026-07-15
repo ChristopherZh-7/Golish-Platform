@@ -12,6 +12,9 @@ use golish_agent_kit::harness::StageKind;
 use golish_agent_kit::runtime_memory::{RuntimeMemoryContract, RuntimeMemoryWriteStrategy};
 use golish_core::AttackExecutionContract;
 use golish_db::models::{AgentType, Organization};
+use golish_db::repo::stage_run_units::StageRunUnitRow;
+use golish_db::repo::stage_teams::{StageTeamPlanRow, StageWorkItemRow};
+use golish_db::repo::stage_worker_runs::StageWorkerRunRow;
 use uuid::Uuid;
 
 use super::scheduler::{FleetReport, OrgRunOutcome, OrgRunStatus};
@@ -191,6 +194,129 @@ fn ownership_percent(organization: &Organization) -> Option<f64> {
         _ => None,
     }
     .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+}
+
+#[derive(Debug)]
+struct StageTeamResumeAuthority {
+    plan: StageTeamPlanRow,
+    work_items: Vec<StageWorkItemRow>,
+}
+
+fn select_stage_team_primary_worker<'a>(
+    unit: &StageRunUnitRow,
+    workers: &'a [&StageWorkerRunRow],
+    team: Option<&StageTeamResumeAuthority>,
+) -> Result<Option<&'a StageWorkerRunRow>> {
+    let Some(team) = team else {
+        return match workers {
+            [] => Ok(None),
+            [worker] => Ok(Some(*worker)),
+            _ => Err(anyhow!("multiple non-Team Workers own one stage Unit")),
+        };
+    };
+
+    let plan = &team.plan;
+    anyhow::ensure!(
+        plan.operation_id == unit.operation_id
+            && plan.stage_execution_id == unit.stage_execution_id
+            && plan.stage_run_unit_id == unit.id
+            && plan.scope_snapshot_id == unit.scope_snapshot_id
+            && plan.organization_id == unit.organization_id
+            && plan.stage_kind == unit.stage_kind,
+        "Stage Team plan identity crossed Unit/operation/scope"
+    );
+    let aggregator_role = plan
+        .aggregator_role
+        .as_deref()
+        .ok_or_else(|| anyhow!("Stage Team plan has no aggregator role"))?;
+    anyhow::ensure!(
+        plan.leader_role == aggregator_role
+            && plan.aggregator_kind == "worker"
+            && plan.final_submitter_kind == "worker",
+        "Stage Team leader/aggregator/final-submitter contract diverged"
+    );
+
+    let leader_items = team
+        .work_items
+        .iter()
+        .filter(|item| {
+            item.role == plan.leader_role
+                && item.stable_key == "leader:primary"
+                && !item.required_for_barrier
+                && item.created_by == "server_seed"
+        })
+        .collect::<Vec<_>>();
+    let [leader_item] = leader_items.as_slice() else {
+        return Err(anyhow!(
+            "Stage Team Unit requires exactly one leader WorkItem, found {}",
+            leader_items.len()
+        ));
+    };
+
+    for item in &team.work_items {
+        anyhow::ensure!(
+            item.team_plan_id == plan.id
+                && item.operation_id == unit.operation_id
+                && item.stage_execution_id == unit.stage_execution_id
+                && item.stage_run_unit_id == unit.id
+                && item.scope_snapshot_id == unit.scope_snapshot_id
+                && item.organization_id == unit.organization_id,
+            "Stage Team WorkItem identity crossed plan/Unit/operation/scope"
+        );
+    }
+
+    let mut leader_workers = Vec::new();
+    for worker in workers {
+        let work_item_id = worker
+            .work_item_id
+            .ok_or_else(|| anyhow!("Stage Team Worker has no bound WorkItem"))?;
+        let item = team
+            .work_items
+            .iter()
+            .find(|item| item.id == work_item_id)
+            .ok_or_else(|| anyhow!("Stage Team Worker references a foreign WorkItem"))?;
+        anyhow::ensure!(
+            worker.operation_id == unit.operation_id
+                && worker.stage_execution_id == unit.stage_execution_id
+                && worker.stage_run_unit_id == unit.id
+                && worker.organization_id == unit.organization_id
+                && worker.specialist == item.role
+                && worker.work_item_kind == item.kind
+                && worker.work_item_key == item.stable_key,
+            "Stage Team Worker identity crossed WorkItem/Unit/operation"
+        );
+        if item.id == leader_item.id {
+            leader_workers.push(*worker);
+        }
+    }
+    let [leader_worker] = leader_workers.as_slice() else {
+        return Err(anyhow!(
+            "Stage Team Unit requires exactly one leader Worker, found {}",
+            leader_workers.len()
+        ));
+    };
+    Ok(Some(*leader_worker))
+}
+
+async fn load_stage_team_resume_authorities(
+    pool: &sqlx::PgPool,
+    units: &[StageRunUnitRow],
+) -> Result<HashMap<Uuid, StageTeamResumeAuthority>> {
+    let mut authorities = HashMap::new();
+    for unit in units {
+        let Some(plan) =
+            golish_db::repo::stage_teams::get_plan_for_unit_with_executor(pool, unit.id)
+                .await
+                .context("load Stage Team plan for V2 runtime authority")?
+        else {
+            continue;
+        };
+        let work_items = golish_db::repo::stage_teams::list_work_items_with_executor(pool, plan.id)
+            .await
+            .context("load Stage Team WorkItems for V2 runtime authority")?;
+        authorities.insert(unit.id, StageTeamResumeAuthority { plan, work_items });
+    }
+    Ok(authorities)
 }
 
 fn canonical_percent(value: f64) -> String {
@@ -378,6 +504,7 @@ pub(crate) async fn load_cli_report(
         golish_db::repo::stage_worker_runs::list_for_execution(pool, task.id, execution.id)
             .await
             .context("load V2 CLI stage workers")?;
+    let stage_team_authorities = load_stage_team_resume_authorities(pool, &stage_units).await?;
     let mut workers_by_unit: HashMap<Uuid, Vec<_>> = HashMap::new();
     for worker in &workers {
         workers_by_unit
@@ -397,8 +524,25 @@ pub(crate) async fn load_cli_report(
                 Some(unit) => {
                     let status = RuntimeStageUnitStatus::try_parse(&unit.status);
                     let worker_rows = workers_by_unit.get(&unit.id).cloned().unwrap_or_default();
-                    let worker = match worker_rows.as_slice() {
-                        [worker] => RuntimeWorkerStatus::try_parse(&worker.status).map(|status| {
+                    let primary_worker = match select_stage_team_primary_worker(
+                        unit,
+                        &worker_rows,
+                        stage_team_authorities.get(&unit.id),
+                    ) {
+                        Ok(worker) => worker,
+                        Err(error) => {
+                            return OrgRunOutcome {
+                                org_id: scope_unit.organization_id,
+                                org_name: scope_unit.organization_name_at_freeze.clone(),
+                                status: OrgRunStatus::Failed,
+                                detail: Some(format!(
+                                    "V2 stage Unit worker authority rejected: {error}"
+                                )),
+                            };
+                        }
+                    };
+                    let worker = primary_worker.and_then(|worker| {
+                        RuntimeWorkerStatus::try_parse(&worker.status).map(|status| {
                             ResumeWorkerSnapshot {
                                 id: worker.id,
                                 operation_id: worker.operation_id,
@@ -409,17 +553,8 @@ pub(crate) async fn load_cli_report(
                                 lease_expires_at: worker.lease_expires_at,
                                 active_tool_call_id: worker.active_tool_call_id,
                             }
-                        }),
-                        [] => None,
-                        _ => {
-                            return OrgRunOutcome {
-                                org_id: scope_unit.organization_id,
-                                org_name: scope_unit.organization_name_at_freeze.clone(),
-                                status: OrgRunStatus::Failed,
-                                detail: Some("multiple V2 workers own one stage unit".to_string()),
-                            };
-                        }
-                    };
+                        })
+                    });
                     match status {
                         Some(status) => classify_runtime_v2_resume(&RuntimeV2ResumeSnapshot {
                             operation_id: task.id,
@@ -628,6 +763,7 @@ pub(crate) async fn load_relational_resume_authority(
         units.len() == expected_unit_count,
         "relational V2 stage Unit cardinality exceeds frozen scope"
     );
+    let stage_team_authorities = load_stage_team_resume_authorities(pool, &units).await?;
     let chains = golish_db::repo::message_chains::list_by_session(pool, session_id)
         .await
         .context("load relational V2 message chains")?;
@@ -664,85 +800,102 @@ pub(crate) async fn load_relational_resume_authority(
                         unit.id
                     )));
                 }
-                anyhow::ensure!(
-                    unit_workers.len() == 1,
-                    "relational V2 Unit has multiple Worker owners"
-                );
-                let worker = unit_workers[0];
-                anyhow::ensure!(
-                    worker.operation_id == operation.operation_id
-                        && worker.stage_execution_id == execution.id
-                        && worker.organization_id == unit.organization_id
-                        && worker.specialist == expected_specialist,
-                    "relational V2 Worker identity crossed Unit/operation"
-                );
-                let worker_status =
-                    RuntimeWorkerStatus::try_parse(&worker.status).ok_or_else(|| {
-                        relational_resume_incomplete("Worker status cannot be decoded")
+                let team_authority = stage_team_authorities.get(&unit.id);
+                let worker = select_stage_team_primary_worker(unit, &unit_workers, team_authority)?
+                    .ok_or_else(|| relational_resume_incomplete("Unit owner Worker is missing"))?;
+                let expected_chain_agent = resume_worker_chain_agent(expected_specialist)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "relational V2 specialist '{expected_specialist}' has no durable chain agent"
+                        )
                     })?;
-                match worker.message_chain_id {
-                    Some(chain_id) => {
-                        let expected_chain_agent = resume_worker_chain_agent(expected_specialist)
-                            .ok_or_else(|| {
-                                anyhow!(
-                                    "relational V2 specialist '{expected_specialist}' has no durable chain agent"
-                                )
-                            })?;
-                        let chain = match chains.iter().find(|chain| chain.id == chain_id) {
-                            Some(chain) => chain,
-                            None => {
-                                let exists_outside_session =
-                                    golish_db::repo::message_chains::exists_by_id(pool, chain_id)
+                let mut worker_status = None;
+                for bound_worker in &unit_workers {
+                    anyhow::ensure!(
+                        bound_worker.operation_id == operation.operation_id
+                            && bound_worker.stage_execution_id == execution.id
+                            && bound_worker.stage_run_unit_id == unit.id
+                            && bound_worker.organization_id == unit.organization_id
+                            && (team_authority.is_some()
+                                || bound_worker.specialist == expected_specialist),
+                        "relational V2 Worker identity crossed Unit/operation"
+                    );
+                    let bound_status = RuntimeWorkerStatus::try_parse(&bound_worker.status)
+                        .ok_or_else(|| {
+                            relational_resume_incomplete("Worker status cannot be decoded")
+                        })?;
+                    if bound_worker.id == worker.id {
+                        worker_status = Some(bound_status);
+                    } else if bound_status == RuntimeWorkerStatus::Running
+                        && bound_worker
+                            .lease_expires_at
+                            .is_some_and(|expires_at| expires_at > now)
+                    {
+                        return Err(anyhow::Error::new(RelationalResumeBusy));
+                    }
+                    match bound_worker.message_chain_id {
+                        Some(chain_id) => {
+                            let chain = match chains.iter().find(|chain| chain.id == chain_id) {
+                                Some(chain) => chain,
+                                None => {
+                                    let exists_outside_session =
+                                        golish_db::repo::message_chains::exists_by_id(
+                                            pool, chain_id,
+                                        )
                                         .await
                                         .context(
                                             "classify relational V2 message-chain ownership",
                                         )?;
-                                if exists_outside_session {
-                                    return Err(anyhow!(
-                                        "relational V2 message chain crossed session identity"
+                                    if exists_outside_session {
+                                        return Err(anyhow!(
+                                            "relational V2 message chain crossed session identity"
+                                        ));
+                                    }
+                                    return Err(relational_resume_incomplete(
+                                        "bound message chain row is missing",
                                     ));
                                 }
-                                return Err(relational_resume_incomplete(
-                                    "bound message chain row is missing",
-                                ));
-                            }
-                        };
-                        anyhow::ensure!(
-                            chain.session_id == session_id
-                                && chain.task_id == Some(operation.operation_id)
-                                && chain.agent == expected_chain_agent,
-                            "relational V2 message chain crossed session/task/agent scope"
-                        );
-                        let chain_body = chain.chain.as_ref().ok_or_else(|| {
-                            relational_resume_incomplete("bound message chain body is missing")
-                        })?;
-                        decode_relational_message_chain(chain_body)?;
+                            };
+                            anyhow::ensure!(
+                                chain.session_id == session_id
+                                    && chain.task_id == Some(operation.operation_id)
+                                    && chain.agent == expected_chain_agent,
+                                "relational V2 message chain crossed session/task/agent scope"
+                            );
+                            let chain_body = chain.chain.as_ref().ok_or_else(|| {
+                                relational_resume_incomplete("bound message chain body is missing")
+                            })?;
+                            decode_relational_message_chain(chain_body)?;
+                        }
+                        None => anyhow::ensure!(
+                            bound_status == RuntimeWorkerStatus::Queued,
+                            "relational V2 non-queued Worker has no bound message chain"
+                        ),
                     }
-                    None => anyhow::ensure!(
-                        worker_status == RuntimeWorkerStatus::Queued,
-                        "relational V2 non-queued Worker has no bound message chain"
-                    ),
+                    if let Some(active_tool_call_id) = bound_worker.active_tool_call_id {
+                        let exact_active_tool =
+                            golish_db::repo::tool_calls::has_exact_active_worker_fence(
+                                pool,
+                                active_tool_call_id,
+                                bound_worker.id,
+                                bound_worker.operation_id,
+                                bound_worker.stage_execution_id,
+                                bound_worker.stage_run_unit_id,
+                                bound_worker.organization_id,
+                                bound_worker.attempt_epoch,
+                                bound_worker.lease_token,
+                            )
+                            .await
+                            .context("validate relational V2 active tool fence")?;
+                        anyhow::ensure!(
+                            exact_active_tool,
+                            "relational V2 active tool fence is stale or cross-owned"
+                        );
+                    }
                 }
-                if let Some(active_tool_call_id) = worker.active_tool_call_id {
-                    let exact_active_tool =
-                        golish_db::repo::tool_calls::has_exact_active_worker_fence(
-                            pool,
-                            active_tool_call_id,
-                            worker.id,
-                            worker.operation_id,
-                            worker.stage_execution_id,
-                            worker.stage_run_unit_id,
-                            worker.organization_id,
-                            worker.attempt_epoch,
-                            worker.lease_token,
-                        )
-                        .await
-                        .context("validate relational V2 active tool fence")?;
-                    anyhow::ensure!(
-                        exact_active_tool,
-                        "relational V2 active tool fence is stale or cross-owned"
-                    );
-                }
+                let worker_status = worker_status.ok_or_else(|| {
+                    relational_resume_incomplete("Unit owner Worker status is missing")
+                })?;
                 Some(ResumeWorkerSnapshot {
                     id: worker.id,
                     operation_id: worker.operation_id,
@@ -805,16 +958,19 @@ pub(crate) async fn load_relational_resume_authority(
             _ => {}
         }
     }
-    let expected_worker_count = if specialist.is_some() { units.len() } else { 0 };
-    if workers.len() < expected_worker_count {
+    let minimum_worker_count = if specialist.is_some() { units.len() } else { 0 };
+    if workers.len() < minimum_worker_count {
         return Err(relational_resume_incomplete(format!(
-            "Worker rows are missing: expected {expected_worker_count}, found {}",
+            "Worker rows are missing: expected at least {minimum_worker_count}, found {}",
             workers.len()
         )));
     }
+    let unit_ids = units.iter().map(|unit| unit.id).collect::<HashSet<_>>();
     anyhow::ensure!(
-        workers.len() == expected_worker_count,
-        "relational V2 Worker cardinality exceeds frozen Unit set"
+        workers
+            .iter()
+            .all(|worker| unit_ids.contains(&worker.stage_run_unit_id)),
+        "relational V2 Worker references a foreign Unit"
     );
 
     Ok(RuntimeV2ResumeAuthority {
@@ -1078,6 +1234,219 @@ mod tests {
             "updated_at": "2026-07-13T00:00:00Z"
         }))
         .expect("organization fixture")
+    }
+
+    fn stage_team_resume_unit() -> StageRunUnitRow {
+        let now = Utc::now();
+        StageRunUnitRow {
+            id: Uuid::new_v4(),
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            scope_snapshot_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            stage_kind: StageKind::Enumeration.as_str().to_string(),
+            generation: 1,
+            specialist: Some("enumerator".to_string()),
+            status: "passed".to_string(),
+            gate_attempt: 0,
+            pass_watermark: serde_json::json!({}),
+            row_version: 2,
+            started_at: Some(now),
+            updated_at: now,
+            terminal_at: Some(now),
+        }
+    }
+
+    fn stage_team_resume_plan(unit: &StageRunUnitRow) -> StageTeamPlanRow {
+        let now = Utc::now();
+        StageTeamPlanRow {
+            id: Uuid::new_v4(),
+            operation_id: unit.operation_id,
+            stage_execution_id: unit.stage_execution_id,
+            stage_run_unit_id: unit.id,
+            scope_snapshot_id: unit.scope_snapshot_id,
+            organization_id: unit.organization_id,
+            stage_kind: unit.stage_kind.clone(),
+            unit_generation: unit.generation,
+            schema_version: 1,
+            plan_version: 1,
+            plan_hash: "sha256:test".to_string(),
+            leader_role: "company_stage_controller".to_string(),
+            aggregator_kind: "worker".to_string(),
+            aggregator_role: Some("company_stage_controller".to_string()),
+            allowed_worker_roles: serde_json::json!(["company_stage_controller", "enumerator"]),
+            max_workers_total: 35,
+            max_workers_active: 3,
+            dynamic_requests_allowed: true,
+            dynamic_request_policy: serde_json::json!({}),
+            dispatch_epoch: 0,
+            requests_closed_at: Some(now),
+            final_submitter_kind: "worker".to_string(),
+            final_submitter_worker_run_id: None,
+            created_from_stage_spec_hash: "sha256:test".to_string(),
+            row_version: 1,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn stage_team_resume_item(
+        unit: &StageRunUnitRow,
+        plan: &StageTeamPlanRow,
+        role: &str,
+        kind: &str,
+        stable_key: &str,
+        required_for_barrier: bool,
+    ) -> StageWorkItemRow {
+        let now = Utc::now();
+        StageWorkItemRow {
+            id: Uuid::new_v4(),
+            team_plan_id: plan.id,
+            operation_id: unit.operation_id,
+            stage_execution_id: unit.stage_execution_id,
+            stage_run_unit_id: unit.id,
+            scope_snapshot_id: unit.scope_snapshot_id,
+            organization_id: unit.organization_id,
+            dispatch_epoch: 0,
+            kind: kind.to_string(),
+            stable_key: stable_key.to_string(),
+            role: role.to_string(),
+            input_manifest_hash: "sha256:test".to_string(),
+            input_refs: serde_json::json!({}),
+            required_for_barrier,
+            conflict_key: None,
+            priority: 0,
+            status: "completed".to_string(),
+            attempt_policy: serde_json::json!({}),
+            budget: serde_json::json!({}),
+            output_schema: "test.v1".to_string(),
+            created_by: if stable_key == "leader:primary" {
+                "server_seed".to_string()
+            } else {
+                "accepted_worker_request".to_string()
+            },
+            row_version: 1,
+            created_at: now,
+            updated_at: now,
+            started_at: Some(now),
+            terminal_at: Some(now),
+        }
+    }
+
+    fn stage_team_resume_worker(
+        unit: &StageRunUnitRow,
+        item: &StageWorkItemRow,
+    ) -> StageWorkerRunRow {
+        let now = Utc::now();
+        StageWorkerRunRow {
+            id: Uuid::new_v4(),
+            operation_id: unit.operation_id,
+            stage_execution_id: unit.stage_execution_id,
+            stage_run_unit_id: unit.id,
+            work_item_id: Some(item.id),
+            organization_id: unit.organization_id,
+            worker_generation: 0,
+            specialist: item.role.clone(),
+            work_item_kind: item.kind.clone(),
+            work_item_key: item.stable_key.clone(),
+            agent_path: "main>stage_run:test".to_string(),
+            parent_request_id: None,
+            message_chain_id: Some(Uuid::new_v4()),
+            status: "passed".to_string(),
+            gate_attempt: 0,
+            checkpoint: serde_json::json!({}),
+            checkpoint_version: 1,
+            lease_token: None,
+            lease_owner: None,
+            lease_acquired_at: None,
+            lease_expires_at: None,
+            heartbeat_at: None,
+            attempt_epoch: 1,
+            active_tool_call_id: None,
+            active_tool_started_at: None,
+            evidence_watermark: None,
+            started_at: Some(now),
+            updated_at: now,
+            terminal_at: Some(now),
+        }
+    }
+
+    #[test]
+    fn stage_team_resume_selects_unique_controller_and_accepts_dynamic_children() {
+        let unit = stage_team_resume_unit();
+        let plan = stage_team_resume_plan(&unit);
+        let leader_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "company_stage_controller",
+            "aggregate_stage_unit",
+            "leader:primary",
+            false,
+        );
+        let child_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "enumerator",
+            "content_enumeration",
+            "dynamic:test",
+            true,
+        );
+        let leader_worker = stage_team_resume_worker(&unit, &leader_item);
+        let child_worker = stage_team_resume_worker(&unit, &child_item);
+        let authority = StageTeamResumeAuthority {
+            plan,
+            work_items: vec![leader_item, child_item],
+        };
+
+        let workers = [&child_worker, &leader_worker];
+        let selected = select_stage_team_primary_worker(&unit, &workers, Some(&authority))
+            .expect("valid Stage Team resume authority")
+            .expect("leader Worker");
+
+        assert_eq!(selected.id, leader_worker.id);
+    }
+
+    #[test]
+    fn stage_team_resume_rejects_duplicate_leader_or_foreign_child() {
+        let unit = stage_team_resume_unit();
+        let plan = stage_team_resume_plan(&unit);
+        let leader_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "company_stage_controller",
+            "aggregate_stage_unit",
+            "leader:primary",
+            false,
+        );
+        let child_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "enumerator",
+            "content_enumeration",
+            "dynamic:test",
+            true,
+        );
+        let leader_worker = stage_team_resume_worker(&unit, &leader_item);
+        let duplicate_leader = stage_team_resume_worker(&unit, &leader_item);
+        let mut foreign_child = stage_team_resume_worker(&unit, &child_item);
+        foreign_child.organization_id = Uuid::new_v4();
+        let authority = StageTeamResumeAuthority {
+            plan,
+            work_items: vec![leader_item, child_item],
+        };
+
+        assert!(select_stage_team_primary_worker(
+            &unit,
+            &[&leader_worker, &duplicate_leader],
+            Some(&authority),
+        )
+        .is_err());
+        assert!(select_stage_team_primary_worker(
+            &unit,
+            &[&leader_worker, &foreign_child],
+            Some(&authority),
+        )
+        .is_err());
     }
 
     #[test]

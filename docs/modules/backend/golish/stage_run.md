@@ -53,6 +53,7 @@
 
 - 真 LLM + 真工具 + 真 evidence（无 GUI）；活体跑需 LLM key + 网络。
 - 普通公司阶段的 CLI/GUI 调度合同现统一为 `company_controller_v1`：Target Intel / EAS / Enumeration / Vuln 都应在 `run_tree.py --full --db` 中显示每 org 一个 `leader:primary` Company Controller，冻结 specialist 分别为 Recon / Prober / Enumerator / Vuln Scanner。Candidate/Verification 仍显示 Wave/CandidateAttempt，Post-Exploit/Reporting/Cleanup 仍显示 typed scheduler；不要为了 UI 统一将这些不同业务语义强行塞进普通 Team。
+- exact resume 不能再假设“一个 Unit 只有一个 Worker”：Stage Team Unit 必须按 exact Plan/WorkItem/Worker identity 选择唯一 server-seeded `leader:primary` Controller，同时逐一验证动态 child 的 Unit/operation/org/role/kind/key、message chain 与 active tool fence。多个 leader、foreign WorkItem/child 或仍持 live lease 的 child 均 fail closed；合法 terminal child 不影响 Controller owner 选择。
 - `--ephemeral-db` 只隔离数据库；LLM provider / 外部情报源 / 主机工具仍是真调用，跑活体 smoke 前要确认授权与 API 成本。
 - `GOLISH_STAGE_RUN_SEED_OPEN_PORTS` 只用于 isolated smoke；它会在 seed target 后写 `targets.ports[]` 和 EAS collected timestamps，方便复现“DB 已确认 open port，但 SERVICE-FINGERPRINT 没收口”的 retry 类问题。
 - `scripts/stage_smoke.py` 对**任何实际经过 Enumeration 的 slice**（包括 `scoping -> attack_candidate`，不只终点恰好是 Enumeration）默认给 `route_probe_paths` 设置小前台预算（env：`GOLISH_ROUTE_PROBE_DEFAULT_MAX_RUNTIME_MS=30000`、`GOLISH_ROUTE_PROBE_DEFAULT_MAX_REQUESTS=800`）并写进 objective，避免本地 fixture / DeepSeek smoke 等三分钟才收束；从 Vuln/Candidate 之后起跑或 `--only attack_candidate` 不伪装成经过 Enumeration，需要完整字典闭环时传 `--full-route-probe`。

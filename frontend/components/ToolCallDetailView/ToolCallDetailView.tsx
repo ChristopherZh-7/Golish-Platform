@@ -19,7 +19,10 @@ import { AttackCandidateReview } from "@/components/Engagement/AttackCandidateRe
 import { CandidateAttemptRows } from "@/components/Engagement/CandidateAttemptRows";
 import { CleanupObligationList } from "@/components/Engagement/CleanupObligationList";
 import { ReportReadModelView } from "@/components/Engagement/ReportReadModelView";
-import { StageRunOrgRows } from "@/components/Engagement/StageRunOrgRows";
+import {
+  isCompanyControllerStageRunRows,
+  StageRunOrgRows,
+} from "@/components/Engagement/StageRunOrgRows";
 import { JsonView } from "@/components/JsonView/JsonView";
 import { Markdown } from "@/components/Markdown";
 import { ToolAiTraceSummary } from "@/components/ToolAiTraceSummary";
@@ -529,7 +532,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     // have landed when the user clicks. Show the live per-org rows if we already
     // have them, otherwise a loading state while the block resolves — instead of
     // a bare "no tool executions" message that reads as an unresponsive button.
-    const stageRunReady = Boolean(stageRun && stageRun.rows.length > 0);
+    const stageRunReady = Boolean(stageRun && isCompanyControllerStageRunRows(stageRun.rows));
     return (
       <div className="h-full flex flex-col bg-card">
         <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--border-subtle)] flex-shrink-0">
@@ -549,10 +552,6 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             </div>
             <StageRunOrgRows
               rows={stageRun.rows}
-              summary={stageRun.summary}
-              stageLabel={stageRun.stageLabel}
-              roleLabel={stageRun.roleLabel}
-              coverageAxis={stageRun.coverageAxis}
               agentRequestIdsByWorker={stageTeamAgentRequestIds}
               onDrillIn={handleDrillIntoOrg}
             />
@@ -676,23 +675,20 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         </div>
 
-        {execution.toolName === "stage_run" && stageRun && stageRun.rows.length > 0 && (
-          <div className="px-4 py-3 border-b border-border/20">
-            <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
-              Company Controllers
+        {execution.toolName === "stage_run" &&
+          stageRun &&
+          isCompanyControllerStageRunRows(stageRun.rows) && (
+            <div className="px-4 py-3 border-b border-border/20">
+              <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
+                Company Controllers
+              </div>
+              <StageRunOrgRows
+                rows={stageRun.rows}
+                agentRequestIdsByWorker={stageTeamAgentRequestIds}
+                onDrillIn={handleDrillIntoOrg}
+              />
             </div>
-            <StageRunOrgRows
-              rows={stageRun.rows}
-              summary={stageRun.summary}
-              stageLabel={stageRun.stageLabel}
-              roleLabel={stageRun.roleLabel}
-              coverageAxis={stageRun.coverageAxis}
-              isActive={isRunning}
-              agentRequestIdsByWorker={stageTeamAgentRequestIds}
-              onDrillIn={handleDrillIntoOrg}
-            />
-          </div>
-        )}
+          )}
 
         {candidateReviewHint && isAttackCandidateStageRun(execution.toolName, execution.args) && (
           <div className="space-y-3 border-b border-border/20 px-4 py-3">

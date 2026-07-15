@@ -5927,6 +5927,22 @@
 - **下一步最佳动作**：将这个已验收的下游合同保持不动；后续回到父 feature 时，先对 Candidate/Verification 未完成 DoD 建立独立验收，不要再把 CandidateAttempt 强行改成普通 Company Controller UI。
 - **以下文件已修改但未提交（本 scope）**：三个 downstream stage specs；`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/{stage_run_call.rs,stage_team_scheduler.rs}`；`backend/crates/golish-agent-app/src/ai/tracking_bridge/records.rs`；`backend/crates/golish-pentest-app/src/pentest_bridge/anonymous_access.rs`；`frontend/lib/tools.ts`、`frontend/components/AIChatPanel/ToolCallSummary.tsx`、`frontend/components/Engagement/StageRunOrgRows.tsx` 及聚焦测试；对应 design/plan、模块卡、INDEX、`feature_list.json`、`agent-progress.md`。共享 dirty tree 中其它既有改动均未回滚或覆盖。
 
+### 2026-07-16 · Company stage legacy runtime 删除前 checkpoint
+
+- **本轮目标**：按用户要求，如果仍是兼容分叉就修到对齐；无必要后删除旧逻辑，但任何删除前先 commit 安全 checkpoint。
+- **已完成 checkpoint**：对共享工作树 348 files、`+75,875/-9,712` 做了完整范围检查，无 `.env`/凭据/key/运行产物；修复 3 个旧文档 EOF 空行后 `git diff --cached --check` exit 0。
+- **删除前门禁**：真实 index 下 `just space-guard && just precommit` 全绿：fmt 3s、check-fe 11s、test-fe 21s、lint-rust 4s、test-rust-all 218s、check-types 50s，最终打印 `━━━ OK ━━━`。未运行 `init.sh`。
+- **提交记录**：`5af4f31a feat: checkpoint durable stage team runtime`，未 push。此 commit 成功后才开始 legacy 删除设计。
+- **进一步根因**：不是单纯前端兼容。runtime 只在 frozen contract=`v2_only` 时 seed Team；DualWrite/Legacy 会落回 per-org specialist，而 CLI resume 还错误假设每 Unit 恰好一个 Worker，无法恢复拥有 Controller + dynamic child 的合法 Team。
+- **DB/rollout 核验**：当前 deployment runtime rollout 已是 `v2_only rank=3 row_version=3`，attack rollout 保持 rank 1；因此本轮不需要也没有修改 `golish-db`、schema、migration、rollout row 或 frozen historical operation。非 V2 company operation 改为 typed rerun-required。
+- **实现**：四个 company stages 在 generic specialist loop 前强制检查 Team policy/route，分别返回 `STAGE_TEAM_POLICY_REQUIRED`、`STAGE_TEAM_V2_RERUN_REQUIRED`、`STAGE_TEAM_ROUTE_INVARIANT`；已 final-sealed stage 从 operation-fresh aggregate completion 幂等返回且 `provider_dispatched=false`，不再 reseed/model dispatch。CLI resume 按 exact Team Plan/WorkItem/Worker identity 选择唯一 `leader:primary` Controller，并验证所有 child chain/tool fence。前端删除 `Main Agent -> Specialist`、legacy CollectorCard/CoverageChips；missing/mixed Team pointer 整体 fail closed 为 rerun-required，Candidate/Verification 与后续 typed view 不受影响。
+- **红绿过程**：先复现 CLI resume 对多 Worker Unit 的拒绝，再补 Team owner selector；随后复现 completed Enumeration replay 再 seed 时的 `stage_team_dynamic_work_item_authority_mismatch`，改为在 seed 前读取 fresh aggregate pass token。期间修复一个 Rust 临时数组 borrow 编译错误和测试 fixture `created_by=test` 不满足 server-seed authority。第一次 full precommit 还确定性复现 `test_agentic_loop_cancellation_via_timeout` 栈溢出：新增 completion queries 扩大了本来就很大的 dispatch async future；将该 replay future heap-box 后，单测与 8 个相关用例全部转绿。
+- **localhost CLI 验收**：fixture `http://127.0.0.1:54761`，workspace `/private/tmp/golish-company-runtime-retirement-20260716-ZFyWai`，session `stage-run-c6331c37-48e9-4ea1-a93c-e2082762c72d`，operation `b63c135a-eee1-46b3-87d1-fb5cc35c38e3`。首次 EAS/Enumeration 已 Company Controller PASS，在 intentional phase boundary 停止；exact `--stage-run-resume ... --resume-to vuln_triage --allow-orphan-running` 退出 0，Enumeration replay PASS、Vuln PASS。
+- **DB/run-tree 证据**：`scripts/run_tree.py --full --db` 显示 EAS/Enumeration/Vuln 三个 `mode=company_controller` Team，三个 `leader:primary` Controller 均 passed/final submitter，Enumeration 的一个 dynamic Enumerator child passed；三份 durable submission/handoff 有 exact evidence ids；`selected_read_source=v2 legacy_fallback=forbidden`。本地 HTTP fixture 已停止。
+- **最终门禁**：`just space-guard` exit 0；最终 `just precommit` 打印 `━━━ OK ━━━`：fmt 3s、check-fe 10s、test-fe 20s、lint-rust 40s、test-rust-all 294s、check-types 47s。聚焦验证另含 8 个 runtime/CLI tests、24 个前端相关 tests、TypeScript、Biome、Rustfmt 和 `golish + golish-agent-runtime` all-target Clippy。
+- **未运行**：按用户要求没有运行 `init.sh`；未修改 DB/schema/migration；未 push。
+- **下一步最佳动作**：提交本次 legacy-retirement closeout。父 feature 仍因 Candidate-to-Verification 的更大 DoD 保持 `in_progress`。
+
 ### 2026-07-16 · Company Controller terminal progress / compact card 收敛
 
 - **本轮目标**：修复最新 `pentest-chat-1784137594582-1` 中 Target Intel 的 durable Team/Gate 已 PASS，但聊天里的 `Running specialist agents` 仍显示 `0/1 passed · 1 进行` 的矛盾状态；用户明确要求不运行 `init.sh`。

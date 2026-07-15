@@ -574,6 +574,66 @@ fn stage_team_scheduler_admits_stage(stage: StageKind) -> bool {
     )
 }
 
+const STAGE_TEAM_POLICY_REQUIRED: &str = "STAGE_TEAM_POLICY_REQUIRED";
+const STAGE_TEAM_V2_RERUN_REQUIRED: &str = "STAGE_TEAM_V2_RERUN_REQUIRED";
+const STAGE_TEAM_ROUTE_INVARIANT: &str = "STAGE_TEAM_ROUTE_INVARIANT";
+
+/// The four Company Controller stages have one scheduler contract. An old
+/// operation cannot be silently reinterpreted as a Team run because it has no
+/// durable Plan/WorkItem/WorkerRun identity to recover. Likewise, a missing
+/// Team policy is a deployment defect, not permission to revive the retired
+/// per-org specialist loop.
+fn company_stage_runtime_rejection_code(
+    stage: StageKind,
+    contract: Option<RuntimeMemoryContract>,
+    has_team_policy: bool,
+) -> Option<&'static str> {
+    if !stage_team_scheduler_admits_stage(stage) {
+        return None;
+    }
+    if !has_team_policy {
+        return Some(STAGE_TEAM_POLICY_REQUIRED);
+    }
+    if contract != Some(RuntimeMemoryContract::V2Only) {
+        return Some(STAGE_TEAM_V2_RERUN_REQUIRED);
+    }
+    None
+}
+
+fn company_stage_runtime_rejection_result(
+    stage: StageKind,
+    contract: Option<RuntimeMemoryContract>,
+    code: &'static str,
+) -> ToolExecutionResult {
+    let rerun_required = code == STAGE_TEAM_V2_RERUN_REQUIRED;
+    let error = match code {
+        STAGE_TEAM_POLICY_REQUIRED => format!(
+            "stage '{}' must declare a durable Team Scheduler policy; the legacy specialist fallback has been retired",
+            stage.as_str()
+        ),
+        STAGE_TEAM_V2_RERUN_REQUIRED => format!(
+            "stage '{}' requires a new operation frozen to runtime-memory contract 'v2_only'; the legacy specialist fallback has been retired",
+            stage.as_str()
+        ),
+        _ => format!(
+            "stage '{}' reached the retired generic specialist route instead of the durable Team Scheduler",
+            stage.as_str()
+        ),
+    };
+    ToolExecutionResult {
+        value: json!({
+            "code": code,
+            "error": error,
+            "passed": false,
+            "provider_dispatched": false,
+            "rerun_required": rerun_required,
+            "runtime_memory_contract": contract.map(RuntimeMemoryContract::as_str),
+            "stage": stage.as_str(),
+        }),
+        success: false,
+    }
+}
+
 fn bind_claimed_stage_team_worker(
     repository: Arc<dyn RuntimeMemoryRepository>,
     tracker: golish_agent_kit::db_tracking::DbTracker,
@@ -5692,8 +5752,21 @@ where
         }));
     }
     Ok(company_controller_scheduler_result(
-        spec.kind, gaps, passed, pass_token,
+        spec.kind, gaps, passed, pass_token, true,
     ))
+}
+
+async fn company_controller_completion_scope_ids(ctx: &AgenticLoopContext<'_>) -> Vec<uuid::Uuid> {
+    let Some(repo) = ctx.events.db_tracker.and_then(|tracker| tracker.repo()) else {
+        return Vec::new();
+    };
+    let mut organization_ids = match ctx.harness_org_id {
+        Some(root) => repo.org_subtree_ids(root).await.unwrap_or_default(),
+        None => repo.in_scope_org_ids(None).await.unwrap_or_default(),
+    };
+    organization_ids.sort_unstable();
+    organization_ids.dedup();
+    organization_ids
 }
 
 async fn company_controller_aggregate_pass_token(
@@ -5736,11 +5809,27 @@ async fn company_controller_aggregate_pass_token(
         .filter(|token| !token.is_empty())
 }
 
+async fn completed_company_controller_replay(
+    ctx: &AgenticLoopContext<'_>,
+    stage: StageKind,
+) -> Option<ToolExecutionResult> {
+    let completed_scope = company_controller_completion_scope_ids(ctx).await;
+    let pass_token = company_controller_aggregate_pass_token(ctx, stage, &completed_scope).await?;
+    Some(company_controller_scheduler_result(
+        stage,
+        Vec::new(),
+        completed_scope.len(),
+        Some(pass_token),
+        false,
+    ))
+}
+
 fn company_controller_scheduler_result(
     stage: StageKind,
     gaps: Vec<Value>,
     passed: usize,
     pass_token: Option<String>,
+    provider_dispatched: bool,
 ) -> ToolExecutionResult {
     let success = gaps.is_empty() && pass_token.is_some();
     let closeout_claim = pass_token.as_ref().map(|token| {
@@ -5761,7 +5850,7 @@ fn company_controller_scheduler_result(
             "gaps": gaps,
             "passed": success,
             "pass_token": pass_token,
-            "provider_dispatched": true,
+            "provider_dispatched": provider_dispatched,
             "scheduler": "company_controller_v1",
             "stage": stage.as_str(),
             "summary": summary,
@@ -5846,6 +5935,24 @@ where
     } else {
         None
     };
+    if let Some(code) = company_stage_runtime_rejection_code(
+        stage,
+        persisted_runtime_contract,
+        spec.team_scheduler.is_some(),
+    ) {
+        tracing::warn!(
+            target: "harness::stage_run",
+            stage = %stage.as_str(),
+            runtime_memory_contract = persisted_runtime_contract.map(RuntimeMemoryContract::as_str),
+            code,
+            "Company Controller stage refused the retired specialist scheduler route"
+        );
+        return Ok(company_stage_runtime_rejection_result(
+            stage,
+            persisted_runtime_contract,
+            code,
+        ));
+    }
     let persisted_attack_contract = if matches!(
         stage,
         StageKind::AttackCandidate | StageKind::Verification
@@ -6037,6 +6144,14 @@ where
                     }
                 };
                 if let Some(team_seed) = team_seed {
+                    // This dispatch future is already large. Keep completion
+                    // queries heap-backed so unrelated agent-loop turns retain
+                    // their bounded test/runtime thread stack.
+                    if let Some(result) =
+                        Box::pin(completed_company_controller_replay(ctx, stage)).await
+                    {
+                        return Ok(result);
+                    }
                     let teams = match runtime_memory.seed_stage_team_runtime(team_seed).await {
                         Ok(teams) if !teams.is_empty() => teams,
                         Ok(_) => {
@@ -6241,6 +6356,22 @@ where
             wave_plan,
         )
         .await;
+    }
+
+    // Defense in depth: every admitted Company Controller path must have
+    // returned from the durable Team Scheduler above. Never let a future
+    // refactor revive the removed Main Agent -> per-org specialist runtime.
+    if stage_team_scheduler_admits_stage(stage) {
+        tracing::error!(
+            target: "harness::stage_run",
+            stage = %stage.as_str(),
+            "Company Controller stage reached the retired generic specialist loop"
+        );
+        return Ok(company_stage_runtime_rejection_result(
+            stage,
+            persisted_runtime_contract,
+            STAGE_TEAM_ROUTE_INVARIANT,
+        ));
     }
 
     // 2b. Engagement-org isolation (设计 2026-06-15-engagement-org-isolation):
@@ -8929,6 +9060,78 @@ mod tests {
         assert!(!stage_team_scheduler_admits_stage(StageKind::Reporting));
     }
 
+    #[test]
+    fn company_stages_never_fall_back_to_the_legacy_specialist_scheduler() {
+        for stage in [
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+            StageKind::Enumeration,
+            StageKind::VulnTriage,
+        ] {
+            assert_eq!(
+                company_stage_runtime_rejection_code(stage, None, true),
+                Some(STAGE_TEAM_V2_RERUN_REQUIRED)
+            );
+            for contract in [
+                RuntimeMemoryContract::LegacyV1,
+                RuntimeMemoryContract::DualWriteLegacyRead,
+                RuntimeMemoryContract::DualWriteV2Preferred,
+            ] {
+                assert_eq!(
+                    company_stage_runtime_rejection_code(stage, Some(contract), true),
+                    Some(STAGE_TEAM_V2_RERUN_REQUIRED),
+                    "{} must reject {} without provider dispatch",
+                    stage.as_str(),
+                    contract.as_str()
+                );
+            }
+            assert_eq!(
+                company_stage_runtime_rejection_code(
+                    stage,
+                    Some(RuntimeMemoryContract::V2Only),
+                    false,
+                ),
+                Some(STAGE_TEAM_POLICY_REQUIRED)
+            );
+            assert_eq!(
+                company_stage_runtime_rejection_code(
+                    stage,
+                    Some(RuntimeMemoryContract::V2Only),
+                    true,
+                ),
+                None
+            );
+        }
+
+        for stage in [StageKind::AttackCandidate, StageKind::Verification] {
+            assert_eq!(
+                company_stage_runtime_rejection_code(stage, None, false),
+                None,
+                "{} keeps its separate typed scheduler",
+                stage.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn non_v2_company_stage_rejection_is_typed_and_pre_dispatch() {
+        let result = company_stage_runtime_rejection_result(
+            StageKind::Enumeration,
+            Some(RuntimeMemoryContract::DualWriteV2Preferred),
+            STAGE_TEAM_V2_RERUN_REQUIRED,
+        );
+
+        assert!(!result.success);
+        assert_eq!(result.value["code"], STAGE_TEAM_V2_RERUN_REQUIRED);
+        assert_eq!(result.value["passed"], false);
+        assert_eq!(result.value["provider_dispatched"], false);
+        assert_eq!(result.value["rerun_required"], true);
+        assert_eq!(
+            result.value["runtime_memory_contract"],
+            RuntimeMemoryContract::DualWriteV2Preferred.as_str()
+        );
+    }
+
     fn candidate_manifest_fixture(
         observation: serde_json::Value,
     ) -> golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot {
@@ -9998,11 +10201,13 @@ mod tests {
             Vec::new(),
             1,
             Some(pass_token.clone()),
+            true,
         );
 
         assert!(result.success);
         assert_eq!(result.value["passed"], true);
         assert_eq!(result.value["pass_token"], pass_token);
+        assert_eq!(result.value["provider_dispatched"], true);
         assert_eq!(
             result.value["closeout_claim"],
             json!({
@@ -10011,6 +10216,23 @@ mod tests {
                 "summary": "server-derived-pass-token",
             })
         );
+    }
+
+    #[test]
+    fn company_controller_completed_replay_does_not_claim_provider_dispatch() {
+        let result = company_controller_scheduler_result(
+            StageKind::Enumeration,
+            Vec::new(),
+            2,
+            Some("operation-bound-token".to_string()),
+            false,
+        );
+
+        assert!(result.success);
+        assert_eq!(result.value["passed"], true);
+        assert_eq!(result.value["provider_dispatched"], false);
+        assert_eq!(result.value["team_units_passed"], 2);
+        assert_eq!(result.value["scheduler"], "company_controller_v1");
     }
 
     #[test]
