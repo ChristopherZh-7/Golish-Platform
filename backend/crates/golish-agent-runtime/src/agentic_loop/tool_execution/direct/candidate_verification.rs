@@ -22,6 +22,7 @@ const CANDIDATE_LEASE_TTL_SECS: i32 = 30;
 
 pub struct ClaimedCandidateVerifier {
     pub bound: BoundWorkerChainContext,
+    pub lease_owner: String,
     _supervisor: CandidateLeaseSupervisor,
 }
 
@@ -74,6 +75,9 @@ pub async fn claim_candidate_verifier(
             attempt_epoch: claimed.worker.attempt_epoch,
         },
         candidate_attempt: Some(claimed.candidate_attempt),
+        candidate_submit_only: claimed.submit_only,
+        return_on_first_durable_stage_submission: false,
+        stage_team_leader: None,
         chain_id: claimed.message_chain_id,
         session_id: tracker.session_uuid(),
         agent_type: "candidate_verifier".to_string(),
@@ -95,11 +99,12 @@ pub async fn claim_candidate_verifier(
     let supervisor = CandidateLeaseSupervisor::start(
         repository,
         bound.clone(),
-        lease_owner,
+        lease_owner.clone(),
         CANDIDATE_HEARTBEAT_INTERVAL_SECS,
     );
     Ok(Some(ClaimedCandidateVerifier {
         bound,
+        lease_owner,
         _supervisor: supervisor,
     }))
 }

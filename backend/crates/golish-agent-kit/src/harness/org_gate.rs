@@ -47,10 +47,23 @@ const ENUM_CONTENT_TECHNIQUES: [&str; 4] = [
     "GOLISH-ENUM-PARAM",
     "GOLISH-ENUM-JSAPI",
 ];
+const VULN_TRIAGE_TECHNIQUES: [&str; 10] = [
+    "WSTG-INPV-05",
+    "WSTG-INPV-01",
+    "WSTG-INPV-12",
+    "WSTG-ATHN-04",
+    "WSTG-ATHN-02",
+    "WSTG-SESS-02",
+    "WSTG-CONF-05",
+    "WSTG-CRYP-03",
+    "WSTG-INFO",
+    "GOLISH-NDAY",
+];
 const TRUSTED_ENUM_BLOCKED_SOURCE: &str = "enum_preflight_web_origins";
 const TRUSTED_ENUM_ROUTE_RECOVERY_BLOCKED_SOURCE: &str = "route_probe_paths";
 const TRUSTED_ENUM_COLLECTION_RECOVERY_BLOCKED_SOURCE: &str = "browser_collect_js_api";
 const TRUSTED_EAS_WEB_BLOCKED_SOURCE: &str = "eas_fingerprint_web_stack";
+const TRUSTED_VULN_ANONYMOUS_ACCESS_SOURCE: &str = "vuln_probe_anonymous_access";
 
 /// Collision-proof Target Intel organization coverage identity shared by the
 /// submit preview and the final per-org gate.
@@ -107,6 +120,21 @@ impl TargetIntelOrganizationContext {
     }
 }
 
+/// Resolve the collision-proof identity for the synthetic Target Intel
+/// organization row exposed by the coverage read model. Callers must still
+/// scope this to Target Intel; the target type and UUID check prevent a domain
+/// whose display value resembles an organization name from becoming an alias.
+pub fn target_intel_organization_asset_key(
+    target_type: Option<&str>,
+    target_id: Option<&str>,
+) -> Option<String> {
+    if target_type != Some("organization") {
+        return None;
+    }
+    let organization_id = target_id.and_then(|value| Uuid::parse_str(value).ok())?;
+    Some(format!("organization:{organization_id}"))
+}
+
 fn target_intel_deliverable_with_organization_aliases(
     deliverable: &StageDeliverable,
     organization_key: &str,
@@ -145,7 +173,8 @@ fn trusted_enumeration_blocked_source(technique: &str, source: Option<&str>) -> 
     }
 }
 
-pub type EnumerationCoverageAxis = (Vec<String>, Vec<(String, String)>);
+pub type ExactWebOriginCoverageAxis = (Vec<String>, Vec<(String, String)>);
+pub type EnumerationCoverageAxis = ExactWebOriginCoverageAxis;
 
 /// 一个 org 在某 stage 的裁决。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,12 +289,12 @@ fn target_intel_fact_asset_key(asset: &str) -> String {
     asset.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
-/// Merge the current run's provenance rows into gate facts. For Enumeration,
-/// current exact-origin `technique_outcomes` are the sole completion truth:
-/// legacy ledger/DB facts for all four axes are removed first, then this run's
-/// found/empty rows and non-terminal error/partial markers are projected. Partial
-/// reuses the Error sentinel, while the Enumeration spec makes Error non-terminal;
-/// missing/marker rows therefore cannot inherit a PASS from stale evidence.
+/// Merge the current run's provenance rows into gate facts. For Enumeration and
+/// Vuln Triage, current exact-origin `technique_outcomes` are the sole completion
+/// truth: legacy ledger/DB facts are removed first, then this run's rows are
+/// projected. Partial reuses the Error sentinel, while both stage specs make
+/// Error non-terminal; missing/marker rows therefore cannot inherit a PASS from
+/// stale evidence.
 pub fn apply_technique_outcome_rows(
     stage: StageKind,
     facts: &mut Vec<EvidenceFact>,
@@ -352,6 +381,8 @@ pub fn apply_technique_outcome_rows(
         };
     if stage == StageKind::Enumeration {
         facts.retain(|fact| !ENUM_CONTENT_TECHNIQUES.contains(&fact.technique.as_str()));
+    } else if stage == StageKind::VulnTriage {
+        facts.retain(|fact| !VULN_TRIAGE_TECHNIQUES.contains(&fact.technique.as_str()));
     } else if stage == StageKind::ExternalAttackSurface {
         // Raw ledger and business-table EAS facts are corroboration inputs only.
         // A terminal cell is re-added below solely from a fresh org/current-owner
@@ -373,6 +404,20 @@ pub fn apply_technique_outcome_rows(
             && *evidence_id <= 0
         {
             return None;
+        }
+        if stage == StageKind::VulnTriage {
+            if !VULN_TRIAGE_TECHNIQUES.contains(&technique.as_str())
+                || !vuln_outcome_source_is_trusted(technique, source.as_deref())
+            {
+                return None;
+            }
+            if matches!(
+                outcome.as_str(),
+                "found" | "empty" | "blocked" | "not_applicable"
+            ) && *evidence_id <= 0
+            {
+                return None;
+            }
         }
         if stage == StageKind::Enumeration
             && outcome == "blocked"
@@ -430,8 +475,10 @@ pub fn apply_technique_outcome_rows(
         {
             return None;
         }
-        let asset = if stage == StageKind::Enumeration
-            && ENUM_CONTENT_TECHNIQUES.contains(&technique.as_str())
+        let asset = if (stage == StageKind::Enumeration
+            && ENUM_CONTENT_TECHNIQUES.contains(&technique.as_str()))
+            || (stage == StageKind::VulnTriage
+                && VULN_TRIAGE_TECHNIQUES.contains(&technique.as_str()))
         {
             golish_pentest_domain::canonical_web_origin(asset)
                 .map(|origin| origin.key)
@@ -462,20 +509,20 @@ pub fn eas_cidr_range_outcome_is_self_corroborating(
             .is_some_and(|key| key.class == golish_pentest_domain::AssetClass::Cidr)
 }
 
-/// Enumeration completion is origin-keyed and comes only from the current
-/// technique outcome rows; provider/source terminal rows are host/source-level
-/// compatibility data and cannot close one of its four cells.
+/// Enumeration and Vuln Triage completion is origin-keyed and comes only from
+/// current, org-bound technique outcome rows; provider/source terminal rows are
+/// host/source-level compatibility data and cannot close their cells.
 pub fn stage_accepts_source_query_completion(stage: StageKind) -> bool {
-    stage != StageKind::Enumeration
+    !matches!(stage, StageKind::Enumeration | StageKind::VulnTriage)
 }
 
-/// EAS and Enumeration have strict freshness contracts: without a concrete
-/// stage start, presence-only rows from an earlier attempt in the same chat
-/// session must not be projected. Other stages retain their historical fallback.
+/// EAS, Enumeration, and Vuln Triage have strict freshness contracts: without
+/// a concrete stage start, presence-only rows from an earlier attempt in the
+/// same chat session must not be projected. Other stages retain their fallback.
 pub fn stage_accepts_outcome_projection(stage: StageKind, has_freshness_cutoff: bool) -> bool {
     !matches!(
         stage,
-        StageKind::ExternalAttackSurface | StageKind::Enumeration
+        StageKind::ExternalAttackSurface | StageKind::Enumeration | StageKind::VulnTriage
     ) || has_freshness_cutoff
 }
 
@@ -500,6 +547,32 @@ pub fn eas_service_not_applicable_from_port_outcomes(
                 && matches!(row.outcome.as_str(), "empty" | "not_applicable")
         })
         .map(|row| (row.asset.clone(), TECH_EAS_SERVICE_FP.to_string()))
+        .collect()
+}
+
+fn vuln_outcome_source_is_trusted(technique: &str, source: Option<&str>) -> bool {
+    if technique == "GOLISH-NDAY" {
+        source == Some("vuln_nuclei_fingerprint_targeted")
+    } else if technique == "WSTG-ATHN-04" {
+        source == Some(TRUSTED_VULN_ANONYMOUS_ACCESS_SOURCE)
+    } else if VULN_TRIAGE_TECHNIQUES.contains(&technique) {
+        source == Some("vuln_nuclei_general")
+    } else {
+        false
+    }
+}
+
+pub fn vuln_not_applicable_from_outcomes(rows: &[TechniqueOutcomeFact]) -> Vec<(String, String)> {
+    rows.iter()
+        .filter(|row| {
+            row.outcome == "not_applicable"
+                && row.evidence_id > 0
+                && vuln_outcome_source_is_trusted(&row.technique, row.source.as_deref())
+        })
+        .filter_map(|row| {
+            let origin = golish_pentest_domain::canonical_web_origin(&row.asset)?;
+            Some((origin.key, row.technique.clone()))
+        })
         .collect()
 }
 
@@ -638,6 +711,18 @@ pub fn stage_asset_axis_cutoff(
     }
 }
 
+fn stage_outcome_run_id(
+    stage: StageKind,
+    operation_id: Option<Uuid>,
+    session_id: &str,
+) -> Option<String> {
+    if stage == StageKind::VulnTriage {
+        operation_id.map(|operation_id| operation_id.to_string())
+    } else {
+        Some(session_id.to_string())
+    }
+}
+
 /// 对 `org_id` 的某 stage 交付跑一次注入了该 org DB 真值的权威 gate。
 ///
 /// 复用 orchestrator stage-close 的同一批 repo 查询（`in_scope_assets` /
@@ -712,19 +797,31 @@ pub async fn evaluate_org_stage_gate(
         .flatten();
     let asset_axis_cutoff = stage_asset_axis_cutoff(stage, effective_cutoff, effective_wave_cutoff);
     let freshness_cutoff = spec.freshness_window.then_some(effective_cutoff).flatten();
-    if stage == StageKind::Enumeration {
+    if matches!(stage, StageKind::Enumeration | StageKind::VulnTriage) {
         if session_id.trim().is_empty() {
             return GateResult::block(
-                vec!["enumeration gate requires a non-empty current run/session id".to_string()],
+                vec![format!(
+                    "{} gate requires a non-empty current run/session id",
+                    stage.as_str()
+                )],
+                Default::default(),
+            );
+        }
+        if stage == StageKind::VulnTriage && operation_id.is_none() {
+            return GateResult::block(
+                vec![
+                    "vuln_triage gate requires a trusted operation id for outcome identity"
+                        .to_string(),
+                ],
                 Default::default(),
             );
         }
         if freshness_cutoff.is_none() {
             return GateResult::block(
-                vec![
-                    "enumeration gate requires the current stage_started_at freshness cutoff; refusing an unscoped or stale denominator"
-                        .to_string(),
-                ],
+                vec![format!(
+                    "{} gate requires the current stage_started_at freshness cutoff; refusing an unscoped or stale denominator",
+                    stage.as_str()
+                )],
                 Default::default(),
             );
         }
@@ -917,20 +1014,20 @@ pub async fn evaluate_org_stage_gate(
         _ => Vec::new(),
     };
     // EAS PORT-empty outcomes may deterministically close SERVICE below. The
-    // Enumeration denominator is already exact HTTP(S) origins, so raw-host
-    // DNS-only context must never synthesize origin-level not_applicable cells.
+    // Enumeration/Vuln denominator is already exact HTTP(S) origins, so raw-host
+    // context must never synthesize origin-level not_applicable cells.
     let mut not_applicable_coverage: Vec<(String, String)> = Vec::new();
     if let Some((organization_context, _)) = target_intel_org_context.as_ref() {
         not_applicable_coverage.extend(organization_context.not_applicable_coverage());
     }
     let mut authoritative_coverage_axis = false;
-    if stage == StageKind::Enumeration {
+    if matches!(stage, StageKind::Enumeration | StageKind::VulnTriage) {
         let Some(oid) = org_id else {
             return GateResult::block(
-                vec![
-                    "enumeration gate requires an organization-bound exact-origin coverage snapshot"
-                        .to_string(),
-                ],
+                vec![format!(
+                    "{} gate requires an organization-bound exact-origin coverage snapshot",
+                    stage.as_str()
+                )],
                 Default::default(),
             );
         };
@@ -950,13 +1047,19 @@ pub async fn evaluate_org_stage_gate(
             Err(error) => {
                 return GateResult::block(
                     vec![format!(
-                        "enumeration exact-origin coverage snapshot failed: {error}"
+                        "{} exact-origin coverage snapshot failed: {error}",
+                        stage.as_str()
                     )],
                     Default::default(),
                 )
             }
         };
-        match validated_enumeration_axis_from_coverage_snapshot(&snapshot, oid, Some(session_id)) {
+        match validated_exact_web_origin_axis_from_coverage_snapshot(
+            &snapshot,
+            stage,
+            oid,
+            Some(session_id),
+        ) {
             Ok((assets, typed)) => {
                 authoritative_coverage_axis = true;
                 in_scope_assets = assets;
@@ -965,7 +1068,8 @@ pub async fn evaluate_org_stage_gate(
             Err(error) => {
                 return GateResult::block(
                     vec![format!(
-                        "enumeration exact-origin coverage snapshot is invalid: {error}"
+                        "{} exact-origin coverage snapshot is invalid: {error}",
+                        stage.as_str()
                     )],
                     Default::default(),
                 )
@@ -1000,6 +1104,11 @@ pub async fn evaluate_org_stage_gate(
         // Intel's org-bound closeout instead uses org-scoped fresh business truth
         // for Found and org+run source/outcome rows for empty/error/blocked.
         Vec::new()
+    } else if stage == StageKind::VulnTriage {
+        // The Nuclei wrappers self-land fresh, org-bound, run-scoped technique
+        // outcomes. Session-wide legacy shell evidence must not close an exact
+        // origin cell for a sibling organization or a previous attempt.
+        Vec::new()
     } else {
         match repo.evidence_facts_for_session(session_id).await {
             Ok(rows) => facts_from_rows(rows),
@@ -1015,7 +1124,7 @@ pub async fn evaluate_org_stage_gate(
             Err(_) => Vec::new(),
         }
     };
-    if !in_scope_assets.is_empty() {
+    if !in_scope_assets.is_empty() && stage != StageKind::VulnTriage {
         match repo
             .db_truth_facts(org_id, &in_scope_assets, freshness_cutoff)
             .await
@@ -1036,15 +1145,27 @@ pub async fn evaluate_org_stage_gate(
 
     // #4/E3 (设计 2026-06-23-technique-outcomes-provenance)：从当前
     // technique_outcomes 投影 facts（per-org fan-out gate；与 execute.rs 主路径同源）。
-    // Enumeration 会先清掉四轴兼容 facts，且缺 freshness cutoff 时 fail-closed；其他
-    // stage 保持 additive union。org=None = 跳过。
-    let outcome_rows = match org_id {
-        Some(oid) if stage_accepts_outcome_projection(stage, freshness_cutoff.is_some()) => {
-            repo.technique_outcome_facts_fresh(oid, session_id, freshness_cutoff)
+    // Enumeration/Vuln 会先清掉兼容 facts，且缺 freshness cutoff 时
+    // fail-closed；其他 stage 保持 additive union。org=None = 跳过。
+    let outcome_run_id = stage_outcome_run_id(stage, operation_id, session_id);
+    let outcome_rows = match (org_id, outcome_run_id.as_deref()) {
+        (Some(oid), Some(outcome_run_id))
+            if stage_accepts_outcome_projection(stage, freshness_cutoff.is_some()) =>
+        {
+            if stage == StageKind::VulnTriage {
+                repo.technique_outcome_facts_fresh_with_evidence_session(
+                    oid,
+                    outcome_run_id,
+                    session_id,
+                    freshness_cutoff,
+                )
                 .await
+            } else {
+                repo.technique_outcome_facts_fresh(oid, outcome_run_id, freshness_cutoff)
+                    .await
+            }
         }
-        None => Vec::new(),
-        Some(_) => Vec::new(),
+        _ => Vec::new(),
     };
     let eas_origin_barrier = if stage == StageKind::ExternalAttackSurface {
         let Some(organization_id) = org_id else {
@@ -1087,6 +1208,8 @@ pub async fn evaluate_org_stage_gate(
     if stage == StageKind::ExternalAttackSurface {
         not_applicable_coverage
             .extend(eas_service_not_applicable_from_port_outcomes(&outcome_rows));
+    } else if stage == StageKind::VulnTriage {
+        not_applicable_coverage.extend(vuln_not_applicable_from_outcomes(&outcome_rows));
     }
     apply_technique_outcome_rows(stage, &mut facts, &outcome_rows);
 
@@ -1187,9 +1310,9 @@ fn enumeration_eas_live_web_worklist(
     (!worklist.is_empty()).then_some(worklist)
 }
 
-pub fn enumeration_axis_from_coverage_snapshot(
+pub fn exact_web_origin_axis_from_coverage_snapshot(
     snapshot: &serde_json::Value,
-) -> EnumerationCoverageAxis {
+) -> ExactWebOriginCoverageAxis {
     let mut assets = Vec::new();
     let mut typed_assets = Vec::new();
     for row in snapshot
@@ -1238,16 +1361,25 @@ pub fn enumeration_axis_from_coverage_snapshot(
     (assets, typed_assets)
 }
 
-/// Validate the trusted Enumeration snapshot envelope before deriving its exact
-/// origin axis. Submit preview and final per-org gate must reject the same
-/// stage/org/session mismatch or malformed assets payload.
-pub fn validated_enumeration_axis_from_coverage_snapshot(
+/// Backward-compatible Enumeration name for callers that consume the same
+/// shared exact-origin axis outside the final gate.
+pub fn enumeration_axis_from_coverage_snapshot(
     snapshot: &serde_json::Value,
+) -> EnumerationCoverageAxis {
+    exact_web_origin_axis_from_coverage_snapshot(snapshot)
+}
+
+/// Validate a trusted exact-origin stage snapshot before deriving its axis.
+/// Worklist preview and final per-org gate must reject the same stage/org/run
+/// mismatch or malformed assets payload.
+pub fn validated_exact_web_origin_axis_from_coverage_snapshot(
+    snapshot: &serde_json::Value,
+    expected_stage: StageKind,
     expected_org_id: Uuid,
     expected_session_id: Option<&str>,
-) -> Result<EnumerationCoverageAxis, &'static str> {
-    if snapshot.get("stage").and_then(serde_json::Value::as_str) != Some("enumeration") {
-        return Err("stage is not enumeration");
+) -> Result<ExactWebOriginCoverageAxis, &'static str> {
+    if snapshot.get("stage").and_then(serde_json::Value::as_str) != Some(expected_stage.as_str()) {
+        return Err("stage does not match the requested exact-origin stage");
     }
     if snapshot
         .get("organization_id")
@@ -1271,7 +1403,23 @@ pub fn validated_enumeration_axis_from_coverage_snapshot(
     {
         return Err("assets is not an authoritative array");
     }
-    Ok(enumeration_axis_from_coverage_snapshot(snapshot))
+    Ok(exact_web_origin_axis_from_coverage_snapshot(snapshot))
+}
+
+/// Validate the trusted Enumeration snapshot envelope before deriving its exact
+/// origin axis. Submit preview and final per-org gate must reject the same
+/// stage/org/session mismatch or malformed assets payload.
+pub fn validated_enumeration_axis_from_coverage_snapshot(
+    snapshot: &serde_json::Value,
+    expected_org_id: Uuid,
+    expected_session_id: Option<&str>,
+) -> Result<EnumerationCoverageAxis, &'static str> {
+    validated_exact_web_origin_axis_from_coverage_snapshot(
+        snapshot,
+        StageKind::Enumeration,
+        expected_org_id,
+        expected_session_id,
+    )
 }
 
 #[cfg(test)]
@@ -1472,6 +1620,211 @@ mod tests {
                 "https://current.example.com:443".to_string(),
                 "url".to_string()
             )]
+        );
+    }
+
+    #[test]
+    fn vuln_triage_final_gate_uses_exact_origin_snapshot_axis() {
+        use golish_pentest::evidence_ledger::EvidenceAuditId;
+
+        let org_id = Uuid::new_v4();
+        let target_id = Uuid::new_v4();
+        let session_id = "vuln-run-current";
+        let exact_origin = "https://app.example.com:443";
+        let snapshot = serde_json::json!({
+            "stage": "vuln_triage",
+            "organization_id": org_id,
+            "session_id": session_id,
+            "assets": [{
+                "target_id": target_id,
+                "value": exact_origin,
+                "target_type": "url",
+                "exact_web_origin": true,
+                "coverage": []
+            }]
+        });
+        let (assets, typed_assets) = validated_exact_web_origin_axis_from_coverage_snapshot(
+            &snapshot,
+            StageKind::VulnTriage,
+            org_id,
+            Some(session_id),
+        )
+        .expect("trusted Vuln snapshot");
+        assert_eq!(assets, vec![exact_origin.to_string()]);
+        assert_eq!(
+            typed_assets,
+            vec![(exact_origin.to_string(), "url".to_string())]
+        );
+
+        let outcome_rows = VULN_TRIAGE_TECHNIQUES
+            .iter()
+            .enumerate()
+            .map(|(index, technique)| {
+                TechniqueOutcomeFact::new(
+                    "HTTPS://APP.EXAMPLE.COM/login",
+                    *technique,
+                    if matches!(*technique, "GOLISH-NDAY" | "WSTG-ATHN-04") {
+                        "not_applicable"
+                    } else {
+                        "empty"
+                    },
+                    100 + index as i64,
+                    Some(
+                        match *technique {
+                            "GOLISH-NDAY" => "vuln_nuclei_fingerprint_targeted",
+                            "WSTG-ATHN-04" => TRUSTED_VULN_ANONYMOUS_ACCESS_SOURCE,
+                            _ => "vuln_nuclei_general",
+                        }
+                        .to_string(),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut facts = vec![EvidenceFact {
+            asset: "app.example.com".to_string(),
+            technique: "WSTG-CONF-05".to_string(),
+            outcome: EvidenceOutcome::Found,
+            evidence_id: 7,
+        }];
+        let not_applicable_coverage = vuln_not_applicable_from_outcomes(&outcome_rows);
+        apply_technique_outcome_rows(StageKind::VulnTriage, &mut facts, &outcome_rows);
+        assert_eq!(facts.len(), VULN_TRIAGE_TECHNIQUES.len() - 2);
+        assert!(facts.iter().all(|fact| fact.asset == exact_origin));
+        assert!(facts.iter().all(|fact| fact.evidence_id >= 100));
+        assert_eq!(
+            not_applicable_coverage,
+            vec![
+                (exact_origin.to_string(), "WSTG-ATHN-04".to_string()),
+                (exact_origin.to_string(), "GOLISH-NDAY".to_string()),
+            ]
+        );
+
+        let evidence_refs = (100..110).map(EvidenceAuditId::new).collect::<Vec<_>>();
+        let deliverable = StageDeliverable {
+            stage_id: StageKind::VulnTriage.as_str().to_string(),
+            stage_run_id: Uuid::new_v4(),
+            claims: Vec::new(),
+            evidence_refs: evidence_refs.clone(),
+            skipped_checks: Vec::new(),
+            findings: Vec::new(),
+            required_checks_done: Vec::new(),
+            coverage: Vec::new(),
+            candidates: Vec::new(),
+            candidate_decisions: Vec::new(),
+        };
+        let context = GateContextBuilder::new()
+            .typed_assets(typed_assets)
+            .extend_evidence_facts(facts)
+            .not_applicable_coverage(not_applicable_coverage)
+            .expected_techniques(Some(VULN_TRIAGE_TECHNIQUES.map(str::to_string).to_vec()))
+            .authoritative_in_scope_assets(Some(assets))
+            .build();
+        let spec = load_embedded_stage_spec(StageKind::VulnTriage).unwrap();
+
+        let result = validate_stage_gate_with_context(&deliverable, &spec, None, None, &context);
+
+        assert!(
+            result.allowed,
+            "exact-origin Nuclei outcomes should close the final Vuln gate: {:?}",
+            result.reasons
+        );
+    }
+
+    #[test]
+    fn vuln_triage_outcome_run_identity_uses_operation_not_chat_session() {
+        let operation_id = Uuid::new_v4();
+        let chat_session_id = "chat-session-is-not-the-operation";
+        let operation_run_id = operation_id.to_string();
+
+        assert_eq!(
+            stage_outcome_run_id(StageKind::VulnTriage, Some(operation_id), chat_session_id,)
+                .as_deref(),
+            Some(operation_run_id.as_str())
+        );
+        assert_eq!(
+            stage_outcome_run_id(StageKind::Enumeration, Some(operation_id), chat_session_id)
+                .as_deref(),
+            Some(chat_session_id)
+        );
+        assert_eq!(
+            stage_outcome_run_id(StageKind::VulnTriage, None, chat_session_id),
+            None,
+            "Vuln must fail closed without a trusted operation identity"
+        );
+    }
+
+    #[test]
+    fn vuln_not_applicable_requires_exact_origin_real_evidence_and_targeted_source() {
+        let valid = TechniqueOutcomeFact::new(
+            "https://app.example.com/login",
+            "GOLISH-NDAY",
+            "not_applicable",
+            91,
+            Some("vuln_nuclei_fingerprint_targeted".to_string()),
+        );
+        assert_eq!(
+            vuln_not_applicable_from_outcomes(std::slice::from_ref(&valid)),
+            vec![(
+                "https://app.example.com:443".to_string(),
+                "GOLISH-NDAY".to_string(),
+            )]
+        );
+
+        for forged in [
+            TechniqueOutcomeFact::new(
+                &valid.asset,
+                &valid.technique,
+                &valid.outcome,
+                0,
+                valid.source.clone(),
+            ),
+            TechniqueOutcomeFact::new(
+                &valid.asset,
+                &valid.technique,
+                &valid.outcome,
+                valid.evidence_id,
+                Some("vuln_nuclei_general".to_string()),
+            ),
+            TechniqueOutcomeFact::new(
+                "app.example.com",
+                &valid.technique,
+                &valid.outcome,
+                valid.evidence_id,
+                valid.source.clone(),
+            ),
+        ] {
+            assert!(vuln_not_applicable_from_outcomes(&[forged]).is_empty());
+        }
+    }
+
+    #[test]
+    fn vuln_anonymous_access_not_applicable_requires_its_dedicated_wrapper() {
+        let exact_origin = "https://app.example.com:443";
+        let valid = TechniqueOutcomeFact::new(
+            exact_origin,
+            "WSTG-ATHN-04",
+            "not_applicable",
+            92,
+            Some("vuln_probe_anonymous_access".to_string()),
+        );
+
+        assert_eq!(
+            vuln_not_applicable_from_outcomes(std::slice::from_ref(&valid)),
+            vec![(
+                exact_origin.to_string(),
+                "WSTG-ATHN-04".to_string(),
+            )],
+            "the final gate must consume the same dedicated-wrapper truth as the worklist read model"
+        );
+        assert!(
+            vuln_not_applicable_from_outcomes(&[TechniqueOutcomeFact::new(
+                exact_origin,
+                "WSTG-ATHN-04",
+                "not_applicable",
+                92,
+                Some("vuln_nuclei_general".to_string()),
+            )])
+            .is_empty()
         );
     }
 
@@ -2339,6 +2692,23 @@ mod tests {
         assert_eq!(key, "organization:00000000-0000-0000-0000-000000000007");
         assert_ne!(key, "moresec.cn");
         assert!(!key.ends_with(".moresec.cn"));
+    }
+
+    #[test]
+    fn organization_snapshot_identity_requires_exact_type_and_uuid() {
+        let organization_id = "00000000-0000-0000-0000-000000000007";
+        assert_eq!(
+            target_intel_organization_asset_key(Some("organization"), Some(organization_id)),
+            Some(format!("organization:{organization_id}"))
+        );
+        assert_eq!(
+            target_intel_organization_asset_key(Some("domain"), Some(organization_id)),
+            None
+        );
+        assert_eq!(
+            target_intel_organization_asset_key(Some("organization"), Some("not-a-uuid")),
+            None
+        );
     }
 
     #[test]

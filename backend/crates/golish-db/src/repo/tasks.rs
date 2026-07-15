@@ -340,14 +340,32 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                                          AND unit.stage_execution_id=active_execution.id
                                          AND (
                                              NULLIF(BTRIM(unit.specialist),'') IS NULL
-                                             OR (
-                                                 SELECT COUNT(*) FROM stage_worker_runs worker_count
-                                                 WHERE worker_count.operation_id=os.operation_id
-                                                   AND worker_count.stage_execution_id=active_execution.id
-                                                   AND worker_count.stage_run_unit_id=unit.id
-                                                   AND worker_count.organization_id=unit.organization_id
-                                                   AND worker_count.specialist=unit.specialist
-                                             ) <> 1
+                                             OR NOT (
+                                                 (
+                                                     NOT EXISTS (
+                                                         SELECT 1 FROM stage_team_plans team_plan
+                                                         WHERE team_plan.stage_run_unit_id=unit.id
+                                                     )
+                                                     AND (
+                                                         SELECT COUNT(*) FROM stage_worker_runs worker_count
+                                                         WHERE worker_count.operation_id=os.operation_id
+                                                           AND worker_count.stage_execution_id=active_execution.id
+                                                           AND worker_count.stage_run_unit_id=unit.id
+                                                           AND worker_count.organization_id=unit.organization_id
+                                                           AND worker_count.specialist=unit.specialist
+                                                     ) = 1
+                                                 )
+                                                 OR
+                                                 (
+                                                     SELECT COUNT(*) FROM stage_team_plans team_plan
+                                                     WHERE team_plan.operation_id=os.operation_id
+                                                       AND team_plan.stage_execution_id=active_execution.id
+                                                       AND team_plan.stage_run_unit_id=unit.id
+                                                       AND team_plan.scope_snapshot_id=snapshot.id
+                                                       AND team_plan.organization_id=unit.organization_id
+                                                       AND team_plan.stage_kind=unit.stage_kind
+                                                 ) = 1
+                                             )
                                          )
                                    )
                                    AND NOT EXISTS (
@@ -364,7 +382,35 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                                              unit.scope_snapshot_id<>snapshot.id
                                              OR unit.stage_kind<>os.current_stage
                                              OR NULLIF(BTRIM(unit.specialist),'') IS NULL
-                                             OR unit.specialist<>worker.specialist
+                                             OR (
+                                                 (
+                                                     NOT EXISTS (
+                                                         SELECT 1 FROM stage_team_plans team_plan
+                                                         WHERE team_plan.stage_run_unit_id=unit.id
+                                                     )
+                                                     AND unit.specialist<>worker.specialist
+                                                 )
+                                                 OR
+                                                 (
+                                                     EXISTS (
+                                                         SELECT 1 FROM stage_team_plans team_plan
+                                                         WHERE team_plan.stage_run_unit_id=unit.id
+                                                     )
+                                                     AND NOT EXISTS (
+                                                         SELECT 1
+                                                           FROM stage_work_items team_item
+                                                           JOIN stage_team_plans team_plan
+                                                             ON team_plan.id=team_item.team_plan_id
+                                                          WHERE team_plan.stage_run_unit_id=unit.id
+                                                            AND team_item.id=worker.work_item_id
+                                                            AND team_item.operation_id=worker.operation_id
+                                                            AND team_item.stage_execution_id=worker.stage_execution_id
+                                                            AND team_item.stage_run_unit_id=worker.stage_run_unit_id
+                                                            AND team_item.organization_id=worker.organization_id
+                                                            AND team_item.role=worker.specialist
+                                                     )
+                                                 )
+                                             )
                                              OR (
                                                  worker.message_chain_id IS NULL
                                                  AND worker.status<>'queued'
@@ -377,6 +423,8 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                                                        AND bound_chain.session_id=tasks.session_id
                                                        AND bound_chain.task_id=tasks.id
                                                        AND bound_chain.agent=(CASE
+                                                           WHEN worker.work_item_id IS NOT NULL
+                                                               THEN 'pentester'::agent_type
                                                            WHEN worker.specialist='reporter'
                                                                THEN 'reporter'::agent_type
                                                            WHEN worker.specialist IN (
@@ -412,6 +460,14 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                                                      OR (
                                                          worker.status='recovery_required'
                                                          AND worker.active_tool_call_id IS NOT NULL
+                                                     )
+                                                     OR (
+                                                         worker.work_item_id IS NOT NULL
+                                                         AND worker.status IN (
+                                                             'passed','failed','superseded','exhausted'
+                                                         )
+                                                         AND worker.terminal_at IS NOT NULL
+                                                         AND worker.active_tool_call_id IS NULL
                                                      )
                                                  )
                                              )
@@ -856,7 +912,10 @@ mod tests {
             sql.contains("EXISTS") && sql.contains("'graph_flow'"),
             "must require a checkpoint to be resumable: {sql}"
         );
-        assert!(!sql.contains("'failed'"), "pause must not fail: {sql}");
+        assert!(
+            !sql.contains("SET status = 'failed'"),
+            "pause must not fail the task even though the relational recoverability predicate may inspect failed child workers: {sql}"
+        );
     }
 
     /// Both startup reaper branches must share one fail-closed checkpoint

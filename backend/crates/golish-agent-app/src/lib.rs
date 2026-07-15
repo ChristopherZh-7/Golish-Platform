@@ -20,6 +20,10 @@
 // `State` handles and many optional request fields straight from the frontend.
 // Mirrors the same crate-level allow in `golish` and `golish-pentest-app`.
 #![allow(clippy::too_many_arguments)]
+// The command crate composes a large Tauri handler tuple. Stage-team and
+// Candidate-recovery commands extend that compile-time type only; they do not
+// add runtime recursion.
+#![recursion_limit = "256"]
 
 pub mod ai;
 pub mod conversation_store;

@@ -82,6 +82,138 @@ fn custom_http_client_verb_helpers() {
 }
 
 #[test]
+fn candidate_api_preserves_custom_client_receiver_and_exact_span() {
+    let src = "const admin = axios.create({ baseURL: '/admin-api' });admin.get('/users');";
+
+    let candidates = extract_candidates_from_source("app.js", src);
+
+    assert_eq!(candidates.len(), 1);
+    let candidate = &candidates[0];
+    assert_eq!(candidate.endpoint.method, "GET");
+    assert_eq!(candidate.endpoint.path, "/users");
+    assert_eq!(candidate.call.callee, "admin.get");
+    assert_eq!(candidate.call.receiver.as_deref(), Some("admin"));
+    assert_eq!(candidate.call.span.line, 1);
+    assert_eq!(candidate.call.span.column, src.find("admin.get").unwrap());
+    assert_eq!(
+        &src[candidate.call.span.start_byte..candidate.call.span.end_byte],
+        "admin.get('/users'"
+    );
+}
+
+#[test]
+fn candidate_api_distinguishes_minified_same_line_calls_by_byte_span() {
+    let src = "admin.get('/users');open.get('/users');";
+
+    let candidates = extract_candidates_from_source("app.js", src);
+
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].call.receiver.as_deref(), Some("admin"));
+    assert_eq!(candidates[1].call.receiver.as_deref(), Some("open"));
+    assert_eq!(candidates[0].call.span.line, 1);
+    assert_eq!(candidates[1].call.span.line, 1);
+    assert_ne!(
+        candidates[0].call.span.start_byte,
+        candidates[1].call.span.start_byte
+    );
+    assert_eq!(
+        &src[candidates[0].call.span.start_byte..candidates[0].call.span.end_byte],
+        "admin.get('/users'"
+    );
+    assert_eq!(
+        &src[candidates[1].call.span.start_byte..candidates[1].call.span.end_byte],
+        "open.get('/users'"
+    );
+}
+
+#[test]
+fn candidate_file_report_keeps_occurrences_while_legacy_report_stays_compatible() {
+    let files = [
+        ("a.js", "admin.get('/users')"),
+        ("b.js", "open.get('/users')"),
+    ];
+
+    let candidate_report =
+        extract_candidates_from_files(files.iter().map(|(path, source)| (*path, *source)));
+    let legacy_report = extract_from_files(files.iter().map(|(path, source)| (*path, *source)));
+
+    assert_eq!(candidate_report.candidates.len(), 2);
+    assert_eq!(candidate_report.unique, 1);
+    assert_eq!(legacy_report.endpoints.len(), 2);
+    assert_eq!(legacy_report.unique, 1);
+    assert_eq!(
+        candidate_report
+            .candidates
+            .iter()
+            .map(|candidate| &candidate.endpoint.path)
+            .collect::<Vec<_>>(),
+        legacy_report
+            .endpoints
+            .iter()
+            .map(|endpoint| &endpoint.path)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn candidate_api_preserves_full_member_chain_without_changing_legacy_api() {
+    let source = concat!(
+        "const api=axios.create({baseURL:'/local'});",
+        "this.api.get('/wrong');services.api.post('/also-wrong');",
+        "api.get('/right');"
+    );
+
+    let candidates = extract_candidates_from_source("app.js", source);
+    let legacy = extract_from_source("app.js", source);
+
+    assert_eq!(candidates.len(), 3);
+    assert_eq!(candidates[0].call.receiver.as_deref(), Some("this.api"));
+    assert_eq!(candidates[0].call.callee, "this.api.get");
+    assert_eq!(candidates[0].endpoint.path, "/wrong");
+    assert_eq!(candidates[1].call.receiver.as_deref(), Some("services.api"));
+    assert_eq!(candidates[1].call.callee, "services.api.post");
+    assert_eq!(candidates[1].endpoint.path, "/also-wrong");
+    assert_eq!(candidates[2].call.receiver.as_deref(), Some("api"));
+    assert_eq!(candidates[2].endpoint.path, "/right");
+    assert_eq!(legacy.len(), 1);
+    assert_eq!(legacy[0].path, "/right");
+}
+
+#[test]
+fn candidate_api_keeps_optional_member_chain_opaque() {
+    let source = concat!(
+        "const api=axios.create({baseURL:'/local'});",
+        "this?.api.get('/wrong');api.get('/right');"
+    );
+
+    let candidates = extract_candidates_from_source("app.js", source);
+    let legacy = extract_from_source("app.js", source);
+
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].call.receiver.as_deref(), Some("this?.api"));
+    assert_eq!(candidates[0].call.callee, "this?.api.get");
+    assert_eq!(candidates[1].call.receiver.as_deref(), Some("api"));
+    assert_eq!(legacy.len(), 1);
+    assert_eq!(legacy[0].path, "/right");
+}
+
+#[test]
+fn candidate_api_adds_relative_custom_client_paths_without_changing_legacy_api() {
+    let source = "const api=axios.create({baseURL:'/v2'});api.get('users');";
+
+    let candidates = extract_candidates_from_source("app.js", source);
+    let legacy = extract_from_source("app.js", source);
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].call.receiver.as_deref(), Some("api"));
+    assert_eq!(candidates[0].endpoint.path, "users");
+    assert!(
+        legacy.is_empty(),
+        "legacy Endpoint contract remains root-relative"
+    );
+}
+
+#[test]
 fn axios_verb_helpers_are_not_double_emitted_by_generic_client_pattern() {
     let src = r#"
             axios.get('/api/me');

@@ -21,6 +21,21 @@ from pathlib import Path
 
 DEFAULT_SMOKE_ROUTE_PROBE_MAX_RUNTIME_MS = 30_000
 DEFAULT_SMOKE_ROUTE_PROBE_MAX_REQUESTS = 800
+SMOKE_STAGE_ORDER = (
+    "scoping",
+    "target_intel",
+    "external_attack_surface",
+    "enumeration",
+    "vuln_triage",
+    "attack_candidate",
+    "verification",
+    "access_validation",
+    "internal_discovery",
+    "objective_pathing",
+    "objective_simulation",
+    "reporting",
+    "cleanup",
+)
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -120,6 +135,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not pass --auto-approve to the runner.",
     )
     parser.add_argument(
+        "--approve-phase-boundaries",
+        action="store_true",
+        help=(
+            "Explicitly approve profile-defined phase confirmations so a multi-phase "
+            "headless slice can cross the same boundary the GUI renders as a Confirm card."
+        ),
+    )
+    parser.add_argument(
         "--include-subsidiaries",
         action="store_true",
         help="Pass through stage-run subsidiary scope mode.",
@@ -195,8 +218,22 @@ def default_objective(args: argparse.Namespace, stage_args: list[str], targets: 
 
 
 def includes_enumeration(args: argparse.Namespace) -> bool:
-    requested = {args.only_stage, args.to_stage, args.stage}
-    return "enumeration" in requested
+    if args.only_stage:
+        return args.only_stage == "enumeration"
+
+    terminal = args.to_stage or args.stage
+    if terminal is None:
+        return False
+    entry = args.from_stage or "scoping"
+    try:
+        entry_index = SMOKE_STAGE_ORDER.index(entry)
+        enumeration_index = SMOKE_STAGE_ORDER.index("enumeration")
+        terminal_index = SMOKE_STAGE_ORDER.index(terminal)
+    except ValueError:
+        # The Rust CLI owns stage validation. Unknown wrapper input must not
+        # accidentally claim a route-probe budget for a route we cannot prove.
+        return False
+    return entry_index <= enumeration_index <= terminal_index
 
 
 def route_probe_budget(args: argparse.Namespace) -> tuple[int, int] | None:
@@ -252,6 +289,8 @@ def main() -> int:
         cmd.extend(["--model", args.model])
     if not args.no_auto_approve:
         cmd.append("--auto-approve")
+    if args.approve_phase_boundaries:
+        cmd.append("--approve-phase-boundaries")
     if args.keep_ephemeral_db:
         cmd.append("--keep-ephemeral-db")
     if args.json:

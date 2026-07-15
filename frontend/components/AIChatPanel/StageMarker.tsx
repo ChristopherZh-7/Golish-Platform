@@ -35,7 +35,7 @@ export function prettyStageName(id: string): string {
 }
 
 function iconFor(kind?: string, status?: string) {
-  if (status === "waiting_approval") return PauseCircle;
+  if (status === "waiting_approval" || status === "waiting_target_scope") return PauseCircle;
   if (kind === "stage_completed" || status === "finished") return Flag;
   if (kind === "task_resumed") return RotateCcw;
   if (kind === "subtask_completed") return Check;
@@ -57,7 +57,7 @@ export function StageMarker({ message }: { message: ChatMessage }) {
   const ev = message.stageEvent;
   const label = ev?.label ?? message.content;
   const detail = ev?.detail;
-  const isWaiting = ev?.status === "waiting_approval";
+  const isWaiting = ev?.status === "waiting_approval" || ev?.status === "waiting_target_scope";
   const isStage = ev?.kind === "stage_completed";
   const isStep = ev?.kind === "subtask_completed";
   const [expanded, setExpanded] = useState(false);
@@ -66,7 +66,7 @@ export function StageMarker({ message }: { message: ChatMessage }) {
   if (!label) return null;
 
   // Prominence: stage milestones stand out (bold green flag); step completions
-  // recede (muted, smaller); waiting-for-approval is amber; everything else
+  // recede (muted, smaller); human waiting states are amber; everything else
   // keeps the neutral default.
   const pillClass = isWaiting
     ? "border-[#e0af68]/40 text-[#e0af68] bg-[#e0af68]/5 px-2.5 py-1 text-[11px] font-medium"

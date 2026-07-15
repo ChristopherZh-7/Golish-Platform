@@ -114,7 +114,6 @@ pub struct BridgeToolSelection {
     pub vault: bool,
     pub browser_collect_js_api: bool,
     pub js_extract_apis: bool,
-    pub auth_probe: bool,
     /// `submit_stage_deliverable` — the deterministic harness deliverable
     /// channel. Deliberately NOT part of [`Self::all_enabled`]: it is only
     /// meaningful while a harness stage is active (task mode), so chat mode
@@ -147,7 +146,6 @@ impl BridgeToolSelection {
             vault: true,
             browser_collect_js_api: true,
             js_extract_apis: true,
-            auth_probe: true,
             // Harness-stage-only; opted into per-mode (task) rather than via the
             // generic "all bridge tools" set so chat mode never exposes it.
             submit_stage_deliverable: false,
@@ -171,7 +169,6 @@ impl BridgeToolSelection {
             vault: false,
             browser_collect_js_api: false,
             js_extract_apis: false,
-            auth_probe: false,
             submit_stage_deliverable: false,
             start_operation: false,
             wait_for_background_jobs: false,
@@ -216,9 +213,6 @@ impl BridgeToolSelection {
         }
         if self.js_extract_apis {
             out.push("js_extract_apis");
-        }
-        if self.auth_probe {
-            out.push("auth_probe");
         }
         if self.submit_stage_deliverable {
             out.push("submit_stage_deliverable");
@@ -310,7 +304,6 @@ mod tests {
                 "vault",
                 "browser_collect_js_api",
                 "js_extract_apis",
-                "auth_probe",
                 "wait_for_background_jobs",
                 "check_job",
                 "kill_job",

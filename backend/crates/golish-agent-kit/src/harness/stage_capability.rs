@@ -346,27 +346,51 @@ const CAPABILITIES: &[StageCapabilitySpec] = &[
         runner: CapabilityRunnerKind::ExistingDirectTool,
     },
     StageCapabilitySpec {
-        id: "vuln.run_formulaic_sweep",
-        label: "Run formulaic vulnerability sweep",
+        id: "vuln.nuclei_general",
+        label: "Run controlled general Nuclei scan",
         stage: StageKind::VulnTriage,
         techniques: &[
             "WSTG-INPV-05",
             "WSTG-INPV-01",
             "WSTG-INPV-12",
-            "WSTG-ATHZ-04",
             "WSTG-ATHN-02",
             "WSTG-SESS-02",
             "WSTG-CONF-05",
             "WSTG-CRYP-03",
             "WSTG-INFO",
-            "GOLISH-NDAY",
         ],
-        tool_names: &["vuln_run_formulaic_sweep"],
-        allowed_tool_types: &["vuln_run_formulaic_sweep"],
+        tool_names: &["vuln_nuclei_general"],
+        allowed_tool_types: &["vuln_nuclei_general"],
         risk: CapabilityRisk::Active,
-        batchable: true,
-        max_batch: 50,
-        writes: &["audit_log", "technique_outcomes", "attack_candidate_seeds"],
+        batchable: false,
+        max_batch: 1,
+        writes: &["audit_log", "technique_outcomes"],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
+        id: "vuln.anonymous_access",
+        label: "Probe anonymous access to selected endpoints",
+        stage: StageKind::VulnTriage,
+        techniques: &["WSTG-ATHN-04"],
+        tool_names: &["vuln_probe_anonymous_access"],
+        allowed_tool_types: &["vuln_probe_anonymous_access"],
+        risk: CapabilityRisk::Active,
+        batchable: false,
+        max_batch: 1,
+        writes: &["audit_log", "technique_outcomes"],
+        runner: CapabilityRunnerKind::BackendWrapper,
+    },
+    StageCapabilitySpec {
+        id: "vuln.nuclei_fingerprint_targeted",
+        label: "Run fingerprint-targeted Nuclei templates",
+        stage: StageKind::VulnTriage,
+        techniques: &["GOLISH-NDAY"],
+        tool_names: &["vuln_nuclei_fingerprint_targeted"],
+        allowed_tool_types: &["vuln_nuclei_fingerprint_targeted"],
+        risk: CapabilityRisk::Active,
+        batchable: false,
+        max_batch: 1,
+        writes: &["audit_log", "technique_outcomes"],
         runner: CapabilityRunnerKind::BackendWrapper,
     },
     StageCapabilitySpec {
@@ -707,13 +731,34 @@ mod tests {
     }
 
     #[test]
-    fn vuln_formulaic_sweep_suggests_backend_wrapper() {
-        let capability = capability_by_id("vuln.run_formulaic_sweep").unwrap();
-        assert_eq!(capability.runner, CapabilityRunnerKind::BackendWrapper);
-        assert_eq!(capability.tool_names, &["vuln_run_formulaic_sweep"]);
-        assert!(
-            suggested_tools_for_technique(StageKind::VulnTriage, "WSTG-INPV-05")
-                .contains(&"vuln_run_formulaic_sweep".to_string())
+    fn vuln_formulaic_capabilities_split_general_anonymous_and_fingerprint_targeted_scans() {
+        let general = capability_by_id("vuln.nuclei_general").unwrap();
+        assert_eq!(general.runner, CapabilityRunnerKind::BackendWrapper);
+        assert_eq!(general.tool_names, &["vuln_nuclei_general"]);
+        assert_eq!(general.techniques.len(), 8);
+        assert!(!general.techniques.contains(&"WSTG-ATHN-04"));
+        assert!(!general.techniques.contains(&"WSTG-ATHZ-04"));
+        assert_eq!(
+            suggested_tools_for_technique(StageKind::VulnTriage, "WSTG-INPV-05"),
+            vec!["vuln_nuclei_general".to_string()]
+        );
+
+        let anonymous = capability_by_id("vuln.anonymous_access").unwrap();
+        assert_eq!(anonymous.runner, CapabilityRunnerKind::BackendWrapper);
+        assert_eq!(anonymous.tool_names, &["vuln_probe_anonymous_access"]);
+        assert_eq!(anonymous.techniques, &["WSTG-ATHN-04"]);
+        assert_eq!(
+            suggested_tools_for_technique(StageKind::VulnTriage, "WSTG-ATHN-04"),
+            vec!["vuln_probe_anonymous_access".to_string()]
+        );
+
+        let targeted = capability_by_id("vuln.nuclei_fingerprint_targeted").unwrap();
+        assert_eq!(targeted.runner, CapabilityRunnerKind::BackendWrapper);
+        assert_eq!(targeted.tool_names, &["vuln_nuclei_fingerprint_targeted"]);
+        assert_eq!(targeted.techniques, &["GOLISH-NDAY"]);
+        assert_eq!(
+            suggested_tools_for_technique(StageKind::VulnTriage, "GOLISH-NDAY"),
+            vec!["vuln_nuclei_fingerprint_targeted".to_string()]
         );
     }
 
@@ -764,11 +809,8 @@ mod tests {
 
     #[test]
     fn candidate_v2_stage_metadata_preserves_writer_boundaries() {
-        let vuln = capability_by_id("vuln.run_formulaic_sweep").unwrap();
-        assert_eq!(
-            vuln.writes,
-            &["audit_log", "technique_outcomes", "attack_candidate_seeds"]
-        );
+        let vuln = capability_by_id("vuln.nuclei_general").unwrap();
+        assert_eq!(vuln.writes, &["audit_log", "technique_outcomes"]);
 
         let synthesis = capability_by_id("attack.synthesize_candidates").unwrap();
         assert_eq!(

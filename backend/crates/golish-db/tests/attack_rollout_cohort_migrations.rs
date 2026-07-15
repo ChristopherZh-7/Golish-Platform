@@ -829,6 +829,8 @@ async fn seal_with_matching_no_candidate_shadow(
         r#"SELECT COALESCE(jsonb_agg(
                    jsonb_build_object(
                        'evidence_ids',item_source.evidence_ids,
+                       'observation',item_source.observation,
+                       'observation_hash',item_source.observation_hash,
                        'target_identity_hash',item_source.target_identity_hash,
                        'technique',item_source.technique,
                        'work_item_id',item_source.work_item_id,
@@ -838,6 +840,7 @@ async fn seal_with_matching_no_candidate_shadow(
              FROM (
                  SELECT item.id AS work_item_id,item.work_item_key,
                         item.target_identity_hash,seed.technique,
+                        seed.observation,seed.observation_hash,
                         COALESCE((
                             SELECT jsonb_agg(source.evidence_id ORDER BY source.evidence_id)
                               FROM (

@@ -53,6 +53,55 @@ pub struct PostExploitPolicy {
     pub canonical_rows: Vec<String>,
 }
 
+fn deserialize_nonzero_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u32::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom("value must be non-zero"));
+    }
+    Ok(value)
+}
+
+/// Company Controller scheduler policy. When present, one company-scoped Lead
+/// owns coordination and final submission while any later children are
+/// server-validated durable sibling WorkItems. C/G/K are required non-zero
+/// limits: company controllers, global provider calls, and per-company live
+/// workers respectively.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StageTeamSchedulerPolicy {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub enabled_in_v2_only: bool,
+    #[serde(default)]
+    pub allowed_roles: Vec<String>,
+    pub aggregator_kind: String,
+    pub aggregator_role: String,
+    /// Maximum number of company-scoped Unit controllers that the outer
+    /// `stage_run` queue may keep active (C).
+    #[serde(deserialize_with = "deserialize_nonzero_u32")]
+    pub max_company_units_active: u32,
+    /// Global ceiling for concurrent provider calls across all active company
+    /// controllers and their children (G).
+    #[serde(deserialize_with = "deserialize_nonzero_u32")]
+    pub global_provider_cap: u32,
+    /// Per-company active WorkerRun cap. In company-controller mode this
+    /// includes the Lead itself as well as its active children (K).
+    #[serde(deserialize_with = "deserialize_nonzero_u32")]
+    pub max_workers: u32,
+    #[serde(default)]
+    pub max_dynamic_requests: u32,
+    /// Closed server allowlist for model-proposed sibling WorkItem kinds.
+    #[serde(default)]
+    pub allowed_dynamic_request_kinds: Vec<String>,
+    /// Maximum number of canonical, same-scope subject refs per request.
+    #[serde(default)]
+    pub max_dynamic_subject_refs: u32,
+    #[serde(default)]
+    pub risk_lane: String,
+}
+
 /// Doc 3 §4.1 StageSpec.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageSpec {
@@ -62,6 +111,10 @@ pub struct StageSpec {
 
     #[serde(default)]
     pub requires_stages: Vec<StageKind>,
+    /// Contract-aware dependency used only by an exact V2-only operation.
+    /// Keeping it separate avoids changing legacy static graph semantics.
+    #[serde(default)]
+    pub v2_requires_stages: Vec<StageKind>,
     #[serde(default)]
     pub allowed_next_stages: Vec<StageKind>,
 
@@ -145,6 +198,11 @@ pub struct StageSpec {
     /// apply. Config-driven so 12 stages share one mechanism with no new code.
     #[serde(default)]
     pub specialist: Option<String>,
+
+    /// Optional durable sibling Team Scheduler policy. Absence deliberately
+    /// means the stage remains on its existing single-worker scheduler.
+    #[serde(default)]
+    pub team_scheduler: Option<StageTeamSchedulerPolicy>,
 
     /// Display-only coverage technique columns the `stage_run` view renders per
     /// org (intel → `["DNS","WHOIS","ASN","CT","SUBDOMAIN","OSINT"]`). Distinct
@@ -232,6 +290,19 @@ pub struct StageSpec {
     pub findings_allowed: bool,
 }
 
+impl StageSpec {
+    /// Resolve the dependency set from the operation's already-frozen
+    /// execution contract. An empty V2 override intentionally falls back to
+    /// the legacy declaration so existing specs remain byte-compatible.
+    pub fn required_stages_for_contract(&self, v2_only: bool) -> &[StageKind] {
+        if v2_only && !self.v2_requires_stages.is_empty() {
+            &self.v2_requires_stages
+        } else {
+            &self.requires_stages
+        }
+    }
+}
+
 fn default_continuity() -> AgentContinuity {
     AgentContinuity::SingleSession
 }
@@ -261,6 +332,12 @@ mod tests {
     const TARGET_INTEL_JSON: &str =
         include_str!("../../../../../resources/harness/stages/target_intel/spec.json");
 
+    const ENUMERATION_JSON: &str =
+        include_str!("../../../../../resources/harness/stages/enumeration/spec.json");
+
+    const VULN_TRIAGE_JSON: &str =
+        include_str!("../../../../../resources/harness/stages/vuln_triage/spec.json");
+
     const REPORTING_JSON: &str =
         include_str!("../../../../../resources/harness/stages/reporting/spec.json");
 
@@ -279,6 +356,113 @@ mod tests {
         assert_eq!(s.risk_level, RiskLevel::Medium);
         assert_eq!(s.deliverable_schema, "ExternalAttackSurfaceDeliverable");
         assert_eq!(s.gate_validator, "validate_external_attack_surface_gate");
+    }
+
+    #[test]
+    fn target_intel_declares_a_bounded_company_controller_scheduler() {
+        let spec = load_stage_spec_from_json(TARGET_INTEL_JSON).expect("parse");
+        let team = spec.team_scheduler.expect("target_intel team scheduler");
+
+        assert!(team.enabled_in_v2_only);
+        assert_eq!(team.aggregator_role, "company_stage_controller");
+        assert!(team.allowed_roles.contains(&"intel_provider".to_string()));
+        assert!(team.max_company_units_active > 0);
+        assert!(team.global_provider_cap > 0);
+        assert!(team.max_workers > 0);
+        assert_eq!(team.max_dynamic_requests, 12);
+        assert!(!team.allowed_dynamic_request_kinds.is_empty());
+        assert!(team.max_dynamic_subject_refs > 0);
+    }
+
+    #[test]
+    fn downstream_company_stages_declare_bounded_company_controller_schedulers() {
+        for (raw, stage, specialist, child_role, request_kind, risk_lane) in [
+            (
+                EXTERNAL_ATTACK_SURFACE_JSON,
+                StageKind::ExternalAttackSurface,
+                "prober",
+                "prober",
+                "surface_probe",
+                "active_recon",
+            ),
+            (
+                ENUMERATION_JSON,
+                StageKind::Enumeration,
+                "enumerator",
+                "enumerator",
+                "content_enumeration",
+                "active_recon",
+            ),
+            (
+                VULN_TRIAGE_JSON,
+                StageKind::VulnTriage,
+                "vuln_scanner",
+                "vuln_scanner",
+                "formulaic_scan",
+                "formulaic_scan",
+            ),
+        ] {
+            let spec = load_stage_spec_from_json(raw).expect("embedded downstream stage spec");
+            assert_eq!(spec.specialist.as_deref(), Some(specialist));
+            let team = spec
+                .team_scheduler
+                .unwrap_or_else(|| panic!("{} must use Company Controller", stage.as_str()));
+
+            assert!(team.enabled_in_v2_only);
+            assert_eq!(team.aggregator_role, "company_stage_controller");
+            assert!(team
+                .allowed_roles
+                .contains(&"company_stage_controller".to_string()));
+            assert!(team.allowed_roles.contains(&child_role.to_string()));
+            assert!(team
+                .allowed_dynamic_request_kinds
+                .contains(&request_kind.to_string()));
+            assert!(team.max_company_units_active > 0);
+            assert!(team.global_provider_cap > 0);
+            assert!(team.max_workers > 0);
+            assert!(team.max_dynamic_requests > 0);
+            assert!(team.max_dynamic_subject_refs > 0);
+            assert_eq!(team.risk_lane, risk_lane);
+        }
+    }
+
+    #[test]
+    fn company_controller_concurrency_caps_are_required_and_nonzero() {
+        let source = serde_json::from_str::<serde_json::Value>(TARGET_INTEL_JSON).expect("json");
+        for field in [
+            "max_company_units_active",
+            "global_provider_cap",
+            "max_workers",
+        ] {
+            let mut missing = source.clone();
+            missing["team_scheduler"]
+                .as_object_mut()
+                .expect("team policy object")
+                .remove(field);
+            assert!(serde_json::from_value::<StageSpec>(missing).is_err());
+
+            let mut zero = source.clone();
+            zero["team_scheduler"][field] = serde_json::json!(0);
+            assert!(serde_json::from_value::<StageSpec>(zero).is_err());
+        }
+    }
+
+    #[test]
+    fn verification_v2_depends_on_candidate_and_never_uses_general_team_concurrency() {
+        const VERIFICATION_JSON: &str =
+            include_str!("../../../../../resources/harness/stages/verification/spec.json");
+        let spec = load_stage_spec_from_json(VERIFICATION_JSON).expect("parse");
+
+        assert_eq!(spec.v2_requires_stages, vec![StageKind::AttackCandidate]);
+        assert_eq!(
+            spec.required_stages_for_contract(true),
+            &[StageKind::AttackCandidate]
+        );
+        assert_eq!(
+            spec.required_stages_for_contract(false),
+            &[StageKind::VulnTriage]
+        );
+        assert!(spec.team_scheduler.is_none());
     }
 
     #[test]
@@ -903,17 +1087,47 @@ mod tests {
         assert!(!s.coverage_axis.is_empty());
         assert!(s.facts_from_db_truth);
         assert!(s.freshness_window);
-        assert_eq!(s.allowed_tool_types, vec!["vuln_run_formulaic_sweep"]);
+        assert!(
+            !s.asset_wave_barrier,
+            "VulnTriage inherits the final-sealed Enumeration exact-origin surface; it must not seed the generic raw-target asset wave"
+        );
+        assert_eq!(
+            s.allowed_tool_types,
+            vec![
+                "vuln_nuclei_general".to_string(),
+                "vuln_nuclei_fingerprint_targeted".to_string(),
+                "vuln_probe_anonymous_access".to_string(),
+            ]
+        );
+        for wrapper in [
+            "vuln_nuclei_general",
+            "vuln_nuclei_fingerprint_targeted",
+            "vuln_probe_anonymous_access",
+        ] {
+            assert!(crate::harness::stage_allows(
+                wrapper,
+                &serde_json::json!({}),
+                &s.allowed_tool_types,
+            ));
+        }
+        assert!(!crate::harness::stage_allows(
+            "nuclei",
+            &serde_json::json!({}),
+            &s.allowed_tool_types,
+        ));
+        assert!(!crate::harness::stage_allows(
+            "pentest_run",
+            &serde_json::json!({"tool_name": "nuclei"}),
+            &s.allowed_tool_types,
+        ));
     }
 
     // Attack-stage split (design 2026-07-02 §3.9, P3 Task3.2): vuln_triage is
     // narrowed to the 10 formulaic technique classes and its coverage_complete
-    // opts into derive_from_evidence (DB-truth fact projection can close a cell).
-    // The 5 reasoning-heavy classes (SSTI/SSRF/LFI/auth-bypass/business-logic)
-    // move to attack_candidate. authoritative_found stays OFF until the
-    // nuclei/dir/weakpw/tls write-path lands technique_outcomes facts (design §11
-    // open-question 3 / plan deviation), so a self-reported cell still satisfies
-    // the gate and the live gate does not permanently block.
+    // derives only from the three trusted wrapper families' DB truth. True IDOR
+    // plus the other reasoning-heavy classes move to attack_candidate; bounded
+    // anonymous-access observation remains here. All formulaic classes are
+    // authoritative, so a hand-written deliverable cell cannot close the gate.
     #[test]
     fn vuln_triage_narrowed_to_formulaic_and_derives_from_evidence() {
         use crate::harness::gate::rule_engine::GateRule;
@@ -921,7 +1135,17 @@ mod tests {
             .expect("load vuln_triage spec");
         assert_eq!(s.expected_techniques.len(), 10);
         assert!(s.expected_techniques.contains(&"GOLISH-NDAY".to_string()));
-        for moved in ["WSTG-BUSL", "WSTG-INPV-19", "WSTG-INPV-18"] {
+        assert!(s.expected_techniques.contains(&"WSTG-ATHN-04".to_string()));
+        assert!(!s.expected_techniques.contains(&"WSTG-ATHZ-04".to_string()));
+        assert_eq!(
+            s.allowed_tool_types,
+            vec![
+                "vuln_nuclei_general",
+                "vuln_nuclei_fingerprint_targeted",
+                "vuln_probe_anonymous_access",
+            ]
+        );
+        for moved in ["WSTG-BUSL", "WSTG-INPV-19", "WSTG-INPV-18", "WSTG-ATHZ-04"] {
             assert!(
                 !s.expected_techniques.contains(&moved.to_string()),
                 "{moved} must move out of vuln_triage"
@@ -939,14 +1163,11 @@ mod tests {
         );
     }
 
-    // Phase 4 (gate-capability-ledger, incremental): once the deterministic
-    // nuclei handler upserts technique_outcomes per covered WSTG class, the 4
-    // most objective formulaic classes go authoritative — a self-reported
-    // `found` no longer counts without a DB fact. The other 6 classes stay
-    // legacy self-report so the live gate never permanently blocks (the escape
-    // hatch is blocked/not_applicable+note, terminal for any class).
+    // The three foreground wrapper families self-land every formulaic class, so
+    // all ten cells are authoritative. Legacy shell/source rows and hand-written
+    // deliverable coverage cannot close this stage.
     #[test]
-    fn vuln_triage_authoritative_scoped_to_objective_formulaic_classes() {
+    fn vuln_triage_all_formulaic_classes_are_authoritative() {
         use crate::harness::gate::rule_engine::GateRule;
         let s = crate::harness::resources::load_embedded_stage_spec(StageKind::VulnTriage)
             .expect("load vuln_triage spec");
@@ -961,26 +1182,14 @@ mod tests {
         let techs = scoped.expect(
             "vuln_triage coverage_complete must be authoritative for a scoped technique list",
         );
-        let mut sorted = techs.clone();
+        let mut sorted = techs;
         sorted.sort();
+        let mut expected = s.expected_techniques.clone();
+        expected.sort();
         assert_eq!(
-            sorted,
-            vec![
-                "GOLISH-NDAY".to_string(),
-                "WSTG-ATHN-02".to_string(),
-                "WSTG-CONF-05".to_string(),
-                "WSTG-CRYP-03".to_string(),
-            ],
-            "authoritative scope must stay the 4 objective classes the handler upserts \
-             (widen only as more scanner write-paths land — guardrail 2)"
+            sorted, expected,
+            "authoritative scope must cover every wrapper-owned formulaic class"
         );
-        // The reasoning/tool-sweep classes must NOT be authoritative yet.
-        for legacy in ["WSTG-INPV-05", "WSTG-INPV-01", "WSTG-ATHZ-04", "WSTG-INFO"] {
-            assert!(
-                !techs.contains(&legacy.to_string()),
-                "{legacy} has no complete write-path yet; must stay legacy self-report"
-            );
-        }
     }
 
     #[test]
@@ -1028,9 +1237,9 @@ mod tests {
         assert!(!s2.findings_allowed);
     }
 
-    // Static resources preserve legacy/dual operation behavior. Candidate V2Only
-    // derives the stricter observation/terminalizer policy from its persisted
-    // contract at runtime; attack_candidate is never a Finding writer.
+    // VulnTriage and AttackCandidate are observation/reasoning stages for every
+    // runtime contract. Only Verification retains its persisted legacy finding
+    // compatibility; V2 findings still come from the Attempt terminalizer.
     #[test]
     fn stage_findings_policy_preserves_candidate_v2_and_legacy_verification_boundaries() {
         use crate::harness::resources::load_embedded_stage_spec;
@@ -1046,16 +1255,13 @@ mod tests {
                 "recon stage {kind:?} must set findings_allowed=false"
             );
         }
-        let attack_candidate = load_embedded_stage_spec(StageKind::AttackCandidate)
-            .expect("load AttackCandidate spec");
-        assert!(!attack_candidate.findings_allowed);
-        for kind in [StageKind::VulnTriage, StageKind::Verification] {
+        for kind in [StageKind::VulnTriage, StageKind::AttackCandidate] {
             let spec = load_embedded_stage_spec(kind).unwrap_or_else(|_| panic!("load {kind:?}"));
-            assert!(
-                spec.findings_allowed,
-                "static {kind:?} policy must preserve persisted legacy compatibility"
-            );
+            assert!(!spec.findings_allowed, "{kind:?} must not author findings");
         }
+        let verification =
+            load_embedded_stage_spec(StageKind::Verification).expect("load Verification spec");
+        assert!(verification.findings_allowed);
     }
 
     #[test]

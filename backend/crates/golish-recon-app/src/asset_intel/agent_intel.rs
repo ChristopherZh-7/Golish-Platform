@@ -31,6 +31,7 @@ use super::{
 /// Keep automatic apex expansion bounded: it is passive/zero-touch, but each
 /// root can fan out to several provider requests.
 const AUTO_DOMAIN_EXPANSION_LIMIT: usize = 5;
+const CURRENT_RUN_DOMAIN_PIVOT_MIN_CONFIDENCE: f64 = 0.7;
 
 /// Which passive provider phase to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +164,11 @@ pub struct PassiveIntelSummary {
     /// persistence was incomplete. The runtime treats this as retryable failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Fresh, provider-attributed company-registry domains from this one pass.
+    /// The outer orchestrator may consume them once for a bounded domain-keyed
+    /// second pass; they are never serialized or recursively fed forward.
+    #[serde(skip)]
+    current_run_domain_roots: Vec<String>,
 }
 
 fn append_summary_error(error: &mut Option<String>, message: impl Into<String>) {
@@ -220,10 +226,10 @@ pub async fn run_passive_intel(
     .await?;
 
     if should_auto_expand_domains {
-        let roots = match authorized_domain_scope_hosts(pool.as_ref(), organization_id).await {
-            Ok(hosts) => {
-                domain_expansion_roots_from_authorized_hosts(&hosts, AUTO_DOMAIN_EXPANSION_LIMIT)
-            }
+        let authorized_hosts = match authorized_domain_scope_hosts(pool.as_ref(), organization_id)
+            .await
+        {
+            Ok(hosts) => hosts,
             Err(error) => {
                 tracing::warn!(%error, "load authorized roots for passive-intel domain expansion failed");
                 summary.status = "Partial".to_string();
@@ -234,6 +240,11 @@ pub async fn run_passive_intel(
                 Vec::new()
             }
         };
+        let roots = prioritized_domain_expansion_roots(
+            &summary.current_run_domain_roots,
+            &authorized_hosts,
+            AUTO_DOMAIN_EXPANSION_LIMIT,
+        );
 
         for domain in roots {
             let mut expansion_config = config.clone();
@@ -347,7 +358,6 @@ async fn run_passive_intel_once(
             phase.as_str()
         )));
     }
-    let provider_ids: Vec<String> = selected.iter().map(|tool| tool.id.clone()).collect();
     let provider_capabilities: HashMap<String, Vec<String>> = selected
         .iter()
         .filter_map(|tool| {
@@ -393,6 +403,23 @@ async fn run_passive_intel_once(
         &provider_config,
     )
     .await?;
+    let domain_pivot = config
+        .domain
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(pivot) = domain_pivot {
+        // A domain-keyed provider pass is one bounded child expansion, not a
+        // new organization discovery authority. Keep only the exact pivot and
+        // strict child host identities; provider noise and standalone IP rows
+        // remain in raw evidence but cannot enter the Target handoff.
+        run.candidates.organizations.clear();
+        run.candidates
+            .targets
+            .retain(|candidate| domain_pivot_owns_value(pivot, &candidate.value));
+        run.observed_domain_hosts
+            .retain(|host| domain_pivot_owns_value(pivot, host));
+    }
 
     // Promote discovered subsidiaries that clear the ownership-percent threshold
     // into child organizations (parent_id = this org). The pure decision logic
@@ -480,10 +507,13 @@ async fn run_passive_intel_once(
                         })
                     })
                     .collect();
-                let pairs = crate::asset_intel::landing::pairs_from_candidates(
+                let mut pairs = crate::asset_intel::landing::pairs_from_candidates(
                     &run.candidates,
                     &pairs_rules_by_provider,
                 );
+                if let Some(pivot) = domain_pivot {
+                    pairs.retain(|pair| domain_pivot_owns_value(pivot, &pair.host));
+                }
 
                 let mut current_run_hosts: Vec<String> = run.observed_domain_hosts.clone();
                 current_run_hosts.extend(
@@ -494,11 +524,14 @@ async fn run_passive_intel_once(
                 );
                 current_run_hosts.extend(pairs.iter().map(|pair| pair.host.clone()));
 
-                let current_run_plan = crate::asset_intel::landing::plan_current_run_targets(
-                    &run.candidates,
-                    &current_run_hosts,
-                    &pairs,
-                );
+                let promote_ip_targets = domain_pivot.is_none();
+                let current_run_plan =
+                    crate::asset_intel::landing::plan_current_run_targets_with_ip_policy(
+                        &run.candidates,
+                        &current_run_hosts,
+                        &pairs,
+                        promote_ip_targets,
+                    );
                 let mut landing_org = fresh.clone();
                 landing_org.domains = serde_json::json!(current_run_plan
                     .iter()
@@ -515,6 +548,7 @@ async fn run_passive_intel_once(
                     &run.candidates,
                     &pairs,
                     &current_run_hosts,
+                    promote_ip_targets,
                 )
                 .await
                 {
@@ -612,8 +646,11 @@ async fn run_passive_intel_once(
                 // banners per host; they were previously dropped (only the bare
                 // subdomain landed, the 4 target_assets columns stayed NULL).
                 // Non-fatal — a miss only warns.
-                let services =
+                let mut services =
                     crate::asset_intel::landing::service_assets_from_candidates(&run.candidates);
+                if let Some(pivot) = domain_pivot {
+                    services.retain(|service| domain_pivot_owns_value(pivot, &service.host));
+                }
                 match crate::asset_intel::landing::land_service_assets(
                     pool.as_ref(),
                     &landing_org,
@@ -675,6 +712,16 @@ async fn run_passive_intel_once(
     technique_status
         .dedup_by(|left, right| left.source == right.source && left.technique == right.technique);
     let landing_error = (!landing_errors.is_empty()).then(|| landing_errors.join("; "));
+    let current_run_domain_roots = if phase == PassiveIntelPhase::Enrich {
+        current_run_domain_expansion_roots(&run.candidates, AUTO_DOMAIN_EXPANSION_LIMIT)
+    } else {
+        Vec::new()
+    };
+    let executed_provider_ids = run
+        .provider_status
+        .iter()
+        .map(|status| status.provider_id.clone())
+        .collect();
     Ok(PassiveIntelSummary {
         run_id: run.run_id,
         company: org.name,
@@ -692,13 +739,14 @@ async fn run_passive_intel_once(
         dns_records: target_landing.dns_records,
         service_assets: landed_service_assets,
         subdomain_assets: landed_subdomain_assets,
-        providers: provider_ids,
+        providers: executed_provider_ids,
         provider_status: run.provider_status,
         technique_status,
         promoted_children,
         subsidiaries,
         domain_expansions: vec![],
         error: landing_error,
+        current_run_domain_roots,
     })
 }
 
@@ -1019,7 +1067,128 @@ fn domain_expansion_roots_from_authorized_hosts(hosts: &[String], limit: usize) 
     for host in hosts {
         push_authorized_domain_query(host, &mut roots);
     }
-    roots.into_iter().take(limit).collect()
+    minimal_explicit_query_roots(roots)
+        .into_iter()
+        .take(limit)
+        .collect()
+}
+
+/// Remove only redundant provider-query seeds, never Target identities.
+///
+/// If both `example.com` and `api.example.com` were explicitly observed or
+/// authorized, one `example.com` provider query already covers the child and
+/// the child seed would only repeat work. If only `api.example.com` exists we
+/// keep it exactly as-is; inferring/upscoping to an unseen apex is forbidden.
+fn minimal_explicit_query_roots(roots: BTreeSet<String>) -> Vec<String> {
+    let roots = roots.into_iter().collect::<Vec<_>>();
+    roots
+        .iter()
+        .filter(|root| {
+            !roots
+                .iter()
+                .any(|parent| parent != *root && root.ends_with(&format!(".{parent}")))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Fresh company-registry roots eligible for the single domain-keyed pass.
+/// ENScan enrichment and 0.zone are the bootstrap sources that bind a domain
+/// back to the named legal entity. Cyberspace search results are deliberately
+/// excluded here: they are consumers of this pivot, not authorities for a new
+/// recursive pivot.
+fn current_run_domain_expansion_roots(
+    candidates: &OrganizationCandidates,
+    limit: usize,
+) -> Vec<String> {
+    let mut roots = BTreeSet::new();
+    for candidate in &candidates.targets {
+        if candidate.value.trim().starts_with("*.") {
+            continue;
+        }
+        if !candidate_has_company_registry_source(candidate)
+            || candidate.confidence < CURRENT_RUN_DOMAIN_PIVOT_MIN_CONFIDENCE
+        {
+            continue;
+        }
+        push_authorized_domain_query(&candidate.value, &mut roots);
+    }
+    minimal_explicit_query_roots(roots)
+        .into_iter()
+        .take(limit)
+        .collect()
+}
+
+fn domain_pivot_owns_value(pivot: &str, value: &str) -> bool {
+    let Some(pivot) = crate::asset_intel::landing::normalize_concrete_landing_host(pivot) else {
+        return false;
+    };
+    let Some(host) = crate::asset_intel::landing::normalize_concrete_landing_host(value) else {
+        return false;
+    };
+    host == pivot || host.ends_with(&format!(".{pivot}"))
+}
+
+fn candidate_has_company_registry_source(
+    candidate: &crate::organizations::OrganizationCandidate,
+) -> bool {
+    fn is_registry_source(source: &str) -> bool {
+        matches!(
+            source.trim().to_ascii_lowercase().as_str(),
+            "enscan-go" | "enscan-go-enrichment" | "0.zone"
+        )
+    }
+
+    fn evidence_has_registry_source(value: &Value) -> bool {
+        if value
+            .get("provider")
+            .and_then(Value::as_str)
+            .is_some_and(is_registry_source)
+            || value
+                .get("source")
+                .and_then(Value::as_str)
+                .is_some_and(is_registry_source)
+        {
+            return true;
+        }
+        value
+            .get("sources")
+            .and_then(Value::as_array)
+            .is_some_and(|sources| sources.iter().any(evidence_has_registry_source))
+            || value
+                .get("primary")
+                .is_some_and(evidence_has_registry_source)
+    }
+
+    is_registry_source(&candidate.source) || evidence_has_registry_source(&candidate.evidence)
+}
+
+/// Spend the bounded expansion budget on fresh company-registry domains first,
+/// then append pre-existing trusted Target roots. Exact canonical duplicates
+/// collapse. A child query seed is removed only when its parent is also present
+/// explicitly; the child Target itself remains independent and untouched.
+fn prioritized_domain_expansion_roots(
+    current_run_roots: &[String],
+    authorized_hosts: &[String],
+    limit: usize,
+) -> Vec<String> {
+    let current = domain_expansion_roots_from_authorized_hosts(current_run_roots, usize::MAX);
+    let authorized = domain_expansion_roots_from_authorized_hosts(authorized_hosts, usize::MAX);
+    let mut seen = BTreeSet::new();
+    let ordered = current
+        .into_iter()
+        .chain(authorized)
+        .filter(|root| seen.insert(root.clone()))
+        .collect::<Vec<_>>();
+    let all = ordered.iter().cloned().collect::<BTreeSet<_>>();
+    ordered
+        .into_iter()
+        .filter(|root| {
+            !all.iter()
+                .any(|parent| parent != root && root.ends_with(&format!(".{parent}")))
+        })
+        .take(limit)
+        .collect()
 }
 
 fn push_authorized_domain_query(value: &str, roots: &mut BTreeSet<String>) {
@@ -1113,6 +1282,7 @@ mod tests {
             subsidiaries: vec![],
             domain_expansions: vec![],
             error: None,
+            current_run_domain_roots: vec!["private.example".into()],
         };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["company"], "Acme");
@@ -1130,6 +1300,7 @@ mod tests {
         // Empty subsidiaries is skipped from the JSON so enrich stays clean.
         assert!(v.get("subsidiaries").is_none());
         assert!(v.get("domainExpansions").is_none());
+        assert!(v.get("currentRunDomainRoots").is_none());
     }
 
     #[test]
@@ -1423,14 +1594,108 @@ mod tests {
                 "api.moresec.com.cn".to_string(),
                 "console.moresec.com".to_string(),
                 "moresec.cn".to_string(),
-                "wild.moresec.cn".to_string(),
-                "www.moresec.cn".to_string(),
             ]
         );
         assert_eq!(
             domain_expansion_roots_from_authorized_hosts(&hosts, 1),
             vec!["api.moresec.com.cn".to_string()]
         );
+    }
+
+    #[test]
+    fn current_run_company_registry_domains_get_one_bounded_non_recursive_pivot() {
+        let target = |source: &str, value: &str, confidence: f64| {
+            crate::organizations::OrganizationCandidate {
+                id: format!("{source}:{value}"),
+                kind: crate::organizations::OrganizationCandidateKind::Target,
+                label: value.to_string(),
+                value: value.to_string(),
+                organization_id: None,
+                ownership_percent: None,
+                source: source.to_string(),
+                confidence,
+                status: "candidate".to_string(),
+                evidence: serde_json::json!({"provider": source}),
+                created_at: 0,
+            }
+        };
+        let mut merged_primary = target("quake", "shadow.youchuang7.com", 0.95);
+        merged_primary.evidence = serde_json::json!({
+            "provider": "quake",
+            "sources": [
+                {"provider": "quake"},
+                {"provider": "enscan-go-enrichment"}
+            ]
+        });
+        let candidates = OrganizationCandidates {
+            targets: vec![
+                target("enscan-go-enrichment", "YouChuang7.COM.", 0.78),
+                target("0.zone", "portal.youchuang7.com", 0.72),
+                merged_primary,
+                target("quake", "shared-third-party.example", 0.95),
+                target("enscan-go-enrichment", "github.com", 0.78),
+                target("enscan-go-enrichment", "*.youchuang7.com", 0.78),
+                target("enscan-go-enrichment", "low-confidence.example", 0.2),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            current_run_domain_expansion_roots(&candidates, 5),
+            vec!["youchuang7.com".to_string()],
+            "an explicitly observed parent collapses only redundant provider-query seeds"
+        );
+        assert_eq!(
+            current_run_domain_expansion_roots(
+                &OrganizationCandidates {
+                    targets: vec![
+                        target("0.zone", "portal.youchuang7.com", 0.72),
+                        target("enscan-go-enrichment", "admin.youchuang7.com", 0.78),
+                    ],
+                    ..Default::default()
+                },
+                5,
+            ),
+            vec![
+                "admin.youchuang7.com".to_string(),
+                "portal.youchuang7.com".to_string(),
+            ],
+            "without an explicit parent, distinct child seeds stay exact and are never widened"
+        );
+        assert_eq!(
+            prioritized_domain_expansion_roots(
+                &["youchuang7.com".to_string()],
+                &[
+                    "manual.example.com".to_string(),
+                    "youchuang7.com".to_string()
+                ],
+                2,
+            ),
+            vec![
+                "youchuang7.com".to_string(),
+                "manual.example.com".to_string(),
+            ],
+            "fresh registry roots win the bounded budget and exact duplicates collapse"
+        );
+        assert_eq!(
+            prioritized_domain_expansion_roots(
+                &["api.youchuang7.com".to_string()],
+                &["youchuang7.com".to_string()],
+                5,
+            ),
+            vec!["youchuang7.com".to_string()],
+            "an explicit trusted parent removes only the redundant child query, not its Target"
+        );
+        assert!(domain_pivot_owns_value("youchuang7.com", "youchuang7.com"));
+        assert!(domain_pivot_owns_value(
+            "youchuang7.com",
+            "https://api.youchuang7.com:8443/login"
+        ));
+        assert!(!domain_pivot_owns_value(
+            "youchuang7.com",
+            "notyouchuang7.com"
+        ));
+        assert!(!domain_pivot_owns_value("youchuang7.com", "203.0.113.10"));
     }
 
     fn org_with_domains(

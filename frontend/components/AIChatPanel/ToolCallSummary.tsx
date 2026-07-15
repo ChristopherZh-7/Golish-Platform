@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  getStageRunAgentLabel,
   getToolActionLabel,
   getToolColor,
   getToolPrimaryArg,
@@ -28,12 +29,6 @@ import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 
 type ApprovalMode = "ask" | "run-all";
-
-function roleAgentLabel(roleLabel?: string) {
-  const label = roleLabel?.trim();
-  if (!label) return null;
-  return /agent$/i.test(label) ? label : `${label} Agent`;
-}
 
 /**
  * Compact tool-approval mode switch rendered inline on a tool-call card / row.
@@ -143,6 +138,21 @@ export function toolResultIsBackgrounded(result?: string): boolean {
   return toolResultStatus(result) === "backgrounded";
 }
 
+export function stageRunResultPassed(result?: string): boolean {
+  if (!result) return false;
+  try {
+    const parsed = JSON.parse(result);
+    return (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      (parsed as { passed?: unknown }).passed === true
+    );
+  } catch {
+    return false;
+  }
+}
+
 function ToolCallCard({
   tc,
   onClick,
@@ -196,14 +206,30 @@ function ToolCallCard({
     if (sr.requestId && requestId && sr.requestId !== requestId) return null;
     return sr.roleLabel;
   });
-  const stageRunWorkerLabel = roleAgentLabel(stageRunRoleLabel ?? undefined);
-  const workerCount = stageRunSummary?.total ?? 0;
-  const workerText = `${workerCount} ${workerCount === 1 ? "worker" : "workers"}`;
+  const stageRunWorkerLabel = getStageRunAgentLabel(stageRunRoleLabel ?? undefined);
+  const displayStageRunSummary =
+    tc.name === "stage_run" &&
+    tc.success === true &&
+    stageRunSummary &&
+    stageRunResultPassed(tc.result)
+      ? {
+          ...stageRunSummary,
+          covered: stageRunSummary.total,
+          active: 0,
+          queued: 0,
+          blocked: 0,
+        }
+      : stageRunSummary;
+  const workerCount = displayStageRunSummary?.total ?? 0;
+  const controllerUnits = stageRunWorkerLabel === "Company Controller";
+  const workerText = controllerUnits
+    ? `${workerCount} ${workerCount === 1 ? "company" : "companies"}`
+    : `${workerCount} ${workerCount === 1 ? "worker" : "workers"}`;
   const stoppedWorkerCount = isExpired
-    ? (stageRunSummary?.active ?? 0) + (stageRunSummary?.queued ?? 0)
+    ? (displayStageRunSummary?.active ?? 0) + (displayStageRunSummary?.queued ?? 0)
     : 0;
-  const displayActiveWorkers = isExpired ? 0 : (stageRunSummary?.active ?? 0);
-  const displayQueuedWorkers = isExpired ? 0 : (stageRunSummary?.queued ?? 0);
+  const displayActiveWorkers = isExpired ? 0 : (displayStageRunSummary?.active ?? 0);
+  const displayQueuedWorkers = isExpired ? 0 : (displayStageRunSummary?.queued ?? 0);
 
   return (
     <div
@@ -265,7 +291,7 @@ function ToolCallCard({
           )}
         </div>
       </div>
-      {stageRunSummary && (
+      {displayStageRunSummary && (
         <div className="mt-1.5 space-y-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px]">
             <span className="inline-flex items-center gap-1 font-medium text-cyan-300">
@@ -273,7 +299,7 @@ function ToolCallCard({
               {stageRunWorkerLabel ? `${stageRunWorkerLabel} · ${workerText}` : workerText}
             </span>
             <span className="text-foreground/70">
-              {stageRunSummary.covered}/{stageRunSummary.total} passed
+              {displayStageRunSummary.covered}/{displayStageRunSummary.total} passed
             </span>
             {displayActiveWorkers > 0 && (
               <span className="text-sky-400">{displayActiveWorkers} 进行</span>
@@ -284,15 +310,17 @@ function ToolCallCard({
             {stoppedWorkerCount > 0 && (
               <span className="text-yellow-400">{stoppedWorkerCount} stopped</span>
             )}
-            {stageRunSummary.blocked > 0 && (
-              <span className="text-amber-400">{stageRunSummary.blocked} 阻塞</span>
+            {displayStageRunSummary.blocked > 0 && (
+              <span className="text-amber-400">{displayStageRunSummary.blocked} 阻塞</span>
             )}
           </div>
           <div className="h-1 w-full overflow-hidden rounded-full bg-muted/40">
             <div
               className="h-full rounded-full bg-[var(--success)]/70 transition-all"
               style={{
-                width: `${Math.round((stageRunSummary.covered / stageRunSummary.total) * 100)}%`,
+                width: `${Math.round(
+                  (displayStageRunSummary.covered / displayStageRunSummary.total) * 100
+                )}%`,
               }}
             />
           </div>

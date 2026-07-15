@@ -32,6 +32,7 @@ pub struct StageWorkerRunRow {
     pub operation_id: Uuid,
     pub stage_execution_id: Uuid,
     pub stage_run_unit_id: Uuid,
+    pub work_item_id: Option<Uuid>,
     pub organization_id: Uuid,
     pub worker_generation: i32,
     pub specialist: String,
@@ -132,7 +133,7 @@ impl StageWorkerRunStatus {
 }
 
 const COLUMNS: &str = r#"id, operation_id, stage_execution_id, stage_run_unit_id,
-    organization_id, worker_generation, specialist, work_item_kind, work_item_key,
+    work_item_id, organization_id, worker_generation, specialist, work_item_kind, work_item_key,
     agent_path, parent_request_id, message_chain_id, status, gate_attempt, checkpoint,
     checkpoint_version, lease_token, lease_owner, lease_acquired_at, lease_expires_at,
     heartbeat_at, attempt_epoch, active_tool_call_id, active_tool_started_at,
@@ -144,6 +145,7 @@ pub struct NewStageWorkerRun {
     pub operation_id: Uuid,
     pub stage_execution_id: Uuid,
     pub stage_run_unit_id: Uuid,
+    pub work_item_id: Option<Uuid>,
     pub organization_id: Uuid,
     pub worker_generation: i32,
     pub specialist: String,
@@ -178,10 +180,10 @@ where
     }
     let sql = format!(
         "INSERT INTO stage_worker_runs (
-            id, operation_id, stage_execution_id, stage_run_unit_id,
+            id, operation_id, stage_execution_id, stage_run_unit_id, work_item_id,
             organization_id, worker_generation, specialist, work_item_kind,
             work_item_key, agent_path, parent_request_id, status
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'queued')
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'queued')
          RETURNING {COLUMNS}"
     );
     Ok(sqlx::query_as::<_, StageWorkerRunRow>(&sql)
@@ -189,6 +191,7 @@ where
         .bind(input.operation_id)
         .bind(input.stage_execution_id)
         .bind(input.stage_run_unit_id)
+        .bind(input.work_item_id)
         .bind(input.organization_id)
         .bind(input.worker_generation)
         .bind(&input.specialist)
@@ -522,6 +525,31 @@ where
 }
 
 pub(crate) async fn finish_passed_for_final_seal<'e, E>(
+    executor: E,
+    fence: &super::runtime_memory_tx::RuntimeMemoryTxFence,
+    checkpoint: &Value,
+    evidence_watermark: Option<i64>,
+) -> RuntimeMemoryStoreResult<StageWorkerRunRow>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    finish_attempt_cas_inner(
+        executor,
+        fence,
+        StageWorkerRunStatus::Running,
+        StageWorkerRunStatus::Passed,
+        checkpoint,
+        evidence_watermark,
+    )
+    .await
+}
+
+/// Team producers may finish their own independently fenced WorkerRun, but
+/// they are deliberately not allowed to seal the owning StageRunUnit.  Keep
+/// that narrow PASS authority separate from the public attempt finisher so a
+/// caller cannot accidentally turn an ordinary worker completion into a Unit
+/// final seal.
+pub(crate) async fn finish_passed_for_stage_output<'e, E>(
     executor: E,
     fence: &super::runtime_memory_tx::RuntimeMemoryTxFence,
     checkpoint: &Value,

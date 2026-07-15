@@ -133,24 +133,59 @@ async fn create_admitted_worker_in_pool(pool: &PgPool, label: &str) -> AdmittedW
     )
     .await
     .expect("insert runtime unit");
-    stage_worker_runs::insert_with_executor(
-        &mut *tx,
-        &stage_worker_runs::NewStageWorkerRun {
-            id: worker_run_id,
-            operation_id,
-            stage_execution_id,
-            stage_run_unit_id,
-            organization_id,
-            worker_generation: 0,
-            specialist: "target-intel-specialist".to_string(),
-            work_item_kind: "organization".to_string(),
-            work_item_key: organization_id.to_string(),
-            agent_path: format!("root>org:{organization_id}>target-intel-specialist"),
-            parent_request_id: None,
-        },
+    let has_stage_team_work_item: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS (
+               SELECT 1
+                 FROM pg_attribute
+                WHERE attrelid='stage_worker_runs'::regclass
+                  AND attname='work_item_id' AND NOT attisdropped
+           )"#,
     )
+    .fetch_one(&mut *tx)
     .await
-    .expect("insert admitted runtime worker");
+    .expect("inspect runtime Worker schema version");
+    if has_stage_team_work_item {
+        stage_worker_runs::insert_with_executor(
+            &mut *tx,
+            &stage_worker_runs::NewStageWorkerRun {
+                id: worker_run_id,
+                operation_id,
+                stage_execution_id,
+                stage_run_unit_id,
+                work_item_id: None,
+                organization_id,
+                worker_generation: 0,
+                specialist: "target-intel-specialist".to_string(),
+                work_item_kind: "organization".to_string(),
+                work_item_key: organization_id.to_string(),
+                agent_path: format!("root>org:{organization_id}>target-intel-specialist"),
+                parent_request_id: None,
+            },
+        )
+        .await
+        .expect("insert admitted runtime worker");
+    } else {
+        sqlx::query(
+            r#"INSERT INTO stage_worker_runs(
+                   id,operation_id,stage_execution_id,stage_run_unit_id,
+                   organization_id,worker_generation,specialist,work_item_kind,
+                   work_item_key,agent_path,parent_request_id,status
+               ) VALUES($1,$2,$3,$4,$5,0,'target-intel-specialist','organization',
+                        $6,$7,NULL,'queued')"#,
+        )
+        .bind(worker_run_id)
+        .bind(operation_id)
+        .bind(stage_execution_id)
+        .bind(stage_run_unit_id)
+        .bind(organization_id)
+        .bind(organization_id.to_string())
+        .bind(format!(
+            "root>org:{organization_id}>target-intel-specialist"
+        ))
+        .execute(&mut *tx)
+        .await
+        .expect("insert pre-Stage-Team admitted runtime worker");
+    }
     tx.commit().await.expect("commit worker admission");
     AdmittedWorker {
         operation_id,
@@ -206,43 +241,47 @@ async fn install_pre_attestation_worker_as_legacy(
     worker: AdmittedWorker,
     label: &str,
 ) {
-    let worker_row = stage_worker_runs::get(pool, worker.worker_run_id)
-        .await
-        .expect("load pre-attestation WorkerRun")
-        .expect("pre-attestation WorkerRun must exist");
+    let worker_row: serde_json::Value =
+        sqlx::query_scalar("SELECT TO_JSONB(worker) FROM stage_worker_runs AS worker WHERE id=$1")
+            .bind(worker.worker_run_id)
+            .fetch_optional(pool)
+            .await
+            .expect("load pre-attestation WorkerRun")
+            .expect("pre-attestation WorkerRun must exist");
+    let field = |name: &str| worker_row.get(name).cloned().unwrap_or_default();
     let record = serde_json::json!({
         "schema_v": 2,
-        "id": worker_row.id,
-        "operation_id": worker_row.operation_id,
-        "stage_execution_id": worker_row.stage_execution_id,
-        "stage_run_unit_id": worker_row.stage_run_unit_id,
-        "worker_run_id": worker_row.id,
-        "organization_id": worker_row.organization_id,
+        "id": field("id"),
+        "operation_id": field("operation_id"),
+        "stage_execution_id": field("stage_execution_id"),
+        "stage_run_unit_id": field("stage_run_unit_id"),
+        "worker_run_id": field("id"),
+        "organization_id": field("organization_id"),
         "org_name": format!("Runtime rollout {label}"),
-        "worker_generation": worker_row.worker_generation,
-        "specialist": worker_row.specialist,
-        "work_item_kind": worker_row.work_item_kind,
-        "work_item_key": worker_row.work_item_key,
-        "agent_path": worker_row.agent_path,
-        "parent_request_id": worker_row.parent_request_id,
-        "chain_id": worker_row.message_chain_id,
-        "message_chain_id": worker_row.message_chain_id,
-        "status": worker_row.status,
-        "gate_attempt": worker_row.gate_attempt,
-        "checkpoint": worker_row.checkpoint,
-        "checkpoint_version": worker_row.checkpoint_version,
-        "lease_token": worker_row.lease_token,
-        "lease_owner": worker_row.lease_owner,
-        "lease_acquired_at": worker_row.lease_acquired_at,
-        "lease_expires_at": worker_row.lease_expires_at,
-        "heartbeat_at": worker_row.heartbeat_at,
-        "attempt_epoch": worker_row.attempt_epoch,
-        "active_tool_call_id": worker_row.active_tool_call_id,
-        "active_tool_started_at": worker_row.active_tool_started_at,
-        "evidence_watermark": worker_row.evidence_watermark,
-        "started_at": worker_row.started_at,
-        "updated_at": worker_row.updated_at,
-        "terminal_at": worker_row.terminal_at,
+        "worker_generation": field("worker_generation"),
+        "specialist": field("specialist"),
+        "work_item_kind": field("work_item_kind"),
+        "work_item_key": field("work_item_key"),
+        "agent_path": field("agent_path"),
+        "parent_request_id": field("parent_request_id"),
+        "chain_id": field("message_chain_id"),
+        "message_chain_id": field("message_chain_id"),
+        "status": field("status"),
+        "gate_attempt": field("gate_attempt"),
+        "checkpoint": field("checkpoint"),
+        "checkpoint_version": field("checkpoint_version"),
+        "lease_token": field("lease_token"),
+        "lease_owner": field("lease_owner"),
+        "lease_acquired_at": field("lease_acquired_at"),
+        "lease_expires_at": field("lease_expires_at"),
+        "heartbeat_at": field("heartbeat_at"),
+        "attempt_epoch": field("attempt_epoch"),
+        "active_tool_call_id": field("active_tool_call_id"),
+        "active_tool_started_at": field("active_tool_started_at"),
+        "evidence_watermark": field("evidence_watermark"),
+        "started_at": field("started_at"),
+        "updated_at": field("updated_at"),
+        "terminal_at": field("terminal_at"),
     });
     sqlx::query(
         r#"UPDATE operation_state

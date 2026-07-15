@@ -237,7 +237,7 @@ pub struct OperationStateView {
     pub project_scope_id: Option<Uuid>,
     /// Engagement-org isolation (设计 2026-06-15-engagement-org-isolation): the
     /// scoping-confirmed root org this operation is bound to. `None` = not yet
-    /// bound (legacy whole-DB axis).
+    /// bound; consumers must not reinterpret it as permission to read all orgs.
     pub engagement_org_id: Option<uuid::Uuid>,
     /// Harness-private resume state (JSONB). Carries `HarnessResumeState`
     /// (current stage run id + queue titles + completed count) for kill→resume.

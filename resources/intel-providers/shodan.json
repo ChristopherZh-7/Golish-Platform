@@ -22,7 +22,8 @@
         "kind": "native_provider",
         "provider_id": "shodan",
         "queries": [
-          { "query_type": "site", "template": "org:\"{{company_name}}\"" }
+          { "query_type": "site", "template": "org:\"{{company_name}}\"" },
+          { "query_type": "domain", "template": "{{domain}}" }
         ]
       }
     }

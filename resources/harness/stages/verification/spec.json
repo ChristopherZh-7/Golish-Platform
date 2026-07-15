@@ -6,6 +6,7 @@
   "kind": "verification",
   "risk_level": "critical",
   "requires_stages": ["vuln_triage"],
+  "v2_requires_stages": ["attack_candidate"],
   "allowed_next_stages": ["access_validation", "reporting"],
 
   "$comment_allowed_tools": "The static tool classes are legacy-only compatibility. Exact V2Only dispatch exposes only the scheduler-bound ordinal wrapper, recent-evidence read, and Attempt submit surface.",

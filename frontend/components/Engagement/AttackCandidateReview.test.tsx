@@ -120,6 +120,7 @@ describe("AttackCandidateReview", () => {
           candidatePlanHash: "sha256:alpha",
           expectedRowVersion: 4,
           decision: "approve",
+          startBefore: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
           expiresAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
         },
       ],
@@ -140,6 +141,7 @@ describe("AttackCandidateReview", () => {
           latestApproval: {
             approvalId: "approval-1",
             status: "approved",
+            startBefore: "2026-07-14T07:00:00Z",
             expiresAt: "2026-07-14T08:00:00Z",
             decisionVersion: 1,
             rowVersion: 0,

@@ -1,10 +1,8 @@
 //! Tauri command wrappers for scan-runner operations.
 //!
-//! The pure business logic (WhatWeb, Nuclei, feroxbuster runners) now lives
+//! The pure business logic (WhatWeb and feroxbuster runners) now lives
 //! in the `golish-scan-runner` crate. This module provides thin
 //! `#[tauri::command]` wrappers that adapt `AppState` to the library's API.
-
-use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use golish_scan_runner as runner;
@@ -14,9 +12,7 @@ use golish_app_core::DbState;
 use golish_app_core::GolishError;
 use golish_app_core::TauriEventEmitter;
 
-pub use runner::{
-    FeroxScanOptions, NucleiScanOptions, PocMatch, ScanProgress, ScanResult, WhatWebOptions,
-};
+pub use runner::{FeroxScanOptions, ScanProgress, ScanResult, WhatWebOptions};
 
 /// Main-crate adapter: maps the scan-runner's storage callbacks to
 /// `crate::targets::db_directory_entry_add`.
@@ -52,12 +48,6 @@ impl runner::ScanStorage for MainScanStorage {
 }
 
 #[tauri::command]
-pub async fn nuclei_cancel() -> Result<(), GolishError> {
-    runner::NUCLEI_CANCELLED.store(true, Ordering::SeqCst);
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn scan_whatweb(
     app: tauri::AppHandle,
     state: tauri::State<'_, DbState>,
@@ -72,44 +62,6 @@ pub async fn scan_whatweb(
         runner::authorize_scan_target(pool, tid, project_path.as_deref(), &target_url).await?;
     let emitter = TauriEventEmitter::handle(app);
     Ok(runner::run_whatweb(pool, Some(&emitter), &authorization, options).await?)
-}
-
-#[tauri::command]
-pub async fn match_pocs_for_target(
-    state: tauri::State<'_, DbState>,
-    target_id: String,
-) -> Result<Vec<PocMatch>, GolishError> {
-    let pool = state.pool_ready().await?;
-    let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
-    Ok(runner::match_pocs_for_target(pool, tid).await?)
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn scan_nuclei_targeted(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, DbState>,
-    target_url: String,
-    target_id: String,
-    project_path: Option<String>,
-    template_ids: Vec<String>,
-    severity_filter: Option<Vec<String>>,
-    options: Option<NucleiScanOptions>,
-) -> Result<ScanResult, GolishError> {
-    let pool = state.pool_ready().await?;
-    let tid = Uuid::parse_str(&target_id).map_err(|e| GolishError::Validation(e.to_string()))?;
-    let authorization =
-        runner::authorize_scan_target(pool, tid, project_path.as_deref(), &target_url).await?;
-    let emitter = TauriEventEmitter::handle(app);
-    Ok(runner::run_nuclei_targeted(
-        pool,
-        Some(&emitter),
-        &authorization,
-        &template_ids,
-        severity_filter.as_deref(),
-        options,
-    )
-    .await?)
 }
 
 #[tauri::command]

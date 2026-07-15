@@ -47,6 +47,11 @@ pub(crate) const AXIOS_VERB: &str =
 /// root-relative URL to avoid noisy matches such as date/string helpers.
 pub(crate) const HTTP_CLIENT_VERB: &str = r#"(?m)\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*(get|post|put|patch|delete|head|options|download|upload)\s*\(\s*[`'"](/[^`'"]+)[`'"]"#;
 
+/// Candidate-only companion for relative custom-client paths such as
+/// `admin.get('users')`. The legacy endpoint API filters these back out;
+/// contextual consumers may retain them only when `admin` has a proven base.
+pub(crate) const HTTP_CLIENT_RELATIVE_VERB: &str = r#"(?m)\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*(get|post|put|patch|delete|head|options|download|upload)\s*\(\s*[`'"]([^`'"]+)[`'"]"#;
+
 /// `axios({ url: '/path', method: 'POST' })` — captures url; method parsed by helper.
 pub(crate) const AXIOS_CONFIG: &str =
     r#"(?m)\baxios\s*\(\s*\{[^}]*?\burl\s*:\s*[`'"]([^`'"]+)[`'"]"#;

@@ -1,11 +1,12 @@
-//! nuclei/nikto 模板 tag / classification → 注册 WSTG technique id 的确定性映射
+//! Nuclei canonical tag ↔ 注册 WSTG technique id 确定性映射
 //! （设计 `docs/superpowers/plans/2026-07-02-gate-capability-ledger.md` Phase 2 /
 //! Task 2.3）。
 //!
 //! vuln_triage 阶段的 coverage crediting 必须由**确定性 handler**（Rust 代码）从
 //! 工具真实输出推导「本次覆盖了哪个 WSTG 类」，绝不让模型自报（护栏 1）。这张纯函数
-//! 映射表是那条推导链的第一环：把扫描器给出的 tag / classification 归一成
-//! `technique_taxonomy.json` 里注册的 vuln_triage 10 类 technique id。
+//! 映射表是那条推导链的第一环：把 Nuclei 给出的 tag / classification 归一成
+//! `technique_taxonomy.json` 里由 Nuclei 负责的 8 个通用类与 n-day 类。匿名访问
+//! (`WSTG-ATHN-04`) 由独立包装器落库，不允许伪装成 Nuclei tag。
 //!
 //! 只收录**无歧义**映射；未知 tag → `None`（fail-closed，不 upsert，保持
 //! `not_attempted`，绝不凭一个陌生 tag 谎报覆盖）。返回值必须与
@@ -17,13 +18,43 @@
 pub const WSTG_SQLI: &str = "WSTG-INPV-05";
 pub const WSTG_XSS: &str = "WSTG-INPV-01";
 pub const WSTG_CMD_INJECTION: &str = "WSTG-INPV-12";
+/// Legacy Candidate/Verification taxonomy id. It is deliberately absent from
+/// the formulaic VulnTriage denominator because real IDOR/BOLA needs role and
+/// object comparison rather than a tag-driven scanner result.
 pub const WSTG_IDOR: &str = "WSTG-ATHZ-04";
+pub const WSTG_ANONYMOUS_ACCESS: &str = "WSTG-ATHN-04";
 pub const WSTG_WEAK_CREDS: &str = "WSTG-ATHN-02";
 pub const WSTG_SESSION_CSRF: &str = "WSTG-SESS-02";
 pub const WSTG_EXPOSURE_CONFIG: &str = "WSTG-CONF-05";
 pub const WSTG_TLS: &str = "WSTG-CRYP-03";
 pub const WSTG_INFO_DISCLOSURE: &str = "WSTG-INFO";
 pub const GOLISH_NDAY: &str = "GOLISH-NDAY";
+
+/// Complete formulaic vuln-triage taxonomy and the general-Nuclei subset.
+/// Scanner adapters import these constants instead of carrying private copies.
+pub const FORMULAIC_TECHNIQUES: &[&str] = &[
+    WSTG_SQLI,
+    WSTG_XSS,
+    WSTG_CMD_INJECTION,
+    WSTG_ANONYMOUS_ACCESS,
+    WSTG_WEAK_CREDS,
+    WSTG_SESSION_CSRF,
+    WSTG_EXPOSURE_CONFIG,
+    WSTG_TLS,
+    WSTG_INFO_DISCLOSURE,
+    GOLISH_NDAY,
+];
+
+pub const GENERAL_NUCLEI_TECHNIQUES: &[&str] = &[
+    WSTG_SQLI,
+    WSTG_XSS,
+    WSTG_CMD_INJECTION,
+    WSTG_WEAK_CREDS,
+    WSTG_SESSION_CSRF,
+    WSTG_EXPOSURE_CONFIG,
+    WSTG_TLS,
+    WSTG_INFO_DISCLOSURE,
+];
 
 /// 把一个扫描器 tag / classification 归一成注册的 vuln_triage WSTG technique id。
 ///
@@ -35,13 +66,30 @@ pub fn wstg_technique_for_tag(tag: &str) -> Option<&'static str> {
         "sqli" | "sql-injection" => Some(WSTG_SQLI),
         "xss" => Some(WSTG_XSS),
         "rce" | "cmd-injection" | "command-injection" => Some(WSTG_CMD_INJECTION),
-        "idor" | "bola" => Some(WSTG_IDOR),
         "default-login" | "weak-password" | "brute" => Some(WSTG_WEAK_CREDS),
         "csrf" | "session" => Some(WSTG_SESSION_CSRF),
         "exposure" | "config" | "misconfig" => Some(WSTG_EXPOSURE_CONFIG),
         "ssl" | "tls" => Some(WSTG_TLS),
         "disclosure" | "info-leak" | "info" => Some(WSTG_INFO_DISCLOSURE),
         "cve" | "nday" => Some(GOLISH_NDAY),
+        _ => None,
+    }
+}
+
+/// Canonical Nuclei tag selected by the server for one registered technique.
+/// This is deliberately one-to-one; alias handling lives only in the parser
+/// direction above, while command construction always emits one stable tag.
+pub fn nuclei_tag_for_technique(technique: &str) -> Option<&'static str> {
+    match technique {
+        WSTG_SQLI => Some("sqli"),
+        WSTG_XSS => Some("xss"),
+        WSTG_CMD_INJECTION => Some("rce"),
+        WSTG_WEAK_CREDS => Some("default-login"),
+        WSTG_SESSION_CSRF => Some("csrf"),
+        WSTG_EXPOSURE_CONFIG => Some("exposure"),
+        WSTG_TLS => Some("ssl"),
+        WSTG_INFO_DISCLOSURE => Some("disclosure"),
+        GOLISH_NDAY => Some("cve"),
         _ => None,
     }
 }
@@ -64,8 +112,6 @@ mod tests {
             wstg_technique_for_tag("command-injection"),
             Some(WSTG_CMD_INJECTION)
         );
-        assert_eq!(wstg_technique_for_tag("idor"), Some(WSTG_IDOR));
-        assert_eq!(wstg_technique_for_tag("bola"), Some(WSTG_IDOR));
         assert_eq!(
             wstg_technique_for_tag("default-login"),
             Some(WSTG_WEAK_CREDS)
@@ -126,6 +172,27 @@ mod tests {
     }
 
     #[test]
+    fn canonical_nuclei_inverse_covers_the_taxonomy_without_alias_drift() {
+        assert_eq!(FORMULAIC_TECHNIQUES.len(), 10);
+        assert!(FORMULAIC_TECHNIQUES.contains(&"WSTG-ATHN-04"));
+        assert!(!FORMULAIC_TECHNIQUES.contains(&WSTG_IDOR));
+        assert_eq!(GENERAL_NUCLEI_TECHNIQUES.len(), 8);
+        assert!(!GENERAL_NUCLEI_TECHNIQUES.contains(&"WSTG-ATHN-04"));
+        assert!(!GENERAL_NUCLEI_TECHNIQUES.contains(&WSTG_IDOR));
+        assert!(!GENERAL_NUCLEI_TECHNIQUES.contains(&GOLISH_NDAY));
+        for technique in GENERAL_NUCLEI_TECHNIQUES
+            .iter()
+            .copied()
+            .chain(std::iter::once(GOLISH_NDAY))
+        {
+            let tag = nuclei_tag_for_technique(technique).expect("canonical Nuclei tag");
+            assert_eq!(wstg_technique_for_tag(tag), Some(technique));
+        }
+        assert_eq!(nuclei_tag_for_technique("WSTG-ATHN-04"), None);
+        assert_eq!(nuclei_tag_for_technique("WSTG-UNKNOWN"), None);
+    }
+
+    #[test]
     fn every_mapped_id_is_in_vuln_triage_expected_set() {
         // 守卫：映射产出的每个 id 必须落在 spec.json vuln_triage expected_techniques
         // 的 10 类内（与 technique_taxonomy.json 对齐），否则 gate 投影对不上。
@@ -133,7 +200,7 @@ mod tests {
             "WSTG-INPV-05",
             "WSTG-INPV-01",
             "WSTG-INPV-12",
-            "WSTG-ATHZ-04",
+            "WSTG-ATHN-04",
             "WSTG-ATHN-02",
             "WSTG-SESS-02",
             "WSTG-CONF-05",
@@ -147,7 +214,6 @@ mod tests {
             "sqli",
             "xss",
             "rce",
-            "idor",
             "default-login",
             "csrf",
             "exposure",
@@ -161,5 +227,7 @@ mod tests {
                 "{id} must be a vuln_triage expected technique"
             );
         }
+        assert_eq!(wstg_technique_for_tag("idor"), None);
+        assert_eq!(wstg_technique_for_tag("bola"), None);
     }
 }

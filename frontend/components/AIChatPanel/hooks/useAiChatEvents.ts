@@ -336,13 +336,20 @@ export function useAiChatEvents({
                 store.setConversationStreaming(convId, false);
               }
               // Only meaningful transitions — skip the noisy repeated "running".
-              if (s === "finished" || s === "waiting_approval" || s === "reporting") {
+              if (
+                s === "finished" ||
+                s === "waiting_approval" ||
+                s === "waiting_target_scope" ||
+                s === "reporting"
+              ) {
                 const label =
                   s === "finished"
                     ? "Task complete"
                     : s === "waiting_approval"
                       ? "Waiting for approval"
-                      : "Generating report";
+                      : s === "waiting_target_scope"
+                        ? "Review scan targets"
+                        : "Generating report";
                 store.addConversationStageMarker(convId, {
                   kind: "task_progress",
                   label,
@@ -385,6 +392,7 @@ export function useAiChatEvents({
                 requestId: event.request_id,
                 sessionId: event.session_id,
                 question: event.question,
+                rawInputType: event.input_type ?? "",
                 inputType: resolveAskHumanInputType(event.input_type, askOptions),
                 options: askOptions,
                 context: event.context ?? "",
@@ -498,7 +506,6 @@ export function useAiChatEvents({
               break;
             case "compaction_completed":
               setCompactionState({ active: false, tokensBefore: Number(event.tokens_before) });
-              setTimeout(() => setCompactionState(null), 5000);
               break;
             case "compaction_failed":
               setCompactionState(null);

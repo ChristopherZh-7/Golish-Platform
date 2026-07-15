@@ -12,6 +12,20 @@ use crate::organization_recon::{ReconTaskError, ReconTaskManifest, ReconTaskStat
 mod stream;
 pub(crate) use stream::*;
 
+pub(crate) fn cli_json_empty_result_failure_pattern(
+    stdout_raw: &[u8],
+    stderr_raw: &[u8],
+    patterns: &[String],
+) -> Option<String> {
+    let stdout = String::from_utf8_lossy(stdout_raw);
+    let stderr = String::from_utf8_lossy(stderr_raw);
+    patterns.iter().find_map(|pattern| {
+        let pattern = pattern.trim();
+        (!pattern.is_empty() && (stdout.contains(pattern) || stderr.contains(pattern)))
+            .then(|| pattern.to_string())
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_cli_json_provider(
     tool: &ToolConfig,
@@ -43,6 +57,7 @@ pub(crate) async fn run_cli_json_provider(
         timeout_secs,
         artifact_globs: _,
         arg_bindings,
+        empty_result_failure_patterns,
     } = &asset.runtime
     else {
         return Err(GolishError::Validation(format!(
@@ -536,6 +551,54 @@ pub(crate) async fn run_cli_json_provider(
             }),
             profile_entries,
         );
+    }
+
+    if record_count == 0 {
+        if let Some(pattern) = cli_json_empty_result_failure_pattern(
+            &stdout_raw,
+            &stderr_raw,
+            empty_result_failure_patterns,
+        ) {
+            diagnostics.push(ReconTaskError::new(
+                "provider_reported_failure",
+                format!("empty provider output matched configured failure pattern: {pattern}"),
+            ));
+            let manifest_path = persist_cli_artifacts(
+                &out_dir,
+                run_id,
+                &provider_id,
+                ReconTaskStatus::Failed,
+                exit_status.code(),
+                record_count,
+                &stdout_raw,
+                &stderr_raw,
+                diagnostics,
+            )?;
+            let status = AssetIntelProviderRunStatus {
+                provider_id: provider_id.clone(),
+                status: AssetIntelProviderRunState::Failed,
+                message: format!(
+                    "{provider_id} reported an upstream failure despite exit code zero"
+                ),
+            };
+            return finish_provider_run(
+                sink,
+                run_id,
+                status,
+                candidate_count,
+                candidates,
+                serde_json::json!({
+                    "provider": provider_id,
+                    "runId": run_id,
+                    "state": "failed",
+                    "reason": "provider_reported_failure",
+                    "matchedPattern": pattern,
+                    "candidateCount": candidate_count,
+                    "manifestPath": manifest_path,
+                }),
+                profile_entries,
+            );
+        }
     }
 
     let state = if record_count == 0 {

@@ -24,6 +24,7 @@ mod sub_agent_call;
 use self::sub_agent_call::execute_sub_agent_call;
 
 pub mod candidate_verification;
+mod stage_team_scheduler;
 
 // `pub(crate)` so `execution_mode::selection_apply` can pull the tool definition
 // (co-located with its handler) when exposing `stage_run` to the primary agent.
@@ -117,10 +118,19 @@ fn combined_stdout_stderr(result: &serde_json::Value) -> String {
     }
 }
 
+fn stage_evidence_operation_id(
+    harness_operation_id: Option<uuid::Uuid>,
+) -> std::result::Result<uuid::Uuid, &'static str> {
+    harness_operation_id.ok_or(
+        "active harness stage has no durable operation id; refusing to book foreign evidence",
+    )
+}
+
 async fn record_recon_passive_evidence(
     tracker: Option<&golish_agent_kit::db_tracking::DbTracker>,
     session_id: Option<&str>,
     harness_stage: Option<golish_agent_kit::harness::StageKind>,
+    harness_operation_id: Option<uuid::Uuid>,
     harness_org_id: Option<uuid::Uuid>,
     tool_name: &str,
     tool_args: &serde_json::Value,
@@ -141,7 +151,10 @@ async fn record_recon_passive_evidence(
     let repo = tracker.repo().ok_or_else(|| {
         "active Target Intel recon has no DB repository for evidence persistence".to_string()
     })?;
-    let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
+    let op_id = stage_evidence_operation_id(harness_operation_id)?;
+    let organization_id = harness_org_id.ok_or_else(|| {
+        "active Target Intel recon has no organization id for evidence persistence".to_string()
+    })?;
     let ev_subject = result
         .get("company")
         .and_then(|c| c.as_str())
@@ -157,9 +170,10 @@ async fn record_recon_passive_evidence(
         .then(|| golish_agent_kit::harness::evidence_facts::subsidiary_discovery_facts(result))
         .flatten();
 
-    match repo
-        .evidence_append(
+    let append_result = repo
+        .evidence_append_for_organization(
             op_id,
+            organization_id,
             None,
             session_id,
             tracker.project_path(),
@@ -169,8 +183,9 @@ async fn record_recon_passive_evidence(
             &ev_raw,
             facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
         )
-        .await
-    {
+        .await;
+
+    match append_result {
         Ok(id) => {
             tracing::info!(
                 target: "harness::evidence",
@@ -568,12 +583,6 @@ where
                 if ctx.harness_stage.is_some() {
                     if let Some(tracker) = ctx.events.db_tracker {
                         if let Some(repo) = tracker.repo() {
-                            // Operation grouping key for the hash chain: the
-                            // task_id when a task scope is set, else the session
-                            // uuid. (Per-task scoping via `set_task_context` has no
-                            // callers yet; session keeps the chain working today
-                            // and auto-upgrades to task_id once that is wired.)
-                            let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
                             let ev_output = combined_stdout_stderr(v);
                             let ev_subject = tool_args
                                 .get("command")
@@ -588,20 +597,31 @@ where
                                     let outcome = golish_agent_kit::harness::evidence_facts::coverage_outcome_for_run(technique, &ev_output, true, false);
                                     (technique, asset, outcome)
                                 });
-                            match repo
-                                .evidence_append(
-                                    op_id,
-                                    None,
-                                    ctx.events.session_id,
-                                    tracker.project_path(),
-                                    effective_tool_name,
-                                    effective_tool_name,
-                                    ev_subject,
-                                    &ev_output,
-                                    facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
-                                )
-                                .await
-                            {
+                            let append_result = match (
+                                stage_evidence_operation_id(ctx.harness_operation_id),
+                                ctx.harness_org_id,
+                            ) {
+                                (Ok(op_id), Some(organization_id)) => {
+                                    repo.evidence_append_for_organization(
+                                        op_id,
+                                        organization_id,
+                                        None,
+                                        ctx.events.session_id,
+                                        tracker.project_path(),
+                                        effective_tool_name,
+                                        effective_tool_name,
+                                        ev_subject,
+                                        &ev_output,
+                                        facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+                                    )
+                                    .await
+                                }
+                                (Err(error), _) => Err(anyhow::anyhow!(error)),
+                                (_, None) => Err(anyhow::anyhow!(
+                                    "active harness stage has no organization id; refusing to book unowned evidence"
+                                )),
+                            };
+                            match append_result {
                                 Ok(id) => {
                                     appended_evidence_ids.push(id);
                                     tracing::info!(
@@ -678,7 +698,6 @@ where
             {
                 if let Some(tracker) = ctx.events.db_tracker {
                     if let Some(repo) = tracker.repo() {
-                        let op_id = tracker.task_id().unwrap_or_else(|| tracker.session_uuid());
                         let ev_output = combined_stdout_stderr(v);
                         let (pt_tool, pt_args) =
                             pentest_underlying_invocation(effective_tool_name, tool_args, v)
@@ -721,20 +740,31 @@ where
                                     .unwrap_or("coverage check failed")
                                     .to_string()
                             };
-                            match repo
-                                .evidence_append(
-                                    op_id,
-                                    None,
-                                    ctx.events.session_id,
-                                    tracker.project_path(),
-                                    pt_tool.as_str(),
-                                    pt_tool.as_str(),
-                                    &ev_subject,
-                                    &ev_body,
-                                    facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
-                                )
-                                .await
-                            {
+                            let append_result = match (
+                                stage_evidence_operation_id(ctx.harness_operation_id),
+                                ctx.harness_org_id,
+                            ) {
+                                (Ok(op_id), Some(organization_id)) => {
+                                    repo.evidence_append_for_organization(
+                                        op_id,
+                                        organization_id,
+                                        None,
+                                        ctx.events.session_id,
+                                        tracker.project_path(),
+                                        pt_tool.as_str(),
+                                        pt_tool.as_str(),
+                                        &ev_subject,
+                                        &ev_body,
+                                        facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
+                                    )
+                                    .await
+                                }
+                                (Err(error), _) => Err(anyhow::anyhow!(error)),
+                                (_, None) => Err(anyhow::anyhow!(
+                                    "active harness stage has no organization id; refusing to book unowned evidence"
+                                )),
+                            };
+                            match append_result {
                                 Ok(id) => {
                                     appended_evidence_ids.push(id);
                                     tracing::info!(
@@ -820,6 +850,7 @@ where
                 ctx.events.db_tracker,
                 ctx.events.session_id,
                 ctx.harness_stage,
+                ctx.harness_operation_id,
                 ctx.harness_org_id,
                 effective_tool_name,
                 tool_args,
@@ -1384,13 +1415,28 @@ mod tests {
         recon_source_query_rows, recon_source_query_rows_for_call, should_refresh_target_intel_dns,
         source_query_belongs_to_action, source_query_statuses_all_terminal,
         source_status_completion_marker_matches, source_status_completion_rows,
-        structured_storage_hook_payload,
+        stage_evidence_operation_id, structured_storage_hook_payload,
     };
     use golish_agent_kit::harness::StageKind;
     use serde_json::json;
 
     fn in_stage() -> Option<StageKind> {
         Some(StageKind::ExternalAttackSurface)
+    }
+
+    #[test]
+    fn stage_evidence_requires_the_durable_harness_operation() {
+        let operation_id = uuid::Uuid::from_u128(1);
+
+        assert_eq!(
+            stage_evidence_operation_id(Some(operation_id)).expect("operation should be accepted"),
+            operation_id,
+            "final-seal evidence must join the durable operation, not the chat session row"
+        );
+        assert!(
+            stage_evidence_operation_id(None).is_err(),
+            "a staged writer must fail closed instead of falling back to task/session UUIDs"
+        );
     }
 
     #[test]

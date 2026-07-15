@@ -36,7 +36,7 @@
 
 - [System hooks](system-hooks.md) · [Planning system](planning-system.md) · [Concurrent sub-agents](concurrent-sub-agents.md)
 - [System prompt guide](system-prompt-guide.md) · [Prompt contributions](prompt-contributions.md)
-- [Database & tools](database-and-tools.md) · [Graph-flow integration](graph-flow-integration.md) · [Auth-probe contract](auth-probe-contract.md)
+- [Database & tools](database-and-tools.md) · [Graph-flow integration](graph-flow-integration.md) · [Retired auth-probe contract](auth-probe-contract.md)
 
 ## 🗺️ 规划 / 概览
 

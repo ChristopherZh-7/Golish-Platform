@@ -305,10 +305,6 @@ fn build_get_secret_by_name_project_sql() -> String {
     "SELECT value, username, entry_type::text FROM vault_entries WHERE name=$1 AND project_path = $2 LIMIT 1".to_string()
 }
 
-fn build_get_value_by_name_project_sql() -> String {
-    "SELECT value FROM vault_entries WHERE name=$1 AND project_path = $2 LIMIT 1".to_string()
-}
-
 /// `(name, entry_type, username, notes)` rows for a project (exact match),
 /// alphabetical. Backs the AI `credential_vault` tool's `list` action.
 pub async fn list_name_meta_by_project(
@@ -341,22 +337,6 @@ pub async fn get_secret_by_name_project(
     Ok(row)
 }
 
-/// The first vault entry's encrypted `value` matching `name` within a project
-/// (exact match, `LIMIT 1`). Backs the `auth_probe` token resolver, which only
-/// needs the encrypted value. `None` == no such entry.
-pub async fn get_value_by_name_project(
-    pool: &PgPool,
-    name: &str,
-    project_path: &str,
-) -> Result<Option<String>> {
-    let row = sqlx::query_scalar::<_, String>(&build_get_value_by_name_project_sql())
-        .bind(name)
-        .bind(project_path)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,10 +350,6 @@ mod tests {
         assert_eq!(
             build_get_secret_by_name_project_sql(),
             "SELECT value, username, entry_type::text FROM vault_entries WHERE name=$1 AND project_path = $2 LIMIT 1"
-        );
-        assert_eq!(
-            build_get_value_by_name_project_sql(),
-            "SELECT value FROM vault_entries WHERE name=$1 AND project_path = $2 LIMIT 1"
         );
     }
 }

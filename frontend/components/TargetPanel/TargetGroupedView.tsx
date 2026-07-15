@@ -34,6 +34,15 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { Building2, Loader2, Network, Plus, Shield } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { assetIntel, organizationRecon, organizations as orgsApi } from "@/lib/api";
 import type { AssetIntelRun } from "@/lib/api/asset-intel";
 import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
@@ -140,8 +149,42 @@ interface TargetGroupedViewProps {
   ) => Promise<Target[]>;
   onDelete: (id: string) => Promise<void>;
   onDeleteMany: (ids: string[]) => Promise<void>;
+  onReloadTargets: () => Promise<void>;
   onToggleScope: (target: Target) => Promise<void>;
   onUpdateNotes: (id: string, notes: string) => void;
+}
+
+type DeleteIntent =
+  | {
+      kind: "organization";
+      id: string;
+      message: string;
+    }
+  | {
+      kind: "targets";
+      ids: string[];
+      message: string;
+      selectedHostId: string | null;
+    };
+
+const ORGANIZATION_DELETE_POLL_INTERVAL_MS = 150;
+const ORGANIZATION_DELETE_TIMEOUT_MS = 10_000;
+
+async function waitForOrganizationDeletion(
+  id: string,
+  projectPath: string
+): Promise<Organization[]> {
+  const deadline = Date.now() + ORGANIZATION_DELETE_TIMEOUT_MS;
+  while (true) {
+    const organizations = await orgsApi.listOrganizations(projectPath);
+    if (!organizations.some((organization) => organization.id === id)) return organizations;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        "Organization deletion is still processing. The Target page will refresh after background cleanup completes."
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, ORGANIZATION_DELETE_POLL_INTERVAL_MS));
+  }
 }
 
 /**
@@ -188,6 +231,7 @@ export function TargetGroupedView({
   onBatchAdd,
   onDelete,
   onDeleteMany,
+  onReloadTargets,
   onToggleScope,
   onUpdateNotes,
 }: TargetGroupedViewProps) {
@@ -205,6 +249,9 @@ export function TargetGroupedView({
   // Surface tab lists the domains that resolve to it.
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("overview");
+  const [deleteIntent, setDeleteIntent] = useState<DeleteIntent | null>(null);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Inline editor / creator state — only one can be open at a time. `ROOT_PARENT_KEY`
   // is used by `addingChildTo` to mean "creating a new top-level org".
@@ -782,48 +829,84 @@ export function TargetGroupedView({
   }, [editingOrgId, orgFormName, orgFormOwner, orgFormDesc, refreshOrgs, closeAllEditors]);
 
   const handleDeleteOrg = useCallback(
-    async (id: string, name: string) => {
+    (id: string, name: string) => {
       // Deleting an org cascades to its descendant orgs AND all their targets
       // (DB FKs, migration 20260614000002). Warn with the blast radius up front.
       const { subOrgCount, targetCount } = countOrgDeletionImpact(orgs, targets, id);
-      const confirmMsg = t("organizations.deleteConfirm")
+      const message = t("organizations.deleteConfirm")
         .replace("{{name}}", name)
         .replace("{{subOrgCount}}", String(subOrgCount))
         .replace("{{targetCount}}", String(targetCount));
-      if (!confirm(confirmMsg)) return;
-      try {
-        const projectPath = getProjectPath();
-        if (!projectPath) throw new Error("No active project is selected");
-        await orgsApi.deleteOrganization({ id, projectPath });
-        await refreshOrgs();
-        // Targets are cascade-deleted server-side; reload them so the UI drops
-        // the removed rows instead of leaving them stale.
-        sendCustomEvent("targets-changed").catch(() => {});
-      } catch (e) {
-        alert(String(e));
-      }
+      setDeleteError(null);
+      setDeleteIntent({ kind: "organization", id, message });
     },
-    [orgs, targets, refreshOrgs, t]
+    [orgs, targets, t]
   );
 
   const handleDeleteNodeTargets = useCallback(
-    async (node: OrgTreeNode) => {
+    (node: OrgTreeNode) => {
       // Synthetic groups (unassigned / unresolved bucket / IP host) have no DB
       // row of their own, so "delete this group" means deleting the real targets
       // it contains (recursively). Warn with the exact blast radius first.
       const victims = collectSubtreeTargets(node);
       if (victims.length === 0) return;
-      const confirmMsg = t("targets.deleteBucketConfirm")
+      const message = t("targets.deleteBucketConfirm")
         .replace("{{name}}", node.name)
         .replace("{{count}}", String(victims.length));
-      if (!confirm(confirmMsg)) return;
-      await onDeleteMany(victims.map((target) => target.id));
-      // Drop a selection pointing at the now-emptied group so the right panel
-      // doesn't dangle (host ids are also pruned by the tree-rebuild effect).
-      if (selectedHostId === node.id) setSelectedHostId(null);
+      setDeleteError(null);
+      setDeleteIntent({
+        kind: "targets",
+        ids: victims.map((target) => target.id),
+        message,
+        selectedHostId: node.id,
+      });
     },
-    [onDeleteMany, t, selectedHostId]
+    [t]
   );
+
+  const handleDeleteTarget = useCallback(
+    (id: string) => {
+      const target = targets.find((candidate) => candidate.id === id);
+      if (!target) return;
+      setDeleteError(null);
+      setDeleteIntent({
+        kind: "targets",
+        ids: [id],
+        message: t("targets.deleteConfirm").replace("{{name}}", target.value),
+        selectedHostId: null,
+      });
+    },
+    [targets, t]
+  );
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!deleteIntent || deleteSubmitting) return;
+    setDeleteSubmitting(true);
+    setDeleteError(null);
+    try {
+      if (deleteIntent.kind === "organization") {
+        const projectPath = getProjectPath();
+        if (!projectPath) throw new Error("No active project is selected");
+        await orgsApi.deleteOrganization({ id: deleteIntent.id, projectPath });
+        const remainingOrganizations = await waitForOrganizationDeletion(
+          deleteIntent.id,
+          projectPath
+        );
+        setOrgs(remainingOrganizations);
+        await onReloadTargets();
+        await sendCustomEvent("targets-changed").catch(() => {});
+      } else {
+        if (deleteIntent.ids.length === 1) await onDelete(deleteIntent.ids[0]);
+        else await onDeleteMany(deleteIntent.ids);
+        if (deleteIntent.selectedHostId === selectedHostId) setSelectedHostId(null);
+      }
+      setDeleteIntent(null);
+    } catch (error) {
+      setDeleteError(String(error));
+    } finally {
+      setDeleteSubmitting(false);
+    }
+  }, [deleteIntent, deleteSubmitting, onDelete, onDeleteMany, onReloadTargets, selectedHostId]);
 
   const handleAddTargetSubmit = useCallback(
     async (orgId: string) => {
@@ -998,7 +1081,7 @@ export function TargetGroupedView({
             selectedHostId={selectedHostId}
             setSelectedHostId={setSelectedHostId}
             onToggleScope={onToggleScope}
-            onDelete={onDelete}
+            onDelete={handleDeleteTarget}
             onUpdateNotes={onUpdateNotes}
             orgFormName={orgFormName}
             setOrgFormName={setOrgFormName}
@@ -1078,6 +1161,52 @@ export function TargetGroupedView({
         }
         onCreated={refreshOrgs}
       />
+
+      <Dialog
+        open={deleteIntent !== null}
+        onOpenChange={(open) => {
+          if (!open && !deleteSubmitting) {
+            setDeleteIntent(null);
+            setDeleteError(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-md border-border bg-card text-foreground/90">
+          <DialogHeader>
+            <DialogTitle>{t("common.delete")}</DialogTitle>
+            <DialogDescription className="whitespace-pre-line">
+              {deleteIntent?.message}
+            </DialogDescription>
+          </DialogHeader>
+          {deleteError && (
+            <div className="rounded border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+              {deleteError}
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={deleteSubmitting}
+              onClick={() => {
+                setDeleteIntent(null);
+                setDeleteError(null);
+              }}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deleteSubmitting}
+              onClick={() => void handleConfirmDelete()}
+            >
+              {deleteSubmitting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+              {t("common.delete")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

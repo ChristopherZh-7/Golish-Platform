@@ -2,9 +2,8 @@
 //!
 //! Extracts API endpoint call-sites from JS source code, returning a
 //! structured list of `{ method, path, params, auth, body_schema, ... }`
-//! tuples that downstream pentest tools (e.g. `auth_probe`, IDOR/未授权
-//! testing) can consume directly without paying LLM tokens to "read" each
-//! bundle.
+//! tuples that bounded anonymous-access review and later Candidate verification
+//! can consume directly without paying LLM tokens to "read" each bundle.
 //!
 //! ## Scope (P0)
 //!
@@ -78,13 +77,10 @@ pub enum AuthHint {
 
 /// Shape of the URL captured from source.
 ///
-/// `auth_probe` (Stage 2) reads this to decide whether it can safely
-/// substitute a path ID for cross-user IDOR testing:
-/// - `Literal`: full path is a string constant — safe to test as-is.
-/// - `Concatenated`: path is a prefix followed by `+ var` — the variable is
-///   conventionally an ID; substitute by appending a different user's ID.
-/// - `TemplateLiteral`: path contains `${...}` interpolation — substitute
-///   by replacing inside the placeholder when its position is known.
+/// Downstream consumers use this to distinguish concrete URLs from unresolved
+/// runtime templates. A shape hint is never permission to invent or substitute
+/// path values: anonymous-access probes require an exact safe endpoint, and
+/// Candidate verification replays only the frozen observation binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UrlKind {
@@ -137,8 +133,8 @@ pub struct Endpoint {
     #[serde(default)]
     pub url_kind: UrlKind,
     /// `true` when the path contains an ID-shaped segment (numeric, UUID,
-    /// or 24+-byte hex) — strong signal that `auth_probe` cross-user
-    /// scenario is applicable.
+    /// or 24+-byte hex). This is a Candidate-analysis signal, not permission
+    /// for a caller to guess or substitute identifiers.
     #[serde(default)]
     pub has_path_params: bool,
     /// 0-based index (within `/`-split segments) of the first ID-shaped
@@ -151,6 +147,50 @@ pub struct Endpoint {
     /// [`EndpointSource::Regex`] for backward-compatible deserialization.
     #[serde(default)]
     pub source: EndpointSource,
+}
+
+/// Byte-precise location of deterministic source evidence.
+///
+/// The end offset is exclusive. For regex-backed call candidates this span
+/// covers the matched callee and URL literal, which is enough to distinguish
+/// multiple calls on one minified line without persisting surrounding source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceSpan {
+    pub start_byte: usize,
+    pub end_byte: usize,
+    /// 1-based source line.
+    pub line: usize,
+    /// 0-based byte column within `line`.
+    pub column: usize,
+}
+
+/// Deterministic call-site facts that are intentionally kept separate from
+/// [`Endpoint`] so existing consumers and persisted endpoint JSON remain
+/// backward compatible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallSiteContext {
+    /// Normalized callee label such as `fetch`, `axios.post`, or `admin.get`.
+    pub callee: String,
+    /// Receiver identifier when the call has one (`admin` in `admin.get`).
+    pub receiver: Option<String>,
+    pub span: SourceSpan,
+}
+
+/// One raw endpoint plus the source-local call-site evidence needed by a
+/// downstream contextual resolver.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndpointCandidate {
+    pub endpoint: Endpoint,
+    pub call: CallSiteContext,
+}
+
+/// Candidate-preserving counterpart to [`ExtractReport`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CandidateExtractReport {
+    pub candidates: Vec<EndpointCandidate>,
+    pub skipped: Vec<SkippedFile>,
+    /// Unique raw `(method, path)` pairs. Occurrences remain in `candidates`.
+    pub unique: usize,
 }
 
 /// Aggregated extraction result for one or more JS files.
@@ -185,6 +225,19 @@ pub struct SkippedFile {
 /// false-positives where a `fetch('/x')` snippet inside a comment or
 /// `const docs = "..."` was getting picked up as a real call site.
 pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
+    extract_candidates_from_source(source_file, content)
+        .into_iter()
+        .filter(legacy_candidate_visible)
+        .map(|candidate| candidate.endpoint)
+        .collect()
+}
+
+/// Extract endpoint call-sites while preserving receiver and byte-span facts.
+///
+/// This is additive to [`extract_from_source`]. Downstream resolvers should
+/// consume this API when raw `(method, path)` is insufficient to distinguish
+/// named HTTP clients.
+pub fn extract_candidates_from_source(source_file: &str, content: &str) -> Vec<EndpointCandidate> {
     // P2: pre-compute byte ranges of every tree-sitter-confirmed
     // call_expression / new_expression. Endpoints whose match offset
     // falls outside ALL of these ranges are filtered out as
@@ -202,7 +255,7 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
 
     let scrubbed = noise::strip_noise(content);
     let scrubbed_str = scrubbed.as_str();
-    let mut hits: Vec<(usize, Endpoint)> = Vec::new();
+    let mut hits: Vec<(usize, EndpointCandidate)> = Vec::new();
 
     // We pre-compile each pattern once per call. The regex compilation cost
     // is small (~1 ms total), so caching across calls is not worth the
@@ -212,6 +265,8 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
     let axios_verb_re = Regex::new(patterns::AXIOS_VERB).expect("AXIOS_VERB regex valid");
     let http_client_verb_re =
         Regex::new(patterns::HTTP_CLIENT_VERB).expect("HTTP_CLIENT_VERB regex valid");
+    let http_client_relative_verb_re = Regex::new(patterns::HTTP_CLIENT_RELATIVE_VERB)
+        .expect("HTTP_CLIENT_RELATIVE_VERB regex valid");
     let axios_config_re = Regex::new(patterns::AXIOS_CONFIG).expect("AXIOS_CONFIG regex valid");
     let jquery_re = Regex::new(patterns::JQUERY_AJAX).expect("JQUERY_AJAX regex valid");
     let new_request_re = Regex::new(patterns::NEW_REQUEST).expect("NEW_REQUEST regex valid");
@@ -234,8 +289,14 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
             }
             None => continue,
         };
-        if let Some(ep) = patterns::endpoint_from_fetch_concat(&cap, scrubbed_str, source_file) {
-            hits.push((off, ep));
+        if let (Some(matched), Some(endpoint)) = (
+            cap.get(0),
+            patterns::endpoint_from_fetch_concat(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                off,
+                endpoint_candidate(endpoint, content, matched, "fetch", None),
+            ));
         }
     }
     for cap in fetch_template_re.captures_iter(scrubbed_str) {
@@ -246,8 +307,14 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
             }
             None => continue,
         };
-        if let Some(ep) = patterns::endpoint_from_fetch_template(&cap, scrubbed_str, source_file) {
-            hits.push((off, ep));
+        if let (Some(matched), Some(endpoint)) = (
+            cap.get(0),
+            patterns::endpoint_from_fetch_template(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                off,
+                endpoint_candidate(endpoint, content, matched, "fetch", None),
+            ));
         }
     }
     for cap in fetch_re.captures_iter(scrubbed_str) {
@@ -260,39 +327,110 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
             }
             None => continue,
         };
-        if let Some(ep) = patterns::endpoint_from_fetch(&cap, scrubbed_str, source_file) {
-            hits.push((off, ep));
+        if let (Some(matched), Some(endpoint)) = (
+            cap.get(0),
+            patterns::endpoint_from_fetch(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                off,
+                endpoint_candidate(endpoint, content, matched, "fetch", None),
+            ));
         }
     }
     for cap in axios_verb_re.captures_iter(scrubbed_str) {
         let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
-        if let Some(ep) = patterns::endpoint_from_axios_verb(&cap, scrubbed_str, source_file) {
-            hits.push((off, ep));
+        let verb = cap.get(1).map(|value| value.as_str().to_ascii_lowercase());
+        if let (Some(matched), Some(verb), Some(endpoint)) = (
+            cap.get(0),
+            verb,
+            patterns::endpoint_from_axios_verb(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                off,
+                endpoint_candidate(
+                    endpoint,
+                    content,
+                    matched,
+                    &format!("axios.{verb}"),
+                    Some("axios"),
+                ),
+            ));
         }
     }
     for cap in http_client_verb_re.captures_iter(scrubbed_str) {
-        let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
-        if let Some(ep) = patterns::endpoint_from_http_client_verb(&cap, scrubbed_str, source_file)
-        {
-            hits.push((off, ep));
+        let receiver = cap.get(1).map(|value| value.as_str().to_string());
+        let verb = cap.get(2).map(|value| value.as_str().to_ascii_lowercase());
+        if let (Some(matched), Some(receiver), Some(verb), Some(endpoint)) = (
+            cap.get(0),
+            receiver,
+            verb,
+            patterns::endpoint_from_http_client_verb(&cap, scrubbed_str, source_file),
+        ) {
+            let candidate =
+                http_client_endpoint_candidate(endpoint, content, matched, &receiver, &verb);
+            hits.push((candidate.call.span.start_byte, candidate));
+        }
+    }
+    for cap in http_client_relative_verb_re.captures_iter(scrubbed_str) {
+        let Some(path) = cap.get(3).map(|value| value.as_str()) else {
+            continue;
+        };
+        if path.starts_with('/') || path.contains(':') {
+            continue;
+        }
+        let receiver = cap.get(1).map(|value| value.as_str().to_string());
+        let verb = cap.get(2).map(|value| value.as_str().to_ascii_lowercase());
+        if let (Some(matched), Some(receiver), Some(verb), Some(mut endpoint)) = (
+            cap.get(0),
+            receiver,
+            verb,
+            patterns::endpoint_from_http_client_verb(&cap, scrubbed_str, source_file),
+        ) {
+            endpoint.confidence = 0.65;
+            let candidate =
+                http_client_endpoint_candidate(endpoint, content, matched, &receiver, &verb);
+            hits.push((candidate.call.span.start_byte, candidate));
         }
     }
     for cap in axios_config_re.captures_iter(scrubbed_str) {
         let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
-        if let Some(ep) = patterns::endpoint_from_axios_config(&cap, scrubbed_str, source_file) {
-            hits.push((off, ep));
+        if let (Some(matched), Some(endpoint)) = (
+            cap.get(0),
+            patterns::endpoint_from_axios_config(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                off,
+                endpoint_candidate(endpoint, content, matched, "axios", Some("axios")),
+            ));
         }
     }
     for cap in jquery_re.captures_iter(scrubbed_str) {
         let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
-        if let Some(ep) = patterns::endpoint_from_jquery(&cap, scrubbed_str, source_file) {
-            hits.push((off, ep));
+        if let (Some(matched), Some(endpoint)) = (
+            cap.get(0),
+            patterns::endpoint_from_jquery(&cap, scrubbed_str, source_file),
+        ) {
+            let callee = if matched.as_str().trim_start().starts_with('$') {
+                "$.ajax"
+            } else {
+                "jQuery.ajax"
+            };
+            hits.push((
+                off,
+                endpoint_candidate(endpoint, content, matched, callee, None),
+            ));
         }
     }
     for cap in new_request_re.captures_iter(scrubbed_str) {
         let off = cap.get(0).map(|m| m.start()).unwrap_or(0);
-        if let Some(ep) = patterns::endpoint_from_new_request(&cap, scrubbed_str, source_file) {
-            hits.push((off, ep));
+        if let (Some(matched), Some(endpoint)) = (
+            cap.get(0),
+            patterns::endpoint_from_new_request(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                off,
+                endpoint_candidate(endpoint, content, matched, "Request", None),
+            ));
         }
     }
 
@@ -300,16 +438,134 @@ pub fn extract_from_source(source_file: &str, content: &str) -> Vec<Endpoint> {
     // tree-sitter-confirmed call_expression / new_expression node.
     // When `ast_ranges == None` (parser bailed) we keep everything —
     // graceful degradation.
-    let endpoints: Vec<Endpoint> = if let Some(ref ranges) = ast_ranges {
+    let candidates: Vec<EndpointCandidate> = if let Some(ref ranges) = ast_ranges {
         hits.into_iter()
             .filter(|(off, _)| ranges.contains_offset(*off))
-            .map(|(_, ep)| ep)
+            .map(|(_, candidate)| candidate)
             .collect()
     } else {
-        hits.into_iter().map(|(_, ep)| ep).collect()
+        hits.into_iter().map(|(_, candidate)| candidate).collect()
     };
 
-    endpoints
+    candidates
+}
+
+fn expanded_member_chain_receiver(
+    source: &str,
+    receiver_start: usize,
+    receiver_leaf: &str,
+) -> (String, usize) {
+    let bytes = source.as_bytes();
+    let mut chain_start = receiver_start;
+    loop {
+        let mut cursor = chain_start;
+        while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+            cursor -= 1;
+        }
+        if cursor == 0 || bytes[cursor - 1] != b'.' {
+            break;
+        }
+        cursor -= 1;
+        while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+            cursor -= 1;
+        }
+        if cursor > 0 && bytes[cursor - 1] == b'?' {
+            cursor -= 1;
+            while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+        }
+        let identifier_end = cursor;
+        while cursor > 0
+            && (bytes[cursor - 1].is_ascii_alphanumeric()
+                || matches!(bytes[cursor - 1], b'_' | b'$'))
+        {
+            cursor -= 1;
+        }
+        if cursor == identifier_end {
+            break;
+        }
+        chain_start = cursor;
+    }
+
+    let receiver_end = receiver_start.saturating_add(receiver_leaf.len());
+    let receiver = source[chain_start..receiver_end]
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    (receiver, chain_start)
+}
+
+fn legacy_candidate_visible(candidate: &EndpointCandidate) -> bool {
+    (candidate.endpoint.kind != CallSiteKind::HttpClientVerb
+        || candidate.endpoint.path.starts_with('/'))
+        && candidate
+            .call
+            .receiver
+            .as_deref()
+            .is_none_or(|receiver| !receiver.contains('.'))
+}
+
+fn http_client_endpoint_candidate(
+    endpoint: Endpoint,
+    source: &str,
+    matched: regex::Match<'_>,
+    receiver_leaf: &str,
+    verb: &str,
+) -> EndpointCandidate {
+    let (receiver, chain_start) =
+        expanded_member_chain_receiver(source, matched.start(), receiver_leaf);
+    let mut candidate = endpoint_candidate(
+        endpoint,
+        source,
+        matched,
+        &format!("{receiver}.{verb}"),
+        Some(&receiver),
+    );
+    if chain_start != candidate.call.span.start_byte {
+        let line_start = source[..chain_start]
+            .rfind('\n')
+            .map(|offset| offset + 1)
+            .unwrap_or(0);
+        candidate.call.span.start_byte = chain_start;
+        candidate.call.span.line = 1 + source[..chain_start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count();
+        candidate.call.span.column = chain_start.saturating_sub(line_start);
+    }
+    candidate
+}
+
+fn endpoint_candidate(
+    endpoint: Endpoint,
+    source: &str,
+    matched: regex::Match<'_>,
+    callee: &str,
+    receiver: Option<&str>,
+) -> EndpointCandidate {
+    let start_byte = matched.start();
+    let end_byte = matched.end();
+    let line_start = source[..start_byte]
+        .rfind('\n')
+        .map(|offset| offset + 1)
+        .unwrap_or(0);
+    EndpointCandidate {
+        endpoint,
+        call: CallSiteContext {
+            callee: callee.to_string(),
+            receiver: receiver.map(ToOwned::to_owned),
+            span: SourceSpan {
+                start_byte,
+                end_byte,
+                line: 1 + source[..start_byte]
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count(),
+                column: start_byte.saturating_sub(line_start),
+            },
+        },
+    }
 }
 
 /// Convenience: extract from many files and aggregate into a single report.
@@ -321,11 +577,40 @@ where
 {
     let mut report = ExtractReport::default();
     let mut seen: HashSet<(String, String)> = HashSet::new();
+    for (path, source) in files {
+        let path_ref = path.as_ref();
+        let mut found = extract_from_source(path_ref, source.as_ref());
+        if found.is_empty() {
+            report.skipped.push(SkippedFile {
+                file: path_ref.to_string(),
+                reason: "no recognized HTTP call patterns".to_string(),
+            });
+            continue;
+        }
+        for endpoint in &found {
+            if seen.insert((endpoint.method.clone(), endpoint.path.clone())) {
+                report.unique += 1;
+            }
+        }
+        report.endpoints.append(&mut found);
+    }
+    report
+}
+
+/// Extract from many files without collapsing source-local call-site facts.
+pub fn extract_candidates_from_files<I, S1, S2>(files: I) -> CandidateExtractReport
+where
+    I: IntoIterator<Item = (S1, S2)>,
+    S1: AsRef<str>,
+    S2: AsRef<str>,
+{
+    let mut report = CandidateExtractReport::default();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
 
     for (path, source) in files {
         let path_ref = path.as_ref();
         let source_ref = source.as_ref();
-        let mut found = extract_from_source(path_ref, source_ref);
+        let mut found = extract_candidates_from_source(path_ref, source_ref);
 
         if found.is_empty() {
             report.skipped.push(SkippedFile {
@@ -335,12 +620,15 @@ where
             continue;
         }
 
-        for ep in &found {
-            if seen.insert((ep.method.clone(), ep.path.clone())) {
+        for candidate in &found {
+            if seen.insert((
+                candidate.endpoint.method.clone(),
+                candidate.endpoint.path.clone(),
+            )) {
                 report.unique += 1;
             }
         }
-        report.endpoints.append(&mut found);
+        report.candidates.append(&mut found);
     }
 
     report

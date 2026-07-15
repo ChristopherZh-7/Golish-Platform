@@ -1,8 +1,8 @@
 //! `ChatModePolicy` — single-agent conversational mode with the full toolbox.
 //!
 //! This policy is what finally gives the chat-mode LLM access to
-//! `browser_collect_js_api / manage_targets / record_finding / vault / js_extract_apis /
-//! auth_probe` (the `pentest_bridge` tools that the legacy
+//! `browser_collect_js_api / manage_targets / record_finding / vault /
+//! js_extract_apis` (the `pentest_bridge` tools that the legacy
 //! `tool.name.starts_with("pentest_")` filter was silently dropping).
 
 use async_trait::async_trait;
@@ -71,7 +71,6 @@ mod tests {
     async fn chat_primary_includes_js_api_tools() {
         let s = ChatModePolicy.primary_tools(&mock_ctx()).await;
         assert!(s.bridge_tools.manage_targets);
-        assert!(s.bridge_tools.auth_probe);
         assert!(s.bridge_tools.record_finding);
         assert!(s.bridge_tools.vault);
         assert!(s.bridge_tools.browser_collect_js_api);

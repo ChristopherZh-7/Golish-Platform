@@ -22,6 +22,14 @@ manifest or decision.
   the frozen technique.
 - `decision="no_candidate"` requires a stable `no_candidate_reason_code` and
   evidence-backed rationale. It is the explicit I8 terminal state, not silence.
+- Treat evidence outcome semantics literally. `blocked` means the check did not
+  complete; it is neither a negative result nor proof of WAF/rate limiting,
+  target resistance, or any other cause. Name a blocker cause only when that
+  exact cause is present in trusted evidence supplied to this turn. Otherwise
+  say only that the check was blocked and keep the resulting uncertainty in the
+  rationale.
+- `not_applicable` applies only to the exact technique and producer represented
+  by that evidence row. It must not be generalized into "the target is safe".
 
 **Recommended sequence:**
 
@@ -51,6 +59,9 @@ manifest or decision.
 - Do NOT invent hypotheses with no observational basis; every decision must be
   grounded by a concrete rationale and non-empty evidence ids from its exact
   work item. Foreign or unlinked ids fail closed.
+- Do NOT invent why a producer returned `blocked`. In particular, never rewrite
+  a template/configuration/tooling blocker as "blocked by WAF" unless trusted
+  evidence explicitly says WAF.
 - Prefer a few high-quality, well-grounded candidates over a long list of
   speculative ones — each approved candidate costs real exploitation budget in
   `verification`.

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Bridge layer between the Tauri application and the agent runtime.
 //!
 //! Extracted from `golish-ai` in **A1-3** of the architecture upgrade plan.

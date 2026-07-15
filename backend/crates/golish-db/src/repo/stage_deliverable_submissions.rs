@@ -221,6 +221,85 @@ async fn lock_and_verify_tool_call(
     if row.stage_kind != input.stage_kind {
         return Err(identity_mismatch("submission_tool_stage_kind_mismatch"));
     }
+
+    // A Team-owned Unit has one server-selected final submitter.  Producer and
+    // helper prompts intentionally omit this authority, but prompts are not a
+    // security boundary: the immutable submission writer rechecks the exact
+    // TeamPlan -> Aggregator WorkItem -> WorkerRun tuple under row locks.
+    if let Some(stage_run_unit_id) = input.stage_run_unit_id {
+        // The retained foundation-migration compatibility tests exercise this
+        // repository before the later Stage Team schema exists. Such a schema
+        // cannot contain a Team-owned Unit, so only run the stronger Team
+        // authority check once that atomic migration is present.
+        let stage_team_schema_available: bool =
+            sqlx::query_scalar("SELECT TO_REGCLASS('public.stage_team_plans') IS NOT NULL")
+                .fetch_one(&mut **tx)
+                .await?;
+        let team_plan = if stage_team_schema_available {
+            sqlx::query_as::<_, (Uuid, Option<Uuid>, Option<String>)>(
+                r#"SELECT id,final_submitter_worker_run_id,aggregator_role
+                     FROM stage_team_plans
+                    WHERE stage_run_unit_id=$1
+                    FOR SHARE"#,
+            )
+            .bind(stage_run_unit_id)
+            .fetch_optional(&mut **tx)
+            .await?
+        } else {
+            None
+        };
+        if let Some((team_plan_id, final_submitter_worker_run_id, aggregator_role)) = team_plan {
+            let exact_aggregator = match (
+                input.worker_run_id,
+                final_submitter_worker_run_id,
+                aggregator_role.as_deref(),
+            ) {
+                (Some(worker_run_id), Some(final_submitter), Some(aggregator_role))
+                    if worker_run_id == final_submitter =>
+                {
+                    sqlx::query_scalar::<_, bool>(
+                        r#"SELECT EXISTS (
+                               SELECT 1
+                                 FROM stage_worker_runs AS worker
+                                 JOIN stage_work_items AS item
+                                   ON item.id=worker.work_item_id
+                                  AND item.operation_id=worker.operation_id
+                                  AND item.stage_execution_id=worker.stage_execution_id
+                                  AND item.stage_run_unit_id=worker.stage_run_unit_id
+                                  AND item.organization_id=worker.organization_id
+                                WHERE worker.id=$1
+                                  AND worker.operation_id=$2
+                                  AND worker.stage_execution_id=$3
+                                  AND worker.stage_run_unit_id=$4
+                                  AND worker.organization_id=$5
+                                  AND worker.status='running'
+                                  AND worker.active_tool_call_id=$6
+                                  AND item.team_plan_id=$7
+                                  AND item.role=$8
+                                  AND item.required_for_barrier=FALSE
+                                  AND item.status='running'
+                           )"#,
+                    )
+                    .bind(worker_run_id)
+                    .bind(input.operation_id)
+                    .bind(input.stage_execution_id)
+                    .bind(stage_run_unit_id)
+                    .bind(input.organization_id)
+                    .bind(input.tool_call_record_id)
+                    .bind(team_plan_id)
+                    .bind(aggregator_role)
+                    .fetch_one(&mut **tx)
+                    .await?
+                }
+                _ => false,
+            };
+            if !exact_aggregator {
+                return Err(StageDeliverableSubmissionError::Conflict {
+                    code: "stage_team_submission_requires_unique_aggregator",
+                });
+            }
+        }
+    }
     Ok(())
 }
 

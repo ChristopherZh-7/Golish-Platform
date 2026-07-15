@@ -26,6 +26,23 @@ import { safeStringify } from "./text";
  */
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 
+/** Stable product label for stage_run specialist/controller role slugs. */
+export function getStageRunAgentLabel(roleLabel?: string): string | null {
+  const raw = roleLabel?.trim();
+  if (!raw) return null;
+  const normalizedWords = raw.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (/^company (stage )?controller$/i.test(normalizedWords)) {
+    return "Company Controller";
+  }
+  const readable = /[_-]/.test(raw)
+    ? normalizedWords
+        .split(" ")
+        .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+        .join(" ")
+    : raw;
+  return /agent$/i.test(readable) ? readable : `${readable} Agent`;
+}
+
 const TOOL_COLORS: Record<string, string> = {
   run_command: "var(--ansi-green)",
   run_pty_cmd: "var(--ansi-green)",
@@ -41,7 +58,8 @@ const TOOL_COLORS: Record<string, string> = {
   recon_lookup_whois: "var(--ansi-magenta)",
   recon_discover_subsidiaries: "var(--ansi-magenta)",
   enum_crawl_same_origin_urls: "var(--ansi-magenta)",
-  vuln_run_formulaic_sweep: "#f59e0b",
+  vuln_nuclei_general: "#f59e0b",
+  vuln_nuclei_fingerprint_targeted: "#f59e0b",
 };
 
 const TOOL_ICONS: Record<string, LucideIcon> = {
@@ -63,7 +81,8 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   recon_lookup_whois: Globe,
   recon_discover_subsidiaries: Radar,
   enum_crawl_same_origin_urls: Globe,
-  vuln_run_formulaic_sweep: Radar,
+  vuln_nuclei_general: Radar,
+  vuln_nuclei_fingerprint_targeted: Radar,
 };
 
 export function getToolColor(name: string): string {
@@ -119,7 +138,8 @@ const TOOL_LABELS_SHORT: Record<string, string> = {
   recon_discover_subsidiaries: "Subsidiaries",
   eas_fingerprint_web_stack: "Web FP",
   enum_crawl_same_origin_urls: "Crawl URLs",
-  vuln_run_formulaic_sweep: "Vuln Sweep",
+  vuln_nuclei_general: "Nuclei Scan",
+  vuln_nuclei_fingerprint_targeted: "Nuclei PoC",
 };
 
 const TOOL_LABELS_STANDARD: Record<string, string> = {
@@ -143,7 +163,8 @@ const TOOL_LABELS_STANDARD: Record<string, string> = {
   recon_discover_subsidiaries: "Discover Subsidiaries",
   eas_fingerprint_web_stack: "Fingerprint Web Stack",
   enum_crawl_same_origin_urls: "Crawl Same-Origin URLs",
-  vuln_run_formulaic_sweep: "Formulaic Vuln Sweep",
+  vuln_nuclei_general: "General Nuclei Scan",
+  vuln_nuclei_fingerprint_targeted: "Fingerprint-Targeted Nuclei Scan",
 };
 
 export function getToolLabel(name: string, variant: "short" | "standard" = "standard"): string {
@@ -176,7 +197,8 @@ const TOOL_ACTION_LABELS: Record<string, string> = {
   recon_enrich_assets: "Enriching assets",
   eas_fingerprint_web_stack: "Fingerprinting web services",
   enum_crawl_same_origin_urls: "Crawling same-origin URLs",
-  vuln_run_formulaic_sweep: "Running formulaic vuln sweep",
+  vuln_nuclei_general: "Running general Nuclei scan",
+  vuln_nuclei_fingerprint_targeted: "Running fingerprint-targeted Nuclei scan",
   read_file: "Reading file",
   write_file: "Writing file",
   edit_file: "Editing file",
@@ -270,8 +292,8 @@ export function getToolPrimaryArg(name: string, args: Record<string, unknown>): 
   if (name === "enum_crawl_same_origin_urls") {
     return formatEnumCrawlSameOriginUrlsSummary(args);
   }
-  if (name === "vuln_run_formulaic_sweep") {
-    return formatVulnRunFormulaicSweepSummary(args);
+  if (name === "vuln_nuclei_general" || name === "vuln_nuclei_fingerprint_targeted") {
+    return formatVulnNucleiSummary(args);
   }
   // pentest_run wraps the real tool in `tool_name` + `args`; the card title now
   // carries the action ("Probing services"), so the secondary line stays compact
@@ -410,14 +432,8 @@ function formatEnumCrawlSameOriginUrlsSummary(args: Record<string, unknown>): st
   return [targetSummary, depth].filter(Boolean).join(" · ") || null;
 }
 
-function formatVulnRunFormulaicSweepSummary(args: Record<string, unknown>): string | null {
-  const targetSummary = Array.isArray(args.targets)
-    ? formatTargetListSummary(
-        args.targets
-          .map((line) => normalizeInputLine(line))
-          .filter((line): line is string => line != null)
-      )
-    : null;
+function formatVulnNucleiSummary(args: Record<string, unknown>): string | null {
+  const targetSummary = normalizeInputLine(args.target_url);
   const techniques = Array.isArray(args.techniques)
     ? args.techniques
         .map((technique) => normalizeInputLine(technique))

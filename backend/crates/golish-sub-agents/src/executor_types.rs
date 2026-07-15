@@ -16,6 +16,20 @@ use golish_tools::ToolRegistry;
 /// When a sub-agent calls this tool, the executor terminates the loop and
 /// returns the structured result to the parent agent (PentAGI barrier pattern).
 pub const BARRIER_TOOL_NAME: &str = "submit_result";
+/// Host-routed control tool exposed only to a trusted Company Controller.
+pub const STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME: &str = "stage_team_dispatch_workers";
+/// Host-routed control tool used by a trusted Company Controller to close its
+/// current request epoch and hand finalization back to the outer scheduler.
+pub const STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME: &str =
+    "stage_team_prepare_final_submission";
+/// Local planning tool exposed through the static catalogue only to an exact
+/// bound Company Controller. Unbound orchestrator agents retain their existing
+/// generic `update_plan` path.
+pub const STAGE_TEAM_UPDATE_PLAN_TOOL_NAME: &str = "update_plan";
+/// Exact successful router status that parks the Controller after dispatch.
+pub const STAGE_TEAM_DISPATCH_ACCEPTED_STATUS: &str = "dispatch_accepted";
+/// Exact successful router status that transfers finalization to the scheduler.
+pub const STAGE_TEAM_PREPARE_FINAL_STATUS: &str = "prepare_final";
 
 const MODEL_RECOVERY_ACTION_SAMPLE_LIMIT: usize = 20;
 const MODEL_RECOVERY_INSTRUCTION_MAX_BYTES: usize = 32 * 1024;
@@ -64,6 +78,15 @@ pub enum SubAgentChainError {
 /// shared checkpoint counter is the CAS witness for chain checkpoints; the
 /// lease-loss flag is set by the runtime heartbeat/fencing supervisor and is
 /// checked before subsequent provider/tool work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageTeamLeaderBinding {
+    pub stage_team_plan_id: uuid::Uuid,
+    pub leader_work_item_id: uuid::Uuid,
+    pub expected_dispatch_epoch: i64,
+    pub expected_plan_row_version: i64,
+    pub expected_work_item_row_version: i64,
+}
+
 #[derive(Clone)]
 pub struct BoundWorkerChainContext {
     pub operation_id: uuid::Uuid,
@@ -73,6 +96,20 @@ pub struct BoundWorkerChainContext {
     /// Opaque Candidate identity for a prebound verifier WorkerRun. Generic
     /// stage workers keep this `None`.
     pub candidate_attempt: Option<golish_core::CandidateAttemptContextRef>,
+    /// Host-owned continuation mode. Once a terminal action exists without a
+    /// terminal intent, the same durable chain may read evidence and submit
+    /// only; it may never dispatch another external action.
+    pub candidate_submit_only: bool,
+    /// Host-owned Team Aggregator policy. Once `submit_stage_deliverable`
+    /// durably persists either an accepted or needs-fix submission, return the
+    /// submission id to the outer scheduler so it owns Gate repair routing.
+    /// Ordinary stage workers keep this disabled and retain their in-chain
+    /// repair behavior.
+    pub return_on_first_durable_stage_submission: bool,
+    /// Trusted Company Controller identity. This is populated only from a
+    /// server-owned Stage Team claim; agent-visible arguments can never create
+    /// or widen it. Ordinary workers and legacy Aggregators keep this `None`.
+    pub stage_team_leader: Option<StageTeamLeaderBinding>,
     pub chain_id: uuid::Uuid,
     pub session_id: uuid::Uuid,
     pub agent_type: String,
@@ -498,7 +535,9 @@ impl SubmitRepairMode {
                 "eas_discover_ports",
                 "eas_fingerprint_services",
                 "eas_fingerprint_web_stack",
-                "vuln_run_formulaic_sweep",
+                "vuln_nuclei_general",
+                "vuln_nuclei_fingerprint_targeted",
+                "vuln_probe_anonymous_access",
                 "list_recent_evidence",
                 "check_stage_asset_coverage",
                 "query_target_data",
@@ -527,7 +566,16 @@ impl SubmitRepairMode {
                 append_direct_eas_repair_tools(&mut tools, &self.coverage_gap_actions);
                 append_direct_vuln_repair_tools(&mut tools, &self.coverage_gap_actions);
                 if has_vuln_gap_actions(&self.coverage_gap_actions) {
-                    tools.retain(|tool| tool != "pentest_run" && tool != "pentest_list_tools");
+                    tools.retain(|tool| {
+                        !matches!(
+                            tool.as_str(),
+                            "pentest_run"
+                                | "pentest_list_tools"
+                                | "wait_for_background_jobs"
+                                | "check_job"
+                                | "kill_job"
+                        )
+                    });
                 }
             }
         }
@@ -587,8 +635,13 @@ impl SubmitRepairMode {
                      entire attack surface. Run only stage-allowed probes for the exact \
                      asset/technique pairs named in the gate feedback. Batch sibling gap assets with \
                      input_lines/list-file mode when every target is present in coverage_gap_actions. \
-                     Vuln-triage gaps must use vuln_run_formulaic_sweep with explicit targets[] and \
-                     techniques[] from the gap list. \
+                     Vuln-triage general WSTG gaps must use vuln_nuclei_general; WSTG-ATHN-04 \
+                     must use vuln_probe_anonymous_access after a complete endpoint review; \
+                     GOLISH-NDAY must use vuln_nuclei_fingerprint_targeted. Nuclei calls pass one \
+                     server-side target_id, one exact target_url, and explicit techniques[] from \
+                     the gap list. Anonymous-access calls pass the same exact target binding, the \
+                     complete reviewed_endpoint_ids[] witness, and at most 16 selected_probes[] \
+                     entries containing only endpoint_id/query_values/rationale. \
                      Do NOT call list_in_scope_targets, list_attack_surface_seeds, \
                      CIDR/range sweeps, targets outside coverage_gap_actions, or broad rediscovery. \
                      When each named gap has a terminal coverage cell, resubmit."
@@ -628,7 +681,7 @@ impl SubmitRepairMode {
             return Some(self.block_payload(
                 tool_name,
                 Some(
-                    "Vuln-triage coverage-gap repair must use vuln_run_formulaic_sweep, not raw pentest_run"
+                    "Vuln-triage coverage-gap repair must use vuln_nuclei_general, vuln_probe_anonymous_access, or vuln_nuclei_fingerprint_targeted, not raw pentest_run"
                         .to_string(),
                 ),
             ));
@@ -657,7 +710,7 @@ impl SubmitRepairMode {
                     return Some(self.block_payload(
                         tool_name,
                         Some(
-                            "Vuln-triage coverage-gap repair must use vuln_run_formulaic_sweep, not raw pentest_run"
+                            "Vuln-triage coverage-gap repair must use vuln_nuclei_general, vuln_probe_anonymous_access, or vuln_nuclei_fingerprint_targeted, not raw pentest_run"
                                 .to_string(),
                         ),
                     ));
@@ -693,9 +746,11 @@ impl SubmitRepairMode {
                 }
             }
             if self.kind == SubmitRepairKind::CoverageGap && is_direct_vuln_repair_tool(tool_name) {
-                if let Some(reason) =
-                    coverage_gap_vuln_wrapper_block_reason(tool_args, &self.coverage_gap_actions)
-                {
+                if let Some(reason) = coverage_gap_vuln_wrapper_block_reason(
+                    tool_name,
+                    tool_args,
+                    &self.coverage_gap_actions,
+                ) {
                     return Some(self.block_payload(tool_name, Some(reason)));
                 }
             }
@@ -739,8 +794,12 @@ pub(crate) fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> 
          run ONLY target/technique pairs authorized by the complete guard data. EAS gaps must use \
          eas_probe_http_liveness / eas_discover_ports / eas_fingerprint_services / \
          eas_fingerprint_web_stack instead of raw \
-         pentest_run. Vuln-triage gaps must use vuln_run_formulaic_sweep with explicit targets[] \
-         and techniques[] from this list, not raw pentest_run. Direct enumeration tools \
+         pentest_run. Vuln-triage general WSTG gaps must use vuln_nuclei_general, WSTG-ATHN-04 \
+         must use vuln_probe_anonymous_access after reviewing the complete eligible endpoint set, \
+         and GOLISH-NDAY must use vuln_nuclei_fingerprint_targeted. Nuclei calls pass singular \
+         target_id + exact target_url + explicit techniques[]. Anonymous-access calls pass the \
+         complete reviewed_endpoint_ids[] witness plus a bounded selected_probes[] subset; never \
+         raw nuclei, manual authorization probes, pentest_run, or background controls. Direct enumeration tools \
          (browser_collect_js_api/js_extract_apis/route_probe_paths/enum_crawl_same_origin_urls) may be called by \
          name when suggested here; directory discovery must use route_probe_paths, not external \
          ffuf/gobuster/feroxbuster. Bounded crawler URL supplements must use \
@@ -1035,8 +1094,25 @@ fn append_direct_eas_repair_tools(tools: &mut Vec<String>, actions: &[CoverageGa
 }
 
 fn append_direct_vuln_repair_tools(tools: &mut Vec<String>, actions: &[CoverageGapAction]) {
-    if has_vuln_gap_actions(actions) {
-        push_unique_tool(tools, "vuln_run_formulaic_sweep");
+    for action in actions {
+        for suggested in &action.suggested_tools {
+            let suggested = suggested
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            if is_direct_vuln_repair_tool(&suggested) {
+                push_unique_tool(tools, &suggested);
+            }
+        }
+        if action.technique == "GOLISH-NDAY" {
+            push_unique_tool(tools, "vuln_nuclei_fingerprint_targeted");
+        } else if action.technique == "WSTG-ATHN-04" {
+            push_unique_tool(tools, "vuln_probe_anonymous_access");
+        } else if action.technique.starts_with("WSTG-") {
+            push_unique_tool(tools, "vuln_nuclei_general");
+        }
     }
 }
 
@@ -1077,7 +1153,10 @@ fn is_direct_eas_repair_tool(tool_name: &str) -> bool {
 }
 
 fn is_direct_vuln_repair_tool(tool_name: &str) -> bool {
-    tool_name == "vuln_run_formulaic_sweep"
+    matches!(
+        tool_name,
+        "vuln_nuclei_general" | "vuln_nuclei_fingerprint_targeted" | "vuln_probe_anonymous_access"
+    )
 }
 
 fn has_eas_gap_actions(actions: &[CoverageGapAction]) -> bool {
@@ -1301,6 +1380,7 @@ fn normalize_exact_web_origin(value: &str) -> Option<String> {
 }
 
 fn coverage_gap_vuln_wrapper_block_reason(
+    tool_name: &str,
     tool_args: &serde_json::Value,
     actions: &[CoverageGapAction],
 ) -> Option<String> {
@@ -1309,77 +1389,281 @@ fn coverage_gap_vuln_wrapper_block_reason(
     }
     let allowed_actions = actions
         .iter()
-        .filter(|action| action.technique.starts_with("WSTG-") || action.technique == "GOLISH-NDAY")
+        .filter(|action| match tool_name {
+            "vuln_nuclei_general" => {
+                action.technique.starts_with("WSTG-") && action.technique != "WSTG-ATHN-04"
+            }
+            "vuln_nuclei_fingerprint_targeted" => action.technique == "GOLISH-NDAY",
+            "vuln_probe_anonymous_access" => action.technique == "WSTG-ATHN-04",
+            _ => false,
+        })
         .collect::<Vec<_>>();
     if allowed_actions.is_empty() {
-        return Some(
-            "coverage-gap repair blocks vuln_run_formulaic_sweep because no vuln_triage coverage_gap_actions are active"
-                .to_string(),
-        );
+        return Some(format!(
+            "coverage-gap repair blocks {tool_name} because no compatible vuln_triage coverage_gap_actions are active"
+        ));
     }
 
-    let targets = string_array_arg(tool_args, "targets");
-    if targets.is_empty() {
-        return Some(
-            "coverage-gap repair requires vuln_run_formulaic_sweep targets[] so they can be checked against coverage_gap_actions"
-                .to_string(),
-        );
+    let target_id = tool_args
+        .get("target_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if target_id.is_none() {
+        return Some(format!(
+            "coverage-gap repair requires {tool_name} target_id so the backend can revalidate current ownership"
+        ));
     }
-    let techniques = string_array_arg(tool_args, "techniques");
-    if techniques.is_empty() {
-        return Some(
-            "coverage-gap repair requires vuln_run_formulaic_sweep techniques[]; default-all is too broad for targeted gap repair"
-                .to_string(),
-        );
-    }
+    let target_url = tool_args
+        .get("target_url")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(target_url) = target_url else {
+        return Some(format!(
+            "coverage-gap repair requires {tool_name} target_url so the exact web origin can be checked against coverage_gap_actions"
+        ));
+    };
+    let Some(normalized_target_url) = normalize_exact_web_origin(target_url) else {
+        return Some(format!(
+            "coverage-gap repair requires {tool_name} target_url to be an exact absolute http(s) origin"
+        ));
+    };
 
-    let allowed_targets = allowed_actions
+    let allowed_pairs = allowed_actions
         .iter()
-        .map(|action| normalize_probe_target(&action.asset))
-        .filter(|asset| !asset.is_empty())
+        .filter_map(|action| {
+            Some((
+                normalize_exact_web_origin(&action.asset)?,
+                action.technique.as_str(),
+            ))
+        })
         .collect::<HashSet<_>>();
+
+    if tool_name == "vuln_probe_anonymous_access" {
+        if !allowed_pairs.contains(&(normalized_target_url, "WSTG-ATHN-04")) {
+            return Some(format!(
+                "coverage-gap repair blocks {tool_name} target '{target_url}' because that exact WSTG-ATHN-04 origin is not in vuln_triage coverage_gap_actions"
+            ));
+        }
+        return anonymous_access_repair_args_block_reason(tool_args);
+    }
+
+    let techniques = string_array_arg(tool_args, "techniques");
+    if tool_name == "vuln_nuclei_fingerprint_targeted"
+        && !(techniques.len() == 1 && techniques[0] == "GOLISH-NDAY")
+    {
+        return Some(
+            "coverage-gap repair requires vuln_nuclei_fingerprint_targeted techniques to be exactly [\"GOLISH-NDAY\"]"
+                .to_string(),
+        );
+    }
+    if techniques.is_empty() {
+        return Some(format!(
+            "coverage-gap repair requires {tool_name} techniques[]; default-all is too broad for targeted gap repair"
+        ));
+    }
+
     let allowed_techniques = allowed_actions
         .iter()
         .map(|action| action.technique.as_str())
         .collect::<HashSet<_>>();
-    let allowed_pairs = allowed_actions
-        .iter()
-        .map(|action| {
-            (
-                normalize_probe_target(&action.asset),
-                action.technique.as_str(),
-            )
-        })
-        .collect::<HashSet<_>>();
-
-    if let Some(blocked) = targets
-        .iter()
-        .find(|target| !allowed_targets.contains(&normalize_probe_target(target)))
-    {
-        return Some(format!(
-            "coverage-gap repair blocks vuln_run_formulaic_sweep target '{blocked}' because it is not in vuln_triage coverage_gap_actions"
-        ));
-    }
     if let Some(blocked) = techniques
         .iter()
         .find(|technique| !allowed_techniques.contains(technique.as_str()))
     {
         return Some(format!(
-            "coverage-gap repair blocks vuln_run_formulaic_sweep technique '{blocked}' because it is not in vuln_triage coverage_gap_actions"
+            "coverage-gap repair blocks {tool_name} target/technique pair for '{blocked}' because that technique is not in compatible vuln_triage coverage_gap_actions"
         ));
     }
-    for target in &targets {
-        let normalized_target = normalize_probe_target(target);
-        for technique in &techniques {
-            if !allowed_pairs.contains(&(normalized_target.clone(), technique.as_str())) {
-                return Some(format!(
-                    "coverage-gap repair blocks vuln_run_formulaic_sweep pair '{} × {}' because that target/technique pair is not in vuln_triage coverage_gap_actions",
-                    target, technique
-                ));
-            }
+    for technique in &techniques {
+        if !allowed_pairs.contains(&(normalized_target_url.clone(), technique.as_str())) {
+            return Some(format!(
+                "coverage-gap repair blocks {tool_name} pair '{} × {}' because that exact target/technique pair is not in vuln_triage coverage_gap_actions",
+                target_url, technique
+            ));
         }
     }
     None
+}
+
+fn anonymous_access_repair_args_block_reason(tool_args: &serde_json::Value) -> Option<String> {
+    let Some(args) = tool_args.as_object() else {
+        return Some(
+            "coverage-gap repair requires vuln_probe_anonymous_access arguments to be an object"
+                .to_string(),
+        );
+    };
+    if let Some(forbidden) = args.keys().find(|key| {
+        !matches!(
+            key.as_str(),
+            "target_id"
+                | "target_url"
+                | "reviewed_endpoint_ids"
+                | "selected_probes"
+                | "timeout_secs"
+                | "__harness_org_id"
+        )
+    }) {
+        return Some(format!(
+            "coverage-gap repair blocks unsupported anonymous-access request control '{forbidden}'"
+        ));
+    }
+
+    let Some(reviewed_values) = args
+        .get("reviewed_endpoint_ids")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Some(
+            "coverage-gap repair requires reviewed_endpoint_ids[] as the complete eligible endpoint review witness"
+                .to_string(),
+        );
+    };
+    if reviewed_values.len() > 5_000 {
+        return Some(
+            "coverage-gap repair blocks reviewed_endpoint_ids[] above the 5000-endpoint review bound"
+                .to_string(),
+        );
+    }
+    let mut reviewed_ids = HashSet::with_capacity(reviewed_values.len());
+    for value in reviewed_values {
+        let Some(endpoint_id) = value.as_str() else {
+            return Some(
+                "coverage-gap repair requires reviewed_endpoint_ids[] to contain only UUID strings"
+                    .to_string(),
+            );
+        };
+        let Ok(endpoint_id) = uuid::Uuid::parse_str(endpoint_id) else {
+            return Some(
+                "coverage-gap repair requires reviewed_endpoint_ids[] to contain only UUID strings"
+                    .to_string(),
+            );
+        };
+        if !reviewed_ids.insert(endpoint_id) {
+            return Some(
+                "coverage-gap repair requires reviewed_endpoint_ids[] to be duplicate-free"
+                    .to_string(),
+            );
+        }
+    }
+
+    let Some(selected_values) = args
+        .get("selected_probes")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Some(
+            "coverage-gap repair requires selected_probes[] after reviewing the complete eligible endpoint set"
+                .to_string(),
+        );
+    };
+    if selected_values.len() > 16 {
+        return Some(
+            "coverage-gap repair blocks selected_probes[] above the 16-probe execution bound"
+                .to_string(),
+        );
+    }
+
+    let mut selected_ids = HashSet::with_capacity(selected_values.len());
+    for value in selected_values {
+        let Some(probe) = value.as_object() else {
+            return Some(
+                "coverage-gap repair requires every selected_probes[] entry to be an object"
+                    .to_string(),
+            );
+        };
+        if probe.len() != 3
+            || !probe.contains_key("endpoint_id")
+            || !probe.contains_key("query_values")
+            || !probe.contains_key("rationale")
+        {
+            return Some(
+                "coverage-gap repair allows only endpoint_id, query_values, and rationale in each selected_probes[] entry"
+                    .to_string(),
+            );
+        }
+        let Some(endpoint_id) = probe.get("endpoint_id").and_then(serde_json::Value::as_str) else {
+            return Some(
+                "coverage-gap repair requires selected_probes[].endpoint_id to be a UUID string"
+                    .to_string(),
+            );
+        };
+        let Ok(endpoint_id) = uuid::Uuid::parse_str(endpoint_id) else {
+            return Some(
+                "coverage-gap repair requires selected_probes[].endpoint_id to be a UUID string"
+                    .to_string(),
+            );
+        };
+        if !reviewed_ids.contains(&endpoint_id) || !selected_ids.insert(endpoint_id) {
+            return Some(
+                "coverage-gap repair requires selected_probes[] to be a unique subset of reviewed_endpoint_ids[]"
+                    .to_string(),
+            );
+        }
+
+        let Some(query_values) = probe
+            .get("query_values")
+            .and_then(serde_json::Value::as_object)
+        else {
+            return Some(
+                "coverage-gap repair requires selected_probes[].query_values to be an object"
+                    .to_string(),
+            );
+        };
+        if query_values.len() > 16
+            || query_values.iter().any(|(key, value)| {
+                key.is_empty()
+                    || key.len() > 128
+                    || value
+                        .as_str()
+                        .is_none_or(|value| !is_safe_anonymous_query_scalar(value))
+            })
+        {
+            return Some(
+                "coverage-gap repair requires query_values to contain at most 16 known query names with short safe scalar strings"
+                    .to_string(),
+            );
+        }
+
+        let rationale = probe
+            .get("rationale")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if rationale
+            .is_none_or(|value| value.chars().count() > 512 || value.chars().any(char::is_control))
+        {
+            return Some(
+                "coverage-gap repair requires each selected probe to have a bounded non-empty rationale"
+                    .to_string(),
+            );
+        }
+    }
+
+    if let Some(timeout) = args.get("timeout_secs") {
+        if timeout
+            .as_u64()
+            .is_none_or(|timeout| !(5..=120).contains(&timeout))
+        {
+            return Some(
+                "coverage-gap repair requires timeout_secs to be an integer between 5 and 120"
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
+fn is_safe_anonymous_query_scalar(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && trimmed == value
+        && trimmed.len() <= 64
+        && trimmed.is_ascii()
+        && !trimmed.contains("..")
+        && trimmed.parse::<std::net::IpAddr>().is_err()
+        && trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
 }
 
 fn coverage_gap_pentest_run_block_reason(tool_args: &serde_json::Value) -> Option<String> {

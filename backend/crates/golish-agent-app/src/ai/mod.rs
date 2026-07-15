@@ -15,9 +15,11 @@ pub mod harness_submit_tool;
 pub mod harness_trace_tool;
 pub mod knowledge_policy_adapter;
 pub mod llm_one_shot;
+pub mod provider_bootstrap;
 pub mod session_bridge;
 pub mod sidecar_bridge;
 pub mod start_operation_tool;
+pub mod task_operation;
 pub mod tracking_bridge;
 
 // --- A3: flat re-exports replacing `pub use golish_ai::*;` ---

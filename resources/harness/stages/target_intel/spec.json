@@ -87,6 +87,23 @@
 
   "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout §3.2): specialist = the per-org sub-agent the stage_run tool fans out (intel → recon, the passive collector split from Pentester); coverage_axis = the human-readable technique columns the StageRunView renders per org row.",
   "specialist": "recon",
+  "team_scheduler": {
+    "schema_version": 1,
+    "enabled_in_v2_only": true,
+    "allowed_roles": ["company_stage_controller", "intel_provider", "intel_coverage_critic"],
+    "aggregator_kind": "aggregate_stage_unit",
+    "aggregator_role": "company_stage_controller",
+    "max_company_units_active": 3,
+    "global_provider_cap": 8,
+    "max_workers": 4,
+    "max_dynamic_requests": 12,
+    "allowed_dynamic_request_kinds": [
+      "coverage_recheck",
+      "provider_followup"
+    ],
+    "max_dynamic_subject_refs": 16,
+    "risk_lane": "passive"
+  },
   "runtime_memory": {
     "schema_version": 2,
     "unit_identity": "stage_execution_organization",

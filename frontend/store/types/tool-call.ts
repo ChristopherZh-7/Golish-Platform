@@ -45,6 +45,7 @@ export interface AskHumanRequest {
   requestId: string;
   sessionId?: string;
   question: string;
+  rawInputType?: string;
   inputType:
     | "credentials"
     | "choice"

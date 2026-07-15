@@ -24,6 +24,10 @@ export const GOLISH_ERROR_CODES = [
   "ATTACK_APPROVAL_EXPIRED",
   "ATTACK_REVIEW_ALREADY_CLOSED",
   "ATTACK_RESUME_NOT_READY",
+  "ATTACK_RECOVERY_CONFLICT",
+  "STAGE_TEAM_INVALID_ID",
+  "STAGE_TEAM_SCOPE_MISMATCH",
+  "STAGE_TEAM_DATABASE",
   "INTERNAL",
 ] as const;
 
@@ -55,6 +59,12 @@ const MESSAGES: Record<GolishErrorCode | typeof UNKNOWN_ERROR_CODE, string> = {
   ATTACK_APPROVAL_EXPIRED: "The requested Candidate approval expiry is invalid or has passed.",
   ATTACK_REVIEW_ALREADY_CLOSED: "This Candidate review is already closed.",
   ATTACK_RESUME_NOT_READY: "The durable Candidate review is not ready to resume verification.",
+  ATTACK_RECOVERY_CONFLICT:
+    "The Candidate recovery state changed or the requested recovery is not valid. Refresh before deciding again.",
+  STAGE_TEAM_INVALID_ID: "The Stage Team execution identity is invalid.",
+  STAGE_TEAM_SCOPE_MISMATCH:
+    "The Stage Team execution does not belong to this operation or operator scope.",
+  STAGE_TEAM_DATABASE: "The durable Stage Team scheduler state could not be read.",
   INTERNAL: "An unexpected error occurred.",
   UNKNOWN: "An unexpected error occurred.",
 };

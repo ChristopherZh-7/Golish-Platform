@@ -28,13 +28,6 @@ pub trait VaultReadPort: Send + Sync {
         name: &str,
         project_path: &str,
     ) -> anyhow::Result<Option<(String, String, String)>>;
-
-    /// Encrypted `value` for the first entry matching `name`.
-    async fn get_value_by_name_project(
-        &self,
-        name: &str,
-        project_path: &str,
-    ) -> anyhow::Result<Option<String>>;
 }
 
 /// In-proc adapter backed by the embedded Postgres pool. The ONLY place in the
@@ -68,19 +61,6 @@ impl VaultReadPort for PgVaultAdapter {
         project_path: &str,
     ) -> anyhow::Result<Option<(String, String, String)>> {
         Ok(golish_db::repo::vault::get_secret_by_name_project(
-            self.pool.as_ref(),
-            name,
-            project_path,
-        )
-        .await?)
-    }
-
-    async fn get_value_by_name_project(
-        &self,
-        name: &str,
-        project_path: &str,
-    ) -> anyhow::Result<Option<String>> {
-        Ok(golish_db::repo::vault::get_value_by_name_project(
             self.pool.as_ref(),
             name,
             project_path,

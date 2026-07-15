@@ -20,12 +20,15 @@ import {
   normalizeSubAgentEntriesForDetail,
   parseStageRefinerDirectiveSummary,
   parseStageRunOrgRequestId,
+  parseSubAgentUpdatePlanArgs,
+  resolveLatestVisibleSubAgentUpdatePlanTool,
   resolveStageCoverageContextForSubAgent,
   SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
   SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS,
   SUB_AGENT_HEADER_STATUS_BADGE_STYLES,
   SubAgentDetailView,
   SubAgentShellOutputText,
+  SubAgentUpdatePlanCard,
   shouldSeparateSubAgentDetailEntries,
   stripAgentXmlTags,
   summarizeSubAgentAssetWork,
@@ -37,6 +40,152 @@ beforeEach(() => {
     backgroundJobs: {},
     sessions: {},
     timelines: {},
+  });
+});
+
+describe("Controller update_plan rendering", () => {
+  const planArgs = {
+    explanation: "先确认资产覆盖，再补齐缺失证据。",
+    plan: [
+      { status: "completed", step: "读取当前覆盖矩阵" },
+      { status: "in_progress", step: "调度 DNS worker" },
+      { status: "pending", step: "复核 Gate 结果" },
+    ],
+  };
+
+  it("parses explanation, supported step states, and progress counts", () => {
+    expect(parseSubAgentUpdatePlanArgs(planArgs)).toEqual({
+      completedCount: 1,
+      explanation: "先确认资产覆盖，再补齐缺失证据。",
+      inProgressCount: 1,
+      steps: planArgs.plan,
+      totalCount: 3,
+    });
+
+    expect(
+      parseSubAgentUpdatePlanArgs({
+        plan: [
+          { status: "unknown", step: "invalid" },
+          { status: "pending", step: "" },
+        ],
+      })
+    ).toBeNull();
+  });
+
+  it("rejects the entire plan when a valid step is mixed with an invalid step", () => {
+    expect(
+      parseSubAgentUpdatePlanArgs({
+        plan: [
+          { status: "completed", step: "valid" },
+          { status: "unknown", step: "invalid" },
+        ],
+      })
+    ).toBeNull();
+  });
+
+  it("rejects plans with more than twelve steps", () => {
+    expect(
+      parseSubAgentUpdatePlanArgs({
+        plan: Array.from({ length: 13 }, (_, index) => ({
+          status: "pending",
+          step: `step ${index + 1}`,
+        })),
+      })
+    ).toBeNull();
+  });
+
+  it("rejects plans with more than one in-progress step", () => {
+    expect(
+      parseSubAgentUpdatePlanArgs({
+        plan: [
+          { status: "in_progress", step: "first" },
+          { status: "in_progress", step: "second" },
+        ],
+      })
+    ).toBeNull();
+  });
+
+  it("renders a compact running plan card with progress and per-step icons", () => {
+    const { getByLabelText, getByRole, getByText } = render(
+      createElement(SubAgentUpdatePlanCard, {
+        tool: {
+          args: planArgs,
+          id: "plan-running",
+          name: "update_plan",
+          startedAt: "2026-07-15T10:00:00.000Z",
+          status: "running",
+        },
+      })
+    );
+
+    expect(getByRole("region", { name: "Controller plan" })).toBeTruthy();
+    expect(getByText("正在规划")).toBeTruthy();
+    expect(getByText("1/3 已完成")).toBeTruthy();
+    expect(getByText("先确认资产覆盖，再补齐缺失证据。")).toBeTruthy();
+    expect(getByText("读取当前覆盖矩阵")).toBeTruthy();
+    expect(getByText("调度 DNS worker")).toBeTruthy();
+    expect(getByText("复核 Gate 结果")).toBeTruthy();
+    expect(getByLabelText("步骤状态：completed")).toBeTruthy();
+    expect(getByLabelText("步骤状态：in_progress")).toBeTruthy();
+    expect(getByLabelText("步骤状态：pending")).toBeTruthy();
+  });
+
+  it("shows a completed tool state without changing the plan snapshot", () => {
+    const { getByText } = render(
+      createElement(SubAgentUpdatePlanCard, {
+        tool: {
+          args: planArgs,
+          completedAt: "2026-07-15T10:00:01.000Z",
+          id: "plan-completed",
+          name: "update_plan",
+          startedAt: "2026-07-15T10:00:00.000Z",
+          status: "completed",
+        },
+      })
+    );
+
+    expect(getByText("当前计划")).toBeTruthy();
+    expect(getByText("调度 DNS worker")).toBeTruthy();
+  });
+
+  it("keeps only the latest valid current plan and hides failed or superseded updates", () => {
+    const first = {
+      args: planArgs,
+      completedAt: "2026-07-15T10:00:01.000Z",
+      id: "plan-first",
+      name: "update_plan",
+      startedAt: "2026-07-15T10:00:00.000Z",
+      status: "completed" as const,
+    };
+    const rejected = {
+      args: {
+        plan: [
+          { status: "in_progress", step: "并行运行资产映射" },
+          { status: "in_progress", step: "并行运行 WHOIS" },
+        ],
+      },
+      completedAt: "2026-07-15T10:00:02.000Z",
+      id: "plan-rejected",
+      name: "update_plan",
+      startedAt: "2026-07-15T10:00:01.000Z",
+      status: "error" as const,
+    };
+    const current = {
+      args: {
+        explanation: "合并并行工具为一个当前步骤。",
+        plan: [{ status: "in_progress", step: "并行收集资产和 WHOIS" }],
+      },
+      id: "plan-current",
+      name: "update_plan",
+      startedAt: "2026-07-15T10:00:03.000Z",
+      status: "running" as const,
+    };
+
+    expect(resolveLatestVisibleSubAgentUpdatePlanTool([first, rejected, current])?.id).toBe(
+      "plan-current"
+    );
+    expect(resolveLatestVisibleSubAgentUpdatePlanTool([first, rejected])?.id).toBe("plan-first");
+    expect(resolveLatestVisibleSubAgentUpdatePlanTool([rejected])).toBeNull();
   });
 });
 
@@ -674,6 +823,35 @@ describe("stage-run org coverage context", () => {
       stage: "target_intel",
       stageLabel: "Target Intel",
     });
+  });
+
+  it("does not misclassify vuln_triage as enumeration from a shared DIR axis", () => {
+    expect(
+      resolveStageCoverageContextForSubAgent(
+        "tool-2::org::org-2",
+        {
+          "tool-2": {
+            requestId: "tool-2",
+            stageLabel: "Vulnerability Triage",
+            roleLabel: "Vuln Scanner",
+            coverageAxis: ["UNAUTH", "IDOR", "NDAY", "DIR", "WEAKPW", "TLS", "INFO"],
+            summary: { total: 1, covered: 0, active: 1, queued: 0, blocked: 0 },
+            rows: [
+              {
+                id: "org-2",
+                name: "Acme Root",
+                ownershipPercent: 100,
+                status: "running",
+                agentRequestId: "tool-2::org::org-2",
+                evidenceCount: 0,
+                coverage: {},
+              },
+            ],
+          },
+        },
+        null
+      )
+    ).toBeNull();
   });
 });
 

@@ -79,6 +79,13 @@ impl FofaProvider {
         if q.is_empty() {
             return Err(IntelError::Other("fofa query string is empty".into()));
         }
+        // JSON provider configs may intentionally supply a complete FOFA DSL
+        // expression (for example `org="Acme"`). Preserve it verbatim instead
+        // of nesting it inside `host="..."` / `cert="..."`. Domain-mode
+        // templates pass a raw hostname and still take the typed wrapper below.
+        if q.contains('=') {
+            return Ok(q.to_string());
+        }
         match qtype {
             QueryType::Site => Ok(format!("host=\"{q}\"")),
             QueryType::Domain => Ok(format!("domain=\"{q}\"")),
@@ -239,6 +246,18 @@ mod tests {
         assert_eq!(
             FofaProvider::render_query(QueryType::Cert, "example.com").unwrap(),
             "cert=\"example.com\""
+        );
+    }
+
+    #[test]
+    fn render_query_preserves_explicit_fofa_dsl_from_provider_config() {
+        assert_eq!(
+            FofaProvider::render_query(QueryType::Site, "org=\"Acme\"").unwrap(),
+            "org=\"Acme\""
+        );
+        assert_eq!(
+            FofaProvider::render_query(QueryType::Cert, "cert=\"Acme\"").unwrap(),
+            "cert=\"Acme\""
         );
     }
 

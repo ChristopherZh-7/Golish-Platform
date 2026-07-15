@@ -105,7 +105,6 @@ pub async fn create_default_sub_agents_from_registry(
             "record_finding".into(),
             "vault".into(),
             "js_extract_apis".into(),
-            "auth_probe".into(),
             "pentest_list_tools".into(),
             "pentest_run".into(),
             "list_recent_evidence".into(),
@@ -274,7 +273,7 @@ pub async fn create_default_sub_agents_from_registry(
         SubAgentDefinition::new(
             "vuln_scanner",
             "Vuln Scanner",
-            "Formulaic vulnerability-triage specialist for the vuln_triage stage. Closes WSTG/GOLISH scan cells through backend-owned wrappers rather than raw CLI commands. The stage_run tool fans one Vuln Scanner out per org.",
+            "Formulaic vulnerability-observation specialist for the vuln_triage stage. Closes WSTG/GOLISH cells through two guarded Nuclei wrappers plus one server-owned anonymous-access wrapper rather than raw CLI/request commands. The stage_run tool fans one Vuln Scanner out per org.",
             // No `vuln_scanner.tera` in the registry; the prompt has literal
             // JSON-ish examples and should remain a hardcoded stage contract.
             build_vuln_scanner_prompt(),
@@ -283,14 +282,12 @@ pub async fn create_default_sub_agents_from_registry(
             "stage_worklist_status".into(),
             "stage_worklist_next".into(),
             "query_target_data".into(),
-            "vuln_run_formulaic_sweep".into(),
-            "wait_for_background_jobs".into(),
-            "check_job".into(),
-            "kill_job".into(),
+            "vuln_nuclei_general".into(),
+            "vuln_nuclei_fingerprint_targeted".into(),
+            "vuln_probe_anonymous_access".into(),
             "list_recent_evidence".into(),
             "check_stage_asset_coverage".into(),
             "submit_stage_deliverable".into(),
-            "record_finding".into(),
             "search_knowledge_base".into(),
             "read_knowledge".into(),
         ])

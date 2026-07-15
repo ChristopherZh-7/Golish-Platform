@@ -32,6 +32,8 @@ pub struct AttackCandidateApprovalRow {
     pub allowed_capability_ids: Vec<String>,
     pub allowed_action_kinds: Vec<String>,
     pub budget: serde_json::Value,
+    /// Latest instant at which a new Candidate action may begin.
+    pub start_before: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub decision_version: i64,
     pub status: String,
@@ -46,6 +48,7 @@ pub struct CandidateReviewDecision {
     pub expected_candidate_plan_hash: String,
     pub expected_candidate_row_version: i64,
     pub approve: bool,
+    pub start_before: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
 }
 
@@ -173,7 +176,7 @@ struct ReviewCounts {
 const APPROVAL_COLUMNS: &str = "id,candidate_id,operation_id,scope_snapshot_id,wave_run_id,\
     wave_unit_id,organization_id,target_live_id,target_type_at_time,target_value_at_time,\
     target_identity_hash,candidate_plan_hash,source_work_item_id,execution_plan,\
-    allowed_capability_ids,allowed_action_kinds,budget,expires_at,decision_version,status,\
+    allowed_capability_ids,allowed_action_kinds,budget,start_before,expires_at,decision_version,status,\
     decided_by,decided_at,row_version";
 const BARRIER_COLUMNS: &str = "wave_run_id,operation_id,scope_snapshot_id,status,resume_version,\
     last_error,dispatch_started_at,created_at,updated_at";
@@ -396,15 +399,20 @@ async fn expire_unstarted_approvals(
     tx: &mut Transaction<'_, Postgres>,
     authority: &ReviewAuthority,
 ) -> crate::Result<Vec<Uuid>> {
-    let expired: Vec<(Uuid, Uuid, Uuid, Uuid, bool)> = sqlx::query_as(
+    let expired: Vec<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
         r#"SELECT approval.id,approval.candidate_id,approval.wave_unit_id,
-                  approval.organization_id,
-                  EXISTS(SELECT 1 FROM candidate_attempts attempt
-                          WHERE attempt.approval_id=approval.id) AS has_attempt
+                  approval.organization_id
              FROM attack_candidate_approvals approval
             WHERE approval.operation_id=$1 AND approval.scope_snapshot_id=$2
               AND approval.wave_run_id=$3 AND approval.status='approved'
-              AND approval.expires_at <= NOW()
+              AND approval.start_before <= NOW()
+              AND NOT EXISTS(
+                    SELECT 1 FROM candidate_attempts attempt
+                     WHERE attempt.approval_id=approval.id
+                       AND attempt.status IN (
+                           'queued','running','submitted','terminalization_pending'
+                       )
+                  )
             ORDER BY approval.candidate_id
             FOR UPDATE OF approval"#,
     )
@@ -414,7 +422,7 @@ async fn expire_unstarted_approvals(
     .fetch_all(&mut **tx)
     .await?;
     let mut reopened = Vec::new();
-    for (approval_id, candidate_id, wave_unit_id, organization_id, has_attempt) in expired {
+    for (approval_id, candidate_id, wave_unit_id, organization_id) in expired {
         sqlx::query(
             "UPDATE attack_candidate_approvals
              SET status='expired',row_version=row_version+1
@@ -423,9 +431,6 @@ async fn expire_unstarted_approvals(
         .bind(approval_id)
         .execute(&mut **tx)
         .await?;
-        if has_attempt {
-            continue;
-        }
         let updated = sqlx::query(
             r#"UPDATE attack_candidates
                   SET disposition='proposed',row_version=row_version+1,updated_at=NOW()
@@ -615,6 +620,32 @@ async fn refresh_barrier(
     Ok((barrier, counts, reopened))
 }
 
+/// Recompute the durable review barrier after a recovery transaction safely
+/// abandons an unstarted Attempt and moves its Candidate back to `proposed`.
+/// Keeping this wrapper in the review repository prevents recovery code from
+/// duplicating Wave/barrier state-machine rules.
+pub(super) async fn reopen_review_after_candidate_abandon(
+    tx: &mut Transaction<'_, Postgres>,
+    operation_id: Uuid,
+    scope_snapshot_id: Uuid,
+    wave_run_id: Uuid,
+) -> crate::Result<()> {
+    let authority = lock_authority(tx, operation_id, wave_run_id).await?;
+    if authority.scope_snapshot_id != scope_snapshot_id {
+        return Err(review_error(
+            ATTACK_REVIEW_SCOPE_MISMATCH,
+            "Candidate recovery snapshot authority drifted",
+        ));
+    }
+    refresh_barrier(
+        tx,
+        &authority,
+        Duration::seconds(DEFAULT_REVIEW_DISPATCH_STALE_SECONDS),
+    )
+    .await?;
+    Ok(())
+}
+
 fn exact_decision_replay(
     candidate: &CandidateForReview,
     decision: &CandidateReviewDecision,
@@ -628,7 +659,13 @@ fn exact_decision_replay(
     } else {
         "rejected"
     };
-    let expiry_matches = !decision.approve || decision.expires_at == Some(approval.expires_at);
+    let expected_start_before = decision
+        .start_before
+        .as_ref()
+        .or(decision.expires_at.as_ref());
+    let temporal_authority_matches = !decision.approve
+        || (expected_start_before == Some(&approval.start_before)
+            && decision.expires_at.as_ref() == Some(&approval.expires_at));
     candidate.row_version == decision.expected_candidate_row_version.saturating_add(1)
         && candidate.disposition == expected_status
         && candidate.candidate_plan_hash == decision.expected_candidate_plan_hash
@@ -638,7 +675,7 @@ fn exact_decision_replay(
         && approval.allowed_capability_ids == allowed_capability_ids
         && approval.allowed_action_kinds == allowed_action_kinds
         && approval.budget == *budget
-        && expiry_matches
+        && temporal_authority_matches
 }
 
 pub async fn review_wave_candidates(
@@ -793,18 +830,32 @@ pub async fn review_wave_candidates(
                 "Candidate is no longer proposed",
             ));
         }
-        let expires_at = if decision.approve {
-            decision
+        let now = Utc::now();
+        let (start_before, expires_at) = if decision.approve {
+            let expires_at = decision
                 .expires_at
-                .filter(|expires| *expires > Utc::now())
+                .filter(|expires| *expires > now)
                 .ok_or_else(|| {
                     review_error(
                         ATTACK_APPROVAL_EXPIRED,
-                        "approved Candidate requires an unexpired exact budget",
+                        "approved Candidate requires a future approval expiry",
                     )
-                })?
+                })?;
+            let start_before = decision
+                .start_before
+                .or(Some(expires_at))
+                .filter(|start_before| *start_before > now && *start_before <= expires_at)
+                .ok_or_else(|| {
+                    review_error(
+                        ATTACK_APPROVAL_EXPIRED,
+                        "approved Candidate requires a future start-before no later than expiry",
+                    )
+                })?;
+            (start_before, expires_at)
         } else {
-            decision.expires_at.unwrap_or_else(Utc::now)
+            let expires_at = decision.expires_at.unwrap_or(now);
+            let start_before = decision.start_before.unwrap_or(expires_at);
+            (start_before.min(expires_at), expires_at)
         };
         let decision_version: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(decision_version),0)+1
@@ -823,9 +874,9 @@ pub async fn review_wave_candidates(
                  id,candidate_id,operation_id,scope_snapshot_id,wave_run_id,wave_unit_id,
                  organization_id,target_live_id,target_type_at_time,target_value_at_time,
                  target_identity_hash,candidate_plan_hash,source_work_item_id,execution_plan,
-                 allowed_capability_ids,allowed_action_kinds,budget,expires_at,decision_version,
+                 allowed_capability_ids,allowed_action_kinds,budget,start_before,expires_at,decision_version,
                  status,decided_by)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
              RETURNING {APPROVAL_COLUMNS}"
         );
         let approval = sqlx::query_as::<_, AttackCandidateApprovalRow>(&sql)
@@ -846,6 +897,7 @@ pub async fn review_wave_candidates(
             .bind(&allowed_capability_ids)
             .bind(&allowed_action_kinds)
             .bind(&budget)
+            .bind(start_before)
             .bind(expires_at)
             .bind(decision_version)
             .bind(status)

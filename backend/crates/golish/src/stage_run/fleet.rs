@@ -42,7 +42,6 @@ pub(crate) struct OrgFleetExecutor {
     pub db_pool: Arc<sqlx::PgPool>,
     pub session_id: String,
     pub profile_id: String,
-    pub workspace: std::path::PathBuf,
     pub subsidiary_threshold: u8,
     /// The per-org child-operation adapter is a LegacyV1 compatibility seam.
     /// V2-writing CLI runs are represented by one frozen operation/snapshot and
@@ -63,6 +62,8 @@ impl OrgFleetExecutor {
             stage: task.to_stage.as_str().to_string(),
             agent_path: "main".to_string(),
             trace: HarnessTraceKind::StageRunOrgProgress {
+                stage_execution_id: None,
+                stage_run_unit_id: None,
                 org_id: task.org_id.to_string(),
                 org_name: task.org_name.clone(),
                 // CLI fleet runs `orchestrate` (a full run_stage) directly rather
@@ -103,10 +104,11 @@ impl OrgRunExecutor for OrgFleetExecutor {
             &self.db_pool,
             &self.session_id,
             &self.profile_id,
-            &self.workspace,
             task.entry_stage,
             task.allowlist.clone(),
             &task.objective,
+            Some(task.org_name.as_str()),
+            &[],
             Some(task.org_id),
             // 每个 org 都是独立任务（root 与子公司平级）→ 单 org run，不在 run 内再开
             // SUBSIDIARY 扇出（避免双重扇出）。
@@ -114,7 +116,8 @@ impl OrgRunExecutor for OrgFleetExecutor {
             self.subsidiary_threshold,
             None,
         )
-        .await;
+        .await
+        .map(|outcome| outcome.response);
         if self.emit_progress {
             let status = if result.is_ok() { "passed" } else { "blocked" };
             self.emit(task, status, None);

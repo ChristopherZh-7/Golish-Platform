@@ -29,6 +29,9 @@ export interface AskHumanState {
   requestId: string;
   sessionId: string;
   question: string;
+  /** Original backend value. Presentation may coerce an unknown or
+   * freetext-with-options request to a choice, but authority may not. */
+  rawInputType?: string;
   inputType: AskHumanInputType;
   options: string[];
   context: string;
@@ -154,10 +157,37 @@ export function isSubsidiaryScopeDecision(request: AskHumanState): boolean {
   return namesSubsidiaries && hasScopeOption;
 }
 
+/** Harness phase crossings are execution-authorization boundaries. Support
+ * both a structured marker and the prose contract emitted by existing runs. */
+export function isPhaseBoundaryDecision(request: AskHumanState): boolean {
+  if (request.inputType !== "confirmation") return false;
+
+  try {
+    let parsed: unknown = JSON.parse(request.context);
+    if (typeof parsed === "string") parsed = JSON.parse(parsed);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      (parsed as Record<string, unknown>).decision === "phase_boundary"
+    ) {
+      return true;
+    }
+  } catch {
+    // Existing backend events use the stable prose markers below.
+  }
+
+  const prompt = `${request.context} ${request.question}`.toLowerCase();
+  return (
+    prompt.includes("phase-boundary gate") ||
+    (prompt.includes("approve entering the next phase") && prompt.includes("crossing"))
+  );
+}
+
 /**
- * How long lightweight ask_human boxes wait before auto-running their default
- * action. Scope/unit reviews and subsidiary-scope choices are deliberate
- * security boundaries and never auto-confirm.
+ * How long typed, low-risk ask_human boxes wait before auto-running their
+ * default action. Only an ordinary confirmation or a non-security choice with
+ * a concrete first option is eligible; every other input waits for a person.
  */
 export const ASK_HUMAN_COUNTDOWN_MS = 60_000;
 const COUNTDOWN_TICK_MS = 100;
@@ -212,12 +242,15 @@ export function AskHumanInline({
   request,
   onSubmit,
   onSkip,
+  autoResolve = false,
   fallbackOrgId,
   minOwnershipPercent,
 }: {
   request: AskHumanState;
   onSubmit: (response: string) => void;
   onSkip: () => void;
+  /** Enabled only after the backend accepted Run Everything mode. */
+  autoResolve?: boolean;
   /** Authoritative engagement org id captured from the `recon_discover_subsidiaries`
    * call, used to source unit_review candidates when the model didn't thread a
    * valid `organization_id` into the ask_human context. */
@@ -241,6 +274,7 @@ export function AskHumanInline({
   const Icon = INPUT_TYPE_ICONS[request.inputType] || MessageSquare;
   const isReviewTable = request.inputType === "scope_review" || request.inputType === "unit_review";
   const isScopeBoundaryDecision = isSubsidiaryScopeDecision(request);
+  const isPhaseBoundary = isPhaseBoundaryDecision(request);
 
   // Resolve where the review table's rows come from (org id → DB, an array, or
   // bulk text). Memoized so the fetch effect below doesn't re-run every render.
@@ -300,18 +334,23 @@ export function AskHumanInline({
     }
   };
 
-  // Auto-confirm countdown for lightweight prompts. Review tables and scope
-  // boundary decisions stay visible until the user confirms or skips.
+  // Fail-closed auto-confirm policy. Credentials/free text have no safe default;
+  // reviews and scope-boundary choices are authorization decisions; an unknown
+  // runtime input type must not gain authority through the fallback branch.
   const reviewTableRef = useRef<ScopeReviewHandle>(null);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const paused = hovered || focused;
-  const autoConfirmEnabled = !isReviewTable && !isScopeBoundaryDecision;
+  const rawInputType = request.rawInputType ?? request.inputType;
+  const autoConfirmEnabled =
+    autoResolve &&
+    !isScopeBoundaryDecision &&
+    !isPhaseBoundary &&
+    ((rawInputType === "confirmation" && request.inputType === "confirmation") ||
+      (rawInputType === "choice" && request.inputType === "choice" && request.options.length > 0));
 
-  // Some inputs (the options-less "Other" field) autofocus on mount. That mount
-  // focus must NOT pause the clock, otherwise an unattended box would dangle
-  // forever — the exact bug this countdown fixes. Arm focus-pausing one tick
-  // after mount so only focus/typing the user actually triggers counts.
+  // Arm focus-pausing one tick after mount so only focus/typing the user actually
+  // triggers pauses on an eligible prompt; ineligible prompts ignore the timer.
   const focusArmedRef = useRef(false);
   useEffect(() => {
     const id = setTimeout(() => {
@@ -320,43 +359,24 @@ export function AskHumanInline({
     return () => clearTimeout(id);
   }, []);
 
-  // When the clock runs out, perform the box's primary affirmative action — the
-  // same thing the user clicking the main button (or the first choice) would do.
-  // If that action is currently a no-op (an empty "Other" field), fall back to
-  // Skip so the request still resolves and the box clears.
+  // Keep this callback fail closed too, so a future countdown wiring regression
+  // still cannot synthesize credentials, prose, review rows, or an unknown
+  // response. Eligible choices always use their concrete first option.
   const performDefaultAction = useCallback(() => {
+    if (!autoConfirmEnabled) return;
     switch (request.inputType) {
-      case "scope_review":
-      case "unit_review":
-        reviewTableRef.current?.confirm();
-        break;
       case "choice":
-        if (request.options.length > 0) onSubmit(request.options[0]);
-        else if (otherText.trim()) onSubmit(otherText.trim());
-        else onSkip();
+        if (request.options.length > 0) {
+          onSubmit(request.options[0]);
+        }
         break;
       case "confirmation":
         onSubmit("yes");
         break;
-      case "freetext":
-        onSubmit(freetext);
-        break;
-      case "credentials":
-        onSubmit(JSON.stringify({ username, password }));
-        break;
       default:
-        onSkip();
+        break;
     }
-  }, [
-    request.inputType,
-    request.options,
-    otherText,
-    freetext,
-    username,
-    password,
-    onSubmit,
-    onSkip,
-  ]);
+  }, [autoConfirmEnabled, request.inputType, request.options, onSubmit]);
 
   const remainingMs = useAutoConfirmCountdown(
     ASK_HUMAN_COUNTDOWN_MS,
@@ -547,7 +567,13 @@ export function AskHumanInline({
         </div>
       ) : (
         <div className="mt-2.5 rounded-md border border-[#e0af68]/20 bg-background/30 px-2 py-1 text-[10px] text-muted-foreground/70">
-          {isScopeBoundaryDecision ? "Waiting for your scope decision" : "Waiting for your review"}
+          {isScopeBoundaryDecision
+            ? "Waiting for your scope decision"
+            : isPhaseBoundary
+              ? "Waiting for your phase approval"
+              : isReviewTable
+                ? "Waiting for your review"
+                : "Waiting for your response"}
         </div>
       )}
     </div>

@@ -62,6 +62,16 @@ fn runtime_tool_identity_from_parts(
         _ => return Err("incomplete trusted operation/stage execution identity"),
     };
 
+    // The durable tool-call schema deliberately keeps Scoping control-plane
+    // calls execution-only until an exact per-org stage unit exists. The
+    // engagement org remains available in AgentToolContext for authorization,
+    // but must not create a partially bound runtime identity.
+    let organization_id = match (stage_run_unit_id, organization_id) {
+        (None, _) => None,
+        (Some(_), Some(organization_id)) => Some(organization_id),
+        (Some(_), None) => return Err("stage run unit requires organization identity"),
+    };
+
     let (worker_run_id, attempt_epoch, lease_token) = match worker_lease {
         Some(lease) if stage_run_unit_id == Some(lease.stage_run_unit_id) => (
             Some(lease.worker_run_id),
@@ -829,6 +839,22 @@ mod runtime_tracking_tests {
                 .expect("ordinary chat identity")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn execution_only_runtime_identity_does_not_stamp_org_before_unit_binding() {
+        let identity = runtime_tool_identity_from_parts(
+            Some(uuid::Uuid::new_v4()),
+            Some(uuid::Uuid::new_v4()),
+            None,
+            Some(uuid::Uuid::new_v4()),
+            None,
+        )
+        .expect("execution-only identity")
+        .expect("runtime identity");
+
+        assert_eq!(identity.stage_run_unit_id, None);
+        assert_eq!(identity.organization_id, None);
     }
 
     #[test]

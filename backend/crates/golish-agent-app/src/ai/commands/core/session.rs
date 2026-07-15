@@ -6,13 +6,13 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use super::super::super::agent_bridge::AgentBridge;
-use super::super::super::llm_client::{ProviderConfig, SharedComponentsConfig};
+use super::super::super::llm_client::ProviderConfig;
 use super::super::{
     activate_bridge_background_listeners, configure_bridge, prepare_bridge_background_listeners,
 };
+use crate::ai::provider_bootstrap::normalize_agent_bootstrap;
 use crate::runtime::TauriRuntime;
 use crate::state::AgentState;
-use golish_context::ContextManagerConfig;
 use golish_core::runtime::GolishRuntime;
 use golish_events::TranscriptWriter;
 
@@ -44,37 +44,20 @@ pub async fn init_ai_session(
     let runtime: Arc<dyn GolishRuntime> =
         Arc::new(TauriRuntime::new(app, Some(state.pty_output_tap.clone())));
 
-    // Load shared components config from application settings
-    // This includes context management config and shell override
-    let shared_config = {
-        let settings = state.settings_manager.get().await;
-
-        // Build context config if enabled
-        let context_config = if settings.context.enabled {
-            Some(ContextManagerConfig {
-                enabled: settings.context.enabled,
-                compaction_threshold: settings.context.compaction_threshold,
-                protected_turns: settings.context.protected_turns,
-                cooldown_seconds: settings.context.cooldown_seconds,
-            })
-        } else {
-            None
-        };
-
-        // Shell override is now part of the settings instance passed to SharedComponentsConfig
-        if settings.terminal.shell.is_some() {
-            tracing::debug!(
-                "Using shell override from settings for session {}: {:?}",
-                session_id,
-                settings.terminal.shell
-            );
-        }
-
-        SharedComponentsConfig {
-            context_config,
-            settings,
-        }
-    };
+    // GUI and CLI normalize all settings-backed provider/runtime fields through
+    // the same pure helper. Typed GUI fields (workspace/model/key/explicit
+    // endpoint) remain authoritative; hidden settings fields are attached here.
+    let settings = state.settings_manager.get().await;
+    if settings.terminal.shell.is_some() {
+        tracing::debug!(
+            "Using shell override from settings for session {}: {:?}",
+            session_id,
+            settings.terminal.shell
+        );
+    }
+    let bootstrap = normalize_agent_bootstrap(config, &settings);
+    let config = bootstrap.provider_config;
+    let shared_config = bootstrap.shared_components_config;
 
     tracing::debug!(
         "Shared config for session {}: context={:?}",

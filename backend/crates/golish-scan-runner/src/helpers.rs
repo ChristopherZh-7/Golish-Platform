@@ -1,8 +1,7 @@
-//! Shared scan-runner helpers: progress emission, audit logging, command
-//! lookup, and the global Nuclei cancellation flag.
+//! Shared scan-runner helpers: progress emission, audit logging, and command
+//! lookup.
 
 use std::process::ExitStatus;
-use std::sync::atomic::AtomicBool;
 
 use golish_core::EventEmitterHandle;
 use golish_db::repo::audit::PentestAudit;
@@ -12,8 +11,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::types::ScanProgress;
-
-pub static NUCLEI_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 pub fn emit_progress(
     emitter: Option<&EventEmitterHandle>,

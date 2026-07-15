@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { getToolActionLabel, getToolPrimaryArg } from "./tools";
+import { getStageRunAgentLabel, getToolActionLabel, getToolPrimaryArg } from "./tools";
+
+describe("getStageRunAgentLabel", () => {
+  it("renders the durable Controller role as one consistent product label", () => {
+    expect(getStageRunAgentLabel("company_stage_controller")).toBe("Company Controller");
+    expect(getStageRunAgentLabel("Company Controller")).toBe("Company Controller");
+  });
+
+  it("humanizes downstream specialist slugs without changing ordinary labels", () => {
+    expect(getStageRunAgentLabel("vuln_scanner")).toBe("Vuln Scanner Agent");
+    expect(getStageRunAgentLabel("Prober")).toBe("Prober Agent");
+  });
+});
 
 describe("getToolActionLabel", () => {
   it("renders wait_for_background_jobs as a sentence-like action", () => {
@@ -37,9 +49,10 @@ describe("getToolActionLabel", () => {
     );
   });
 
-  it("renders vuln formulaic wrapper as a readable action", () => {
-    expect(getToolActionLabel("vuln_run_formulaic_sweep")).toBe(
-      "Running formulaic vuln sweep"
+  it("renders both Nuclei wrappers as distinct readable actions", () => {
+    expect(getToolActionLabel("vuln_nuclei_general")).toBe("Running general Nuclei scan");
+    expect(getToolActionLabel("vuln_nuclei_fingerprint_targeted")).toBe(
+      "Running fingerprint-targeted Nuclei scan"
     );
   });
 
@@ -130,13 +143,21 @@ describe("getToolPrimaryArg", () => {
     ).toBe("batch 3 targets (https://a.example.com/ ... https://c.example.com/) · depth 2");
   });
 
-  it("summarizes vuln formulaic wrapper targets and techniques", () => {
+  it("summarizes singular Nuclei wrapper target and techniques", () => {
     expect(
-      getToolPrimaryArg("vuln_run_formulaic_sweep", {
-        targets: ["https://a.example.com/", "https://b.example.com/"],
+      getToolPrimaryArg("vuln_nuclei_general", {
+        target_id: "11111111-1111-1111-1111-111111111111",
+        target_url: "https://a.example.com/",
         techniques: ["WSTG-INPV-05", "WSTG-INPV-01"],
       })
-    ).toBe("batch 2 targets (https://a.example.com/ ... https://b.example.com/) · 2 techniques");
+    ).toBe("https://a.example.com/ · 2 techniques");
+    expect(
+      getToolPrimaryArg("vuln_nuclei_fingerprint_targeted", {
+        target_id: "22222222-2222-2222-2222-222222222222",
+        target_url: "https://cms.example.com/",
+        techniques: ["GOLISH-NDAY"],
+      })
+    ).toBe("https://cms.example.com/ · GOLISH-NDAY");
   });
 
   it("shows the command for shell tools", () => {

@@ -54,6 +54,15 @@ pub struct TerminalizeVerifiedFinding {
     pub expected_checkpoint_version: i64,
 }
 
+/// Server-only recovery terminalization. Every identity and evidence link is
+/// reloaded from the immutable `CandidateRecoveryCase`; callers can select
+/// neither a target nor a result disposition. Unknown external side effects
+/// always converge to `blocked`, never to an inferred verified/refuted fact.
+#[derive(Debug, Clone, Copy)]
+pub struct TerminalizeBlockedCandidateRecovery {
+    pub recovery_case_id: Uuid,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalizedFinding {
     pub finding_id: Uuid,
@@ -91,18 +100,47 @@ struct TerminalStateRow {
     execution_plan: serde_json::Value,
     attempt_status: String,
     stage_worker_run_id: Uuid,
-    result_json: serde_json::Value,
-    result_hash: String,
+    result_json: Option<serde_json::Value>,
+    result_hash: Option<String>,
     attempt_row_version: i64,
     terminal_at: Option<DateTime<Utc>>,
     approval_status: String,
-    approval_expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
 struct TerminalAttemptUpdate {
     row_version: i64,
     terminal_at: DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct RecoveryTerminalStateRow {
+    operation_id: Uuid,
+    scope_snapshot_id: Uuid,
+    wave_run_id: Uuid,
+    wave_unit_id: Uuid,
+    organization_id: Uuid,
+    candidate_id: Uuid,
+    approval_id: Uuid,
+    attempt_id: Uuid,
+    candidate_plan_hash: String,
+    recovery_status: String,
+    resolution_kind: Option<String>,
+    candidate_disposition: String,
+    terminal_attempt_id: Option<Uuid>,
+    terminal_finding_id: Option<Uuid>,
+    target_live_id: Option<Uuid>,
+    target_type_at_time: String,
+    target_value_at_time: String,
+    target_identity_hash: String,
+    execution_plan: serde_json::Value,
+    attempt_status: String,
+    attempt_row_version: i64,
+    worker_run_id: Uuid,
+    worker_status: String,
+    stage_execution_id: Uuid,
+    stage_run_unit_id: Uuid,
+    project_scope_id: Uuid,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -246,6 +284,7 @@ async fn append_candidate_terminal_event(
     source_version: i64,
     occurred_at: DateTime<Utc>,
     relational_evidence: &[(i64, String)],
+    result_hash: &str,
 ) -> crate::Result<()> {
     let mut evidence_ids = relational_evidence
         .iter()
@@ -282,7 +321,7 @@ async fn append_candidate_terminal_event(
                 "approval_id": command.approval_id,
                 "disposition": payload.disposition,
                 "candidate_plan_hash": command.candidate_plan_hash,
-                "result_hash": state.result_hash,
+                "result_hash": result_hash,
                 "finding_id": finding_id,
                 "target_type_at_time": state.target_type_at_time,
                 "target_value_at_time": state.target_value_at_time,
@@ -544,6 +583,27 @@ pub async fn terminalize_candidate_attempt(
     tx: &mut Transaction<'_, Postgres>,
     command: TerminalizeCandidateAttempt,
 ) -> crate::Result<TerminalizedCandidateAttempt> {
+    terminalize_candidate_attempt_inner(tx, command, None).await
+}
+
+/// Recovery-only entrypoint. Identity, result and checkpoint are loaded from
+/// an immutable intent/barrier by `candidate_recovery`. The original executor
+/// lease may be expired or already cleared by a generic reaper; no executor
+/// authority is resurrected and no external action is replayed.
+pub(super) async fn terminalize_candidate_attempt_from_intent(
+    tx: &mut Transaction<'_, Postgres>,
+    command: TerminalizeCandidateAttempt,
+    submitted_result: serde_json::Value,
+) -> crate::Result<TerminalizedCandidateAttempt> {
+    terminalize_candidate_attempt_inner(tx, command, Some(submitted_result)).await
+}
+
+async fn terminalize_candidate_attempt_inner(
+    tx: &mut Transaction<'_, Postgres>,
+    command: TerminalizeCandidateAttempt,
+    intent_result: Option<serde_json::Value>,
+) -> crate::Result<TerminalizedCandidateAttempt> {
+    let server_authority = intent_result.is_some();
     let contracts: Option<(String, String, Uuid)> = sqlx::query_as(
         "SELECT runtime_memory_contract,attack_execution_contract,project_scope_id
          FROM operation_state WHERE operation_id=$1 FOR UPDATE",
@@ -584,8 +644,7 @@ pub async fn terminalize_candidate_attempt(
                   attempt.status AS attempt_status,attempt.stage_worker_run_id,
                   attempt.result_json,attempt.result_hash,
                   attempt.row_version AS attempt_row_version,attempt.terminal_at,
-                  approval.status AS approval_status,
-                  approval.expires_at AS approval_expires_at
+                  approval.status AS approval_status
              FROM attack_candidates candidate
              JOIN attack_candidate_approvals approval
                ON approval.id=$2 AND approval.candidate_id=candidate.candidate_id
@@ -622,10 +681,24 @@ pub async fn terminalize_candidate_attempt(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| crate::DbError::NotFound("verified_candidate_attempt".to_string()))?;
-    if state.result_hash != command.expected_result_hash {
+    if state
+        .result_hash
+        .as_deref()
+        .is_some_and(|hash| hash != command.expected_result_hash)
+        || (!server_authority
+            && state.result_hash.as_deref() != Some(&command.expected_result_hash))
+    {
         return Err(conflict("terminalization result hash drift"));
     }
-    let payload = parse_terminal_payload(&state.result_json)?;
+    let result_json = match (intent_result.as_ref(), state.result_json.as_ref()) {
+        (Some(intent), Some(persisted)) if intent != persisted => {
+            return Err(conflict("terminalization persisted result drift"));
+        }
+        (Some(intent), _) => intent,
+        (None, Some(persisted)) => persisted,
+        (None, None) => return Err(conflict("terminalization result is missing")),
+    };
+    let payload = parse_terminal_payload(result_json)?;
     if payload
         .finding
         .as_ref()
@@ -717,6 +790,7 @@ pub async fn terminalize_candidate_attempt(
                     .terminal_at
                     .ok_or_else(|| conflict("terminal Attempt timestamp missing"))?,
                 &actual_evidence,
+                &command.expected_result_hash,
             )
             .await?;
             let (evidence_count, fact_delta_count) =
@@ -795,6 +869,7 @@ pub async fn terminalize_candidate_attempt(
                 .terminal_at
                 .ok_or_else(|| conflict("terminal Attempt timestamp missing"))?,
             &actual_evidence,
+            &command.expected_result_hash,
         )
         .await?;
         let (evidence_count, fact_delta_count) =
@@ -815,28 +890,51 @@ pub async fn terminalize_candidate_attempt(
         });
     }
 
-    if state.attempt_status != "submitted"
+    let expected_attempt_status = if server_authority {
+        "terminalization_pending"
+    } else {
+        "submitted"
+    };
+    let lane_owned_by_original_executor = lane.stage_worker_run_id == Some(command.worker_run_id)
+        && lane.lease_token == Some(command.lease_token)
+        && lane.lease_owner.as_deref() == Some(command.lease_owner.as_str());
+    let server_lane_identity_drift = server_authority
+        && lane.stage_worker_run_id == Some(command.worker_run_id)
+        && !lane_owned_by_original_executor;
+    if state.attempt_status != expected_attempt_status
         || state.terminal_at.is_some()
         || state.candidate_disposition != "approved"
-        || state.approval_status != "approved"
-        || state.approval_expires_at <= Utc::now()
+        || !matches!(state.approval_status.as_str(), "approved" | "expired")
         || state.stage_worker_run_id != command.worker_run_id
-        || lane.stage_worker_run_id != Some(command.worker_run_id)
-        || lane.lease_token != Some(command.lease_token)
-        || lane.lease_owner.as_deref() != Some(command.lease_owner.as_str())
-        || lane
-            .lease_expires_at
-            .is_none_or(|expires| expires <= Utc::now())
+        || (!server_authority && !lane_owned_by_original_executor)
+        || server_lane_identity_drift
+        || (!server_authority
+            && lane
+                .lease_expires_at
+                .is_none_or(|expires| expires <= Utc::now()))
+        || (server_authority && (state.result_json.is_some() || state.result_hash.is_some()))
     {
         return Err(conflict("Candidate terminalization authority fence lost"));
     }
     let worker: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM stage_worker_runs
          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
-           AND stage_run_unit_id=$4 AND organization_id=$5 AND lease_token=$6
-           AND lease_owner=$7 AND attempt_epoch=$8 AND checkpoint_version=$9
-           AND status='running' AND active_tool_call_id IS NULL
-           AND lease_expires_at>NOW() FOR UPDATE",
+           AND stage_run_unit_id=$4 AND organization_id=$5
+           AND attempt_epoch=$8 AND checkpoint_version=$9
+           AND active_tool_call_id IS NULL
+           AND (
+               (NOT $10 AND status='running' AND lease_token=$6
+                        AND lease_owner=$7 AND lease_expires_at>NOW())
+               OR
+               ($10 AND status IN ('running','queued','recovery_required') AND (
+                    (lease_token=$6 AND lease_owner=$7)
+                    OR
+                    (lease_token IS NULL AND lease_owner IS NULL
+                     AND lease_acquired_at IS NULL AND lease_expires_at IS NULL
+                     AND heartbeat_at IS NULL)
+               ))
+           )
+         FOR UPDATE",
     )
     .bind(command.worker_run_id)
     .bind(command.operation_id)
@@ -847,6 +945,7 @@ pub async fn terminalize_candidate_attempt(
     .bind(&command.lease_owner)
     .bind(command.attempt_epoch)
     .bind(command.expected_checkpoint_version)
+    .bind(server_authority)
     .fetch_optional(&mut **tx)
     .await?;
     if worker.is_none() {
@@ -860,17 +959,36 @@ pub async fn terminalize_candidate_attempt(
     )
     .await?;
 
-    let attempt_updated = sqlx::query_as::<_, TerminalAttemptUpdate>(
-        "UPDATE candidate_attempts SET status=$3,terminal_at=NOW(),
-             row_version=row_version+1,updated_at=NOW()
-         WHERE id=$1 AND status='submitted' AND stage_worker_run_id=$2
-         RETURNING row_version,terminal_at",
-    )
-    .bind(command.attempt_id)
-    .bind(command.worker_run_id)
-    .bind(&payload.disposition)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let attempt_updated = if server_authority {
+        sqlx::query_as::<_, TerminalAttemptUpdate>(
+            "UPDATE candidate_attempts
+             SET status=$3,result_json=$4,result_hash=$5,terminal_at=NOW(),
+                 row_version=row_version+1,updated_at=NOW()
+             WHERE id=$1 AND status='terminalization_pending'
+               AND stage_worker_run_id=$2
+               AND result_json IS NULL AND result_hash IS NULL
+             RETURNING row_version,terminal_at",
+        )
+        .bind(command.attempt_id)
+        .bind(command.worker_run_id)
+        .bind(&payload.disposition)
+        .bind(result_json)
+        .bind(&command.expected_result_hash)
+        .fetch_optional(&mut **tx)
+        .await?
+    } else {
+        sqlx::query_as::<_, TerminalAttemptUpdate>(
+            "UPDATE candidate_attempts SET status=$3,terminal_at=NOW(),
+                 row_version=row_version+1,updated_at=NOW()
+             WHERE id=$1 AND status='submitted' AND stage_worker_run_id=$2
+             RETURNING row_version,terminal_at",
+        )
+        .bind(command.attempt_id)
+        .bind(command.worker_run_id)
+        .bind(&payload.disposition)
+        .fetch_optional(&mut **tx)
+        .await?
+    };
     let attempt_updated =
         attempt_updated.ok_or_else(|| conflict("Candidate terminalization Attempt CAS lost"))?;
     let finding_id = if let Some(finding_payload) = payload.finding.as_ref() {
@@ -969,22 +1087,39 @@ pub async fn terminalize_candidate_attempt(
     if candidate_updated.rows_affected() != 1 {
         return Err(conflict("Candidate terminalization Candidate CAS lost"));
     }
-    attack_execution_lanes::release_global(
-        tx,
-        command.worker_run_id,
-        command.lease_token,
-        &command.lease_owner,
-    )
-    .await?;
+    if lane.stage_worker_run_id == Some(command.worker_run_id) {
+        // A retained expired lane can be released only under its exact original
+        // identity. If a generic reaper already cleared it (or another Worker
+        // currently owns the global lane), terminal truth must not mutate that
+        // unrelated current owner.
+        attack_execution_lanes::release_global(
+            tx,
+            command.worker_run_id,
+            command.lease_token,
+            &command.lease_owner,
+        )
+        .await?;
+    }
     let worker_updated = sqlx::query(
         "UPDATE stage_worker_runs
          SET status='passed',lease_token=NULL,lease_owner=NULL,lease_acquired_at=NULL,
              lease_expires_at=NULL,heartbeat_at=NULL,terminal_at=NOW(),updated_at=NOW(),
              checkpoint_version=checkpoint_version+1
          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
-           AND stage_run_unit_id=$4 AND organization_id=$5 AND lease_token=$6
-           AND attempt_epoch=$7 AND checkpoint_version=$8 AND status='running'
-           AND active_tool_call_id IS NULL",
+           AND stage_run_unit_id=$4 AND organization_id=$5
+           AND attempt_epoch=$7 AND checkpoint_version=$8
+           AND active_tool_call_id IS NULL
+           AND (
+               (NOT $9 AND status='running' AND lease_token=$6 AND lease_owner=$10)
+               OR
+               ($9 AND status IN ('running','queued','recovery_required') AND (
+                    (lease_token=$6 AND lease_owner=$10)
+                    OR
+                    (lease_token IS NULL AND lease_owner IS NULL
+                     AND lease_acquired_at IS NULL AND lease_expires_at IS NULL
+                     AND heartbeat_at IS NULL)
+               ))
+           )",
     )
     .bind(command.worker_run_id)
     .bind(command.operation_id)
@@ -994,6 +1129,8 @@ pub async fn terminalize_candidate_attempt(
     .bind(command.lease_token)
     .bind(command.attempt_epoch)
     .bind(command.expected_checkpoint_version)
+    .bind(server_authority)
+    .bind(&command.lease_owner)
     .execute(&mut **tx)
     .await?;
     if worker_updated.rows_affected() != 1 {
@@ -1009,6 +1146,7 @@ pub async fn terminalize_candidate_attempt(
         attempt_updated.row_version,
         attempt_updated.terminal_at,
         &actual_evidence,
+        &command.expected_result_hash,
     )
     .await?;
     let (evidence_count, fact_delta_count) =
@@ -1025,6 +1163,275 @@ pub async fn terminalize_candidate_attempt(
         finding_id,
         evidence_count,
         fact_delta_count,
+        replayed: false,
+    })
+}
+
+/// Converge an operator-approved outcome-unknown recovery case without ever
+/// replaying the external action. The recovery case itself is the immutable
+/// authority/receipt. Exact external evidence may be attached as blocker
+/// evidence, but it cannot be promoted to proof/refutation without a typed
+/// action result and comparator.
+pub(super) async fn terminalize_blocked_candidate_recovery(
+    tx: &mut Transaction<'_, Postgres>,
+    command: TerminalizeBlockedCandidateRecovery,
+) -> crate::Result<TerminalizedCandidateAttempt> {
+    if command.recovery_case_id.is_nil() {
+        return Err(conflict("invalid Candidate recovery terminalization"));
+    }
+    let state = sqlx::query_as::<_, RecoveryTerminalStateRow>(
+        r#"SELECT recovery.operation_id,recovery.scope_snapshot_id,
+                  recovery.wave_run_id,recovery.wave_unit_id,recovery.organization_id,
+                  recovery.candidate_id,recovery.approval_id,recovery.attempt_id,
+                  recovery.candidate_plan_hash,recovery.status AS recovery_status,
+                  recovery.resolution_kind,
+                  candidate.disposition AS candidate_disposition,
+                  candidate.terminal_attempt_id,candidate.terminal_finding_id,
+                  candidate.target_live_id,candidate.target_type_at_time,
+                  candidate.target_value_at_time,candidate.target_identity_hash,
+                  candidate.execution_plan,attempt.status AS attempt_status,
+                  attempt.row_version AS attempt_row_version,
+                  worker.id AS worker_run_id,worker.status AS worker_status,
+                  worker.stage_execution_id,worker.stage_run_unit_id,
+                  operation.project_scope_id
+             FROM candidate_recovery_cases recovery
+             JOIN operation_state operation
+               ON operation.operation_id=recovery.operation_id
+              AND operation.runtime_memory_contract='v2_only'
+              AND operation.attack_execution_contract='v2_only'
+             JOIN attack_candidates candidate
+               ON candidate.candidate_id=recovery.candidate_id
+              AND candidate.operation_uuid=recovery.operation_id
+              AND candidate.scope_snapshot_id=recovery.scope_snapshot_id
+              AND candidate.wave_run_id=recovery.wave_run_id
+              AND candidate.wave_unit_id=recovery.wave_unit_id
+              AND candidate.organization_id=recovery.organization_id
+              AND candidate.candidate_plan_hash=recovery.candidate_plan_hash
+             JOIN candidate_attempts attempt
+               ON attempt.id=recovery.attempt_id
+              AND attempt.candidate_id=recovery.candidate_id
+              AND attempt.approval_id=recovery.approval_id
+              AND attempt.stage_worker_run_id=recovery.worker_run_id
+             JOIN stage_worker_runs worker
+               ON worker.id=recovery.worker_run_id
+              AND worker.operation_id=recovery.operation_id
+              AND worker.organization_id=recovery.organization_id
+            WHERE recovery.id=$1
+            FOR UPDATE OF recovery,candidate,attempt,worker,operation"#,
+    )
+    .bind(command.recovery_case_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| crate::DbError::NotFound("candidate_recovery_case".to_string()))?;
+    if state.recovery_status != "decision_recorded"
+        || !matches!(
+            state.resolution_kind.as_deref(),
+            Some("terminalize_blocked_outcome_unknown")
+                | Some("accept_external_result_with_exact_evidence")
+        )
+        || state.candidate_disposition != "approved"
+        || state.terminal_attempt_id.is_some()
+        || state.terminal_finding_id.is_some()
+        || state.attempt_status != "running"
+        || state.worker_status != "recovery_required"
+    {
+        return Err(conflict(
+            "Candidate recovery is not eligible for blocked terminalization",
+        ));
+    }
+    attack_waves::lock_wave(
+        tx,
+        state.operation_id,
+        state.scope_snapshot_id,
+        state.wave_run_id,
+    )
+    .await?;
+    attack_waves::lock_wave_unit(
+        tx,
+        state.operation_id,
+        state.scope_snapshot_id,
+        state.wave_run_id,
+        state.wave_unit_id,
+        state.organization_id,
+    )
+    .await?;
+    let lane = attack_execution_lanes::lock_global(tx).await?;
+    if lane.stage_worker_run_id == Some(state.worker_run_id) {
+        return Err(conflict(
+            "Candidate recovery terminalization requires the expired lane to be released",
+        ));
+    }
+
+    let mut blocker_evidence_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT evidence_id FROM candidate_recovery_evidence
+          WHERE recovery_case_id=$1 AND role='external_result'
+          ORDER BY evidence_id",
+    )
+    .bind(command.recovery_case_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    blocker_evidence_ids.sort_unstable();
+    blocker_evidence_ids.dedup();
+    if state.resolution_kind.as_deref() == Some("accept_external_result_with_exact_evidence")
+        && blocker_evidence_ids.is_empty()
+    {
+        return Err(conflict(
+            "external Candidate recovery has no exact evidence",
+        ));
+    }
+    for evidence_id in &blocker_evidence_ids {
+        sqlx::query(
+            "INSERT INTO candidate_attempt_evidence(attempt_id,evidence_id,role)
+             VALUES($1,$2,'blocker') ON CONFLICT DO NOTHING",
+        )
+        .bind(state.attempt_id)
+        .bind(evidence_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    let blocker_reason_code = match state.resolution_kind.as_deref() {
+        Some("accept_external_result_with_exact_evidence") => {
+            "operator_external_result_recorded_without_typed_comparator"
+        }
+        _ => "operator_outcome_unknown",
+    };
+    let result_json = serde_json::json!({
+        "blocker_evidence_ids": blocker_evidence_ids,
+        "blocker_reason_code": blocker_reason_code,
+        "disposition": "blocked",
+        "fact_deltas": [],
+        "finding": null,
+        "proof_evidence_ids": [],
+        "recovery_case_id": command.recovery_case_id,
+        "refutation_evidence_ids": [],
+        "schema_version": 1,
+    });
+    let result_hash = format!(
+        "sha256:{}",
+        super::operation_scope_decisions::sha256_json(&result_json)
+    );
+    let attempt_updated = sqlx::query_as::<_, TerminalAttemptUpdate>(
+        "UPDATE candidate_attempts
+         SET status='blocked',result_json=$3,result_hash=$4,
+             row_version=row_version+1,updated_at=NOW()
+         WHERE id=$1 AND stage_worker_run_id=$2 AND status='running'
+           AND row_version=$5 AND result_json IS NULL AND result_hash IS NULL
+         RETURNING row_version,terminal_at",
+    )
+    .bind(state.attempt_id)
+    .bind(state.worker_run_id)
+    .bind(&result_json)
+    .bind(&result_hash)
+    .bind(state.attempt_row_version)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| conflict("Candidate recovery Attempt terminalization CAS lost"))?;
+    let candidate_updated = sqlx::query(
+        "UPDATE attack_candidates
+         SET disposition='blocked',terminal_attempt_id=$2,terminal_finding_id=NULL,
+             row_version=row_version+1,updated_at=NOW()
+         WHERE candidate_id=$1 AND operation_uuid=$3 AND disposition='approved'
+           AND terminal_attempt_id IS NULL AND terminal_finding_id IS NULL",
+    )
+    .bind(state.candidate_id)
+    .bind(state.attempt_id)
+    .bind(state.operation_id)
+    .execute(&mut **tx)
+    .await?;
+    if candidate_updated.rows_affected() != 1 {
+        return Err(conflict(
+            "Candidate recovery Candidate terminalization CAS lost",
+        ));
+    }
+    let worker_updated = sqlx::query(
+        "UPDATE stage_worker_runs
+         SET status='exhausted',terminal_at=NOW(),updated_at=NOW()
+         WHERE id=$1 AND status='recovery_required'
+           AND lease_token IS NULL AND active_tool_call_id IS NULL",
+    )
+    .bind(state.worker_run_id)
+    .execute(&mut **tx)
+    .await?;
+    if worker_updated.rows_affected() != 1 {
+        return Err(conflict(
+            "Candidate recovery Worker terminalization CAS lost",
+        ));
+    }
+    let terminal_state = TerminalStateRow {
+        candidate_disposition: "blocked".to_string(),
+        terminal_attempt_id: Some(state.attempt_id),
+        terminal_finding_id: None,
+        target_live_id: state.target_live_id,
+        target_type_at_time: state.target_type_at_time,
+        target_value_at_time: state.target_value_at_time,
+        target_identity_hash: state.target_identity_hash,
+        execution_plan: state.execution_plan,
+        attempt_status: "blocked".to_string(),
+        stage_worker_run_id: state.worker_run_id,
+        result_json: Some(result_json.clone()),
+        result_hash: Some(result_hash.clone()),
+        attempt_row_version: attempt_updated.row_version,
+        terminal_at: Some(attempt_updated.terminal_at),
+        approval_status: "approved".to_string(),
+    };
+    let payload = TerminalPayload {
+        disposition: "blocked".to_string(),
+        proof_evidence_ids: Vec::new(),
+        refutation_evidence_ids: Vec::new(),
+        blocker_evidence_ids: blocker_evidence_ids.clone(),
+        blocker_reason_code: Some(blocker_reason_code.to_string()),
+        finding: None,
+        fact_deltas: Vec::new(),
+    };
+    let event_command = TerminalizeCandidateAttempt {
+        operation_id: state.operation_id,
+        scope_snapshot_id: state.scope_snapshot_id,
+        wave_run_id: state.wave_run_id,
+        wave_unit_id: state.wave_unit_id,
+        organization_id: state.organization_id,
+        candidate_id: state.candidate_id,
+        approval_id: state.approval_id,
+        attempt_id: state.attempt_id,
+        candidate_plan_hash: state.candidate_plan_hash,
+        expected_result_hash: result_hash.clone(),
+        worker_run_id: state.worker_run_id,
+        stage_execution_id: state.stage_execution_id,
+        stage_run_unit_id: state.stage_run_unit_id,
+        lease_token: Uuid::nil(),
+        lease_owner: "server:candidate-recovery".to_string(),
+        attempt_epoch: 0,
+        expected_checkpoint_version: 0,
+    };
+    let relational_evidence = blocker_evidence_ids
+        .iter()
+        .map(|evidence_id| (*evidence_id, "blocker".to_string()))
+        .collect::<Vec<_>>();
+    append_candidate_terminal_event(
+        tx,
+        &event_command,
+        state.project_scope_id,
+        &terminal_state,
+        &payload,
+        None,
+        attempt_updated.row_version,
+        attempt_updated.terminal_at,
+        &relational_evidence,
+        &result_hash,
+    )
+    .await?;
+    Ok(TerminalizedCandidateAttempt {
+        scope_snapshot_id: state.scope_snapshot_id,
+        wave_run_id: state.wave_run_id,
+        wave_unit_id: state.wave_unit_id,
+        organization_id: state.organization_id,
+        candidate_id: state.candidate_id,
+        attempt_id: state.attempt_id,
+        status: "blocked".to_string(),
+        disposition: "blocked".to_string(),
+        finding_id: None,
+        evidence_count: u32::try_from(blocker_evidence_ids.len())
+            .map_err(|_| conflict("Candidate recovery evidence count overflow"))?,
+        fact_delta_count: 0,
         replayed: false,
     })
 }

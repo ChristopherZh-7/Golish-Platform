@@ -28,6 +28,8 @@ agent 服务的命令面与运行时状态宿主。`AiState` 持有 per-session 
 | `knowledge_graph_query_scoped` / `knowledge_graph_rebuild_scope` | authoritative temporal graph IPC；server-derived local principal + stable project/exact org DB binding |
 | `PgKnowledgeMemory` / `KnowledgeMemoryRuntime` | canonical UoW + outbox/document/embedding/graph DB adapters；runtime handle 由 desktop/CLI composition root exactly once 启停 |
 | `PgKnowledgeContextAdapter` | DB ownership + server-owned principal policy + local temporal graph 组成的 C7 scoped ContextPack provider |
+| `ai_get_stage_team_read_model` / `ai_resolve_stage_team_recovery` | DB-authoritative Stage Team hierarchy 与 LocalDesktop exact-CAS unknown-tool recovery；绝不提供 replay tool 入口 |
+| `attack_list_verification_queue` / `attack_resolve_candidate_recovery` | Candidate TerminalIntent/action/recovery/Wave 与 pending FactDelta enrichment 的安全 typed read/mutation surface |
 | `ai_session_not_initialized_error` | 会话未初始化错误构造 |
 | `ai`（`commands/` `db_bridge/` `tracking_bridge/`） | command handlers + AppState-free 桥接 |
 | `conversation_store` | agent 拥有的会话存储 |

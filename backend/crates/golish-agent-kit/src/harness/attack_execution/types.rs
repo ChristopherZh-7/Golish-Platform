@@ -7,6 +7,40 @@ pub use crate::harness::types::FindingSeverity;
 
 pub const CANDIDATE_PLAN_SCHEMA_V1: &str = "candidate-plan-v1";
 pub const CANDIDATE_CLASSIFIER_VERSION_V1: &str = "candidate-classifier-v1";
+pub const CANDIDATE_PLAN_SCHEMA_V2: &str = "candidate-plan-v2";
+pub const CANDIDATE_CLASSIFIER_VERSION_V2: &str = "candidate-classifier-v2";
+pub const CANDIDATE_RECIPE_VERSION_LEGACY_GENERIC_V1: &str = "candidate-recipe.legacy-generic-v1";
+pub const CANDIDATE_EXECUTOR_CONTRACT_LEGACY_GENERIC_V1: &str =
+    "candidate-executor.legacy-generic-v1";
+pub const CANDIDATE_RECIPE_VERSION_NUCLEI_REPLAY_V2: &str =
+    "candidate-recipe.nuclei-exact-replay-v2";
+pub const CANDIDATE_EXECUTOR_CONTRACT_NUCLEI_REPLAY_V2: &str =
+    "candidate-executor.nuclei-exact-replay-v2";
+pub const CANDIDATE_RECIPE_VERSION_ANONYMOUS_REPLAY_V2: &str =
+    "candidate-recipe.anonymous-exact-replay-v2";
+pub const CANDIDATE_EXECUTOR_CONTRACT_ANONYMOUS_REPLAY_V2: &str =
+    "candidate-executor.anonymous-exact-replay-v2";
+pub const CANDIDATE_RECIPE_VERSION_DIRECTORY_ENTRY_REPLAY_V2: &str =
+    "candidate-recipe.directory-entry-exact-replay-v2";
+pub const CANDIDATE_EXECUTOR_CONTRACT_DIRECTORY_ENTRY_REPLAY_V2: &str =
+    "candidate-executor.directory-entry-exact-replay-v2";
+pub const CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE: &str = "GOLISH-SURFACE-ANALYSIS";
+
+fn legacy_recipe_version() -> String {
+    CANDIDATE_RECIPE_VERSION_LEGACY_GENERIC_V1.to_string()
+}
+
+fn legacy_executor_contract_version() -> String {
+    CANDIDATE_EXECUTOR_CONTRACT_LEGACY_GENERIC_V1.to_string()
+}
+
+fn is_legacy_recipe_version(value: &str) -> bool {
+    value == CANDIDATE_RECIPE_VERSION_LEGACY_GENERIC_V1
+}
+
+fn is_legacy_executor_contract_version(value: &str) -> bool {
+    value == CANDIDATE_EXECUTOR_CONTRACT_LEGACY_GENERIC_V1
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +88,20 @@ pub struct CandidateBudget {
 pub struct CandidateExecutionPlan {
     pub schema_version: String,
     pub classifier_version: String,
+    /// Frozen recipe semantics. Legacy V1 defaults are omitted when old plans
+    /// are re-serialized so their already-approved canonical hash cannot move.
+    #[serde(
+        default = "legacy_recipe_version",
+        skip_serializing_if = "is_legacy_recipe_version"
+    )]
+    pub recipe_version: String,
+    /// Frozen runtime adapter contract. It is distinct from classifier
+    /// version so a deployment cannot silently replace an approved executor.
+    #[serde(
+        default = "legacy_executor_contract_version",
+        skip_serializing_if = "is_legacy_executor_contract_version"
+    )]
+    pub executor_contract_version: String,
     pub candidate_id: Uuid,
     pub target_identity_hash: String,
     pub actions: Vec<PlannedCandidateAction>,
@@ -66,6 +114,16 @@ pub struct PlannedCandidateAction {
     pub ordinal: u32,
     pub capability_id: String,
     pub action_kind: String,
+    #[serde(
+        default = "legacy_recipe_version",
+        skip_serializing_if = "is_legacy_recipe_version"
+    )]
+    pub recipe_version: String,
+    #[serde(
+        default = "legacy_executor_contract_version",
+        skip_serializing_if = "is_legacy_executor_contract_version"
+    )]
+    pub executor_contract_version: String,
     pub canonical_args: serde_json::Value,
     pub side_effect_class: SideEffectClass,
     pub required_evidence_role: AttemptEvidenceRole,
@@ -148,16 +206,22 @@ pub struct VerifiedFindingDraft {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CandidateClassificationInput {
     pub candidate_id: Uuid,
+    pub target_live_id: Option<Uuid>,
     pub target_identity_hash: String,
     pub target_class: CandidateTargetClass,
     pub target_value: String,
     pub hypothesis: String,
     pub technique: String,
+    pub observation: serde_json::Value,
+    pub observation_hash: String,
     pub prior_refs: Vec<String>,
 }
 
-/// One immutable server-seeded reasoning cell. The model sees only its
-/// `work_item_key`; all remaining fields are authoritative DB projections.
+/// One immutable server-seeded reasoning cell. Concrete observations freeze
+/// `technique` and expose exactly that value in `allowed_techniques`; a
+/// `surface_analysis_v1` observation uses the surface sentinel in `technique`
+/// and a server-derived verifier-registry allowlist. Observation bytes and the
+/// declared hash are both part of the frozen manifest attestation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CandidateManifestWorkItem {
     pub work_item_id: Uuid,
@@ -167,6 +231,20 @@ pub struct CandidateManifestWorkItem {
     pub target_value_at_time: String,
     pub target_identity_hash: String,
     pub technique: String,
+    #[serde(default)]
+    pub source_fact_delta_id: Option<Uuid>,
+    #[serde(default)]
+    pub delta_kind: Option<String>,
+    #[serde(default)]
+    pub observation_kind: String,
+    #[serde(default)]
+    pub allowed_techniques: Vec<String>,
+    #[serde(default)]
+    pub enrichment_required: bool,
+    #[serde(default)]
+    pub observation: serde_json::Value,
+    #[serde(default)]
+    pub observation_hash: String,
     pub evidence_ids: Vec<i64>,
 }
 

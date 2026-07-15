@@ -2,7 +2,7 @@ use golish_db::models::{AgentType, NewSession};
 use golish_db::repo::{
     canonical_fact_refs, message_chains, operation_state, project_scopes, runtime_memory_rollout,
     runtime_memory_tx, sessions, stage_asset_waves, stage_deliverable_submissions, stage_handoffs,
-    stage_run_units, stage_worker_runs, tasks, tool_calls,
+    stage_run_units, stage_teams, stage_worker_runs, tasks, tool_calls,
 };
 use golish_db::{DbConfig, GolishDb};
 use serial_test::serial;
@@ -183,6 +183,1131 @@ async fn complete_migrations_enable_runtime_sampling_and_new_operation_freezes_i
         created_v2.operation.runtime_memory_contract,
         "dual_write_legacy_read"
     );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stage_team_schema_fences_owner_queue_output_and_request_epoch() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots(&db).await;
+    let unit_id = Uuid::new_v4();
+    stage_run_units::insert_with_executor(
+        db.pool(),
+        &stage_run_units::NewStageRunUnit {
+            id: unit_id,
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            scope_snapshot_id: roots.snapshot_id,
+            organization_id: roots.organization_id,
+            stage_kind: "target_intel".to_string(),
+            generation: 0,
+            specialist: Some("target_intel".to_string()),
+        },
+    )
+    .await
+    .expect("seed team-owned stage unit");
+
+    let plan_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO stage_team_plans (
+               id,operation_id,stage_execution_id,stage_run_unit_id,scope_snapshot_id,
+               organization_id,stage_kind,unit_generation,schema_version,plan_version,
+               plan_hash,leader_role,aggregator_kind,aggregator_role,allowed_worker_roles,
+               max_workers_total,max_workers_active,dynamic_requests_allowed,
+               dynamic_request_policy,dispatch_epoch,final_submitter_kind,
+               created_from_stage_spec_hash
+           ) VALUES (
+               $1,$2,$3,$4,$5,$6,'target_intel',0,1,1,$7,'lead','worker','aggregator',
+               $8,8,2,TRUE,$9,0,'worker',$10
+           )"#,
+    )
+    .bind(plan_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.snapshot_id)
+    .bind(roots.organization_id)
+    .bind("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    .bind(serde_json::json!(["lead", "helper", "aggregator"]))
+    .bind(serde_json::json!({"max_dynamic_requests": 2}))
+    .bind("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    .execute(db.pool())
+    .await
+    .expect("insert frozen team plan");
+
+    let duplicate_plan = sqlx::query(
+        r#"INSERT INTO stage_team_plans (
+               id,operation_id,stage_execution_id,stage_run_unit_id,scope_snapshot_id,
+               organization_id,stage_kind,unit_generation,schema_version,plan_version,
+               plan_hash,leader_role,aggregator_kind,aggregator_role,allowed_worker_roles,
+               max_workers_total,max_workers_active,dynamic_requests_allowed,
+               dynamic_request_policy,dispatch_epoch,final_submitter_kind,
+               created_from_stage_spec_hash
+           ) SELECT $1,operation_id,stage_execution_id,stage_run_unit_id,scope_snapshot_id,
+                    organization_id,stage_kind,unit_generation,schema_version,plan_version+1,
+                    $2,leader_role,aggregator_kind,aggregator_role,allowed_worker_roles,
+                    max_workers_total,max_workers_active,dynamic_requests_allowed,
+                    dynamic_request_policy,dispatch_epoch,final_submitter_kind,
+                    created_from_stage_spec_hash
+               FROM stage_team_plans WHERE id=$3"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+    .bind(plan_id)
+    .execute(db.pool())
+    .await;
+    assert!(
+        duplicate_plan.is_err(),
+        "one Unit must own one frozen TeamPlan"
+    );
+
+    let producer_item_id = Uuid::new_v4();
+    let helper_item_id = Uuid::new_v4();
+    for (item_id, stable_key, role, hash_char) in [
+        (producer_item_id, "provider:primary", "lead", 'd'),
+        (helper_item_id, "provider:helper", "helper", 'e'),
+    ] {
+        sqlx::query(
+            r#"INSERT INTO stage_work_items (
+                   id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+                   scope_snapshot_id,organization_id,dispatch_epoch,kind,stable_key,role,
+                   input_manifest_hash,input_refs,required_for_barrier,priority,status,
+                   attempt_policy,budget,output_schema,created_by
+               ) VALUES (
+                   $1,$2,$3,$4,$5,$6,$7,0,'source_batch',$8,$9,$10,'[]'::jsonb,
+                   TRUE,0,'queued','{}'::jsonb,'{}'::jsonb,
+                   'stage_worker_output.v1','server_seed'
+               )"#,
+        )
+        .bind(item_id)
+        .bind(plan_id)
+        .bind(roots.operation_id)
+        .bind(roots.stage_execution_id)
+        .bind(unit_id)
+        .bind(roots.snapshot_id)
+        .bind(roots.organization_id)
+        .bind(stable_key)
+        .bind(role)
+        .bind(format!("sha256:{}", hash_char.to_string().repeat(64)))
+        .execute(db.pool())
+        .await
+        .expect("insert stable server work item");
+    }
+
+    let duplicate_stable_key = sqlx::query(
+        r#"INSERT INTO stage_work_items (
+               id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,dispatch_epoch,kind,stable_key,role,
+               input_manifest_hash,input_refs,required_for_barrier,priority,status,
+               attempt_policy,budget,output_schema,created_by
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,0,'source_batch','provider:primary','helper',
+                     $8,'[]'::jsonb,FALSE,0,'queued','{}'::jsonb,'{}'::jsonb,
+                     'stage_worker_output.v1','server_seed')"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(plan_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.snapshot_id)
+    .bind(roots.organization_id)
+    .bind("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+    .execute(db.pool())
+    .await;
+    assert!(
+        duplicate_stable_key.is_err(),
+        "stable work keys cannot duplicate"
+    );
+
+    let cross_owner_item = sqlx::query(
+        r#"INSERT INTO stage_work_items (
+               id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,dispatch_epoch,kind,stable_key,role,
+               input_manifest_hash,input_refs,required_for_barrier,priority,status,
+               attempt_policy,budget,output_schema,created_by
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,0,'source_batch','foreign-org','helper',
+                     $8,'[]'::jsonb,FALSE,0,'queued','{}'::jsonb,'{}'::jsonb,
+                     'stage_worker_output.v1','server_seed')"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(plan_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.snapshot_id)
+    .bind(Uuid::new_v4())
+    .bind("sha256:1111111111111111111111111111111111111111111111111111111111111111")
+    .execute(db.pool())
+    .await;
+    assert!(
+        cross_owner_item.is_err(),
+        "WorkItems cannot cross the owner tuple"
+    );
+
+    sqlx::query(
+        r#"INSERT INTO stage_work_item_dependencies (
+               team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,work_item_id,depends_on_work_item_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)"#,
+    )
+    .bind(plan_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.snapshot_id)
+    .bind(roots.organization_id)
+    .bind(helper_item_id)
+    .bind(producer_item_id)
+    .execute(db.pool())
+    .await
+    .expect("insert same-owner dependency");
+    let dependency_cycle = sqlx::query(
+        r#"INSERT INTO stage_work_item_dependencies (
+               team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,work_item_id,depends_on_work_item_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)"#,
+    )
+    .bind(plan_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.snapshot_id)
+    .bind(roots.organization_id)
+    .bind(producer_item_id)
+    .bind(helper_item_id)
+    .execute(db.pool())
+    .await;
+    assert!(
+        dependency_cycle.is_err(),
+        "WorkItem dependencies cannot cycle"
+    );
+
+    let unbound_worker = sqlx::query(
+        r#"INSERT INTO stage_worker_runs (
+               id,operation_id,stage_execution_id,stage_run_unit_id,organization_id,
+               worker_generation,specialist,work_item_kind,work_item_key,agent_path,status
+           ) VALUES ($1,$2,$3,$4,$5,0,'lead','source_batch','unbound',
+                     'main>team:unbound','queued')"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.organization_id)
+    .execute(db.pool())
+    .await;
+    assert!(
+        unbound_worker.is_err(),
+        "team Workers must bind an exact WorkItem"
+    );
+
+    let producer_worker_id = Uuid::new_v4();
+    let helper_worker_id = Uuid::new_v4();
+    for (worker_id, item_id, specialist, stable_key) in [
+        (
+            producer_worker_id,
+            producer_item_id,
+            "lead",
+            "provider:primary",
+        ),
+        (
+            helper_worker_id,
+            helper_item_id,
+            "helper",
+            "provider:helper",
+        ),
+    ] {
+        sqlx::query(
+            r#"INSERT INTO stage_worker_runs (
+                   id,operation_id,stage_execution_id,stage_run_unit_id,organization_id,
+                   worker_generation,specialist,work_item_kind,work_item_key,agent_path,
+                   status,work_item_id
+               ) VALUES ($1,$2,$3,$4,$5,0,$6,'source_batch',$7,$8,'queued',$9)"#,
+        )
+        .bind(worker_id)
+        .bind(roots.operation_id)
+        .bind(roots.stage_execution_id)
+        .bind(unit_id)
+        .bind(roots.organization_id)
+        .bind(specialist)
+        .bind(stable_key)
+        .bind(format!("main>team:{specialist}"))
+        .bind(item_id)
+        .execute(db.pool())
+        .await
+        .expect("insert independently fenced sibling Worker");
+    }
+    let duplicate_live_worker = sqlx::query(
+        r#"INSERT INTO stage_worker_runs (
+               id,operation_id,stage_execution_id,stage_run_unit_id,organization_id,
+               worker_generation,specialist,work_item_kind,work_item_key,agent_path,
+               status,work_item_id
+           ) VALUES ($1,$2,$3,$4,$5,1,'lead','source_batch','provider:primary',
+                     'main>team:replacement','queued',$6)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.organization_id)
+    .bind(producer_item_id)
+    .execute(db.pool())
+    .await;
+    assert!(
+        duplicate_live_worker.is_err(),
+        "one WorkItem cannot own two live Workers"
+    );
+
+    let dynamic_item_id = Uuid::new_v4();
+    let mut request_tx = db.pool().begin().await.expect("begin accepted request");
+    sqlx::query(
+        r#"INSERT INTO stage_work_items (
+               id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,dispatch_epoch,kind,stable_key,role,
+               input_manifest_hash,input_refs,required_for_barrier,priority,status,
+               attempt_policy,budget,output_schema,created_by
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,0,'enrichment','dynamic:whois','helper',
+                     $8,'[]'::jsonb,FALSE,1,'queued','{}'::jsonb,'{}'::jsonb,
+                     'stage_worker_output.v1','accepted_worker_request')"#,
+    )
+    .bind(dynamic_item_id)
+    .bind(plan_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.snapshot_id)
+    .bind(roots.organization_id)
+    .bind("sha256:2222222222222222222222222222222222222222222222222222222222222222")
+    .execute(&mut *request_tx)
+    .await
+    .expect("insert dynamic sibling WorkItem");
+    sqlx::query(
+        r#"INSERT INTO stage_worker_requests (
+               id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,parent_work_item_id,parent_worker_run_id,
+               dispatch_epoch,requested_role,request_kind,bounded_subject_refs,reason_code,
+               expected_output_schema,budget_hint,dedupe_key,request_payload_hash,status,
+               accepted_work_item_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,'helper','enrichment','[]'::jsonb,
+                     'missing_whois','stage_worker_output.v1','{}'::jsonb,'whois:root',
+                     $10,'accepted',$11)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(plan_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.snapshot_id)
+    .bind(roots.organization_id)
+    .bind(producer_item_id)
+    .bind(producer_worker_id)
+    .bind("sha256:3333333333333333333333333333333333333333333333333333333333333333")
+    .bind(dynamic_item_id)
+    .execute(&mut *request_tx)
+    .await
+    .expect("record accepted dynamic WorkerRequest");
+    request_tx
+        .commit()
+        .await
+        .expect("accepted request and WorkItem commit together");
+
+    let duplicate_request = sqlx::query(
+        r#"INSERT INTO stage_worker_requests (
+               id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,parent_work_item_id,parent_worker_run_id,
+               dispatch_epoch,requested_role,request_kind,bounded_subject_refs,reason_code,
+               expected_output_schema,budget_hint,dedupe_key,request_payload_hash,status
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,'helper','enrichment','[]'::jsonb,
+                     'duplicate','stage_worker_output.v1','{}'::jsonb,'whois:root',
+                     $10,'rejected')"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(plan_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.snapshot_id)
+    .bind(roots.organization_id)
+    .bind(producer_item_id)
+    .bind(producer_worker_id)
+    .bind("sha256:4444444444444444444444444444444444444444444444444444444444444444")
+    .execute(db.pool())
+    .await;
+    assert!(
+        duplicate_request.is_err(),
+        "request dedupe is exact per epoch"
+    );
+
+    sqlx::query(
+        "UPDATE stage_team_plans SET requests_closed_at=NOW(),row_version=row_version+1,updated_at=NOW() WHERE id=$1",
+    )
+    .bind(plan_id)
+    .execute(db.pool())
+    .await
+    .expect("close current request epoch");
+    let request_after_close = sqlx::query(
+        r#"INSERT INTO stage_worker_requests (
+               id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,parent_work_item_id,parent_worker_run_id,
+               dispatch_epoch,requested_role,request_kind,bounded_subject_refs,reason_code,
+               expected_output_schema,budget_hint,dedupe_key,request_payload_hash,status
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,'helper','dns','[]'::jsonb,
+                     'late','stage_worker_output.v1','{}'::jsonb,'late:dns',$10,'accepted')"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(plan_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.snapshot_id)
+    .bind(roots.organization_id)
+    .bind(producer_item_id)
+    .bind(producer_worker_id)
+    .bind("sha256:5555555555555555555555555555555555555555555555555555555555555555")
+    .execute(db.pool())
+    .await;
+    assert!(
+        request_after_close.is_err(),
+        "closed epochs reject new accepted requests"
+    );
+    let plan_drift = sqlx::query(
+        "UPDATE stage_team_plans SET max_workers_active=max_workers_active+1,row_version=row_version+1,updated_at=NOW() WHERE id=$1",
+    )
+    .bind(plan_id)
+    .execute(db.pool())
+    .await;
+    assert!(
+        plan_drift.is_err(),
+        "the frozen TeamPlan contract is immutable"
+    );
+
+    sqlx::query(
+        "UPDATE stage_work_items SET status='running',started_at=NOW(),row_version=row_version+1,updated_at=NOW() WHERE id=$1",
+    )
+    .bind(producer_item_id)
+    .execute(db.pool())
+    .await
+    .expect("start producer WorkItem");
+    sqlx::query(
+        "UPDATE stage_work_items SET status='completed',terminal_at=NOW(),row_version=row_version+1,updated_at=NOW() WHERE id=$1",
+    )
+    .bind(producer_item_id)
+    .execute(db.pool())
+    .await
+    .expect("complete producer WorkItem");
+    sqlx::query(
+        "UPDATE stage_worker_runs SET status='passed',terminal_at=NOW(),updated_at=NOW() WHERE id=$1",
+    )
+    .bind(producer_worker_id)
+    .execute(db.pool())
+    .await
+    .expect("terminalize producer Worker");
+    let output_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO stage_worker_outputs (
+               id,team_plan_id,work_item_id,worker_run_id,operation_id,stage_execution_id,
+               stage_run_unit_id,scope_snapshot_id,organization_id,output_schema,
+               output_version,business_disposition,canonical_output,canonical_fact_refs,evidence_ids,
+               checked_empty_cells,blocker_codes,output_hash
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'stage_worker_output.v1',1,'found',
+                     '{"facts":[]}'::jsonb,'[]'::jsonb,ARRAY[42]::bigint[],
+                     '[]'::jsonb,ARRAY[]::text[],$10)"#,
+    )
+    .bind(output_id)
+    .bind(plan_id)
+    .bind(producer_item_id)
+    .bind(producer_worker_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(unit_id)
+    .bind(roots.snapshot_id)
+    .bind(roots.organization_id)
+    .bind("sha256:6666666666666666666666666666666666666666666666666666666666666666")
+    .execute(db.pool())
+    .await
+    .expect("persist one terminal WorkerOutput");
+    let output_mutation = sqlx::query(
+        "UPDATE stage_worker_outputs SET blocker_codes=ARRAY['drift']::text[] WHERE id=$1",
+    )
+    .bind(output_id)
+    .execute(db.pool())
+    .await;
+    assert!(output_mutation.is_err(), "WorkerOutput is immutable");
+    let duplicate_output = sqlx::query(
+        r#"INSERT INTO stage_worker_outputs (
+               id,team_plan_id,work_item_id,worker_run_id,operation_id,stage_execution_id,
+               stage_run_unit_id,scope_snapshot_id,organization_id,output_schema,
+               output_version,business_disposition,canonical_output,canonical_fact_refs,evidence_ids,
+               checked_empty_cells,blocker_codes,output_hash
+           ) SELECT $1,team_plan_id,work_item_id,worker_run_id,operation_id,stage_execution_id,
+                    stage_run_unit_id,scope_snapshot_id,organization_id,output_schema,
+                    output_version,business_disposition,canonical_output,canonical_fact_refs,evidence_ids,
+                    checked_empty_cells,blocker_codes,$2
+               FROM stage_worker_outputs WHERE id=$3"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind("sha256:7777777777777777777777777777777777777777777777777777777777777777")
+    .bind(output_id)
+    .execute(db.pool())
+    .await;
+    assert!(
+        duplicate_output.is_err(),
+        "one terminal Worker has one output"
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stage_team_repo_closes_dynamic_queue_and_recovers_expired_aggregator() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let hash = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+    let team_seed = runtime_memory_tx::SeedStageTeamRuntimeRow {
+        base: runtime_memory_tx::SeedStageRuntimeRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_kind: "target_intel".to_string(),
+            unit_generation: 0,
+            specialist: "producer".to_string(),
+            worker_generation: 0,
+            work_item_kind: "stage_unit".to_string(),
+            work_item_key: "team".to_string(),
+            agent_path_prefix: "main>stage_run:target_intel".to_string(),
+            organization_ids: Some(vec![roots.organization_id]),
+        },
+        plan: runtime_memory_tx::StageTeamPlanSeedRow {
+            schema_version: 1,
+            plan_version: 1,
+            plan_hash: hash('a'),
+            leader_role: "aggregator".to_string(),
+            allowed_roles: vec![
+                "producer".to_string(),
+                "helper".to_string(),
+                "aggregator".to_string(),
+            ],
+            aggregator_kind: "worker".to_string(),
+            aggregator_role: Some("aggregator".to_string()),
+            max_workers_total: 4,
+            max_workers_active: 2,
+            dynamic_requests_enabled: true,
+            dynamic_request_policy: serde_json::json!({
+                "allowed_request_kinds": ["enrichment"],
+                "canonical_subject_refs_only": true,
+                "max_requests": 1,
+                "max_subject_refs": 1,
+            }),
+            final_submitter_kind: "worker".to_string(),
+            created_from_stage_spec_hash: hash('b'),
+        },
+        work_items: vec![
+            runtime_memory_tx::StageWorkItemSeedRow {
+                stable_key: "producer:root".to_string(),
+                work_item_kind: "stage_axis".to_string(),
+                role: "producer".to_string(),
+                input_manifest: serde_json::json!({"axis": "root"}),
+                input_manifest_hash: hash('c'),
+                conflict_key: None,
+                priority: 0,
+                required_for_barrier: true,
+                is_aggregator: false,
+                attempt_policy: serde_json::json!({"max_attempts": 2}),
+                budget: serde_json::json!({}),
+                output_schema: "stage_worker_output.v1".to_string(),
+                created_by: "server_seed".to_string(),
+            },
+            runtime_memory_tx::StageWorkItemSeedRow {
+                stable_key: "aggregator:final".to_string(),
+                work_item_kind: "stage_aggregate".to_string(),
+                role: "aggregator".to_string(),
+                input_manifest: serde_json::json!({"aggregate": true}),
+                input_manifest_hash: hash('d'),
+                conflict_key: Some("stage_unit_finalizer".to_string()),
+                priority: i32::MAX,
+                required_for_barrier: false,
+                is_aggregator: true,
+                attempt_policy: serde_json::json!({"max_attempts": 2}),
+                budget: serde_json::json!({}),
+                output_schema: "stage_unit_aggregate.v1".to_string(),
+                created_by: "server_seed".to_string(),
+            },
+        ],
+    };
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &team_seed)
+        .await
+        .expect("seed one durable team");
+    let seeded = &seeded[0];
+    let claim = || runtime_memory_tx::ClaimStageWorkItemRow {
+        operation_id: roots.operation_id,
+        stage_execution_id: roots.stage_execution_id,
+        stage_run_unit_id: seeded.unit.id,
+        stage_team_plan_id: seeded.plan.id,
+        lease_owner: "team-fixture".to_string(),
+        lease_seconds: 60,
+        session_id: roots.session_id,
+        subtask_id: None,
+        agent: AgentType::Pentester,
+        model: None,
+        provider: None,
+        parent_chain_id: None,
+        initial_chain: serde_json::json!([]),
+        initial_checkpoint: serde_json::json!({"turn": 0}),
+    };
+    let producer = runtime_memory_tx::claim_stage_work_item(db.pool(), &claim())
+        .await
+        .expect("claim producer")
+        .expect("producer queued");
+    assert_eq!(producer.work_item.role, "producer");
+    let producer_fence = runtime_memory_tx::RuntimeMemoryTxFence {
+        operation_id: roots.operation_id,
+        stage_execution_id: roots.stage_execution_id,
+        stage_run_unit_id: seeded.unit.id,
+        worker_run_id: producer.worker.id,
+        lease_token: producer.worker.lease_token.expect("producer lease"),
+        attempt_epoch: producer.worker.attempt_epoch,
+        expected_checkpoint_version: producer.worker.checkpoint_version,
+    };
+    let running_unit = stage_run_units::get(db.pool(), seeded.unit.id)
+        .await
+        .expect("load claimed Team Unit")
+        .expect("claimed Team Unit exists");
+    for (next_worker_status, next_unit_status) in [
+        (
+            stage_worker_runs::StageWorkerRunStatus::GateBlocked,
+            stage_run_units::StageRunUnitStatus::GateBlocked,
+        ),
+        (
+            stage_worker_runs::StageWorkerRunStatus::Exhausted,
+            stage_run_units::StageRunUnitStatus::Exhausted,
+        ),
+        (
+            stage_worker_runs::StageWorkerRunStatus::Superseded,
+            stage_run_units::StageRunUnitStatus::Superseded,
+        ),
+    ] {
+        let error = runtime_memory_tx::finish_worker_attempt(
+            db.pool(),
+            &runtime_memory_tx::FinishWorkerAttemptRow {
+                fence: producer_fence.clone(),
+                expected_status: stage_worker_runs::StageWorkerRunStatus::Running,
+                next_status: next_worker_status,
+                expected_unit_status: stage_run_units::StageRunUnitStatus::Running,
+                expected_unit_row_version: running_unit.row_version,
+                next_unit_status,
+                checkpoint: serde_json::json!({"forbidden": "generic-team-finish"}),
+                evidence_watermark: None,
+            },
+        )
+        .await
+        .expect_err("generic finish must not terminalize a Team-owned Unit");
+        assert!(matches!(
+            error,
+            runtime_memory_tx::RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_worker_requires_team_lifecycle"
+            }
+        ));
+    }
+    assert_eq!(
+        stage_run_units::get(db.pool(), seeded.unit.id)
+            .await
+            .expect("reload Team Unit")
+            .expect("Team Unit remains")
+            .status,
+        "running"
+    );
+    assert_eq!(
+        stage_worker_runs::get(db.pool(), producer.worker.id)
+            .await
+            .expect("reload Team producer")
+            .expect("Team producer remains")
+            .status,
+        "running"
+    );
+    let canonical_organization_ref =
+        serde_json::to_value(canonical_fact_refs::CanonicalFactKey::Organization {
+            organization_id: roots.organization_id,
+        })
+        .expect("serialize canonical organization request subject");
+    let mut dynamic_request = runtime_memory_tx::RequestStageWorkerRow {
+        fence: producer_fence.clone(),
+        stage_team_plan_id: seeded.plan.id,
+        parent_work_item_id: producer.work_item.id,
+        expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+        requested_role: "helper".to_string(),
+        requested_kind: "enrichment".to_string(),
+        subject_refs: vec![canonical_organization_ref.clone()],
+        reason: "resolve ownership".to_string(),
+        output_schema: serde_json::json!("stage_worker_output.v1"),
+        budget_hint: serde_json::json!({}),
+        dedupe_key: "ownership:example.test".to_string(),
+        request_sha256: String::new(),
+    };
+    dynamic_request.request_sha256 =
+        runtime_memory_tx::stage_worker_request_payload_hash(&dynamic_request);
+    let accepted = runtime_memory_tx::request_stage_worker(db.pool(), &dynamic_request)
+        .await
+        .expect("accept bounded dynamic sibling");
+    assert_eq!(accepted.request.status, "accepted");
+    assert!(accepted.work_item.is_some());
+    let replayed = runtime_memory_tx::request_stage_worker(db.pool(), &dynamic_request)
+        .await
+        .expect("replay accepted request after response loss");
+    assert!(replayed.replayed);
+    assert_eq!(replayed.request.id, accepted.request.id);
+
+    let restarted = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &team_seed)
+        .await
+        .expect("restart replays static seed beside authorized dynamic WorkItem");
+    assert_eq!(restarted.len(), 1);
+    assert!(restarted[0].replayed);
+    assert_eq!(restarted[0].work_items.len(), team_seed.work_items.len());
+    assert!(restarted[0]
+        .work_items
+        .iter()
+        .all(|item| item.created_by == "server_seed"));
+    let replay_items = stage_teams::list_work_items_with_executor(db.pool(), restarted[0].plan.id)
+        .await
+        .expect("load static and dynamic replay items");
+    assert_eq!(replay_items.len(), team_seed.work_items.len() + 1);
+    assert!(replay_items.iter().any(|item| {
+        item.id == accepted.work_item.as_ref().expect("accepted item").id
+            && item.created_by == "accepted_worker_request"
+    }));
+    let mut mismatched_static_seed = team_seed.clone();
+    mismatched_static_seed.work_items[0].budget = serde_json::json!({"timeout_ms": 1});
+    let mismatch = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &mismatched_static_seed)
+        .await
+        .expect_err("restart must exact-match every immutable server seed field");
+    assert!(matches!(
+        mismatch,
+        runtime_memory_tx::RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_work_item_replay_mismatch"
+        }
+    ));
+
+    let mut limited_request = runtime_memory_tx::RequestStageWorkerRow {
+        dedupe_key: "ownership:second.test".to_string(),
+        subject_refs: vec![canonical_organization_ref],
+        request_sha256: String::new(),
+        ..dynamic_request.clone()
+    };
+    limited_request.request_sha256 =
+        runtime_memory_tx::stage_worker_request_payload_hash(&limited_request);
+    let rejected = runtime_memory_tx::request_stage_worker(db.pool(), &limited_request)
+        .await
+        .expect("persist policy rejection");
+    assert_eq!(rejected.request.status, "rejected");
+    assert_eq!(
+        rejected.request.decision_reason_code.as_deref(),
+        Some("stage_team_dynamic_request_limit_reached")
+    );
+
+    let stage_worker_evidence_id = sqlx::query_scalar::<_, i64>(
+        r#"INSERT INTO audit_log (
+               action, category, details, project_path, source, audit_role,
+               detail, run_id, created_at
+           ) VALUES (
+               'stage team worker evidence','harness','fresh exact worker evidence',
+               '/tmp/runtime-worker','harness','evidence',$1,$2,NOW()
+           ) RETURNING id"#,
+    )
+    .bind(serde_json::json!({"organization_id": roots.organization_id}))
+    .bind(roots.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("insert fresh operation-owned Team worker evidence");
+
+    let mut producer_completion = stage_teams::CompleteStageWorkerRow {
+        fence: producer_fence,
+        team_plan_id: seeded.plan.id,
+        work_item_id: producer.work_item.id,
+        expected_work_item_row_version: producer.work_item.row_version,
+        output_schema: "stage_worker_output.v1".to_string(),
+        business_disposition: "found".to_string(),
+        canonical_output: serde_json::json!({"facts": []}),
+        canonical_fact_refs: serde_json::json!([]),
+        evidence_ids: vec![stage_worker_evidence_id],
+        checked_empty_cells: serde_json::json!([]),
+        blocker_codes: Vec::new(),
+        output_hash: String::new(),
+        terminal_checkpoint: serde_json::json!({"done": true}),
+        evidence_watermark: Some(stage_worker_evidence_id),
+    };
+    refresh_stage_worker_output_hash(&mut producer_completion);
+    let completed = stage_teams::complete_stage_worker(db.pool(), producer_completion.clone())
+        .await
+        .expect("producer completion keeps Unit running");
+    assert_eq!(completed.unit.status, "running");
+    assert!(!completed.replayed);
+    assert!(
+        stage_teams::complete_stage_worker(db.pool(), producer_completion)
+            .await
+            .expect("producer completion exact replay")
+            .replayed
+    );
+
+    let closed = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+            expected_plan_row_version: seeded.plan.row_version,
+        },
+    )
+    .await
+    .expect("close request epoch");
+    assert!(!closed.replayed);
+    let closed_replay = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+            expected_plan_row_version: seeded.plan.row_version,
+        },
+    )
+    .await
+    .expect("close response-loss replay");
+    assert!(closed_replay.replayed);
+
+    let helper = runtime_memory_tx::claim_stage_work_item(db.pool(), &claim())
+        .await
+        .expect("claim accepted dynamic item after request epoch closes")
+        .expect("dynamic item remains claimable");
+    assert_eq!(helper.work_item.role, "helper");
+    let helper_fence = runtime_memory_tx::RuntimeMemoryTxFence {
+        operation_id: roots.operation_id,
+        stage_execution_id: roots.stage_execution_id,
+        stage_run_unit_id: seeded.unit.id,
+        worker_run_id: helper.worker.id,
+        lease_token: helper.worker.lease_token.expect("helper lease"),
+        attempt_epoch: helper.worker.attempt_epoch,
+        expected_checkpoint_version: helper.worker.checkpoint_version,
+    };
+    let mut helper_completion = stage_teams::CompleteStageWorkerRow {
+        fence: helper_fence,
+        team_plan_id: seeded.plan.id,
+        work_item_id: helper.work_item.id,
+        expected_work_item_row_version: helper.work_item.row_version,
+        output_schema: "stage_worker_output.v1".to_string(),
+        business_disposition: "checked_empty".to_string(),
+        canonical_output: serde_json::json!({"facts": []}),
+        canonical_fact_refs: serde_json::json!([]),
+        evidence_ids: vec![stage_worker_evidence_id],
+        checked_empty_cells: serde_json::json!([{"domain": "example.test"}]),
+        blocker_codes: Vec::new(),
+        output_hash: String::new(),
+        terminal_checkpoint: serde_json::json!({"done": true}),
+        evidence_watermark: Some(stage_worker_evidence_id),
+    };
+    refresh_stage_worker_output_hash(&mut helper_completion);
+    stage_teams::complete_stage_worker(db.pool(), helper_completion)
+        .await
+        .expect("complete dynamic sibling");
+    let barrier = runtime_memory_tx::load_stage_team_barrier(
+        db.pool(),
+        &runtime_memory_tx::LoadStageTeamBarrierRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            dispatch_epoch: seeded.plan.dispatch_epoch,
+        },
+    )
+    .await
+    .expect("load closed producer barrier");
+    assert!(barrier.ready_to_finalize());
+    assert_eq!(barrier.required_work_items, 2);
+
+    let aggregator_claim = runtime_memory_tx::ClaimStageAggregatorRow {
+        claim: claim(),
+        expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+        expected_manifest_hash: barrier.manifest_hash.clone(),
+    };
+    let first_aggregator = runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
+        .await
+        .expect("claim unique final submitter");
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET lease_acquired_at=NOW()-INTERVAL '2 minutes',
+                lease_expires_at=NOW()-INTERVAL '1 minute',
+                heartbeat_at=NOW()-INTERVAL '1 minute'
+          WHERE id=$1",
+    )
+    .bind(first_aggregator.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("expire aggregator without an active tool");
+    let replacement = runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
+        .await
+        .expect("atomically supersede and replace expired aggregator");
+    assert_ne!(replacement.worker.id, first_aggregator.worker.id);
+    assert_eq!(
+        replacement.plan.final_submitter_worker_run_id,
+        Some(replacement.worker.id)
+    );
+    assert_eq!(
+        stage_worker_runs::get(db.pool(), first_aggregator.worker.id)
+            .await
+            .expect("load old aggregator")
+            .expect("old aggregator remains auditable")
+            .status,
+        "superseded"
+    );
+    let after_recovery = runtime_memory_tx::load_stage_team_barrier(
+        db.pool(),
+        &runtime_memory_tx::LoadStageTeamBarrierRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            dispatch_epoch: seeded.plan.dispatch_epoch,
+        },
+    )
+    .await
+    .expect("barrier survives aggregator replacement");
+    assert_eq!(after_recovery.manifest_hash, barrier.manifest_hash);
+    assert!(after_recovery.ready_to_finalize());
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stage_team_dynamic_request_replays_after_parent_work_item_retry() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let hash = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+    let team_seed = runtime_memory_tx::SeedStageTeamRuntimeRow {
+        base: runtime_memory_tx::SeedStageRuntimeRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_kind: "target_intel".to_string(),
+            unit_generation: 0,
+            specialist: "producer".to_string(),
+            worker_generation: 0,
+            work_item_kind: "stage_unit".to_string(),
+            work_item_key: "team-request-replay".to_string(),
+            agent_path_prefix: "main>stage_run:target_intel".to_string(),
+            organization_ids: Some(vec![roots.organization_id]),
+        },
+        plan: runtime_memory_tx::StageTeamPlanSeedRow {
+            schema_version: 1,
+            plan_version: 1,
+            plan_hash: hash('a'),
+            leader_role: "aggregator".to_string(),
+            allowed_roles: vec![
+                "producer".to_string(),
+                "helper".to_string(),
+                "aggregator".to_string(),
+            ],
+            aggregator_kind: "worker".to_string(),
+            aggregator_role: Some("aggregator".to_string()),
+            max_workers_total: 4,
+            max_workers_active: 2,
+            dynamic_requests_enabled: true,
+            dynamic_request_policy: serde_json::json!({
+                "allowed_request_kinds": ["enrichment"],
+                "canonical_subject_refs_only": true,
+                "max_requests": 1,
+                "max_subject_refs": 1,
+            }),
+            final_submitter_kind: "worker".to_string(),
+            created_from_stage_spec_hash: hash('b'),
+        },
+        work_items: vec![
+            runtime_memory_tx::StageWorkItemSeedRow {
+                stable_key: "producer:root".to_string(),
+                work_item_kind: "stage_axis".to_string(),
+                role: "producer".to_string(),
+                input_manifest: serde_json::json!({"axis": "root"}),
+                input_manifest_hash: hash('c'),
+                conflict_key: None,
+                priority: 0,
+                required_for_barrier: true,
+                is_aggregator: false,
+                attempt_policy: serde_json::json!({"max_attempts": 2}),
+                budget: serde_json::json!({}),
+                output_schema: "stage_worker_output.v1".to_string(),
+                created_by: "server_seed".to_string(),
+            },
+            runtime_memory_tx::StageWorkItemSeedRow {
+                stable_key: "aggregator:final".to_string(),
+                work_item_kind: "stage_aggregate".to_string(),
+                role: "aggregator".to_string(),
+                input_manifest: serde_json::json!({"aggregate": true}),
+                input_manifest_hash: hash('d'),
+                conflict_key: Some("stage_unit_finalizer".to_string()),
+                priority: i32::MAX,
+                required_for_barrier: false,
+                is_aggregator: true,
+                attempt_policy: serde_json::json!({"max_attempts": 2}),
+                budget: serde_json::json!({}),
+                output_schema: "stage_unit_aggregate.v1".to_string(),
+                created_by: "server_seed".to_string(),
+            },
+        ],
+    };
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &team_seed)
+        .await
+        .expect("seed Team request replay fixture")
+        .remove(0);
+    let claim = || runtime_memory_tx::ClaimStageWorkItemRow {
+        operation_id: roots.operation_id,
+        stage_execution_id: roots.stage_execution_id,
+        stage_run_unit_id: seeded.unit.id,
+        stage_team_plan_id: seeded.plan.id,
+        lease_owner: "team-request-replay-fixture".to_string(),
+        lease_seconds: 60,
+        session_id: roots.session_id,
+        subtask_id: None,
+        agent: AgentType::Primary,
+        model: None,
+        provider: None,
+        parent_chain_id: None,
+        initial_chain: serde_json::json!([]),
+        initial_checkpoint: serde_json::json!({"turn": 0}),
+    };
+    let first_parent = runtime_memory_tx::claim_stage_work_item(db.pool(), &claim())
+        .await
+        .expect("claim first parent Worker")
+        .expect("producer WorkItem is queued");
+    assert_eq!(first_parent.work_item.stable_key, "producer:root");
+    let first_fence = runtime_memory_tx::RuntimeMemoryTxFence {
+        operation_id: roots.operation_id,
+        stage_execution_id: roots.stage_execution_id,
+        stage_run_unit_id: seeded.unit.id,
+        worker_run_id: first_parent.worker.id,
+        lease_token: first_parent.worker.lease_token.expect("first parent lease"),
+        attempt_epoch: first_parent.worker.attempt_epoch,
+        expected_checkpoint_version: first_parent.worker.checkpoint_version,
+    };
+    let subject_ref = serde_json::to_value(canonical_fact_refs::CanonicalFactKey::Organization {
+        organization_id: roots.organization_id,
+    })
+    .expect("serialize canonical organization request subject");
+    let mut initial_request = runtime_memory_tx::RequestStageWorkerRow {
+        fence: first_fence.clone(),
+        stage_team_plan_id: seeded.plan.id,
+        parent_work_item_id: first_parent.work_item.id,
+        expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+        requested_role: "helper".to_string(),
+        requested_kind: "enrichment".to_string(),
+        subject_refs: vec![subject_ref],
+        reason: "resolve ownership".to_string(),
+        output_schema: serde_json::json!("stage_worker_output.v1"),
+        budget_hint: serde_json::json!({}),
+        dedupe_key: "ownership:example.test".to_string(),
+        request_sha256: String::new(),
+    };
+    initial_request.request_sha256 =
+        runtime_memory_tx::stage_worker_request_payload_hash(&initial_request);
+    let accepted = runtime_memory_tx::request_stage_worker(db.pool(), &initial_request)
+        .await
+        .expect("accept dynamic sibling before parent retry");
+    let accepted_work_item_id = accepted
+        .work_item
+        .as_ref()
+        .expect("accepted request owns a WorkItem")
+        .id;
+
+    let retried = stage_teams::retry_stage_worker(
+        db.pool(),
+        stage_teams::RetryStageWorkerRow {
+            fence: first_fence,
+            team_plan_id: seeded.plan.id,
+            work_item_id: first_parent.work_item.id,
+            expected_work_item_row_version: first_parent.work_item.row_version,
+            failure_code: "provider_unavailable".to_string(),
+            terminal_checkpoint: serde_json::json!({
+                "stage_team_execution_failure": {"code": "provider_unavailable"}
+            }),
+        },
+    )
+    .await
+    .expect("requeue stable parent WorkItem after execution failure");
+    assert!(retried.retry_scheduled);
+    assert_eq!(retried.work_item.id, first_parent.work_item.id);
+
+    let recovered_parent = runtime_memory_tx::claim_stage_work_item(db.pool(), &claim())
+        .await
+        .expect("claim requeued parent WorkItem")
+        .expect("parent WorkItem remains retryable");
+    assert_eq!(recovered_parent.work_item.id, first_parent.work_item.id);
+    assert_ne!(recovered_parent.worker.id, first_parent.worker.id);
+    let recovered_lease = recovered_parent
+        .worker
+        .lease_token
+        .expect("recovered parent lease");
+    assert_ne!(Some(recovered_lease), first_parent.worker.lease_token);
+    let mut replay_request = runtime_memory_tx::RequestStageWorkerRow {
+        fence: runtime_memory_tx::RuntimeMemoryTxFence {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            worker_run_id: recovered_parent.worker.id,
+            lease_token: recovered_lease,
+            attempt_epoch: recovered_parent.worker.attempt_epoch,
+            expected_checkpoint_version: recovered_parent.worker.checkpoint_version,
+        },
+        request_sha256: String::new(),
+        ..initial_request.clone()
+    };
+    replay_request.request_sha256 =
+        runtime_memory_tx::stage_worker_request_payload_hash(&replay_request);
+    let replayed = runtime_memory_tx::request_stage_worker(db.pool(), &replay_request)
+        .await
+        .expect("same logical request replays after parent WorkItem retry");
+    assert!(replayed.replayed);
+    assert_eq!(replayed.request.id, accepted.request.id);
+    assert_eq!(
+        replayed.work_item.as_ref().map(|item| item.id),
+        Some(accepted_work_item_id)
+    );
+    let stale_fence = runtime_memory_tx::request_stage_worker(db.pool(), &initial_request)
+        .await
+        .expect_err("replay must still reject the superseded parent Worker fence");
+    assert!(matches!(
+        stale_fence,
+        runtime_memory_tx::RuntimeMemoryStoreError::LeaseLost { .. }
+    ));
+    let request_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stage_worker_requests
+          WHERE team_plan_id=$1 AND dispatch_epoch=$2 AND dedupe_key=$3",
+    )
+    .bind(seeded.plan.id)
+    .bind(seeded.plan.dispatch_epoch)
+    .bind(&replay_request.dedupe_key)
+    .fetch_one(db.pool())
+    .await
+    .expect("count exact dynamic request identity");
+    assert_eq!(request_count, 1);
+    let accepted_work_item_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stage_work_items
+          WHERE team_plan_id=$1 AND id=$2 AND created_by='accepted_worker_request'",
+    )
+    .bind(seeded.plan.id)
+    .bind(accepted_work_item_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count accepted dynamic WorkItem identity");
+    assert_eq!(accepted_work_item_count, 1);
 
     db.stop().await;
 }
@@ -657,6 +1782,1950 @@ fn sha256_json(value: &serde_json::Value) -> String {
         .collect()
 }
 
+fn refresh_stage_worker_output_hash(input: &mut stage_teams::CompleteStageWorkerRow) {
+    let material = serde_json::json!({
+        "blocker_code": input.blocker_codes.first(),
+        "canonical_output": input.canonical_output,
+        "checked_empty_units": input.checked_empty_cells,
+        "disposition": input.business_disposition,
+        "evidence_ids": input.evidence_ids,
+        "fact_refs": input.canonical_fact_refs,
+        "output_schema": input.output_schema,
+        "work_item_id": input.work_item_id,
+        "worker_run_id": input.fence.worker_run_id,
+    });
+    input.output_hash = format!("sha256:{}", sha256_json(&material));
+}
+
+fn stage_team_lifecycle_seed(
+    roots: &RuntimeRoots,
+    max_attempts: i64,
+) -> runtime_memory_tx::SeedStageTeamRuntimeRow {
+    let hash = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+    runtime_memory_tx::SeedStageTeamRuntimeRow {
+        base: runtime_memory_tx::SeedStageRuntimeRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_kind: "target_intel".to_string(),
+            unit_generation: 0,
+            // Team Worker identity is owned by StageWorkItem.role.  Deliberately
+            // keep the Unit specialist different so startup recovery cannot
+            // accidentally rely on the legacy specialist equality join.
+            specialist: "stage_team".to_string(),
+            worker_generation: 0,
+            work_item_kind: "stage_unit".to_string(),
+            work_item_key: "team-lifecycle".to_string(),
+            agent_path_prefix: "main>stage_run:target_intel".to_string(),
+            organization_ids: Some(vec![roots.organization_id]),
+        },
+        plan: runtime_memory_tx::StageTeamPlanSeedRow {
+            schema_version: 1,
+            plan_version: 1,
+            plan_hash: hash('a'),
+            leader_role: "aggregator".to_string(),
+            allowed_roles: vec![
+                "producer".to_string(),
+                "helper".to_string(),
+                "aggregator".to_string(),
+            ],
+            aggregator_kind: "worker".to_string(),
+            aggregator_role: Some("aggregator".to_string()),
+            max_workers_total: 8,
+            max_workers_active: 3,
+            dynamic_requests_enabled: false,
+            dynamic_request_policy: serde_json::json!({}),
+            final_submitter_kind: "worker".to_string(),
+            created_from_stage_spec_hash: hash('b'),
+        },
+        work_items: vec![
+            runtime_memory_tx::StageWorkItemSeedRow {
+                stable_key: "producer:primary".to_string(),
+                work_item_kind: "stage_axis".to_string(),
+                role: "producer".to_string(),
+                input_manifest: serde_json::json!({"axis": "primary"}),
+                input_manifest_hash: hash('c'),
+                conflict_key: None,
+                priority: 0,
+                required_for_barrier: true,
+                is_aggregator: false,
+                attempt_policy: serde_json::json!({"max_attempts": max_attempts}),
+                budget: serde_json::json!({}),
+                output_schema: "stage_worker_output.v1".to_string(),
+                created_by: "server_seed".to_string(),
+            },
+            runtime_memory_tx::StageWorkItemSeedRow {
+                stable_key: "helper:secondary".to_string(),
+                work_item_kind: "stage_axis".to_string(),
+                role: "helper".to_string(),
+                input_manifest: serde_json::json!({"axis": "secondary"}),
+                input_manifest_hash: hash('d'),
+                conflict_key: None,
+                priority: 1,
+                required_for_barrier: true,
+                is_aggregator: false,
+                attempt_policy: serde_json::json!({"max_attempts": max_attempts}),
+                budget: serde_json::json!({}),
+                output_schema: "stage_worker_output.v1".to_string(),
+                created_by: "server_seed".to_string(),
+            },
+            runtime_memory_tx::StageWorkItemSeedRow {
+                stable_key: "aggregator:final".to_string(),
+                work_item_kind: "stage_aggregate".to_string(),
+                role: "aggregator".to_string(),
+                input_manifest: serde_json::json!({"aggregate": true}),
+                input_manifest_hash: hash('e'),
+                conflict_key: Some("stage_unit_finalizer".to_string()),
+                priority: i32::MAX,
+                required_for_barrier: false,
+                is_aggregator: true,
+                attempt_policy: serde_json::json!({"max_attempts": max_attempts}),
+                budget: serde_json::json!({}),
+                output_schema: "stage_unit_aggregate.v1".to_string(),
+                created_by: "server_seed".to_string(),
+            },
+        ],
+    }
+}
+
+fn stage_team_controller_seed(roots: &RuntimeRoots) -> runtime_memory_tx::SeedStageTeamRuntimeRow {
+    let hash = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+    runtime_memory_tx::SeedStageTeamRuntimeRow {
+        base: runtime_memory_tx::SeedStageRuntimeRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_kind: "target_intel".to_string(),
+            unit_generation: 0,
+            specialist: "company_stage_controller".to_string(),
+            worker_generation: 0,
+            work_item_kind: "stage_unit".to_string(),
+            work_item_key: "company-controller".to_string(),
+            agent_path_prefix: "main>stage_run:target_intel".to_string(),
+            organization_ids: Some(vec![roots.organization_id]),
+        },
+        plan: runtime_memory_tx::StageTeamPlanSeedRow {
+            schema_version: 1,
+            plan_version: 1,
+            plan_hash: hash('f'),
+            leader_role: "company_stage_controller".to_string(),
+            allowed_roles: vec![
+                "company_stage_controller".to_string(),
+                "intel_researcher".to_string(),
+            ],
+            aggregator_kind: "worker".to_string(),
+            aggregator_role: Some("company_stage_controller".to_string()),
+            max_workers_total: 5,
+            // One Controller + at most two live children.
+            max_workers_active: 3,
+            dynamic_requests_enabled: true,
+            dynamic_request_policy: serde_json::json!({
+                "allowed_request_kinds": ["stage_axis"],
+                "canonical_subject_refs_only": true,
+                "child_budget": {},
+                "child_output_schema": "stage_worker_output.v1",
+                "coordination_mode": "company_controller",
+                "max_requests": 3,
+                "max_subject_refs": 1,
+                "organization_scope_implicit": true,
+            }),
+            final_submitter_kind: "worker".to_string(),
+            created_from_stage_spec_hash: hash('e'),
+        },
+        work_items: vec![runtime_memory_tx::StageWorkItemSeedRow {
+            stable_key: "leader:primary".to_string(),
+            work_item_kind: "stage_controller".to_string(),
+            role: "company_stage_controller".to_string(),
+            input_manifest: serde_json::json!({"controller": true}),
+            input_manifest_hash: hash('d'),
+            conflict_key: Some("stage_unit_finalizer".to_string()),
+            priority: 0,
+            required_for_barrier: false,
+            is_aggregator: true,
+            attempt_policy: serde_json::json!({"max_attempts": 3}),
+            budget: serde_json::json!({"controller": true}),
+            output_schema: "stage_unit_aggregate.v1".to_string(),
+            created_by: "server_seed".to_string(),
+        }],
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn company_controller_parks_for_dynamic_child_and_resumes_same_worker_chain() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded =
+        runtime_memory_tx::seed_stage_team_runtime(db.pool(), &stage_team_controller_seed(&roots))
+            .await
+            .expect("seed controller-only Team")
+            .remove(0);
+    assert_eq!(seeded.work_items.len(), 1);
+    assert_eq!(seeded.work_items[0].stable_key, "leader:primary");
+
+    let claim = stage_team_claim_input(&roots, &seeded, "controller-fixture");
+    let controller = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: claim.clone(),
+        },
+    )
+    .await
+    .expect("claim Company Controller")
+    .expect("Controller is immediately runnable");
+    assert_eq!(controller.unit.id, seeded.unit.id);
+    assert_eq!(controller.unit.status, "running");
+    assert_eq!(controller.unit.row_version, seeded.unit.row_version + 1);
+    assert_eq!(controller.work_item.id, seeded.work_items[0].id);
+    assert_eq!(controller.work_item.role, seeded.plan.leader_role);
+    assert_eq!(controller.plan.final_submitter_worker_run_id, None);
+    let original_worker_id = controller.worker.id;
+    let original_chain_id = controller.message_chain_id;
+    let original_attempt_epoch = controller.worker.attempt_epoch;
+    let controller_fence = stage_team_fence(&roots, &seeded, &controller);
+
+    let mut request = runtime_memory_tx::RequestStageWorkerRow {
+        fence: controller_fence.clone(),
+        stage_team_plan_id: seeded.plan.id,
+        parent_work_item_id: controller.work_item.id,
+        expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+        requested_role: "intel_researcher".to_string(),
+        requested_kind: "stage_axis".to_string(),
+        subject_refs: Vec::new(),
+        reason: serde_json::json!({
+            "schema": "stage_team_controller_request.v1",
+            "objective": "Check DNS and CT obligations for this frozen organization",
+            "parent_tool_request_id": "lead-tool-call-1",
+        })
+        .to_string(),
+        // These caller values must not become the durable child contract.
+        output_schema: serde_json::json!("caller-owned-schema"),
+        budget_hint: serde_json::json!({"caller_owned": true}),
+        dedupe_key: "controller-round-1:dns-ct".to_string(),
+        request_sha256: String::new(),
+    };
+    request.request_sha256 = runtime_memory_tx::stage_worker_request_payload_hash(&request);
+    let accepted = runtime_memory_tx::request_stage_worker(db.pool(), &request)
+        .await
+        .expect("Controller request is durably decided");
+    assert_eq!(accepted.request.status, "accepted");
+    let child_item = accepted.work_item.expect("accepted child WorkItem");
+    assert_eq!(child_item.output_schema, "stage_worker_output.v1");
+    assert_eq!(child_item.budget, serde_json::json!({}));
+
+    let parked = runtime_memory_tx::park_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ParkStageTeamLeaderRow {
+            fence: controller_fence,
+            stage_team_plan_id: seeded.plan.id,
+            leader_work_item_id: controller.work_item.id,
+            expected_work_item_row_version: controller.work_item.row_version,
+            checkpoint: serde_json::json!({"controller_round": 1, "waiting": true}),
+        },
+    )
+    .await
+    .expect("atomically park Controller behind accepted children");
+    assert_eq!(parked.work_item.status, "waiting_dependency");
+    assert_eq!(parked.worker.status, "waiting_background");
+    assert_eq!(parked.dependency_count, 1);
+
+    let not_ready = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: claim.clone(),
+        },
+    )
+    .await
+    .expect("not-ready Controller claim is a stable queue result");
+    assert!(not_ready.is_none(), "live child keeps Controller parked");
+
+    let child = runtime_memory_tx::claim_stage_work_item(db.pool(), &claim)
+        .await
+        .expect("claim Controller child")
+        .expect("accepted child is queued");
+    assert_eq!(child.work_item.id, child_item.id);
+    assert_ne!(child.worker.id, original_worker_id);
+    assert_eq!(
+        child.worker.parent_request_id.as_deref(),
+        Some("lead-tool-call-1")
+    );
+    let evidence_id = sqlx::query_scalar::<_, i64>(
+        r#"INSERT INTO audit_log (
+               action, category, details, project_path, source, audit_role,
+               detail, run_id, created_at
+           ) VALUES (
+               'controller child evidence','harness','fresh controller child evidence',
+               '/tmp/runtime-worker','harness','evidence',$1,$2,NOW()
+           ) RETURNING id"#,
+    )
+    .bind(serde_json::json!({"organization_id": roots.organization_id}))
+    .bind(roots.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("insert Controller child evidence");
+    let mut completion = stage_teams::CompleteStageWorkerRow {
+        fence: stage_team_fence(&roots, &seeded, &child),
+        team_plan_id: seeded.plan.id,
+        work_item_id: child.work_item.id,
+        expected_work_item_row_version: child.work_item.row_version,
+        output_schema: "stage_worker_output.v1".to_string(),
+        business_disposition: "found".to_string(),
+        canonical_output: serde_json::json!({"facts": []}),
+        canonical_fact_refs: serde_json::json!([]),
+        evidence_ids: vec![evidence_id],
+        checked_empty_cells: serde_json::json!([]),
+        blocker_codes: Vec::new(),
+        output_hash: String::new(),
+        terminal_checkpoint: serde_json::json!({"done": true}),
+        evidence_watermark: Some(evidence_id),
+    };
+    refresh_stage_worker_output_hash(&mut completion);
+    stage_teams::complete_stage_worker(db.pool(), completion)
+        .await
+        .expect("complete Controller child with immutable output");
+
+    let resumed = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow { claim },
+    )
+    .await
+    .expect("resume Controller after child barrier")
+    .expect("Controller dependencies are ready");
+    assert_eq!(resumed.worker.id, original_worker_id);
+    assert_eq!(resumed.message_chain_id, original_chain_id);
+    assert_eq!(resumed.worker.attempt_epoch, original_attempt_epoch + 1);
+    assert_eq!(resumed.work_item.status, "running");
+    assert_eq!(resumed.unit.id, controller.unit.id);
+    assert_eq!(resumed.unit.status, "running");
+    assert_eq!(resumed.unit.row_version, controller.unit.row_version);
+
+    let closed = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+            expected_plan_row_version: resumed.plan.row_version,
+        },
+    )
+    .await
+    .expect("Controller closes its request epoch before final submission");
+    assert!(closed.barrier.ready_to_finalize());
+    let bound = runtime_memory_tx::bind_stage_team_leader_final_submitter(
+        db.pool(),
+        &runtime_memory_tx::BindStageTeamLeaderFinalSubmitterRow {
+            fence: stage_team_fence(&roots, &seeded, &resumed),
+            stage_team_plan_id: seeded.plan.id,
+            leader_work_item_id: resumed.work_item.id,
+            expected_plan_row_version: closed.plan.row_version,
+            expected_dispatch_epoch: closed.plan.dispatch_epoch,
+            expected_manifest_hash: closed.barrier.manifest_hash.clone(),
+        },
+    )
+    .await
+    .expect("bind the same Controller as sole final submitter");
+    assert_eq!(
+        bound.plan.final_submitter_worker_run_id,
+        Some(original_worker_id)
+    );
+    assert!(!bound.replayed);
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn expired_company_controller_reclaims_same_worker_and_message_chain() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded =
+        runtime_memory_tx::seed_stage_team_runtime(db.pool(), &stage_team_controller_seed(&roots))
+            .await
+            .expect("seed controller-only Team")
+            .remove(0);
+    let claim = stage_team_claim_input(&roots, &seeded, "expired-controller-resume");
+    let controller = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: claim.clone(),
+        },
+    )
+    .await
+    .expect("claim Company Controller")
+    .expect("Controller is runnable");
+    let original_worker_id = controller.worker.id;
+    let original_chain_id = controller.message_chain_id;
+    let original_attempt_epoch = controller.worker.attempt_epoch;
+
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET lease_acquired_at=NOW() - INTERVAL '2 hours',
+                lease_expires_at=NOW() - INTERVAL '1 hour',
+                heartbeat_at=NOW() - INTERVAL '1 hour'
+          WHERE id=$1 AND status='running' AND active_tool_call_id IS NULL",
+    )
+    .bind(original_worker_id)
+    .execute(db.pool())
+    .await
+    .expect("expire idle Controller lease");
+
+    let resumed = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow { claim },
+    )
+    .await
+    .expect("reclaim expired Company Controller")
+    .expect("expired idle Controller is immediately resumable");
+    assert_eq!(resumed.worker.id, original_worker_id);
+    assert_eq!(resumed.message_chain_id, original_chain_id);
+    assert_eq!(resumed.worker.attempt_epoch, original_attempt_epoch + 1);
+    assert_eq!(resumed.worker.status, "running");
+
+    let controller_worker_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE work_item_id=$1")
+            .bind(controller.work_item.id)
+            .fetch_one(db.pool())
+            .await
+            .expect("count logical Controller workers");
+    assert_eq!(
+        controller_worker_count, 1,
+        "lease recovery must not mint a second logical Controller"
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn company_controller_gate_block_reopens_same_worker_chain_until_repair_fuel_is_exhausted() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded =
+        runtime_memory_tx::seed_stage_team_runtime(db.pool(), &stage_team_controller_seed(&roots))
+            .await
+            .expect("seed controller-only Team")
+            .remove(0);
+    let claim = stage_team_claim_input(&roots, &seeded, "gate-repair-controller");
+    let controller = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: claim.clone(),
+        },
+    )
+    .await
+    .expect("claim Company Controller")
+    .expect("Controller is runnable");
+    let original_worker_id = controller.worker.id;
+    let original_chain_id = controller.message_chain_id;
+
+    let closed = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: controller.plan.dispatch_epoch,
+            expected_plan_row_version: controller.plan.row_version,
+        },
+    )
+    .await
+    .expect("close initial Controller request epoch");
+    let bound = runtime_memory_tx::bind_stage_team_leader_final_submitter(
+        db.pool(),
+        &runtime_memory_tx::BindStageTeamLeaderFinalSubmitterRow {
+            fence: stage_team_fence(&roots, &seeded, &controller),
+            stage_team_plan_id: seeded.plan.id,
+            leader_work_item_id: controller.work_item.id,
+            expected_plan_row_version: closed.plan.row_version,
+            expected_dispatch_epoch: closed.plan.dispatch_epoch,
+            expected_manifest_hash: closed.barrier.manifest_hash.clone(),
+        },
+    )
+    .await
+    .expect("bind Controller before first Gate attempt");
+    let (submission, controller_after_tool) = persist_stage_team_submission(
+        &db,
+        &roots,
+        &seeded,
+        &controller,
+        "controller-gate-submit-1",
+    )
+    .await;
+    let gate_decision_hash = format!(
+        "sha256:{}",
+        sha256_json(&serde_json::json!({"decision": "block", "round": 1}))
+    );
+    let gap_manifest = serde_json::json!({
+        "gate_decision_hash": gate_decision_hash,
+        "reasons": ["missing_dns_attestation"],
+        "schema_version": 1,
+    });
+    let full_checkpoint = serde_json::json!({
+        "controller": {
+            "current_round": 3,
+            "provider_chain_length": 17,
+            "resume_after_gate_block": true,
+        },
+        "stage_team_gate_block": gap_manifest,
+    });
+    let reopen_input = runtime_memory_tx::ReopenStageTeamLeaderAfterGateBlockRow {
+        request_id: "controller-gate-reopen-1".to_string(),
+        fence: runtime_memory_tx::RuntimeMemoryTxFence {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            worker_run_id: original_worker_id,
+            lease_token: controller_after_tool
+                .lease_token
+                .expect("Controller lease remains after tool completion"),
+            attempt_epoch: controller_after_tool.attempt_epoch,
+            expected_checkpoint_version: controller_after_tool.checkpoint_version,
+        },
+        stage_team_plan_id: seeded.plan.id,
+        leader_work_item_id: controller.work_item.id,
+        deliverable_submission_id: submission.id,
+        expected_dispatch_epoch: bound.plan.dispatch_epoch,
+        expected_manifest_hash: closed.barrier.manifest_hash.clone(),
+        gate_decision_hash: gate_decision_hash.clone(),
+        gap_manifest_hash: format!("sha256:{}", sha256_json(&gap_manifest)),
+        gap_manifest,
+        checkpoint: full_checkpoint.clone(),
+    };
+    let reopened =
+        runtime_memory_tx::reopen_stage_team_leader_after_gate_block(db.pool(), &reopen_input)
+            .await
+            .expect("reopen the same Controller after Gate BLOCK");
+    assert!(!reopened.replayed);
+    assert!(!reopened.fuel_exhausted);
+    assert_eq!(reopened.plan.dispatch_epoch, bound.plan.dispatch_epoch + 1);
+    assert_eq!(reopened.plan.requests_closed_at, None);
+    assert_eq!(reopened.plan.final_submitter_worker_run_id, None);
+    assert_eq!(reopened.unit.status, "running");
+    assert_eq!(reopened.leader_work_item.status, "waiting_dependency");
+    assert_eq!(reopened.leader_worker.id, original_worker_id);
+    assert_eq!(reopened.leader_worker.status, "waiting_background");
+    assert_eq!(
+        reopened.leader_worker.message_chain_id,
+        Some(original_chain_id)
+    );
+    assert_eq!(
+        reopened.leader_worker.checkpoint.get("controller"),
+        full_checkpoint.get("controller")
+    );
+    assert_eq!(
+        reopened
+            .leader_worker
+            .checkpoint
+            .get("stage_team_gate_block"),
+        full_checkpoint.get("stage_team_gate_block")
+    );
+    assert_eq!(
+        reopened
+            .leader_worker
+            .checkpoint
+            .pointer("/_runtime_stage_team_gate_block/request_id")
+            .and_then(serde_json::Value::as_str),
+        Some("controller-gate-reopen-1")
+    );
+    let workers_after_reopen: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE stage_run_unit_id=$1")
+            .bind(seeded.unit.id)
+            .fetch_one(db.pool())
+            .await
+            .expect("count Controller workers after reopen");
+    assert_eq!(workers_after_reopen, 1, "no fresh Aggregator is created");
+    assert!(
+        runtime_memory_tx::reopen_stage_team_leader_after_gate_block(db.pool(), &reopen_input)
+            .await
+            .expect("exact reopen response-loss replay")
+            .replayed
+    );
+
+    let resumed = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: claim.clone(),
+        },
+    )
+    .await
+    .expect("resume Controller immediately after durable reopen")
+    .expect("all old dependencies are already terminal");
+    assert_eq!(resumed.worker.id, original_worker_id);
+    assert_eq!(resumed.message_chain_id, original_chain_id);
+    assert_eq!(
+        resumed.worker.attempt_epoch,
+        controller_after_tool.attempt_epoch + 1
+    );
+    assert_eq!(
+        resumed.worker.checkpoint.get("controller"),
+        full_checkpoint.get("controller")
+    );
+    assert_eq!(
+        resumed.worker.checkpoint.get("stage_team_gate_block"),
+        full_checkpoint.get("stage_team_gate_block")
+    );
+
+    let second_closed = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: resumed.plan.dispatch_epoch,
+            expected_plan_row_version: resumed.plan.row_version,
+        },
+    )
+    .await
+    .expect("close second Controller request epoch");
+    let second_bound = runtime_memory_tx::bind_stage_team_leader_final_submitter(
+        db.pool(),
+        &runtime_memory_tx::BindStageTeamLeaderFinalSubmitterRow {
+            fence: stage_team_fence(&roots, &seeded, &resumed),
+            stage_team_plan_id: seeded.plan.id,
+            leader_work_item_id: resumed.work_item.id,
+            expected_plan_row_version: second_closed.plan.row_version,
+            expected_dispatch_epoch: second_closed.plan.dispatch_epoch,
+            expected_manifest_hash: second_closed.barrier.manifest_hash.clone(),
+        },
+    )
+    .await
+    .expect("bind same Controller before second Gate attempt");
+    let (second_submission, second_controller_after_tool) =
+        persist_stage_team_submission(&db, &roots, &seeded, &resumed, "controller-gate-submit-2")
+            .await;
+    let second_gate_decision_hash = format!(
+        "sha256:{}",
+        sha256_json(&serde_json::json!({"decision": "block", "round": 2}))
+    );
+    let second_gap_manifest = serde_json::json!({
+        "gate_decision_hash": second_gate_decision_hash,
+        "reasons": ["repair_fuel_exhausted"],
+        "schema_version": 1,
+    });
+    let exhausted_input = runtime_memory_tx::ReopenStageTeamLeaderAfterGateBlockRow {
+        request_id: "controller-gate-reopen-2".to_string(),
+        fence: runtime_memory_tx::RuntimeMemoryTxFence {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            worker_run_id: original_worker_id,
+            lease_token: second_controller_after_tool
+                .lease_token
+                .expect("Controller lease remains after second tool"),
+            attempt_epoch: second_controller_after_tool.attempt_epoch,
+            expected_checkpoint_version: second_controller_after_tool.checkpoint_version,
+        },
+        stage_team_plan_id: seeded.plan.id,
+        leader_work_item_id: resumed.work_item.id,
+        deliverable_submission_id: second_submission.id,
+        expected_dispatch_epoch: second_bound.plan.dispatch_epoch,
+        expected_manifest_hash: second_closed.barrier.manifest_hash,
+        gate_decision_hash: second_gate_decision_hash.clone(),
+        gap_manifest_hash: format!("sha256:{}", sha256_json(&second_gap_manifest)),
+        gap_manifest: second_gap_manifest,
+        checkpoint: serde_json::json!({"terminal_gate_block": true}),
+    };
+    let exhausted =
+        runtime_memory_tx::reopen_stage_team_leader_after_gate_block(db.pool(), &exhausted_input)
+            .await
+            .expect("exhaust Controller repair fuel deterministically");
+    assert!(exhausted.fuel_exhausted);
+    assert_eq!(exhausted.unit.status, "gate_blocked");
+    assert_eq!(exhausted.leader_worker.status, "gate_blocked");
+    assert_eq!(exhausted.leader_work_item.status, "superseded");
+    assert_eq!(
+        exhausted.plan.dispatch_epoch,
+        second_bound.plan.dispatch_epoch
+    );
+    assert!(
+        runtime_memory_tx::reopen_stage_team_leader_after_gate_block(db.pool(), &exhausted_input,)
+            .await
+            .expect("exact fuel-exhausted response-loss replay")
+            .replayed
+    );
+
+    db.stop().await;
+}
+
+fn stage_team_claim_input(
+    roots: &RuntimeRoots,
+    seeded: &runtime_memory_tx::SeededStageTeamRuntimeRow,
+    owner: &str,
+) -> runtime_memory_tx::ClaimStageWorkItemRow {
+    runtime_memory_tx::ClaimStageWorkItemRow {
+        operation_id: roots.operation_id,
+        stage_execution_id: roots.stage_execution_id,
+        stage_run_unit_id: seeded.unit.id,
+        stage_team_plan_id: seeded.plan.id,
+        lease_owner: owner.to_string(),
+        lease_seconds: 60,
+        session_id: roots.session_id,
+        subtask_id: None,
+        agent: AgentType::Pentester,
+        model: None,
+        provider: None,
+        parent_chain_id: None,
+        initial_chain: serde_json::json!([]),
+        initial_checkpoint: serde_json::json!({"turn": 0}),
+    }
+}
+
+fn stage_team_fence(
+    roots: &RuntimeRoots,
+    seeded: &runtime_memory_tx::SeededStageTeamRuntimeRow,
+    claimed: &runtime_memory_tx::ClaimedStageWorkItemRow,
+) -> runtime_memory_tx::RuntimeMemoryTxFence {
+    runtime_memory_tx::RuntimeMemoryTxFence {
+        operation_id: roots.operation_id,
+        stage_execution_id: roots.stage_execution_id,
+        stage_run_unit_id: seeded.unit.id,
+        worker_run_id: claimed.worker.id,
+        lease_token: claimed.worker.lease_token.expect("claimed Team lease"),
+        attempt_epoch: claimed.worker.attempt_epoch,
+        expected_checkpoint_version: claimed.worker.checkpoint_version,
+    }
+}
+
+async fn persist_stage_team_submission(
+    db: &GolishDb,
+    roots: &RuntimeRoots,
+    seeded: &runtime_memory_tx::SeededStageTeamRuntimeRow,
+    controller: &runtime_memory_tx::ClaimedStageWorkItemRow,
+    request_id: &str,
+) -> (
+    stage_deliverable_submissions::StageDeliverableSubmissionRow,
+    stage_worker_runs::StageWorkerRunRow,
+) {
+    let fence = stage_team_fence(roots, seeded, controller);
+    let tool_call_id = tool_calls::record_tracked_start(
+        db.pool(),
+        request_id,
+        roots.session_id,
+        Some(roots.operation_id),
+        None,
+        "submit_stage_deliverable",
+        &serde_json::json!({"stage_id": "target_intel"}),
+        Some(&tool_calls::RuntimeToolIdentity {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: Some(seeded.unit.id),
+            worker_run_id: Some(controller.worker.id),
+            organization_id: Some(roots.organization_id),
+            attempt_epoch: Some(controller.worker.attempt_epoch),
+            lease_token: controller.worker.lease_token,
+        }),
+    )
+    .await
+    .expect("record Controller submission tool");
+    runtime_memory_tx::begin_worker_tool(db.pool(), &fence, tool_call_id)
+        .await
+        .expect("fence Controller submission tool");
+    let payload = serde_json::json!({
+        "stage_id": "target_intel",
+        "stage_run_id": roots.stage_execution_id,
+        "claims": [],
+    });
+    let canonical_payload_json = canonical_json(&payload);
+    let submission = stage_deliverable_submissions::insert(
+        db.pool(),
+        &stage_deliverable_submissions::NewStageDeliverableSubmission {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: Some(seeded.unit.id),
+            worker_run_id: Some(controller.worker.id),
+            organization_id: Some(roots.organization_id),
+            tool_call_record_id: tool_call_id,
+            tool_request_id: request_id.to_string(),
+            stage_kind: "target_intel".to_string(),
+            attempt_epoch: Some(controller.worker.attempt_epoch),
+            lease_token: controller.worker.lease_token,
+            payload_sha256: Sha256::digest(canonical_payload_json.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            canonical_payload_json,
+        },
+    )
+    .await
+    .expect("persist Controller deliverable submission");
+    let worker = runtime_memory_tx::finish_worker_tool(db.pool(), &fence, tool_call_id)
+        .await
+        .expect("clear Controller submission fence");
+    tool_calls::record_tracked_finish(
+        db.pool(),
+        tool_call_id,
+        roots.session_id,
+        "finished",
+        "{}",
+        1,
+    )
+    .await
+    .expect("finish Controller submission tool");
+    (submission, worker)
+}
+
+#[tokio::test]
+#[serial]
+async fn startup_reaper_recognizes_team_workers_by_work_item_identity() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(
+        db.pool(),
+        &stage_team_lifecycle_seed(&roots, 2),
+    )
+    .await
+    .expect("seed lifecycle Team")
+    .remove(0);
+    let producer = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "startup-producer"),
+    )
+    .await
+    .expect("claim producer")
+    .expect("producer WorkItem exists");
+    let helper = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "startup-helper"),
+    )
+    .await
+    .expect("claim helper")
+    .expect("helper WorkItem exists");
+    assert_eq!(producer.work_item.role, "producer");
+    assert_eq!(helper.work_item.role, "helper");
+
+    let helper_fence = stage_team_fence(&roots, &seeded, &helper);
+    let active_tool_id = tool_calls::record_tracked_start(
+        db.pool(),
+        "stage-team-startup-active-tool",
+        roots.session_id,
+        Some(roots.operation_id),
+        None,
+        "query_target_data",
+        &serde_json::json!({}),
+        Some(&tool_calls::RuntimeToolIdentity {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: Some(seeded.unit.id),
+            worker_run_id: Some(helper.worker.id),
+            organization_id: Some(roots.organization_id),
+            attempt_epoch: Some(helper.worker.attempt_epoch),
+            lease_token: helper.worker.lease_token,
+        }),
+    )
+    .await
+    .expect("record exact Team active tool");
+    runtime_memory_tx::begin_worker_tool(db.pool(), &helper_fence, active_tool_id)
+        .await
+        .expect("fence Team active tool");
+    sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET lease_acquired_at=NOW()-INTERVAL '2 hours',
+                  lease_expires_at=NOW()-INTERVAL '1 hour',
+                  heartbeat_at=NOW()-INTERVAL '1 hour'
+            WHERE id = ANY($1)"#,
+    )
+    .bind(vec![producer.worker.id, helper.worker.id])
+    .execute(db.pool())
+    .await
+    .expect("expire producer and helper leases");
+    sqlx::query(
+        "UPDATE tasks SET status='running',updated_at=NOW()-INTERVAL '7 hours' WHERE id=$1",
+    )
+    .bind(roots.operation_id)
+    .execute(db.pool())
+    .await
+    .expect("age Team task for startup reaper");
+
+    let reaped = tasks::startup_reap_abandoned(db.pool(), chrono::Duration::zero())
+        .await
+        .expect("reap exact Team workers");
+    assert_eq!(reaped.workers_requeued, 1);
+    assert_eq!(reaped.workers_recovery_required, 1);
+    let producer_worker = stage_worker_runs::get(db.pool(), producer.worker.id)
+        .await
+        .expect("load producer Worker")
+        .expect("producer Worker exists");
+    let helper_worker = stage_worker_runs::get(db.pool(), helper.worker.id)
+        .await
+        .expect("load helper Worker")
+        .expect("helper Worker exists");
+    let items = stage_teams::list_work_items_with_executor(db.pool(), seeded.plan.id)
+        .await
+        .expect("load Team WorkItems after startup");
+    let producer_item = items
+        .iter()
+        .find(|item| item.id == producer.work_item.id)
+        .expect("producer WorkItem remains");
+    let helper_item = items
+        .iter()
+        .find(|item| item.id == helper.work_item.id)
+        .expect("helper WorkItem remains");
+    assert_eq!(producer_worker.status, "superseded");
+    assert_eq!(producer_item.status, "queued");
+    assert_eq!(helper_worker.status, "recovery_required");
+    assert_eq!(helper_worker.active_tool_call_id, Some(active_tool_id));
+    assert_eq!(helper_item.status, "recovery_required");
+    assert_eq!(
+        tasks::get(db.pool(), roots.operation_id)
+            .await
+            .expect("load startup-reaped Team task")
+            .expect("Team task remains")
+            .status,
+        golish_db::models::TaskStatus::Waiting,
+        "valid Team recovery truth must remain resumable"
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn startup_reaper_exhausts_clean_team_worker_when_attempt_budget_is_spent() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(
+        db.pool(),
+        &stage_team_lifecycle_seed(&roots, 1),
+    )
+    .await
+    .expect("seed startup exhaustion Team")
+    .remove(0);
+    let producer = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "startup-exhausted-producer"),
+    )
+    .await
+    .expect("claim startup exhaustion producer")
+    .expect("producer WorkItem exists");
+    sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET lease_acquired_at=NOW()-INTERVAL '2 hours',
+                  lease_expires_at=NOW()-INTERVAL '1 hour',
+                  heartbeat_at=NOW()-INTERVAL '1 hour'
+            WHERE id=$1"#,
+    )
+    .bind(producer.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("expire final producer attempt");
+    sqlx::query(
+        "UPDATE tasks SET status='running',updated_at=NOW()-INTERVAL '7 hours' WHERE id=$1",
+    )
+    .bind(roots.operation_id)
+    .execute(db.pool())
+    .await
+    .expect("age final-attempt Team task");
+
+    let reaped = tasks::startup_reap_abandoned(db.pool(), chrono::Duration::zero())
+        .await
+        .expect("exhaust final Team attempt on startup");
+    assert_eq!(reaped.workers_requeued, 0);
+    assert_eq!(reaped.workers_recovery_required, 0);
+    let worker = stage_worker_runs::get(db.pool(), producer.worker.id)
+        .await
+        .expect("load exhausted startup Worker")
+        .expect("startup Worker remains");
+    assert_eq!(worker.status, "failed");
+    assert_eq!(worker.active_tool_call_id, None);
+    assert_eq!(
+        worker.checkpoint["stage_team_execution_failure"]["code"],
+        "stage_team_worker_lease_expired"
+    );
+    let items = stage_teams::list_work_items_with_executor(db.pool(), seeded.plan.id)
+        .await
+        .expect("load exhausted startup WorkItem");
+    assert_eq!(
+        items
+            .iter()
+            .find(|item| item.id == producer.work_item.id)
+            .expect("producer WorkItem remains")
+            .status,
+        "exhausted"
+    );
+    let outputs = stage_teams::list_outputs_with_executor(db.pool(), seeded.plan.id)
+        .await
+        .expect("load startup exhaustion output");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].work_item_id, producer.work_item.id);
+    assert_eq!(outputs[0].business_disposition, "blocked");
+    assert_eq!(
+        outputs[0].canonical_output["failure_code"],
+        "stage_team_worker_lease_expired"
+    );
+    assert_eq!(
+        outputs[0].blocker_codes,
+        vec!["STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED"]
+    );
+
+    let replay = tasks::startup_reap_abandoned(db.pool(), chrono::Duration::zero())
+        .await
+        .expect("startup exhaustion replay is a no-op");
+    assert_eq!(replay.workers_requeued, 0);
+    assert_eq!(replay.workers_recovery_required, 0);
+    assert_eq!(
+        stage_teams::list_outputs_with_executor(db.pool(), seeded.plan.id)
+            .await
+            .expect("reload one startup exhaustion output")
+            .len(),
+        1
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stage_team_active_tool_recovery_requires_exact_operator_cas() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(
+        db.pool(),
+        &stage_team_lifecycle_seed(&roots, 2),
+    )
+    .await
+    .expect("seed active-tool recovery Team")
+    .remove(0);
+    let claimed = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "active-tool-recovery-producer"),
+    )
+    .await
+    .expect("claim active-tool recovery producer")
+    .expect("producer WorkItem exists");
+    let fence = stage_team_fence(&roots, &seeded, &claimed);
+    let active_tool_id = tool_calls::record_tracked_start(
+        db.pool(),
+        "stage-team-active-tool-unknown-outcome",
+        roots.session_id,
+        Some(roots.operation_id),
+        None,
+        "query_target_data",
+        &serde_json::json!({}),
+        Some(&tool_calls::RuntimeToolIdentity {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: Some(seeded.unit.id),
+            worker_run_id: Some(claimed.worker.id),
+            organization_id: Some(roots.organization_id),
+            attempt_epoch: Some(claimed.worker.attempt_epoch),
+            lease_token: claimed.worker.lease_token,
+        }),
+    )
+    .await
+    .expect("record exact active tool");
+    runtime_memory_tx::begin_worker_tool(db.pool(), &fence, active_tool_id)
+        .await
+        .expect("bind exact active tool");
+    sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET lease_acquired_at=NOW()-INTERVAL '2 hours',
+                  lease_expires_at=NOW()-INTERVAL '1 hour',
+                  heartbeat_at=NOW()-INTERVAL '1 hour'
+            WHERE id=$1"#,
+    )
+    .bind(claimed.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("expire active-tool worker");
+    sqlx::query(
+        "UPDATE tasks SET status='running',updated_at=NOW()-INTERVAL '7 hours' WHERE id=$1",
+    )
+    .bind(roots.operation_id)
+    .execute(db.pool())
+    .await
+    .expect("age active-tool Team task");
+    let reaped = tasks::startup_reap_abandoned(db.pool(), chrono::Duration::zero())
+        .await
+        .expect("park active-tool Worker for recovery");
+    assert_eq!(reaped.workers_recovery_required, 1);
+    let parked_worker = stage_worker_runs::get(db.pool(), claimed.worker.id)
+        .await
+        .expect("load parked Worker")
+        .expect("parked Worker remains");
+    let parked_item = stage_teams::list_work_items_with_executor(db.pool(), seeded.plan.id)
+        .await
+        .expect("load parked WorkItem")
+        .into_iter()
+        .find(|item| item.id == claimed.work_item.id)
+        .expect("parked WorkItem remains");
+    assert_eq!(parked_worker.status, "recovery_required");
+    assert_eq!(parked_item.status, "recovery_required");
+
+    // The immutable decision table is also safe against a bypass of the Rust
+    // repository: a valid plan/item/worker/tool tuple cannot be rebound to a
+    // sibling (or invented) frozen scope by direct SQL.
+    let cross_scope = sqlx::query(
+        r#"INSERT INTO stage_team_recovery_decisions(
+               id,request_id,team_plan_id,work_item_id,worker_run_id,tool_call_record_id,
+               operation_id,stage_execution_id,stage_run_unit_id,scope_snapshot_id,
+               organization_id,expected_work_item_row_version,expected_checkpoint_version,
+               expected_attempt_epoch,resolution_kind,resolution_payload,resolution_hash,resolved_by
+           ) VALUES (
+               $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+               'mark_blocked_outcome_unknown',$15,$16,$17
+           )"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind("cross-scope-recovery-must-fail")
+    .bind(seeded.plan.id)
+    .bind(parked_item.id)
+    .bind(parked_worker.id)
+    .bind(active_tool_id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(seeded.unit.id)
+    .bind(Uuid::new_v4())
+    .bind(roots.organization_id)
+    .bind(parked_item.row_version)
+    .bind(parked_worker.checkpoint_version)
+    .bind(parked_worker.attempt_epoch)
+    .bind(serde_json::json!({"kind": "mark_blocked_outcome_unknown"}))
+    .bind(format!("sha256:{}", "a".repeat(64)))
+    .bind("local-operator")
+    .execute(db.pool())
+    .await;
+    assert!(matches!(
+        cross_scope,
+        Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("23503")
+    ));
+
+    let resolve = stage_teams::ResolveStageTeamRecoveryRow {
+        request_id: "operator-resolution-1".to_string(),
+        operation_id: roots.operation_id,
+        stage_execution_id: roots.stage_execution_id,
+        stage_run_unit_id: seeded.unit.id,
+        scope_snapshot_id: seeded.plan.scope_snapshot_id,
+        team_plan_id: seeded.plan.id,
+        work_item_id: parked_item.id,
+        worker_run_id: parked_worker.id,
+        tool_call_record_id: active_tool_id,
+        expected_work_item_row_version: parked_item.row_version,
+        expected_checkpoint_version: parked_worker.checkpoint_version,
+        expected_attempt_epoch: parked_worker.attempt_epoch,
+        resolved_by: "local-operator".to_string(),
+    };
+    let resolved = stage_teams::resolve_stage_team_recovery(db.pool(), &resolve)
+        .await
+        .expect("resolve unknown external outcome without replay");
+    assert!(!resolved.replayed);
+    assert_eq!(resolved.worker.status, "failed");
+    assert_eq!(resolved.worker.active_tool_call_id, None);
+    assert_eq!(resolved.work_item.status, "exhausted");
+    assert_eq!(resolved.output.business_disposition, "blocked");
+    assert_eq!(
+        resolved.output.blocker_codes,
+        vec!["STAGE_TEAM_ACTIVE_TOOL_RECOVERY_BLOCKED"]
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status::text FROM tool_calls WHERE id=$1")
+            .bind(active_tool_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("load locally resolved tool status"),
+        "failed"
+    );
+    let replayed = stage_teams::resolve_stage_team_recovery(db.pool(), &resolve)
+        .await
+        .expect("exact recovery response-loss replay");
+    assert!(replayed.replayed);
+    assert_eq!(replayed.decision.id, resolved.decision.id);
+    assert_eq!(replayed.output.id, resolved.output.id);
+    let mut drifted = resolve;
+    drifted.request_id = "operator-resolution-drift".to_string();
+    assert!(matches!(
+        stage_teams::resolve_stage_team_recovery(db.pool(), &drifted).await,
+        Err(runtime_memory_tx::RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_recovery_resolution_replay_mismatch"
+        })
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM stage_team_recovery_decisions WHERE worker_run_id=$1"
+        )
+        .bind(claimed.worker.id)
+        .fetch_one(db.pool())
+        .await
+        .expect("count one immutable recovery decision"),
+        1
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stage_team_reclaims_terminal_failed_local_provider_list_fence() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(
+        db.pool(),
+        &stage_team_lifecycle_seed(&roots, 2),
+    )
+    .await
+    .expect("seed local-tool recovery Team")
+    .remove(0);
+    let claimed = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "local-tool-recovery-producer"),
+    )
+    .await
+    .expect("claim local-tool recovery producer")
+    .expect("producer WorkItem exists");
+    let fence = stage_team_fence(&roots, &seeded, &claimed);
+    let active_tool_id = tool_calls::record_tracked_start(
+        db.pool(),
+        "stage-team-local-provider-list",
+        roots.session_id,
+        Some(roots.operation_id),
+        None,
+        "recon_list_providers",
+        &serde_json::json!({}),
+        Some(&tool_calls::RuntimeToolIdentity {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: Some(seeded.unit.id),
+            worker_run_id: Some(claimed.worker.id),
+            organization_id: Some(roots.organization_id),
+            attempt_epoch: Some(claimed.worker.attempt_epoch),
+            lease_token: claimed.worker.lease_token,
+        }),
+    )
+    .await
+    .expect("record exact local provider-list tool");
+    runtime_memory_tx::begin_worker_tool(db.pool(), &fence, active_tool_id)
+        .await
+        .expect("bind local provider-list tool");
+    sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET status='recovery_required',
+                  lease_acquired_at=NOW()-INTERVAL '2 hours',
+                  lease_expires_at=NOW()-INTERVAL '1 hour',
+                  heartbeat_at=NOW()-INTERVAL '1 hour'
+            WHERE id=$1"#,
+    )
+    .bind(claimed.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("park local-tool Worker");
+    sqlx::query(
+        "UPDATE stage_work_items SET status='recovery_required',row_version=row_version+1 WHERE id=$1",
+    )
+    .bind(claimed.work_item.id)
+    .execute(db.pool())
+    .await
+    .expect("park local-tool WorkItem");
+    tool_calls::record_tracked_finish(
+        db.pool(),
+        active_tool_id,
+        roots.session_id,
+        "failed",
+        "worker tool result rejected by lease fence: runtime memory storage failure: deadlock detected",
+        1,
+    )
+    .await
+    .expect("record terminal local lifecycle failure");
+
+    let replacement = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "local-tool-recovery-replacement"),
+    )
+    .await
+    .expect("reclaim retry-safe terminal local tool")
+    .expect("replacement producer exists");
+    assert_eq!(replacement.work_item.id, claimed.work_item.id);
+    assert_ne!(replacement.worker.id, claimed.worker.id);
+    assert_eq!(replacement.worker.status, "running");
+    let superseded = stage_worker_runs::get(db.pool(), claimed.worker.id)
+        .await
+        .expect("load superseded local-tool Worker")
+        .expect("old local-tool Worker remains");
+    assert_eq!(superseded.status, "superseded");
+    assert_eq!(superseded.active_tool_call_id, None);
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn startup_reaper_requeues_expired_aggregator_for_exact_replacement() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(
+        db.pool(),
+        &stage_team_lifecycle_seed(&roots, 2),
+    )
+    .await
+    .expect("seed aggregator recovery Team")
+    .remove(0);
+    for owner in ["aggregator-producer", "aggregator-helper"] {
+        let claimed = runtime_memory_tx::claim_stage_work_item(
+            db.pool(),
+            &stage_team_claim_input(&roots, &seeded, owner),
+        )
+        .await
+        .expect("claim producer before Aggregator")
+        .expect("producer WorkItem remains");
+        let evidence_id = sqlx::query_scalar::<_, i64>(
+            r#"INSERT INTO audit_log (
+                   action,category,details,project_path,source,audit_role,detail,run_id,created_at
+               ) VALUES (
+                   'aggregator recovery producer evidence','harness','fresh producer evidence',
+                   '/tmp/runtime-worker','harness','evidence',$1,$2,NOW()
+               ) RETURNING id"#,
+        )
+        .bind(serde_json::json!({"organization_id": roots.organization_id}))
+        .bind(roots.operation_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("insert fresh Team producer evidence");
+        let mut completion = stage_teams::CompleteStageWorkerRow {
+            fence: stage_team_fence(&roots, &seeded, &claimed),
+            team_plan_id: seeded.plan.id,
+            work_item_id: claimed.work_item.id,
+            expected_work_item_row_version: claimed.work_item.row_version,
+            output_schema: claimed.work_item.output_schema.clone(),
+            business_disposition: "found".to_string(),
+            canonical_output: serde_json::json!({"summary": "producer complete"}),
+            canonical_fact_refs: serde_json::json!([]),
+            evidence_ids: vec![evidence_id],
+            checked_empty_cells: serde_json::json!([]),
+            blocker_codes: Vec::new(),
+            output_hash: String::new(),
+            terminal_checkpoint: serde_json::json!({"done": true}),
+            evidence_watermark: Some(evidence_id),
+        };
+        refresh_stage_worker_output_hash(&mut completion);
+        stage_teams::complete_stage_worker(db.pool(), completion)
+            .await
+            .expect("complete producer before Aggregator");
+    }
+    let closed = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+            expected_plan_row_version: seeded.plan.row_version,
+        },
+    )
+    .await
+    .expect("close producer epoch before Aggregator");
+    assert!(closed.barrier.ready_to_finalize());
+    let aggregator_claim = runtime_memory_tx::ClaimStageAggregatorRow {
+        claim: stage_team_claim_input(&roots, &seeded, "stable-aggregator"),
+        expected_dispatch_epoch: closed.barrier.dispatch_epoch,
+        expected_manifest_hash: closed.barrier.manifest_hash.clone(),
+    };
+    let first = runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
+        .await
+        .expect("claim first Aggregator");
+    sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET lease_acquired_at=NOW()-INTERVAL '2 hours',
+                  lease_expires_at=NOW()-INTERVAL '1 hour',
+                  heartbeat_at=NOW()-INTERVAL '1 hour'
+            WHERE id=$1"#,
+    )
+    .bind(first.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("expire first Aggregator");
+    sqlx::query(
+        "UPDATE tasks SET status='running',updated_at=NOW()-INTERVAL '7 hours' WHERE id=$1",
+    )
+    .bind(roots.operation_id)
+    .execute(db.pool())
+    .await
+    .expect("age Aggregator task");
+    let reaped = tasks::startup_reap_abandoned(db.pool(), chrono::Duration::zero())
+        .await
+        .expect("startup reap expired Aggregator");
+    assert_eq!(reaped.workers_requeued, 1);
+    let old_worker = stage_worker_runs::get(db.pool(), first.worker.id)
+        .await
+        .expect("load old Aggregator")
+        .expect("old Aggregator remains auditable");
+    assert_eq!(old_worker.status, "superseded");
+    assert_eq!(
+        tasks::get(db.pool(), roots.operation_id)
+            .await
+            .expect("load startup-reaped Aggregator task")
+            .expect("Aggregator task remains")
+            .status,
+        golish_db::models::TaskStatus::Waiting,
+        "a clean Aggregator requeue must remain resumable"
+    );
+    let items = stage_teams::list_work_items_with_executor(db.pool(), seeded.plan.id)
+        .await
+        .expect("load Aggregator WorkItem");
+    assert_eq!(
+        items
+            .iter()
+            .find(|item| item.id == first.work_item.id)
+            .expect("Aggregator WorkItem remains")
+            .status,
+        "queued"
+    );
+    let replacement = runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
+        .await
+        .expect("replace startup-reaped Aggregator");
+    assert_ne!(replacement.worker.id, first.worker.id);
+    assert_eq!(
+        replacement.plan.final_submitter_worker_run_id,
+        Some(replacement.worker.id)
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stage_team_gate_repair_advances_epoch_and_blocks_only_fresh_aggregator() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(
+        db.pool(),
+        &stage_team_lifecycle_seed(&roots, 2),
+    )
+    .await
+    .expect("seed repair Team")
+    .remove(0);
+
+    for owner in ["repair-producer", "repair-helper"] {
+        let claimed = runtime_memory_tx::claim_stage_work_item(
+            db.pool(),
+            &stage_team_claim_input(&roots, &seeded, owner),
+        )
+        .await
+        .expect("claim required producer")
+        .expect("required producer remains");
+        let evidence_id = sqlx::query_scalar::<_, i64>(
+            r#"INSERT INTO audit_log (
+                   action,category,details,project_path,source,audit_role,detail,run_id,created_at
+               ) VALUES (
+                   'repair producer evidence','harness','fresh producer evidence',
+                   '/tmp/runtime-worker','harness','evidence',$1,$2,NOW()
+               ) RETURNING id"#,
+        )
+        .bind(serde_json::json!({"organization_id": roots.organization_id}))
+        .bind(roots.operation_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("insert repair producer evidence");
+        let mut completion = stage_teams::CompleteStageWorkerRow {
+            fence: stage_team_fence(&roots, &seeded, &claimed),
+            team_plan_id: seeded.plan.id,
+            work_item_id: claimed.work_item.id,
+            expected_work_item_row_version: claimed.work_item.row_version,
+            output_schema: claimed.work_item.output_schema.clone(),
+            business_disposition: "found".to_string(),
+            canonical_output: serde_json::json!({"summary": "producer complete"}),
+            canonical_fact_refs: serde_json::json!([]),
+            evidence_ids: vec![evidence_id],
+            checked_empty_cells: serde_json::json!([]),
+            blocker_codes: Vec::new(),
+            output_hash: String::new(),
+            terminal_checkpoint: serde_json::json!({"done": true}),
+            evidence_watermark: Some(evidence_id),
+        };
+        refresh_stage_worker_output_hash(&mut completion);
+        stage_teams::complete_stage_worker(db.pool(), completion)
+            .await
+            .expect("complete required producer");
+    }
+
+    let first_closed = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+            expected_plan_row_version: seeded.plan.row_version,
+        },
+    )
+    .await
+    .expect("close first producer epoch");
+    assert!(first_closed.barrier.ready_to_finalize());
+    let first_aggregator = runtime_memory_tx::claim_stage_aggregator(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageAggregatorRow {
+            claim: stage_team_claim_input(&roots, &seeded, "repair-first-aggregator"),
+            expected_dispatch_epoch: first_closed.barrier.dispatch_epoch,
+            expected_manifest_hash: first_closed.barrier.manifest_hash.clone(),
+        },
+    )
+    .await
+    .expect("claim first Aggregator");
+    let first_aggregator_fence = stage_team_fence(&roots, &seeded, &first_aggregator);
+    let tool_request_id = "repair-first-aggregator-submit";
+    let tool_call_id = tool_calls::record_tracked_start(
+        db.pool(),
+        tool_request_id,
+        roots.session_id,
+        Some(roots.operation_id),
+        None,
+        "submit_stage_deliverable",
+        &serde_json::json!({"stage_id": "target_intel"}),
+        Some(&tool_calls::RuntimeToolIdentity {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: Some(seeded.unit.id),
+            worker_run_id: Some(first_aggregator.worker.id),
+            organization_id: Some(roots.organization_id),
+            attempt_epoch: Some(first_aggregator.worker.attempt_epoch),
+            lease_token: first_aggregator.worker.lease_token,
+        }),
+    )
+    .await
+    .expect("record first Aggregator submission tool");
+    runtime_memory_tx::begin_worker_tool(db.pool(), &first_aggregator_fence, tool_call_id)
+        .await
+        .expect("fence first Aggregator submission");
+    let payload = serde_json::json!({
+        "stage_id": "target_intel",
+        "stage_run_id": roots.stage_execution_id,
+        "claims": [],
+    });
+    let canonical_payload_json = canonical_json(&payload);
+    let submission = stage_deliverable_submissions::insert(
+        db.pool(),
+        &stage_deliverable_submissions::NewStageDeliverableSubmission {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: Some(seeded.unit.id),
+            worker_run_id: Some(first_aggregator.worker.id),
+            organization_id: Some(roots.organization_id),
+            tool_call_record_id: tool_call_id,
+            tool_request_id: tool_request_id.to_string(),
+            stage_kind: "target_intel".to_string(),
+            attempt_epoch: Some(first_aggregator.worker.attempt_epoch),
+            lease_token: first_aggregator.worker.lease_token,
+            payload_sha256: Sha256::digest(canonical_payload_json.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            canonical_payload_json,
+        },
+    )
+    .await
+    .expect("persist first Aggregator submission");
+    let first_aggregator_worker =
+        runtime_memory_tx::finish_worker_tool(db.pool(), &first_aggregator_fence, tool_call_id)
+            .await
+            .expect("clear first Aggregator submission fence");
+    tool_calls::record_tracked_finish(
+        db.pool(),
+        tool_call_id,
+        roots.session_id,
+        "finished",
+        "{}",
+        1,
+    )
+    .await
+    .expect("finish first Aggregator submission tool");
+
+    let gate_decision_hash = format!(
+        "sha256:{}",
+        sha256_json(&serde_json::json!({"decision": "block", "schema_version": 1}))
+    );
+    let gap_manifest = serde_json::json!({
+        "gate_decision_hash": gate_decision_hash,
+        "reasons": ["missing_required_fact"],
+        "recovery_actions": ["collect_missing_fact"],
+        "schema_version": 1,
+    });
+    let repair_input = runtime_memory_tx::OpenStageTeamRepairRow {
+        request_id: "stage-team-gate-repair-epoch-1".to_string(),
+        fence: runtime_memory_tx::RuntimeMemoryTxFence {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            worker_run_id: first_aggregator.worker.id,
+            lease_token: first_aggregator
+                .worker
+                .lease_token
+                .expect("Aggregator lease"),
+            attempt_epoch: first_aggregator.worker.attempt_epoch,
+            expected_checkpoint_version: first_aggregator_worker.checkpoint_version,
+        },
+        stage_team_plan_id: seeded.plan.id,
+        aggregator_work_item_id: first_aggregator.work_item.id,
+        deliverable_submission_id: submission.id,
+        expected_dispatch_epoch: first_closed.barrier.dispatch_epoch,
+        expected_manifest_hash: first_closed.barrier.manifest_hash.clone(),
+        gate_decision_hash,
+        gap_manifest_hash: format!("sha256:{}", sha256_json(&gap_manifest)),
+        gap_manifest,
+    };
+    let opened = runtime_memory_tx::open_stage_team_repair(db.pool(), &repair_input)
+        .await
+        .expect("open next repair generation");
+    assert!(!opened.replayed);
+    assert_eq!(opened.unit.status, "running");
+    assert_eq!(opened.plan.dispatch_epoch, seeded.plan.dispatch_epoch + 1);
+    assert_eq!(opened.aggregator_worker.status, "gate_blocked");
+    let repair_item = opened
+        .repair_work_item
+        .as_ref()
+        .expect("repair producer WorkItem");
+    let fresh_aggregator_item = opened
+        .aggregator_work_item
+        .as_ref()
+        .expect("fresh Aggregator WorkItem");
+    assert_eq!(repair_item.dispatch_epoch, opened.plan.dispatch_epoch);
+    assert_eq!(
+        fresh_aggregator_item.dispatch_epoch,
+        opened.plan.dispatch_epoch
+    );
+    assert_ne!(fresh_aggregator_item.id, first_aggregator.work_item.id);
+    assert!(
+        runtime_memory_tx::open_stage_team_repair(db.pool(), &repair_input)
+            .await
+            .expect("exact repair response-loss replay")
+            .replayed
+    );
+
+    let repair_attempt_one = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "repair-attempt-one"),
+    )
+    .await
+    .expect("claim repair producer")
+    .expect("repair producer remains");
+    assert_eq!(repair_attempt_one.work_item.id, repair_item.id);
+    let first_retry = stage_teams::retry_stage_worker(
+        db.pool(),
+        stage_teams::RetryStageWorkerRow {
+            fence: stage_team_fence(&roots, &seeded, &repair_attempt_one),
+            team_plan_id: seeded.plan.id,
+            work_item_id: repair_attempt_one.work_item.id,
+            expected_work_item_row_version: repair_attempt_one.work_item.row_version,
+            failure_code: "provider_unavailable".to_string(),
+            terminal_checkpoint: serde_json::json!({
+                "stage_team_execution_failure": {"code": "provider_unavailable"}
+            }),
+        },
+    )
+    .await
+    .expect("schedule second repair attempt");
+    assert!(first_retry.retry_scheduled);
+    let repair_attempt_two = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "repair-attempt-two"),
+    )
+    .await
+    .expect("claim second repair producer")
+    .expect("second repair attempt remains");
+    assert_eq!(repair_attempt_two.work_item.id, repair_item.id);
+    let exhausted = stage_teams::retry_stage_worker(
+        db.pool(),
+        stage_teams::RetryStageWorkerRow {
+            fence: stage_team_fence(&roots, &seeded, &repair_attempt_two),
+            team_plan_id: seeded.plan.id,
+            work_item_id: repair_attempt_two.work_item.id,
+            expected_work_item_row_version: repair_attempt_two.work_item.row_version,
+            failure_code: "provider_unavailable".to_string(),
+            terminal_checkpoint: serde_json::json!({
+                "stage_team_execution_failure": {"code": "provider_unavailable"}
+            }),
+        },
+    )
+    .await
+    .expect("exhaust repair producer");
+    assert!(!exhausted.retry_scheduled);
+    assert_eq!(exhausted.work_item.status, "exhausted");
+
+    let repair_closed = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: opened.plan.dispatch_epoch,
+            expected_plan_row_version: opened.plan.row_version,
+        },
+    )
+    .await
+    .expect("close repair epoch");
+    assert!(repair_closed.barrier.ready_to_finalize());
+    let blocked = runtime_memory_tx::block_stage_team_unit(
+        db.pool(),
+        &runtime_memory_tx::BlockStageTeamUnitRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: opened.plan.dispatch_epoch,
+            expected_manifest_hash: repair_closed.barrier.manifest_hash,
+        },
+    )
+    .await
+    .expect("block only the fresh repair Aggregator");
+    assert_eq!(blocked.unit.status, "gate_blocked");
+    assert_eq!(blocked.aggregator_work_item.id, fresh_aggregator_item.id);
+    assert_eq!(blocked.aggregator_work_item.status, "superseded");
+    assert_ne!(
+        blocked.aggregator_work_item.id,
+        first_aggregator.work_item.id
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stage_team_exhausted_attempt_lands_explicit_blocked_output() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(
+        db.pool(),
+        &stage_team_lifecycle_seed(&roots, 1),
+    )
+    .await
+    .expect("seed exhaustion Team")
+    .remove(0);
+    let producer = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "exhausted-producer"),
+    )
+    .await
+    .expect("claim producer")
+    .expect("producer WorkItem exists");
+    let retried = stage_teams::retry_stage_worker(
+        db.pool(),
+        stage_teams::RetryStageWorkerRow {
+            fence: stage_team_fence(&roots, &seeded, &producer),
+            team_plan_id: seeded.plan.id,
+            work_item_id: producer.work_item.id,
+            expected_work_item_row_version: producer.work_item.row_version,
+            failure_code: "provider_unavailable".to_string(),
+            terminal_checkpoint: serde_json::json!({
+                "stage_team_execution_failure": {"code": "provider_unavailable"}
+            }),
+        },
+    )
+    .await
+    .expect("terminalize exhausted execution attempt");
+    assert!(!retried.retry_scheduled);
+    assert_eq!(retried.work_item.status, "exhausted");
+    assert_eq!(retried.worker.status, "failed");
+    let outputs = stage_teams::list_outputs_with_executor(db.pool(), seeded.plan.id)
+        .await
+        .expect("load deterministic exhaustion output");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].work_item_id, producer.work_item.id);
+    assert_eq!(outputs[0].business_disposition, "blocked");
+    assert_eq!(
+        outputs[0].blocker_codes,
+        vec!["STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED"]
+    );
+
+    let helper = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "exhausted-helper"),
+    )
+    .await
+    .expect("claim helper")
+    .expect("helper WorkItem exists");
+    let helper_retried = stage_teams::retry_stage_worker(
+        db.pool(),
+        stage_teams::RetryStageWorkerRow {
+            fence: stage_team_fence(&roots, &seeded, &helper),
+            team_plan_id: seeded.plan.id,
+            work_item_id: helper.work_item.id,
+            expected_work_item_row_version: helper.work_item.row_version,
+            failure_code: "provider_unavailable".to_string(),
+            terminal_checkpoint: serde_json::json!({
+                "stage_team_execution_failure": {"code": "provider_unavailable"}
+            }),
+        },
+    )
+    .await
+    .expect("terminalize exhausted helper attempt");
+    assert!(!helper_retried.retry_scheduled);
+    let closed = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+            expected_plan_row_version: seeded.plan.row_version,
+        },
+    )
+    .await
+    .expect("close exhausted producer epoch");
+    assert!(closed.barrier.ready_to_finalize());
+    assert_eq!(closed.barrier.required_work_items, 2);
+    assert_eq!(closed.barrier.terminal_required_work_items, 2);
+    assert_eq!(closed.barrier.missing_outputs, 0);
+    let blocked = runtime_memory_tx::block_stage_team_unit(
+        db.pool(),
+        &runtime_memory_tx::BlockStageTeamUnitRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: closed.barrier.dispatch_epoch,
+            expected_manifest_hash: closed.barrier.manifest_hash.clone(),
+        },
+    )
+    .await
+    .expect("deterministically block Unit from immutable outputs");
+    assert_eq!(blocked.unit.status, "gate_blocked");
+    assert_eq!(blocked.aggregator_work_item.status, "superseded");
+    assert!(!blocked.replayed);
+    assert!(
+        runtime_memory_tx::block_stage_team_unit(
+            db.pool(),
+            &runtime_memory_tx::BlockStageTeamUnitRow {
+                operation_id: roots.operation_id,
+                stage_execution_id: roots.stage_execution_id,
+                stage_run_unit_id: seeded.unit.id,
+                stage_team_plan_id: seeded.plan.id,
+                expected_dispatch_epoch: closed.barrier.dispatch_epoch,
+                expected_manifest_hash: closed.barrier.manifest_hash,
+            },
+        )
+        .await
+        .expect("block terminalizer exact replay")
+        .replayed
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stage_team_producer_cannot_persist_unit_deliverable() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(
+        db.pool(),
+        &stage_team_lifecycle_seed(&roots, 2),
+    )
+    .await
+    .expect("seed submit-authority Team")
+    .remove(0);
+    let producer = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "producer-submit-attempt"),
+    )
+    .await
+    .expect("claim producer")
+    .expect("producer WorkItem exists");
+    let fence = stage_team_fence(&roots, &seeded, &producer);
+    let tool_call_id = tool_calls::record_tracked_start(
+        db.pool(),
+        "team-producer-submit",
+        roots.session_id,
+        Some(roots.operation_id),
+        None,
+        "submit_stage_deliverable",
+        &serde_json::json!({"stage_id": "target_intel"}),
+        Some(&tool_calls::RuntimeToolIdentity {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: Some(seeded.unit.id),
+            worker_run_id: Some(producer.worker.id),
+            organization_id: Some(roots.organization_id),
+            attempt_epoch: Some(producer.worker.attempt_epoch),
+            lease_token: producer.worker.lease_token,
+        }),
+    )
+    .await
+    .expect("record producer submit call");
+    runtime_memory_tx::begin_worker_tool(db.pool(), &fence, tool_call_id)
+        .await
+        .expect("fence producer submit call");
+    let payload = serde_json::json!({
+        "stage_id": "target_intel",
+        "stage_run_id": roots.stage_execution_id,
+        "claims": [],
+    });
+    let canonical_payload_json = canonical_json(&payload);
+    let error = stage_deliverable_submissions::insert(
+        db.pool(),
+        &stage_deliverable_submissions::NewStageDeliverableSubmission {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: Some(seeded.unit.id),
+            worker_run_id: Some(producer.worker.id),
+            organization_id: Some(roots.organization_id),
+            tool_call_record_id: tool_call_id,
+            tool_request_id: "team-producer-submit".to_string(),
+            stage_kind: "target_intel".to_string(),
+            attempt_epoch: Some(producer.worker.attempt_epoch),
+            lease_token: producer.worker.lease_token,
+            payload_sha256: Sha256::digest(canonical_payload_json.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            canonical_payload_json,
+        },
+    )
+    .await
+    .expect_err("only the claimed Team Aggregator may submit the Unit deliverable");
+    assert_eq!(
+        error.code(),
+        "stage_team_submission_requires_unique_aggregator"
+    );
+
+    db.stop().await;
+}
+
 async fn create_final_seal_fixture(db: &GolishDb) -> FinalSealFixture {
     let runtime = create_claimed_compound_runtime(db).await;
     let fence = fence_for_claimed(&runtime);
@@ -968,6 +4037,7 @@ async fn unit_worker_chain_checkpoint_and_tool_fence_are_one_typed_state_machine
             operation_id: roots.operation_id,
             stage_execution_id: roots.stage_execution_id,
             stage_run_unit_id: unit_id,
+            work_item_id: None,
             organization_id: roots.organization_id,
             worker_generation: 0,
             specialist: "target_intel".to_string(),
@@ -2557,6 +5627,54 @@ async fn compound_wave_close_failure_injection_rolls_back_both_pause_and_final_a
         0
     );
 
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stage_handoff_accepts_exact_operation_chat_session_outcome() {
+    let (mut db, _data_dir) = fixture().await;
+    let fixture = create_final_seal_fixture(&db).await;
+    let chat_session_key = format!("stage-run-{}", Uuid::new_v4());
+    sqlx::query("UPDATE sessions SET chat_session_key=$1 WHERE id=$2")
+        .bind(&chat_session_key)
+        .bind(fixture.runtime.roots.session_id)
+        .execute(db.pool())
+        .await
+        .expect("bind exact chat-session key to the operation session");
+    sqlx::query(
+        r#"INSERT INTO technique_outcomes (
+               organization_id, run_id, asset, technique, outcome, evidence_ids,
+               seq, collected_at
+           ) VALUES ($1,$2,'seal.example','GOLISH-INTEL-DNS','found',$3,1,NOW())"#,
+    )
+    .bind(fixture.runtime.roots.organization_id)
+    .bind(&chat_session_key)
+    .bind(vec![fixture.evidence_id])
+    .execute(db.pool())
+    .await
+    .expect("insert exact chat-session canonical outcome");
+
+    let finalized = runtime_memory_tx::finalize_unit_pass(
+        db.pool(),
+        &final_seal_input(
+            &fixture,
+            vec![canonical_fact_refs::CanonicalFactKey::TechniqueOutcome {
+                organization_id: fixture.runtime.roots.organization_id,
+                run_id: chat_session_key.clone(),
+                asset: "seal.example".to_string(),
+                technique: "GOLISH-INTEL-DNS".to_string(),
+            }],
+        ),
+    )
+    .await
+    .expect("the exact operation-owned chat-session outcome must be sealable");
+
+    assert!(matches!(
+        &finalized.canonical_fact_refs[0].key,
+        canonical_fact_refs::CanonicalFactKey::TechniqueOutcome { run_id, .. }
+            if run_id == &chat_session_key
+    ));
     db.stop().await;
 }
 

@@ -28,8 +28,8 @@
 | `get_tool_definitions_*` / `ToolPreset` / `ToolSelectionConfig` | 工具 schema + preset 选择 |
 | `DefaultToolProvider` | `ToolProvider` 默认实现 |
 | `task_orchestrator` / `planner` / `hitl` / `loop_detection` / `tool_policy` / `system_hooks` | 编排 / 计划 / 审批 / 防循环 / 策略 / 钩子 |
-| `harness`（`gate` / `graph_engine` / `knowledge_context`） | stage harness gate + prompt-safe ContextPack renderer；`StageSpec.runtime_memory` 以 typed closed contract 声明 specialist 的 Unit owner、冻结 scope、lease 与 final-seal handoff 语义 |
-| `db_traits` / `db_tracking` / `db_shim` / `memory_*` | repo/tracking 抽象 + 长期记忆；`OrgScopeUnit` / `org_subtree_units` 给 stage fan-out 提供 root subtree 权威组织集合 |
+| `harness`（`gate` / `graph_engine` / `knowledge_context`） | stage harness gate + prompt-safe ContextPack renderer；Candidate classifier 将冻结 observation/hash 映射为 exact replay capability；`StageSpec.runtime_memory` 声明 Unit owner/final-seal，`StageSpec.team_scheduler` 以 closed policy声明 V2 sibling roles、K、dynamic request 与 risk lane |
+| `db_traits` / `db_tracking` / `db_shim` / `memory_*` | repo/tracking 抽象 + 长期记忆；runtime-aware tool start 固定 exact operation task owner；org-bound evidence append显式携带 trusted organization witness；RuntimeMemory trait暴露 Stage Team plan/claim/output/barrier/repair/operator recovery与 Candidate TerminalIntent/barrier/recovery exact contracts |
 | `SharedComponentsConfig` / `ExecutionMode` / `AgentMode`（re-export） | llm-client 配置 / 执行模式 |
 | `SessionCaptureBackend` | per-bridge sidecar lifecycle/capture；restore 支持 end/find/resume/start，禁止回退到 app-global sidecar |
 | `DbFlowCheckpointer` / `TaskOrchestrator::run_from_stage` | whole-record graph adapter：trusted resume 可显式固定 V2/legacy-fallback source；V2 source save no-op、load 只用 relational cursor，legacy source 才读写 `graph_flow` |

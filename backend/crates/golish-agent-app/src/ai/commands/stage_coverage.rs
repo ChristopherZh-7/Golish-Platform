@@ -23,7 +23,8 @@ use golish_agent_kit::harness::{
 
 use crate::ai::db_bridge::evidence::{
     eas_target_bound_evidence_fact_set, enumeration_target_bound_evidence_fact_set,
-    projected_technique_outcome_evidence_id, TargetBoundEvidenceFactSet,
+    projected_technique_outcome_evidence_id, vuln_target_bound_evidence_fact_set,
+    TargetBoundEvidenceFactSet,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -90,7 +91,8 @@ pub struct StageAssetCoverageRow {
     #[ts(skip)]
     pub webserver: String,
     /// True only when `value` is an exact normalized `scheme://host:port`
-    /// Enumeration identity. Enumeration snapshots exclude false rows entirely.
+    /// identity. Enumeration and Vuln Triage snapshots exclude false rows
+    /// entirely.
     #[serde(default)]
     #[ts(skip)]
     pub exact_web_origin: bool,
@@ -218,7 +220,7 @@ const SESSION_EVIDENCE_FACT_ROWS_SQL: &str = r#"SELECT evidence_asset AS asset,
 fn ui_allows_latest_outcome_fallback(stage: StageKind, _session_id: Option<&str>) -> bool {
     !matches!(
         stage,
-        StageKind::ExternalAttackSurface | StageKind::Enumeration
+        StageKind::ExternalAttackSurface | StageKind::Enumeration | StageKind::VulnTriage
     )
 }
 
@@ -265,6 +267,10 @@ pub(crate) async fn stage_asset_coverage_snapshot(
     anyhow::ensure!(
         stage_kind != StageKind::ExternalAttackSurface || run_start.is_some(),
         "external_attack_surface coverage requires current stage_started_at for exact Web Origins"
+    );
+    anyhow::ensure!(
+        stage_kind != StageKind::VulnTriage || operation_id.is_some(),
+        "vuln_triage coverage requires a trusted operation id for the final-sealed Enumeration surface and operation-scoped outcomes"
     );
     let mut assets = list_stage_targets(pool, org_id, stage_kind).await?;
     if stage_kind == StageKind::TargetIntel {
@@ -337,6 +343,26 @@ pub(crate) async fn stage_asset_coverage_snapshot(
             current_wave.as_ref().map(|wave| &wave.target_ids),
             &transport_exclusions,
         );
+    } else if stage_kind == StageKind::VulnTriage {
+        let inherited_origins = match operation_id {
+            Some(operation_id) => {
+                golish_db::repo::stage_handoffs::list_final_sealed_enumeration_origins(
+                    pool,
+                    operation_id,
+                    org_id,
+                )
+                .await?
+            }
+            None => BTreeSet::new(),
+        };
+        assets = filter_vuln_assets_by_enumeration_surface(
+            expand_exact_web_origin_rows_for_wave_excluding(
+                assets,
+                current_wave.as_ref().map(|wave| &wave.target_ids),
+                &BTreeSet::new(),
+            ),
+            &inherited_origins,
+        )?;
     }
     let current_assets: Vec<&TargetCoverageRow> = assets
         .iter()
@@ -377,8 +403,8 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         })
         .collect();
     // EAS business truth corroborates a strict guarded found outcome but cannot
-    // terminalise a cell by itself. Enumeration likewise uses exact-origin
-    // outcomes only. Other stages retain direct DB-found rendering.
+    // terminalise a cell by itself. Enumeration and Vuln Triage likewise use
+    // exact-origin outcomes only. Other stages retain direct DB-found rendering.
     let found = if business_truth_closes_stage_cells(stage_kind) {
         business_found.clone()
     } else {
@@ -389,14 +415,20 @@ pub(crate) async fn stage_asset_coverage_snapshot(
     // outcome. The DNS/53-only helper remains for Enumeration content axes, but
     // EAS SERVICE no longer auto-terminalises open ports as not_applicable.
     let service_not_applicable_assets: BTreeSet<String> = BTreeSet::new();
+    let outcome_run_id = if stage_kind == StageKind::VulnTriage {
+        operation_id.map(|operation_id| operation_id.to_string())
+    } else {
+        session_id.map(str::to_string)
+    };
     let outcomes = stage_outcomes(
         pool,
         org_id,
         stage_kind,
+        outcome_run_id.as_deref(),
         session_id,
         matches!(
             stage_kind,
-            StageKind::ExternalAttackSurface | StageKind::Enumeration
+            StageKind::ExternalAttackSurface | StageKind::Enumeration | StageKind::VulnTriage
         )
         .then_some(run_start)
         .flatten(),
@@ -849,6 +881,44 @@ fn expand_enumeration_web_origin_rows_for_wave_excluding(
     current_wave_target_ids: Option<&BTreeSet<Uuid>>,
     transport_exclusions: &BTreeSet<(Uuid, String)>,
 ) -> Vec<TargetCoverageRow> {
+    expand_exact_web_origin_rows_for_wave_excluding(
+        assets,
+        current_wave_target_ids,
+        transport_exclusions,
+    )
+}
+
+#[cfg(test)]
+fn expand_vuln_triage_web_origin_rows(assets: Vec<TargetCoverageRow>) -> Vec<TargetCoverageRow> {
+    expand_exact_web_origin_rows_for_wave_excluding(assets, None, &BTreeSet::new())
+}
+
+fn filter_vuln_assets_by_enumeration_surface(
+    assets: Vec<TargetCoverageRow>,
+    inherited_origins: &BTreeSet<String>,
+) -> anyhow::Result<Vec<TargetCoverageRow>> {
+    let filtered: Vec<_> = assets
+        .into_iter()
+        .filter(|asset| inherited_origins.contains(&asset.value))
+        .collect();
+    let materialized_origins: BTreeSet<_> =
+        filtered.iter().map(|asset| asset.value.clone()).collect();
+    anyhow::ensure!(
+        materialized_origins == *inherited_origins,
+        "vuln_triage current target inventory cannot materialize the complete final-sealed Enumeration surface"
+    );
+    Ok(filtered)
+}
+
+/// Materialize one denominator row per exact HTTP(S) origin while retaining
+/// the owning target id. Enumeration and Vuln Triage share this identity
+/// contract so a self-landed tool outcome closes the same cell that generated
+/// its work item.
+fn expand_exact_web_origin_rows_for_wave_excluding(
+    assets: Vec<TargetCoverageRow>,
+    current_wave_target_ids: Option<&BTreeSet<Uuid>>,
+    transport_exclusions: &BTreeSet<(Uuid, String)>,
+) -> Vec<TargetCoverageRow> {
     let mut rows = Vec::new();
     let mut origin_indexes = BTreeMap::new();
     for asset in assets {
@@ -930,7 +1000,8 @@ async fn stage_outcomes(
     pool: &sqlx::PgPool,
     organization_id: Uuid,
     stage: StageKind,
-    run_id: Option<&str>,
+    outcome_run_id: Option<&str>,
+    evidence_session_id: Option<&str>,
     run_start: Option<DateTime<Utc>>,
     asset_values: &[String],
     organization_asset_values: &[String],
@@ -946,7 +1017,7 @@ async fn stage_outcomes(
         .map(str::to_string)
         .collect();
 
-    if let Some(run_id) = run_id.filter(|id| !id.trim().is_empty()) {
+    if let Some(run_id) = outcome_run_id.filter(|id| !id.trim().is_empty()) {
         let technique_outcome_rows = golish_db::repo::technique_outcomes::list_for_run_fresh(
             pool,
             organization_id,
@@ -956,15 +1027,17 @@ async fn stage_outcomes(
         .await?;
         let target_bound_evidence_facts = if matches!(
             stage,
-            StageKind::ExternalAttackSurface | StageKind::Enumeration
-        ) && technique_outcome_rows
-            .iter()
-            .any(|row| matches!(row.outcome.as_str(), "found" | "empty" | "blocked"))
-        {
+            StageKind::ExternalAttackSurface | StageKind::Enumeration | StageKind::VulnTriage
+        ) && technique_outcome_rows.iter().any(|row| {
+            matches!(
+                row.outcome.as_str(),
+                "found" | "empty" | "blocked" | "not_applicable"
+            )
+        }) {
             match run_start {
                 Some(cutoff) => match golish_db::repo::audit::evidence_facts_for_session_org_fresh(
                     pool,
-                    run_id,
+                    evidence_session_id.unwrap_or(run_id),
                     organization_id,
                     cutoff,
                 )
@@ -975,13 +1048,16 @@ async fn stage_outcomes(
                             eas_target_bound_evidence_fact_set(organization_id, rows)
                         }
                         StageKind::Enumeration => enumeration_target_bound_evidence_fact_set(rows),
+                        StageKind::VulnTriage => {
+                            vuln_target_bound_evidence_fact_set(organization_id, rows)
+                        }
                         _ => TargetBoundEvidenceFactSet::new(),
                     },
                     Err(error) => {
                         tracing::warn!(
                             target: "stage_coverage",
                             %error,
-                            "org-bound fresh evidence facts read failed; strict EAS/Enumeration terminal outcomes remain pending"
+                            "org-bound fresh evidence facts read failed; strict EAS/Enumeration/Vuln terminal outcomes remain pending"
                         );
                         TargetBoundEvidenceFactSet::new()
                     }
@@ -1012,7 +1088,7 @@ async fn stage_outcomes(
 
         if !matches!(
             stage,
-            StageKind::ExternalAttackSurface | StageKind::Enumeration
+            StageKind::ExternalAttackSurface | StageKind::Enumeration | StageKind::VulnTriage
         ) {
             for row in evidence_fact_rows_for_session(pool, run_id, &stage_techniques).await? {
                 merge_evidence_fact_row(&mut out, asset_values, &stage_techniques, row);
@@ -1023,22 +1099,33 @@ async fn stage_outcomes(
             // persisted partial business data/evidence; the final gate follows
             // the same rule. `merge_source_query_row` only force-overrides on
             // `error`, while empty/blocked still defer to stronger found truth.
-            for row in
+            let source_rows =
                 golish_db::repo::source_query_log::list_for_run(pool, organization_id, run_id)
                     .await?
-            {
-                merge_source_query_row(
-                    &mut out,
-                    asset_values,
-                    &stage_techniques,
-                    SourceQueryProjectionRow {
+                    .into_iter()
+                    .map(|row| SourceQueryProjectionRow {
                         source: row.source,
                         target: row.target,
                         technique: row.technique,
                         status: row.status,
                         evidence_refs: row.evidence_ids,
-                    },
+                    })
+                    .collect::<Vec<_>>();
+            let found_sources = source_query_found_sources(
+                &source_rows,
+                asset_values,
+                &stage_techniques,
+                organization_asset_values,
+            );
+            for row in source_rows {
+                merge_source_query_row_with_authoritative_sources(
+                    &mut out,
+                    asset_values,
+                    &stage_techniques,
+                    row,
                     organization_asset_values,
+                    &found_sources,
+                    business_found,
                 );
             }
         }
@@ -1058,13 +1145,23 @@ async fn stage_outcomes(
             );
         }
         if stage != StageKind::Enumeration {
-            for row in latest_source_query_rows(pool, organization_id, &stage_techniques).await? {
-                merge_source_query_row(
+            let source_rows =
+                latest_source_query_rows(pool, organization_id, &stage_techniques).await?;
+            let found_sources = source_query_found_sources(
+                &source_rows,
+                asset_values,
+                &stage_techniques,
+                organization_asset_values,
+            );
+            for row in source_rows {
+                merge_source_query_row_with_authoritative_sources(
                     &mut out,
                     asset_values,
                     &stage_techniques,
                     row,
                     organization_asset_values,
+                    &found_sources,
+                    business_found,
                 );
             }
         }
@@ -1166,7 +1263,7 @@ fn merge_stage_technique_outcome_row(
 ) {
     if !matches!(
         stage,
-        StageKind::ExternalAttackSurface | StageKind::Enumeration
+        StageKind::ExternalAttackSurface | StageKind::Enumeration | StageKind::VulnTriage
     ) {
         merge_technique_outcome_row(out, asset_values, stage_techniques, row);
         return;
@@ -1175,6 +1272,8 @@ fn merge_stage_technique_outcome_row(
         return;
     }
     let requires_target_bound_evidence = matches!(row.outcome.as_str(), "found" | "empty")
+        || (stage == StageKind::VulnTriage
+            && matches!(row.outcome.as_str(), "blocked" | "not_applicable"))
         || (stage == StageKind::Enumeration && row.outcome == "blocked")
         || (stage == StageKind::ExternalAttackSurface
             && row.technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP
@@ -1223,7 +1322,7 @@ fn merge_stage_technique_outcome_row(
 fn business_truth_closes_stage_cells(stage: StageKind) -> bool {
     !matches!(
         stage,
-        StageKind::ExternalAttackSurface | StageKind::Enumeration
+        StageKind::ExternalAttackSurface | StageKind::Enumeration | StageKind::VulnTriage
     )
 }
 
@@ -1250,6 +1349,7 @@ fn merge_evidence_fact_row(
     );
 }
 
+#[cfg(test)]
 fn merge_source_query_row(
     out: &mut BTreeMap<(String, String), OutcomeProjection>,
     asset_values: &[String],
@@ -1257,44 +1357,122 @@ fn merge_source_query_row(
     row: SourceQueryProjectionRow,
     organization_asset_values: &[String],
 ) {
-    let Some(technique) = row.technique else {
-        return;
+    merge_source_query_row_with_authoritative_sources(
+        out,
+        asset_values,
+        stage_techniques,
+        row,
+        organization_asset_values,
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+}
+
+type SourceQueryFoundSources = BTreeMap<(String, String), BTreeSet<String>>;
+
+fn source_query_projection_keys(
+    asset_values: &[String],
+    stage_techniques: &BTreeSet<String>,
+    row: &SourceQueryProjectionRow,
+    organization_asset_values: &[String],
+) -> Vec<(String, String)> {
+    let Some(technique) = row.technique.as_deref() else {
+        return Vec::new();
     };
-    if !stage_techniques.contains(&technique) {
-        return;
+    if !stage_techniques.contains(technique) {
+        return Vec::new();
     }
+    if row.target.is_empty() {
+        return asset_values
+            .iter()
+            .map(|asset| {
+                (
+                    coverage_lookup_asset(asset, technique),
+                    technique.to_string(),
+                )
+            })
+            .collect();
+    }
+    let target_keys = source_query_matching_stage_asset_keys(asset_values, &row.target, technique);
+    if !target_keys.is_empty() {
+        return target_keys
+            .into_iter()
+            .map(|target_key| (target_key, technique.to_string()))
+            .collect();
+    }
+    if target_intel_source_technique(technique) {
+        return organization_asset_values
+            .iter()
+            .map(|asset| {
+                (
+                    coverage_lookup_asset(asset, technique),
+                    technique.to_string(),
+                )
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+fn source_query_found_sources(
+    rows: &[SourceQueryProjectionRow],
+    asset_values: &[String],
+    stage_techniques: &BTreeSet<String>,
+    organization_asset_values: &[String],
+) -> SourceQueryFoundSources {
+    let mut found_sources = BTreeMap::new();
+    for row in rows.iter().filter(|row| row.status == "found") {
+        let source = row.source.trim().to_ascii_lowercase();
+        for key in source_query_projection_keys(
+            asset_values,
+            stage_techniques,
+            row,
+            organization_asset_values,
+        ) {
+            found_sources
+                .entry(key)
+                .or_insert_with(BTreeSet::new)
+                .insert(source.clone());
+        }
+    }
+    found_sources
+}
+
+fn merge_source_query_row_with_authoritative_sources(
+    out: &mut BTreeMap<(String, String), OutcomeProjection>,
+    asset_values: &[String],
+    stage_techniques: &BTreeSet<String>,
+    row: SourceQueryProjectionRow,
+    organization_asset_values: &[String],
+    found_sources: &SourceQueryFoundSources,
+    business_found: &BTreeSet<(String, String)>,
+) {
     let Some(state) = source_query_terminal_state(&row.status) else {
         return;
     };
+    let keys = source_query_projection_keys(
+        asset_values,
+        stage_techniques,
+        &row,
+        organization_asset_values,
+    );
+    if keys.is_empty() {
+        return;
+    }
+    let source_key = row.source.trim().to_ascii_lowercase();
     let projection = OutcomeProjection {
         state,
         source: Some(row.source),
         evidence_refs: row.evidence_refs,
     };
-    if row.target.is_empty() {
-        for asset in asset_values {
-            merge_source_outcome(
-                out,
-                (coverage_lookup_asset(asset, &technique), technique.clone()),
-                projection.clone(),
-            );
-        }
-        return;
-    }
-    let target_keys = source_query_matching_stage_asset_keys(asset_values, &row.target, &technique);
-    if !target_keys.is_empty() {
-        for target_key in target_keys {
-            merge_source_outcome(out, (target_key, technique.clone()), projection.clone());
-        }
-        return;
-    }
-    if target_intel_source_technique(&technique) {
-        for asset in organization_asset_values {
-            merge_source_outcome(
-                out,
-                (coverage_lookup_asset(asset, &technique), technique.clone()),
-                projection.clone(),
-            );
+    for key in keys {
+        let sibling_found = row.status == "error"
+            && business_found.contains(&key)
+            && found_sources
+                .get(&key)
+                .is_some_and(|sources| sources.iter().any(|source| source != &source_key));
+        if !sibling_found {
+            merge_source_outcome(out, key, projection.clone());
         }
     }
 }
@@ -1356,6 +1534,11 @@ fn coverage_lookup_asset(asset: &str, technique: &str) -> String {
         | golish_db::repo::coverage_truth::TECH_ENUM_DIR
         | golish_db::repo::coverage_truth::TECH_ENUM_PARAM
         | golish_db::repo::coverage_truth::TECH_ENUM_JSAPI => {
+            golish_pentest_domain::canonical_web_origin(asset)
+                .map(|origin| origin.key)
+                .unwrap_or_else(|| asset.to_string())
+        }
+        technique if technique.starts_with("WSTG-") || technique == "GOLISH-NDAY" => {
             golish_pentest_domain::canonical_web_origin(asset)
                 .map(|origin| origin.key)
                 .unwrap_or_else(|| asset.to_string())
@@ -1436,14 +1619,16 @@ fn coverage_cells_with_eas_parent_ips(
                     Some("not applicable to this asset type".to_string()),
                 );
             }
-            if stage == StageKind::Enumeration && !asset.exact_web_origin {
+            if matches!(stage, StageKind::Enumeration | StageKind::VulnTriage)
+                && !asset.exact_web_origin
+            {
                 return cell(
                     technique,
                     "pending",
                     None,
                     Vec::new(),
                     Some(
-                        "EAS has not materialized an exact scheme://host:port origin for this web asset"
+                        "the prior stage has not materialized an exact scheme://host:port origin for this web asset"
                             .to_string(),
                     ),
                 );
@@ -1840,7 +2025,7 @@ fn techniques_for_stage(stage: StageKind) -> Vec<&'static str> {
             "WSTG-INPV-05",
             "WSTG-INPV-01",
             "WSTG-INPV-12",
-            "WSTG-ATHZ-04",
+            "WSTG-ATHN-04",
             "WSTG-ATHN-02",
             "WSTG-SESS-02",
             "WSTG-CONF-05",
@@ -1963,8 +2148,13 @@ fn merge_source_outcome(
         out.insert(key, next);
         return;
     };
-    existing.state = next.state;
-    existing.source = next.source;
+    let gate_materialized_terminal =
+        matches!(existing.state.as_str(), "blocked" | "not_applicable")
+            && existing.source.as_deref() == Some("submit_stage_deliverable");
+    if !gate_materialized_terminal {
+        existing.state = next.state;
+        existing.source = next.source;
+    }
     for evidence_ref in next.evidence_refs {
         if !existing.evidence_refs.contains(&evidence_ref) {
             existing.evidence_refs.push(evidence_ref);
@@ -2003,7 +2193,7 @@ fn technique_label(technique: &str) -> &'static str {
         "WSTG-INPV-05" => "SQL Injection",
         "WSTG-INPV-01" => "XSS",
         "WSTG-INPV-12" => "Command Injection",
-        "WSTG-ATHZ-04" => "IDOR",
+        "WSTG-ATHN-04" => "Anonymous Access",
         "WSTG-ATHN-02" => "Weak Credentials",
         "WSTG-SESS-02" => "Session/CSRF",
         "WSTG-CONF-05" => "Sensitive Config",
@@ -2046,6 +2236,30 @@ fn parse_rfc3339_utc(value: Option<&str>) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn vuln_triage_snapshot_without_operation_id_fails_before_any_db_read() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://golish:golish@127.0.0.1:1/unavailable")
+            .expect("lazy pool");
+        let error = stage_asset_coverage_snapshot(
+            &pool,
+            Uuid::new_v4(),
+            StageKind::VulnTriage,
+            Some("chat-session"),
+            Some(Utc::now()),
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect_err("Vuln coverage without trusted operation identity must fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("requires a trusted operation id"));
+    }
 
     fn target(value: &str, target_type: &str) -> TargetCoverageRow {
         TargetCoverageRow {
@@ -2844,7 +3058,7 @@ mod tests {
     }
 
     #[test]
-    fn eas_and_enumeration_never_fallback_to_latest_outcome() {
+    fn eas_enumeration_and_vuln_never_fallback_to_latest_outcome() {
         assert!(!ui_allows_latest_outcome_fallback(
             StageKind::Enumeration,
             Some("active-session")
@@ -2859,6 +3073,14 @@ mod tests {
         ));
         assert!(!ui_allows_latest_outcome_fallback(
             StageKind::ExternalAttackSurface,
+            None
+        ));
+        assert!(!ui_allows_latest_outcome_fallback(
+            StageKind::VulnTriage,
+            Some("active-session")
+        ));
+        assert!(!ui_allows_latest_outcome_fallback(
+            StageKind::VulnTriage,
             None
         ));
     }
@@ -2881,13 +3103,23 @@ mod tests {
             StageKind::ExternalAttackSurface,
             true
         ));
+        assert!(!stage_accepts_outcome_projection(
+            StageKind::VulnTriage,
+            false
+        ));
+        assert!(stage_accepts_outcome_projection(
+            StageKind::VulnTriage,
+            true
+        ));
     }
 
     #[test]
-    fn vuln_triage_exposes_formulaic_scan_axes() {
+    fn vuln_triage_routes_general_anonymous_and_nday_cells_to_exact_wrappers() {
         let t = techniques_for_stage(StageKind::VulnTriage);
         assert_eq!(t.len(), 10);
         assert!(t.contains(&"WSTG-INPV-05"));
+        assert!(t.contains(&"WSTG-ATHN-04"));
+        assert!(!t.contains(&"WSTG-ATHZ-04"));
         assert!(t.contains(&"WSTG-CONF-05"));
         assert!(t.contains(&"GOLISH-NDAY"));
 
@@ -2901,10 +3133,186 @@ mod tests {
 
         assert_eq!(cells.len(), 10);
         assert!(cells.iter().all(|cell| cell.state == "pending"));
-        assert!(cells.iter().all(|cell| cell
-            .suggested_tools
+        for cell in &cells {
+            let expected = match cell.technique.as_str() {
+                "GOLISH-NDAY" => "vuln_nuclei_fingerprint_targeted",
+                "WSTG-ATHN-04" => "vuln_probe_anonymous_access",
+                _ => "vuln_nuclei_general",
+            };
+            assert_eq!(cell.suggested_tools, vec![expected.to_string()]);
+        }
+    }
+
+    #[test]
+    fn vuln_triage_domain_target_outcome_closes_exact_confirmed_origin_cell() {
+        let mut domain = target("app.example.com", "domain");
+        let target_id = domain.id;
+        domain.ports = serde_json::json!([
+            {
+                "port": 443,
+                "state": "open",
+                "service": "https",
+                "url": "https://app.example.com/login"
+            }
+        ]);
+
+        let assets = expand_vuln_triage_web_origin_rows(vec![domain]);
+
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].id, target_id);
+        assert_eq!(assets[0].value, "https://app.example.com:443");
+        assert!(assets[0].exact_web_origin);
+
+        let technique = "WSTG-CONF-05";
+        let mut outcomes = BTreeMap::new();
+        let guarded = TargetBoundEvidenceFactSet::from([(
+            "https://app.example.com:443".to_string(),
+            technique.to_string(),
+            "found".to_string(),
+            41,
+        )]);
+        merge_stage_technique_outcome_row(
+            StageKind::VulnTriage,
+            &mut outcomes,
+            &[assets[0].value.clone()],
+            &BTreeSet::from([technique.to_string()]),
+            TechniqueOutcomeProjectionRow {
+                asset: "https://app.example.com:443".to_string(),
+                technique: technique.to_string(),
+                outcome: "found".to_string(),
+                source: Some("vuln_nuclei_general".to_string()),
+                evidence_refs: vec![41],
+            },
+            &guarded,
+            &BTreeSet::new(),
+        );
+
+        let cells = coverage_cells(
+            StageKind::VulnTriage,
+            &assets[0],
+            &BTreeSet::new(),
+            &outcomes,
+        );
+        let closed = cells
             .iter()
-            .any(|tool| tool == "vuln_run_formulaic_sweep")));
+            .find(|cell| cell.technique == technique)
+            .expect("WSTG coverage cell");
+        assert_eq!(closed.state, "found");
+        assert_eq!(closed.source.as_deref(), Some("vuln_nuclei_general"));
+        assert_eq!(closed.evidence_refs, vec![41]);
+        assert!(cells
+            .iter()
+            .filter(|cell| cell.technique != technique)
+            .all(|cell| cell.state == "pending"));
+    }
+
+    #[test]
+    fn vuln_triage_url_path_target_outcome_closes_canonical_origin_cell() {
+        let url = target("HTTPS://Portal.Example.com/login?q=1", "url");
+        let target_id = url.id;
+
+        let assets = expand_vuln_triage_web_origin_rows(vec![url]);
+
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].id, target_id);
+        assert_eq!(assets[0].value, "https://portal.example.com:443");
+        assert!(assets[0].exact_web_origin);
+
+        let technique = "GOLISH-NDAY";
+        let mut outcomes = BTreeMap::new();
+        let guarded = TargetBoundEvidenceFactSet::from([(
+            "https://portal.example.com:443".to_string(),
+            technique.to_string(),
+            "empty".to_string(),
+            42,
+        )]);
+        merge_stage_technique_outcome_row(
+            StageKind::VulnTriage,
+            &mut outcomes,
+            &[assets[0].value.clone()],
+            &BTreeSet::from([technique.to_string()]),
+            TechniqueOutcomeProjectionRow {
+                asset: "https://portal.example.com:443".to_string(),
+                technique: technique.to_string(),
+                outcome: "empty".to_string(),
+                source: Some("vuln_nuclei_fingerprint_targeted".to_string()),
+                evidence_refs: vec![42],
+            },
+            &guarded,
+            &BTreeSet::new(),
+        );
+
+        let cells = coverage_cells(
+            StageKind::VulnTriage,
+            &assets[0],
+            &BTreeSet::new(),
+            &outcomes,
+        );
+        let closed = cells
+            .iter()
+            .find(|cell| cell.technique == technique)
+            .expect("N-day coverage cell");
+        assert_eq!(closed.state, "checked_empty");
+        assert_eq!(
+            closed.source.as_deref(),
+            Some("vuln_nuclei_fingerprint_targeted")
+        );
+        assert_eq!(closed.evidence_refs, vec![42]);
+        assert!(cells
+            .iter()
+            .filter(|cell| cell.technique != technique)
+            .all(|cell| cell.state == "pending"));
+    }
+
+    #[test]
+    fn vuln_triage_excludes_url_not_in_final_sealed_enumeration_surface() {
+        let enumerated = target("https://enumerated.example.com/login", "url");
+        let enumerated_id = enumerated.id;
+        let unenumerated = target("https://raw-only.example.com/admin", "url");
+
+        let expanded = expand_vuln_triage_web_origin_rows(vec![enumerated, unenumerated]);
+        let filtered = filter_vuln_assets_by_enumeration_surface(
+            expanded,
+            &BTreeSet::from(["https://enumerated.example.com:443".to_string()]),
+        )
+        .expect("the inherited origin is still materialized by current targets");
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, enumerated_id);
+        assert_eq!(filtered[0].value, "https://enumerated.example.com:443");
+        assert!(filtered[0].exact_web_origin);
+    }
+
+    #[test]
+    fn vuln_triage_rejects_current_target_inventory_that_shrinks_sealed_surface() {
+        let current = expand_vuln_triage_web_origin_rows(vec![target(
+            "https://still-present.example.com/login",
+            "url",
+        )]);
+        let inherited = BTreeSet::from([
+            "https://still-present.example.com:443".to_string(),
+            "https://deleted-or-moved.example.com:443".to_string(),
+        ]);
+
+        let error = filter_vuln_assets_by_enumeration_surface(current, &inherited)
+            .expect_err("a non-empty sealed surface must not collapse to partial or zero coverage");
+
+        assert!(error
+            .to_string()
+            .contains("cannot materialize the complete final-sealed Enumeration surface"));
+    }
+
+    #[test]
+    fn vuln_triage_accepts_explicit_empty_sealed_surface() {
+        let current = expand_vuln_triage_web_origin_rows(vec![target(
+            "https://current-but-not-sealed.example.com/login",
+            "url",
+        )]);
+
+        let filtered = filter_vuln_assets_by_enumeration_surface(current, &BTreeSet::new())
+            .expect("an explicitly empty sealed surface is authoritative");
+
+        assert!(filtered.is_empty());
     }
 
     #[test]
@@ -4454,6 +4862,100 @@ mod tests {
             .expect("source retry marker remains visible");
         assert_eq!(outcome.state, "error");
         assert_eq!(outcome.evidence_refs, vec![10, 11]);
+    }
+
+    #[test]
+    fn target_intel_sibling_provider_found_preserves_business_found_projection() {
+        let asset = target("广州有创网络科技有限公司", "organization");
+        let asset_values = vec![asset.value.clone()];
+        let organization_asset_values = asset_values.clone();
+        let technique = golish_db::repo::coverage_truth::TECH_OSINT.to_string();
+        let stage_techniques = BTreeSet::from([technique.clone()]);
+        let key = (asset.value.clone(), technique.clone());
+        let business_found = BTreeSet::from([key.clone()]);
+        let source_rows = vec![
+            SourceQueryProjectionRow {
+                source: "enscan-go-enrichment".to_string(),
+                target: asset.value.clone(),
+                technique: Some(technique.clone()),
+                status: "found".to_string(),
+                evidence_refs: vec![10],
+            },
+            SourceQueryProjectionRow {
+                source: "quake".to_string(),
+                target: asset.value.clone(),
+                technique: Some(technique.clone()),
+                status: "error".to_string(),
+                evidence_refs: vec![11],
+            },
+        ];
+        let found_sources = source_query_found_sources(
+            &source_rows,
+            &asset_values,
+            &stage_techniques,
+            &organization_asset_values,
+        );
+        let quake_error = source_rows
+            .into_iter()
+            .find(|row| row.source == "quake")
+            .expect("quake row");
+        let mut outcomes = BTreeMap::new();
+
+        merge_source_query_row_with_authoritative_sources(
+            &mut outcomes,
+            &asset_values,
+            &stage_techniques,
+            quake_error,
+            &organization_asset_values,
+            &found_sources,
+            &business_found,
+        );
+
+        let cells = coverage_cells(StageKind::TargetIntel, &asset, &business_found, &outcomes);
+        let osint = cells
+            .iter()
+            .find(|cell| cell.technique == technique)
+            .expect("OSINT cell");
+        assert_eq!(osint.state, "found");
+    }
+
+    #[test]
+    fn source_error_does_not_reopen_gate_materialized_terminal_exception() {
+        for terminal_state in ["blocked", "not_applicable"] {
+            let asset_values = vec!["广州有创网络科技有限公司".to_string()];
+            let technique = golish_db::repo::coverage_truth::TECH_OSINT.to_string();
+            let stage_techniques = BTreeSet::from([technique.clone()]);
+            let key = (asset_values[0].clone(), technique.clone());
+            let mut outcomes = BTreeMap::from([(
+                key.clone(),
+                OutcomeProjection {
+                    state: terminal_state.to_string(),
+                    source: Some("submit_stage_deliverable".to_string()),
+                    evidence_refs: Vec::new(),
+                },
+            )]);
+
+            merge_source_query_row(
+                &mut outcomes,
+                &asset_values,
+                &stage_techniques,
+                SourceQueryProjectionRow {
+                    source: "quake".to_string(),
+                    target: asset_values[0].clone(),
+                    technique: Some(technique),
+                    status: "error".to_string(),
+                    evidence_refs: vec![27784],
+                },
+                &asset_values,
+            );
+
+            let outcome = outcomes
+                .get(&key)
+                .expect("gate-materialized terminal exception remains visible");
+            assert_eq!(outcome.state, terminal_state);
+            assert_eq!(outcome.source.as_deref(), Some("submit_stage_deliverable"));
+            assert_eq!(outcome.evidence_refs, vec![27784]);
+        }
     }
 
     #[test]

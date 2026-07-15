@@ -413,6 +413,34 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.scoping_target_snapshot_impl(organization_id).await
     }
 
+    async fn active_recon_scope_review_candidates(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
+        self.active_recon_scope_review_candidates_impl(operation_id, organization_id)
+            .await
+    }
+
+    async fn active_recon_scope_review_apply(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        approval: ActiveReconScopeReviewApproval,
+    ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
+        self.active_recon_scope_review_apply_impl(operation_id, organization_id, approval)
+            .await
+    }
+
+    async fn active_recon_scope_review_authorized(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        self.active_recon_scope_review_authorized_impl(operation_id, organization_id)
+            .await
+    }
+
     async fn attack_v2_seed_candidate_manifest(
         &self,
         input: golish_agent_kit::harness::attack_execution::SeedCandidateManifest,
@@ -906,6 +934,34 @@ impl DbRepoProvider for GolishDbRepoProvider {
         .await
     }
 
+    async fn evidence_append_for_organization(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_run_id: Option<Uuid>,
+        session_id: Option<&str>,
+        project_path: Option<&str>,
+        tool_name: &str,
+        kind: &str,
+        subject: &str,
+        raw_output: &str,
+        facts: Option<(&str, &str, &str)>,
+    ) -> anyhow::Result<i64> {
+        self.evidence_append_for_organization_impl(
+            operation_id,
+            organization_id,
+            stage_run_id,
+            session_id,
+            project_path,
+            tool_name,
+            kind,
+            subject,
+            raw_output,
+            facts,
+        )
+        .await
+    }
+
     async fn upsert_technique_outcome(
         &self,
         organization_id: Uuid,
@@ -1046,6 +1102,31 @@ impl DbRepoProvider for GolishDbRepoProvider {
         // freshness cutoff（execute.rs 传入 run_start），避免同 session 旧 stage-run
         // 的 technique_outcomes 泄漏进本 stage-run 的 coverage 判定。
         self.technique_outcome_facts_fresh_impl(organization_id, run_id, since)
+            .await
+    }
+
+    async fn technique_outcome_facts_fresh_with_evidence_session(
+        &self,
+        organization_id: Uuid,
+        outcome_run_id: &str,
+        evidence_session_id: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact> {
+        self.technique_outcome_facts_fresh_with_evidence_session_impl(
+            organization_id,
+            outcome_run_id,
+            evidence_session_id,
+            since,
+        )
+        .await
+    }
+
+    async fn final_seal_technique_outcome_facts(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+    ) -> anyhow::Result<Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact>> {
+        self.final_seal_technique_outcome_facts_impl(organization_id, run_id)
             .await
     }
 

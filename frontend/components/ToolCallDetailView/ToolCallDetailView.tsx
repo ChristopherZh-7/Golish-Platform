@@ -41,7 +41,7 @@ import {
   toolResultIndicatesFailure,
 } from "@/lib/tools";
 import { cn } from "@/lib/utils";
-import type { AiToolExecution } from "@/store";
+import type { ActiveSubAgent, AiToolExecution } from "@/store";
 import { useStore } from "@/store";
 
 interface ToolCallDetailViewProps {
@@ -49,6 +49,7 @@ interface ToolCallDetailViewProps {
 }
 
 const EMPTY_BG_JOBS: never[] = [];
+const EMPTY_SUB_AGENT_LIST: ActiveSubAgent[] = [];
 const LIVE_OUTPUT_RENDER_LIMIT = 20000;
 
 export const DETAIL_RUNNING_SPINNER_CLASS = "h-4 w-4 shrink-0 animate-spin";
@@ -446,6 +447,17 @@ export function getLiveOutputForDetail(
   };
 }
 
+export function stageTeamAgentRequestIdsByWorker(
+  agents: ReadonlyArray<{ parentRequestId: string }>
+): Record<string, string> {
+  const indexed: Record<string, string> = {};
+  for (const agent of agents) {
+    const match = agent.parentRequestId.match(/::(?:lead|worker):([^:]+)$/);
+    if (match?.[1]) indexed[match[1]] = agent.parentRequestId;
+  }
+  return indexed;
+}
+
 export const ToolCallDetailView = memo(function ToolCallDetailView({
   sessionId,
 }: ToolCallDetailViewProps) {
@@ -454,6 +466,11 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   const requestIds = useStore((s) => s.sessions[sessionId]?.toolDetailRequestIds);
   const targetRequestId = requestIds?.[0] ?? null;
   const backgroundJobs = useStore((s) => s.backgroundJobs[sessionId]) ?? EMPTY_BG_JOBS;
+  const activeSubAgents = useStore((s) => s.activeSubAgents[sessionId] ?? EMPTY_SUB_AGENT_LIST);
+  const stageTeamAgentRequestIds = useMemo(
+    () => stageTeamAgentRequestIdsByWorker(activeSubAgents),
+    [activeSubAgents]
+  );
 
   const execution = useStore((s) => {
     if (!targetRequestId) return null;
@@ -528,7 +545,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         {stageRunReady && stageRun ? (
           <div className="flex-1 overflow-y-auto px-4 py-3">
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
-              AI workers
+              Company Controllers
             </div>
             <StageRunOrgRows
               rows={stageRun.rows}
@@ -536,6 +553,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
               stageLabel={stageRun.stageLabel}
               roleLabel={stageRun.roleLabel}
               coverageAxis={stageRun.coverageAxis}
+              agentRequestIdsByWorker={stageTeamAgentRequestIds}
               onDrillIn={handleDrillIntoOrg}
             />
           </div>
@@ -661,7 +679,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         {execution.toolName === "stage_run" && stageRun && stageRun.rows.length > 0 && (
           <div className="px-4 py-3 border-b border-border/20">
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
-              AI workers
+              Company Controllers
             </div>
             <StageRunOrgRows
               rows={stageRun.rows}
@@ -670,6 +688,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
               roleLabel={stageRun.roleLabel}
               coverageAxis={stageRun.coverageAxis}
               isActive={isRunning}
+              agentRequestIdsByWorker={stageTeamAgentRequestIds}
               onDrillIn={handleDrillIntoOrg}
             />
           </div>

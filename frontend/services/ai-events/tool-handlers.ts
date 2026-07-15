@@ -53,6 +53,49 @@ function seedStageRunToolRequest(
   });
 }
 
+function reconcilePassedStageRunResult(
+  state: ReturnType<EventHandlerContext["getState"]>,
+  sessionId: string,
+  requestId: string,
+  toolName: string,
+  result: JsonValue,
+  success: boolean,
+  source: ToolSource
+) {
+  if (
+    toolName !== "stage_run" ||
+    source?.type !== "main" ||
+    !success ||
+    result === null ||
+    typeof result !== "object" ||
+    Array.isArray(result) ||
+    (result as { passed?: unknown }).passed !== true
+  ) {
+    return;
+  }
+
+  const session = state.sessions[sessionId];
+  const stageRun = session?.stageRuns?.[requestId] ?? session?.stageRun;
+  if (!stageRun || (stageRun.requestId && stageRun.requestId !== requestId)) return;
+
+  // `passed: true` is emitted only after every Company Controller Unit has
+  // final-sealed. Reconcile stale queued/running rows as a replay-safe fallback
+  // for transcripts produced before terminal per-org progress was emitted.
+  for (const row of [...stageRun.rows]) {
+    if (row.status === "passed") continue;
+    state.upsertStageRunRow(
+      sessionId,
+      { ...row, status: "passed", activity: undefined },
+      {
+        stageLabel: stageRun.stageLabel,
+        roleLabel: stageRun.roleLabel,
+        coverageAxis: stageRun.coverageAxis,
+        requestId,
+      }
+    );
+  }
+}
+
 export const handleToolIntentObservation: EventHandler<{
   type: "tool_intent_observation";
   request_id: string;
@@ -350,6 +393,15 @@ export const handleToolResult: EventHandler<{
   state.updateStreamingToolBlock(ctx.sessionId, event.request_id, event.success, event.result);
   // Update timeline card
   state.completeToolExecutionBlock(ctx.sessionId, event.request_id, event.success, event.result);
+  reconcilePassedStageRunResult(
+    state,
+    ctx.sessionId,
+    event.request_id,
+    event.tool_name,
+    event.result,
+    event.success,
+    event.source
+  );
 };
 
 /**
@@ -450,6 +502,7 @@ export const handleAskHumanRequest: EventHandler<{
     requestId: event.request_id,
     sessionId: event.session_id || ctx.sessionId,
     question: event.question,
+    rawInputType: event.input_type,
     inputType: event.input_type as
       | "credentials"
       | "choice"

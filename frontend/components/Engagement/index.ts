@@ -4,3 +4,4 @@ export { CleanupObligationList } from "./CleanupObligationList";
 export { ReportReadModelView } from "./ReportReadModelView";
 export { StageAssetCoveragePanel } from "./StageAssetCoveragePanel";
 export { StageRunOrgRows } from "./StageRunOrgRows";
+export { StageTeamRunView } from "./StageTeamRunView";

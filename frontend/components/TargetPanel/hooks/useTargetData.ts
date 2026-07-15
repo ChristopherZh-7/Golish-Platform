@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { targets } from "@/lib/api";
 import type { TargetStore } from "@/lib/api/targets";
 import { logAudit } from "@/lib/audit";
@@ -31,17 +31,28 @@ function normalizeTarget(target: Target): Target {
 export function useTargetData() {
   const workspaceReady = useStore((s) => s.workspaceDataReady);
   const [store, setStore] = useState<TargetStore>({ targets: [] });
+  const loadSequence = useRef(0);
 
   const loadTargets = useCallback(async () => {
+    const requestSequence = ++loadSequence.current;
     try {
       const data = await targets.listTargets(getProjectPath());
-      setStore(data?.targets ? data : { targets: [] });
+      if (requestSequence === loadSequence.current) {
+        setStore(data?.targets ? data : { targets: [] });
+      }
     } catch (e) {
+      if (requestSequence !== loadSequence.current) return;
       console.error("Failed to load targets:", e);
       setTimeout(() => {
+        if (requestSequence !== loadSequence.current) return;
+        const retrySequence = ++loadSequence.current;
         targets
           .listTargets(getProjectPath())
-          .then((data) => setStore(data?.targets ? data : { targets: [] }))
+          .then((data) => {
+            if (retrySequence === loadSequence.current) {
+              setStore(data?.targets ? data : { targets: [] });
+            }
+          })
           .catch(() => {});
       }, 3000);
     }
@@ -142,7 +153,13 @@ export function useTargetData() {
     async (id: string) => {
       try {
         await targets.deleteTarget(id, getProjectPath());
-        loadTargets();
+        const refresh = loadTargets();
+        setStore((current) => ({
+          ...current,
+          targets: current.targets.filter((target) => target.id !== id),
+        }));
+        await refresh;
+        await sendCustomEvent("targets-changed").catch(() => {});
         logAudit({
           action: "target_deleted",
           category: "targets",
@@ -152,6 +169,7 @@ export function useTargetData() {
         });
       } catch (e) {
         console.error("Failed to delete target:", e);
+        throw e;
       }
     },
     [loadTargets]
@@ -165,22 +183,27 @@ export function useTargetData() {
       // doesn't trigger one `target_list` round-trip per row.
       const unique = [...new Set(ids)].filter(Boolean);
       if (unique.length === 0) return;
-      let deleted = 0;
+      const deletedIds = new Set<string>();
       for (const id of unique) {
         try {
           await targets.deleteTarget(id, getProjectPath());
-          deleted += 1;
+          deletedIds.add(id);
         } catch (e) {
           console.error("Failed to delete target:", id, e);
         }
       }
-      if (deleted > 0) {
-        loadTargets();
-        sendCustomEvent("targets-changed").catch(() => {});
+      if (deletedIds.size > 0) {
+        const refresh = loadTargets();
+        setStore((current) => ({
+          ...current,
+          targets: current.targets.filter((target) => !deletedIds.has(target.id)),
+        }));
+        await refresh;
+        await sendCustomEvent("targets-changed").catch(() => {});
         logAudit({
           action: "targets_bulk_deleted",
           category: "targets",
-          details: `批量删除 ${deleted}/${unique.length} 个目标`,
+          details: `批量删除 ${deletedIds.size}/${unique.length} 个目标`,
         });
       }
     },
@@ -271,18 +294,18 @@ export function useTargetData() {
     [loadTargets]
   );
 
-  const handleClearAll = useCallback(
-    async (confirmMsg: string) => {
-      if (!confirm(confirmMsg)) return;
-      try {
-        await targets.clearAllTargets(getProjectPath());
-        loadTargets();
-      } catch (e) {
-        console.error("Failed to clear:", e);
-      }
-    },
-    [loadTargets]
-  );
+  const handleClearAll = useCallback(async () => {
+    try {
+      await targets.clearAllTargets(getProjectPath());
+      const refresh = loadTargets();
+      setStore({ targets: [] });
+      await refresh;
+      await sendCustomEvent("targets-changed").catch(() => {});
+    } catch (e) {
+      console.error("Failed to clear:", e);
+      throw e;
+    }
+  }, [loadTargets]);
 
   const safeTargets = useMemo(() => (store?.targets ?? []).map(normalizeTarget), [store?.targets]);
 
@@ -298,6 +321,7 @@ export function useTargetData() {
   return {
     safeTargets,
     stats,
+    reloadTargets: loadTargets,
     handleAdd,
     handleBatchAdd,
     handleDelete,

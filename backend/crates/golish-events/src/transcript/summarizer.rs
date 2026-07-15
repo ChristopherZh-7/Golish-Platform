@@ -309,12 +309,13 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
                         accepted_fact_delta_count,
                         rejected_fact_delta_count,
                         residual_risk_count,
+                        pending_enrichment_count,
                         replayed,
                         ..
                     } => {
                         let target_wave_run_id = target_wave_run_id.as_deref().unwrap_or("-");
                         format!(
-                            "attack_wave {source_wave_run_id} -> {target_wave_run_id} {decision_kind} accepted={accepted_fact_delta_count} rejected={rejected_fact_delta_count} residuals={residual_risk_count} replayed={replayed}"
+                            "attack_wave {source_wave_run_id} -> {target_wave_run_id} {decision_kind} accepted={accepted_fact_delta_count} rejected={rejected_fact_delta_count} residuals={residual_risk_count} pending={pending_enrichment_count} replayed={replayed}"
                         )
                     }
                     K::StageRunOrgProgress {
@@ -472,6 +473,7 @@ mod tests {
                         accepted_fact_delta_count: 1,
                         rejected_fact_delta_count: 2,
                         residual_risk_count: 0,
+                        pending_enrichment_count: 0,
                         replayed: true,
                     },
                 },
@@ -482,7 +484,7 @@ mod tests {
         assert!(output
             .contains("candidate_attempt attempt-1 verified evidence=3 deltas=1 replayed=false"));
         assert!(output.contains(
-            "attack_wave wave-1 -> wave-2 opened_next_wave accepted=1 rejected=2 residuals=0 replayed=true"
+            "attack_wave wave-1 -> wave-2 opened_next_wave accepted=1 rejected=2 residuals=0 pending=0 replayed=true"
         ));
         let rendered = output.to_ascii_lowercase();
         for forbidden in ["payload", "lease", "plan", "exploit"] {

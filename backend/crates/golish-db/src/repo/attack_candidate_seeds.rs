@@ -18,6 +18,11 @@ pub struct AttackCandidateSeedRow {
     pub technique: String,
     pub observation: serde_json::Value,
     pub observation_hash: String,
+    pub source_fact_delta_id: Option<Uuid>,
+    pub delta_kind: Option<String>,
+    pub observation_kind: String,
+    pub allowed_techniques: Vec<String>,
+    pub enrichment_required: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -31,11 +36,17 @@ pub struct NewAttackCandidateSeed {
     pub technique: String,
     pub observation: serde_json::Value,
     pub observation_hash: String,
+    pub source_fact_delta_id: Option<Uuid>,
+    pub delta_kind: Option<String>,
+    pub observation_kind: String,
+    pub allowed_techniques: Vec<String>,
+    pub enrichment_required: bool,
 }
 
 const COLUMNS: &str = "id,wave_unit_id,operation_id,scope_snapshot_id,organization_id,\
     target_live_id,target_type_at_time,target_value_at_time,target_identity_hash,technique,\
-    observation,observation_hash,created_at";
+    observation,observation_hash,source_fact_delta_id,delta_kind,observation_kind,\
+    allowed_techniques,enrichment_required,created_at";
 
 pub(crate) async fn insert_or_get_exact(
     tx: &mut Transaction<'_, Postgres>,
@@ -49,8 +60,9 @@ pub(crate) async fn insert_or_get_exact(
         "INSERT INTO attack_candidate_seeds(
              id,wave_unit_id,operation_id,scope_snapshot_id,organization_id,target_live_id,
              target_type_at_time,target_value_at_time,target_identity_hash,technique,
-             observation,observation_hash)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+             observation,observation_hash,source_fact_delta_id,delta_kind,observation_kind,
+             allowed_techniques,enrichment_required)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
          ON CONFLICT(wave_unit_id,target_identity_hash,technique,observation_hash) DO NOTHING
          RETURNING {COLUMNS}"
     );
@@ -67,6 +79,11 @@ pub(crate) async fn insert_or_get_exact(
         .bind(&seed.technique)
         .bind(&seed.observation)
         .bind(&seed.observation_hash)
+        .bind(seed.source_fact_delta_id)
+        .bind(&seed.delta_kind)
+        .bind(&seed.observation_kind)
+        .bind(&seed.allowed_techniques)
+        .bind(seed.enrichment_required)
         .fetch_optional(&mut **tx)
         .await?;
     let row = if let Some(row) = inserted {
@@ -91,6 +108,11 @@ pub(crate) async fn insert_or_get_exact(
         || row.target_type_at_time != seed.target_type_at_time
         || row.target_value_at_time != seed.target_value_at_time
         || row.observation != seed.observation
+        || row.source_fact_delta_id != seed.source_fact_delta_id
+        || row.delta_kind != seed.delta_kind
+        || row.observation_kind != seed.observation_kind
+        || row.allowed_techniques != seed.allowed_techniques
+        || row.enrichment_required != seed.enrichment_required
     {
         return Err(crate::DbError::Other(anyhow::anyhow!(
             "attack seed idempotency identity mismatch"

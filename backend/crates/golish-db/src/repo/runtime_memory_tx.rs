@@ -28,7 +28,8 @@ use crate::repo::{
     attack_candidates, attack_execution_rollout, attack_execution_shadow, canonical_fact_refs,
     message_chains, operation_org_scope, operation_scope_decisions, operation_state,
     project_scopes, runtime_memory_rollout, runtime_memory_shadow, stage_asset_waves,
-    stage_episodes, stage_handoffs, stage_run_units, stage_runs, stage_worker_runs, tasks,
+    stage_episodes, stage_handoffs, stage_run_units, stage_runs, stage_teams, stage_worker_runs,
+    tasks,
 };
 
 const MEMORY_EPISODE_STAGE_KINDS: [&str; 4] = [
@@ -69,6 +70,72 @@ pub enum RuntimeMemoryStoreError {
 }
 
 pub type RuntimeMemoryStoreResult<T> = Result<T, RuntimeMemoryStoreError>;
+
+const FINISH_WORKER_TOOL_TRANSACTION_ATTEMPTS: usize = 3;
+
+fn is_retryable_runtime_transaction_sqlstate(code: &str) -> bool {
+    matches!(code, "40P01" | "40001")
+}
+
+fn is_retryable_sqlx_transaction_error(error: &sqlx::Error) -> bool {
+    matches!(
+        error,
+        sqlx::Error::Database(database)
+            if database
+                .code()
+                .as_deref()
+                .is_some_and(is_retryable_runtime_transaction_sqlstate)
+    )
+}
+
+fn is_retryable_runtime_transaction_error(error: &RuntimeMemoryStoreError) -> bool {
+    match error {
+        RuntimeMemoryStoreError::Sqlx(error) => is_retryable_sqlx_transaction_error(error),
+        RuntimeMemoryStoreError::Repository(crate::DbError::Sqlx(error)) => {
+            is_retryable_sqlx_transaction_error(error)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod transient_runtime_tx_tests {
+    use super::{is_retryable_runtime_transaction_sqlstate, retry_safe_terminal_worker_tool};
+
+    #[test]
+    fn only_postgres_transaction_abort_states_are_retried() {
+        assert!(is_retryable_runtime_transaction_sqlstate("40P01"));
+        assert!(is_retryable_runtime_transaction_sqlstate("40001"));
+        assert!(!is_retryable_runtime_transaction_sqlstate("23505"));
+        assert!(!is_retryable_runtime_transaction_sqlstate("08006"));
+    }
+
+    #[test]
+    fn only_terminal_local_provider_listing_is_automatic_replay_safe() {
+        let fence_failure =
+            "worker tool result rejected by lease fence: runtime memory storage failure";
+        assert!(retry_safe_terminal_worker_tool(
+            "recon_list_providers",
+            "failed",
+            Some(fence_failure)
+        ));
+        assert!(!retry_safe_terminal_worker_tool(
+            "recon_lookup_company",
+            "failed",
+            Some(fence_failure)
+        ));
+        assert!(!retry_safe_terminal_worker_tool(
+            "recon_list_providers",
+            "running",
+            Some(fence_failure)
+        ));
+        assert!(!retry_safe_terminal_worker_tool(
+            "recon_list_providers",
+            "failed",
+            Some("provider lookup failed")
+        ));
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateRuntimeOperationRow {
@@ -115,6 +182,14 @@ pub struct TransitionStageExecutionRow {
     pub current_stage_execution_id: Uuid,
     pub next_stage_execution_id: Uuid,
     pub next_stage: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompleteTerminalStageExecutionRow {
+    pub operation_id: Uuid,
+    pub current_stage_execution_id: Uuid,
+    pub terminal_stage: String,
+    pub task_result: String,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +271,57 @@ pub struct SeededStageRuntimeRow {
     pub scope_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct StageTeamPlanSeedRow {
+    pub schema_version: i32,
+    pub plan_version: i32,
+    pub plan_hash: String,
+    pub leader_role: String,
+    pub allowed_roles: Vec<String>,
+    pub aggregator_kind: String,
+    pub aggregator_role: Option<String>,
+    pub max_workers_total: i32,
+    pub max_workers_active: i32,
+    pub dynamic_requests_enabled: bool,
+    pub dynamic_request_policy: serde_json::Value,
+    pub final_submitter_kind: String,
+    pub created_from_stage_spec_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StageWorkItemSeedRow {
+    pub stable_key: String,
+    pub work_item_kind: String,
+    pub role: String,
+    pub input_manifest: serde_json::Value,
+    pub input_manifest_hash: String,
+    pub conflict_key: Option<String>,
+    pub priority: i32,
+    pub required_for_barrier: bool,
+    pub is_aggregator: bool,
+    pub attempt_policy: serde_json::Value,
+    pub budget: serde_json::Value,
+    pub output_schema: String,
+    pub created_by: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeedStageTeamRuntimeRow {
+    pub base: SeedStageRuntimeRow,
+    pub plan: StageTeamPlanSeedRow,
+    pub work_items: Vec<StageWorkItemSeedRow>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SeededStageTeamRuntimeRow {
+    pub unit: StageRunUnitRow,
+    pub plan: crate::repo::stage_teams::StageTeamPlanRow,
+    pub work_items: Vec<crate::repo::stage_teams::StageWorkItemRow>,
+    pub organization_name: String,
+    pub scope_hash: String,
+    pub replayed: bool,
+}
+
 /// Compound worker-claim input. The expected Unit and Worker versions are
 /// caller-observed concurrency tokens; lease and chain identities are generated
 /// inside the transaction and cannot be selected by a model.
@@ -226,6 +352,217 @@ pub struct ClaimedWorkerAndChainRow {
     pub unit: StageRunUnitRow,
     pub worker: StageWorkerRunRow,
     pub message_chain_id: Uuid,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaimStageWorkItemRow {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+    pub lease_owner: String,
+    pub lease_seconds: i32,
+    pub session_id: Uuid,
+    pub subtask_id: Option<Uuid>,
+    pub agent: AgentType,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub parent_chain_id: Option<Uuid>,
+    pub initial_chain: serde_json::Value,
+    pub initial_checkpoint: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaimedStageWorkItemRow {
+    pub unit: stage_run_units::StageRunUnitRow,
+    pub plan: stage_teams::StageTeamPlanRow,
+    pub work_item: stage_teams::StageWorkItemRow,
+    pub worker: StageWorkerRunRow,
+    pub message_chain_id: Uuid,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaimStageAggregatorRow {
+    pub claim: ClaimStageWorkItemRow,
+    pub expected_dispatch_epoch: i64,
+    pub expected_manifest_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaimStageTeamLeaderRow {
+    pub claim: ClaimStageWorkItemRow,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParkStageTeamLeaderRow {
+    pub fence: RuntimeMemoryTxFence,
+    pub stage_team_plan_id: Uuid,
+    pub leader_work_item_id: Uuid,
+    pub expected_work_item_row_version: i64,
+    pub checkpoint: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParkedStageTeamLeaderRow {
+    pub plan: stage_teams::StageTeamPlanRow,
+    pub work_item: stage_teams::StageWorkItemRow,
+    pub worker: StageWorkerRunRow,
+    pub dependency_count: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BindStageTeamLeaderFinalSubmitterRow {
+    pub fence: RuntimeMemoryTxFence,
+    pub stage_team_plan_id: Uuid,
+    pub leader_work_item_id: Uuid,
+    pub expected_plan_row_version: i64,
+    pub expected_dispatch_epoch: i64,
+    pub expected_manifest_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BoundStageTeamLeaderFinalSubmitterRow {
+    pub plan: stage_teams::StageTeamPlanRow,
+    pub barrier: stage_teams::StageTeamBarrierRow,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReopenStageTeamLeaderAfterGateBlockRow {
+    pub request_id: String,
+    pub fence: RuntimeMemoryTxFence,
+    pub stage_team_plan_id: Uuid,
+    pub leader_work_item_id: Uuid,
+    pub deliverable_submission_id: Uuid,
+    pub expected_dispatch_epoch: i64,
+    pub expected_manifest_hash: String,
+    pub gate_decision_hash: String,
+    pub gap_manifest: serde_json::Value,
+    pub gap_manifest_hash: String,
+    pub checkpoint: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReopenedStageTeamLeaderAfterGateBlockRow {
+    pub plan: stage_teams::StageTeamPlanRow,
+    pub unit: StageRunUnitRow,
+    pub gap: Option<stage_teams::StageTeamUnitGapRow>,
+    pub repair_generation: i32,
+    pub fuel_exhausted: bool,
+    pub leader_work_item: stage_teams::StageWorkItemRow,
+    pub leader_worker: StageWorkerRunRow,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RequestStageWorkerRow {
+    pub fence: RuntimeMemoryTxFence,
+    pub stage_team_plan_id: Uuid,
+    pub parent_work_item_id: Uuid,
+    pub expected_dispatch_epoch: i64,
+    pub requested_role: String,
+    pub requested_kind: String,
+    pub subject_refs: Vec<serde_json::Value>,
+    pub reason: String,
+    pub output_schema: serde_json::Value,
+    pub budget_hint: serde_json::Value,
+    pub dedupe_key: String,
+    pub request_sha256: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestedStageWorkerRow {
+    pub plan: stage_teams::StageTeamPlanRow,
+    pub request: stage_teams::StageWorkerRequestRow,
+    pub work_item: Option<stage_teams::StageWorkItemRow>,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseStageRequestEpochRow {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+    pub expected_dispatch_epoch: i64,
+    pub expected_plan_row_version: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClosedStageRequestEpochRow {
+    pub plan: stage_teams::StageTeamPlanRow,
+    pub barrier: stage_teams::StageTeamBarrierRow,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadStageTeamBarrierRow {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+    pub dispatch_epoch: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinalizeStageTeamUnitRow {
+    pub stage_team_plan_id: Uuid,
+    pub aggregator_work_item_id: Uuid,
+    pub expected_dispatch_epoch: i64,
+    pub expected_manifest_hash: String,
+    pub final_seal: FinalizeUnitPassRow,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinalizedStageTeamUnitRow {
+    pub plan: stage_teams::StageTeamPlanRow,
+    pub aggregator_work_item: stage_teams::StageWorkItemRow,
+    pub finalized: FinalizedUnitPassRow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockStageTeamUnitRow {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+    pub expected_dispatch_epoch: i64,
+    pub expected_manifest_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockedStageTeamUnitRow {
+    pub plan: stage_teams::StageTeamPlanRow,
+    pub aggregator_work_item: stage_teams::StageWorkItemRow,
+    pub unit: StageRunUnitRow,
+    pub barrier: stage_teams::StageTeamBarrierRow,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenStageTeamRepairRow {
+    pub request_id: String,
+    pub fence: RuntimeMemoryTxFence,
+    pub stage_team_plan_id: Uuid,
+    pub aggregator_work_item_id: Uuid,
+    pub deliverable_submission_id: Uuid,
+    pub expected_dispatch_epoch: i64,
+    pub expected_manifest_hash: String,
+    pub gate_decision_hash: String,
+    pub gap_manifest: serde_json::Value,
+    pub gap_manifest_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenedStageTeamRepairRow {
+    pub plan: stage_teams::StageTeamPlanRow,
+    pub unit: StageRunUnitRow,
+    pub gap: stage_teams::StageTeamUnitGapRow,
+    pub generation: Option<stage_teams::StageTeamRepairGenerationRow>,
+    pub repair_work_item: Option<stage_teams::StageWorkItemRow>,
+    pub aggregator_work_item: Option<stage_teams::StageWorkItemRow>,
+    pub aggregator_worker: StageWorkerRunRow,
+    pub replayed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -776,6 +1113,162 @@ async fn transition_stage_execution_inner(
     })
 }
 
+/// Atomically close the exact active execution at a projected DAG terminal and
+/// finish the operation's task with its generated result. No successor is
+/// created and the operation cursor remains on the terminal stage.
+///
+/// An exact response-loss replay is idempotent: the same completed execution
+/// and identical finished task result return the persisted row. Any identity,
+/// stage, status, or result drift fails closed.
+pub async fn complete_terminal_stage_execution(
+    pool: &sqlx::PgPool,
+    input: &CompleteTerminalStageExecutionRow,
+) -> RuntimeMemoryStoreResult<stage_runs::StageRunRow> {
+    complete_terminal_stage_execution_inner(pool, input, false).await
+}
+
+async fn complete_terminal_stage_execution_inner(
+    pool: &sqlx::PgPool,
+    input: &CompleteTerminalStageExecutionRow,
+    inject_failure_after_stage_close: bool,
+) -> RuntimeMemoryStoreResult<stage_runs::StageRunRow> {
+    if input.terminal_stage.trim().is_empty() {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "empty_terminal_stage",
+        });
+    }
+
+    let mut tx = pool.begin().await?;
+    let locked_operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&locked_operation)?;
+    if locked_operation.current_stage != input.terminal_stage {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "operation_terminal_stage_mismatch",
+        });
+    }
+
+    let active =
+        stage_runs::list_active_for_operation_with_executor(&mut *tx, input.operation_id).await?;
+    match active.as_slice() {
+        [] => {
+            let sql = format!(
+                "SELECT {} FROM stage_runs \
+                 WHERE id=$1 AND operation_id=$2 FOR UPDATE",
+                r#"id, operation_id, stage_kind, started_at,
+                   completed_at, status, active_sprint_contract_id"#
+            );
+            let completed = sqlx::query_as::<_, stage_runs::StageRunRow>(&sql)
+                .bind(input.current_stage_execution_id)
+                .bind(input.operation_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(RuntimeMemoryStoreError::Missing {
+                    entity: "stage_runs",
+                })?;
+            if completed.stage_kind != input.terminal_stage || completed.status != "completed" {
+                return Err(RuntimeMemoryStoreError::Conflict {
+                    code: "terminal_stage_completion_replay_mismatch",
+                });
+            }
+            let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id=$1 FOR UPDATE")
+                .bind(input.operation_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(RuntimeMemoryStoreError::Missing { entity: "tasks" })?;
+            if task.status != crate::models::TaskStatus::Finished
+                || task.result.as_deref() != Some(input.task_result.as_str())
+            {
+                return Err(RuntimeMemoryStoreError::Conflict {
+                    code: "terminal_task_completion_replay_mismatch",
+                });
+            }
+            tx.commit().await?;
+            return Ok(completed);
+        }
+        [_] => {}
+        _ => {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "multiple_active_stage_executions",
+            });
+        }
+    }
+
+    let current = &active[0];
+    if current.id != input.current_stage_execution_id {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "active_stage_execution_mismatch",
+        });
+    }
+    if current.stage_kind != input.terminal_stage {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "operation_stage_execution_mismatch",
+        });
+    }
+
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id=$1 FOR UPDATE")
+        .bind(input.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing { entity: "tasks" })?;
+    if task.status != crate::models::TaskStatus::Running || task.result.is_some() {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "terminal_task_not_running",
+        });
+    }
+
+    let completed = stage_runs::mark_terminal_cas(
+        &mut *tx,
+        input.operation_id,
+        input.current_stage_execution_id,
+        stage_runs::StageExecutionTerminal::Completed,
+    )
+    .await?;
+    if inject_failure_after_stage_close {
+        tx.rollback().await?;
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "injected_after_terminal_stage_close",
+        });
+    }
+
+    let finished = sqlx::query_as::<_, Task>(
+        r#"UPDATE tasks
+              SET result=$2, status='finished', updated_at=NOW()
+            WHERE id=$1 AND status='running' AND result IS NULL
+            RETURNING *"#,
+    )
+    .bind(input.operation_id)
+    .bind(&input.task_result)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Conflict {
+        code: "terminal_task_finish_cas_failed",
+    })?;
+    if finished.status != crate::models::TaskStatus::Finished
+        || finished.result.as_deref() != Some(input.task_result.as_str())
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "terminal_task_finish_mismatch",
+        });
+    }
+    if !stage_runs::list_active_for_operation_with_executor(&mut *tx, input.operation_id)
+        .await?
+        .is_empty()
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "terminal_stage_execution_still_active",
+        });
+    }
+
+    tx.commit().await?;
+    Ok(completed)
+}
+
 /// Developer reset compound: supersede live relational runtime, invalidate
 /// downstream handoffs, rewind the graph/legacy mirror, close the active
 /// execution, and open the selected replacement execution in one transaction.
@@ -984,6 +1477,7 @@ pub async fn supersede_stage_checkpoint(
                                     operation_id: input.operation_id,
                                     stage_execution_id: replacement_stage_execution_id,
                                     stage_run_unit_id: unit.id,
+                                    work_item_id: None,
                                     organization_id: scope_unit.organization_id,
                                     worker_generation: 1,
                                     specialist: specialist.to_string(),
@@ -1968,6 +2462,7 @@ pub async fn seed_stage_runtime(
                         operation_id: input.operation_id,
                         stage_execution_id: input.stage_execution_id,
                         stage_run_unit_id: unit.id,
+                        work_item_id: None,
                         organization_id: scope_unit.organization_id,
                         worker_generation: input.worker_generation,
                         specialist: input.specialist.clone(),
@@ -2014,6 +2509,1140 @@ pub async fn seed_stage_runtime(
     Ok(seeded)
 }
 
+fn validate_stage_team_seed(input: &SeedStageTeamRuntimeRow) -> RuntimeMemoryStoreResult<()> {
+    validate_seed_input(&input.base)?;
+    let plan = &input.plan;
+    if plan.schema_version <= 0
+        || plan.plan_version <= 0
+        || plan.leader_role.trim().is_empty()
+        || plan.allowed_roles.is_empty()
+        || plan.max_workers_total <= 0
+        || plan.max_workers_active <= 0
+        || plan.max_workers_active > plan.max_workers_total
+        || !matches!(plan.aggregator_kind.as_str(), "worker" | "deterministic")
+        || !matches!(
+            plan.final_submitter_kind.as_str(),
+            "worker" | "deterministic"
+        )
+        || !plan.dynamic_request_policy.is_object()
+        || input.work_items.is_empty()
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "invalid_stage_team_seed",
+        });
+    }
+    let roles = plan
+        .allowed_roles
+        .iter()
+        .map(|role| role.trim())
+        .collect::<std::collections::HashSet<_>>();
+    if roles.len() != plan.allowed_roles.len()
+        || roles.contains("")
+        || !roles.contains(plan.leader_role.trim())
+        || plan
+            .aggregator_role
+            .as_deref()
+            .is_some_and(|role| !roles.contains(role.trim()))
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "invalid_stage_team_roles",
+        });
+    }
+    let stable_keys = input
+        .work_items
+        .iter()
+        .map(|item| (item.work_item_kind.trim(), item.stable_key.trim()))
+        .collect::<std::collections::HashSet<_>>();
+    let aggregators = input
+        .work_items
+        .iter()
+        .filter(|item| item.is_aggregator)
+        .count();
+    if stable_keys.len() != input.work_items.len()
+        || aggregators != usize::from(plan.aggregator_kind == "worker")
+        || input.work_items.iter().any(|item| {
+            item.stable_key.trim().is_empty()
+                || item.work_item_kind.trim().is_empty()
+                || !roles.contains(item.role.trim())
+                || !item.input_manifest.is_object()
+                || !item.attempt_policy.is_object()
+                || !item.budget.is_object()
+                || item.output_schema.trim().is_empty()
+                || item.created_by != "server_seed"
+                || (item.is_aggregator
+                    && (plan.aggregator_role.as_deref() != Some(item.role.as_str())
+                        || item.required_for_barrier))
+        })
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "invalid_stage_team_work_items",
+        });
+    }
+    Ok(())
+}
+
+fn stage_team_dynamic_attempt_policy(plan: &stage_teams::StageTeamPlanRow) -> Value {
+    plan.dynamic_request_policy
+        .get("attempt_policy")
+        .cloned()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({"max_attempts": 3}))
+}
+
+fn static_stage_work_item_replays_exactly(
+    existing: &stage_teams::StageWorkItemRow,
+    seed: &StageWorkItemSeedRow,
+    plan: &stage_teams::StageTeamPlanRow,
+    unit: &StageRunUnitRow,
+) -> bool {
+    existing.team_plan_id == plan.id
+        && existing.operation_id == plan.operation_id
+        && existing.stage_execution_id == plan.stage_execution_id
+        && existing.stage_run_unit_id == unit.id
+        && existing.scope_snapshot_id == plan.scope_snapshot_id
+        && existing.organization_id == plan.organization_id
+        && existing.dispatch_epoch == plan.dispatch_epoch
+        && existing.kind == seed.work_item_kind
+        && existing.stable_key == seed.stable_key
+        && existing.role == seed.role
+        && existing.input_manifest_hash == seed.input_manifest_hash
+        && existing.input_refs == serde_json::json!([seed.input_manifest.clone()])
+        && existing.required_for_barrier == seed.required_for_barrier
+        && existing.conflict_key == seed.conflict_key
+        && existing.priority == seed.priority
+        && existing.attempt_policy == seed.attempt_policy
+        && existing.budget == seed.budget
+        && existing.output_schema == seed.output_schema
+        && existing.created_by == "server_seed"
+}
+
+async fn validate_stage_team_replay_extra(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    plan: &stage_teams::StageTeamPlanRow,
+    item: &stage_teams::StageWorkItemRow,
+) -> RuntimeMemoryStoreResult<()> {
+    if item.team_plan_id != plan.id
+        || item.operation_id != plan.operation_id
+        || item.stage_execution_id != plan.stage_execution_id
+        || item.stage_run_unit_id != plan.stage_run_unit_id
+        || item.scope_snapshot_id != plan.scope_snapshot_id
+        || item.organization_id != plan.organization_id
+        || item.dispatch_epoch != plan.dispatch_epoch
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_replay_extra_owner_mismatch",
+        });
+    }
+
+    match item.created_by.as_str() {
+        "accepted_worker_request" => {
+            let request = sqlx::query_as::<_, stage_teams::StageWorkerRequestRow>(
+                "SELECT * FROM stage_worker_requests
+                  WHERE accepted_work_item_id=$1 AND team_plan_id=$2
+                    AND operation_id=$3 AND stage_execution_id=$4
+                    AND stage_run_unit_id=$5 AND scope_snapshot_id=$6
+                    AND organization_id=$7 AND dispatch_epoch=$8
+                  FOR SHARE",
+            )
+            .bind(item.id)
+            .bind(plan.id)
+            .bind(plan.operation_id)
+            .bind(plan.stage_execution_id)
+            .bind(plan.stage_run_unit_id)
+            .bind(plan.scope_snapshot_id)
+            .bind(plan.organization_id)
+            .bind(plan.dispatch_epoch)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
+                code: "stage_team_dynamic_work_item_authority_missing",
+            })?;
+            let input_material = serde_json::json!({
+                "parent_work_item_id": request.parent_work_item_id,
+                "parent_worker_run_id": request.parent_worker_run_id,
+                "reason": &request.reason_code,
+                "subject_refs": &request.bounded_subject_refs,
+            });
+            let expected_input_hash = format!(
+                "sha256:{}",
+                operation_scope_decisions::sha256_json(&input_material)
+            );
+            if request.status != "accepted"
+                || request.decision_reason_code.is_some()
+                || request.accepted_work_item_id != Some(item.id)
+                || request.requested_role != item.role
+                || request.request_kind != item.kind
+                || request.expected_output_schema != item.output_schema
+                || item.stable_key != format!("dynamic:{}", request.id)
+                || item.input_refs != request.bounded_subject_refs
+                || item.input_manifest_hash != expected_input_hash
+                || !item.required_for_barrier
+                || item.conflict_key.is_some()
+                || item.attempt_policy != stage_team_dynamic_attempt_policy(plan)
+                || item.budget != request.budget_hint
+            {
+                return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                    code: "stage_team_dynamic_work_item_authority_mismatch",
+                });
+            }
+            Ok(())
+        }
+        // No durable Gate-repair authority row exists in the current schema.
+        // Fail closed until a later additive migration can bind a repair item
+        // to an immutable Gate decision/generation instead of trusting
+        // `created_by='gate_repair'` by itself.
+        "gate_repair" => Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_gate_repair_authority_missing",
+        }),
+        _ => Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_work_item_replay_extra",
+        }),
+    }
+}
+
+/// Seed a frozen TeamPlan and stable WorkItems for every selected organization.
+/// No Worker is created here: each WorkItem claim receives its own sibling
+/// WorkerRun, lease and message chain in a later short transaction.
+pub async fn seed_stage_team_runtime(
+    pool: &sqlx::PgPool,
+    input: &SeedStageTeamRuntimeRow,
+) -> RuntimeMemoryStoreResult<Vec<SeededStageTeamRuntimeRow>> {
+    validate_stage_team_seed(input)?;
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.base.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    if operation.superseded_by.is_some() {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "operation_superseded",
+        });
+    }
+    let contract = frozen_runtime_contract(&operation)?;
+    if contract != runtime_memory_rollout::RuntimeMemoryContract::V2Only {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_requires_v2_only",
+        });
+    }
+    validate_runtime_stage_execution(
+        &mut tx,
+        &operation,
+        input.base.stage_execution_id,
+        &input.base.stage_kind,
+    )
+    .await?;
+    let scope =
+        operation_org_scope::load_for_operation_with_connection(&mut tx, input.base.operation_id)
+            .await
+            .map_err(map_scope_freeze_error)?
+            .ok_or(RuntimeMemoryStoreError::Missing {
+                entity: "operation_org_scope_snapshots",
+            })?;
+    if scope.snapshot.sealed_at.is_none() {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "operation_scope_not_sealed",
+        });
+    }
+    let selected_ids = input.base.organization_ids.as_ref().map(|ids| {
+        ids.iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+    });
+    if selected_ids.as_ref().is_some_and(|selected| {
+        selected.iter().any(|organization_id| {
+            !scope
+                .units
+                .iter()
+                .any(|unit| unit.organization_id == *organization_id)
+        })
+    }) {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_seed_organization_outside_frozen_scope",
+        });
+    }
+    let existing_units = stage_run_units::list_for_execution_with_executor(
+        &mut *tx,
+        input.base.operation_id,
+        input.base.stage_execution_id,
+    )
+    .await?;
+    let mut seeded = Vec::new();
+    for scope_unit in scope.units.iter().filter(|unit| {
+        selected_ids
+            .as_ref()
+            .is_none_or(|selected| selected.contains(&unit.organization_id))
+    }) {
+        let unit = match existing_units
+            .iter()
+            .find(|existing| existing.organization_id == scope_unit.organization_id)
+        {
+            Some(existing) => {
+                if existing.operation_id != input.base.operation_id
+                    || existing.stage_execution_id != input.base.stage_execution_id
+                    || existing.scope_snapshot_id != scope.snapshot.id
+                    || existing.stage_kind != input.base.stage_kind
+                    || existing.generation != input.base.unit_generation
+                {
+                    return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                        code: "stage_team_unit_replay_mismatch",
+                    });
+                }
+                existing.clone()
+            }
+            None => {
+                stage_run_units::insert_with_executor(
+                    &mut *tx,
+                    &stage_run_units::NewStageRunUnit {
+                        id: Uuid::new_v4(),
+                        operation_id: input.base.operation_id,
+                        stage_execution_id: input.base.stage_execution_id,
+                        scope_snapshot_id: scope.snapshot.id,
+                        organization_id: scope_unit.organization_id,
+                        stage_kind: input.base.stage_kind.clone(),
+                        generation: input.base.unit_generation,
+                        specialist: Some(input.base.specialist.clone()),
+                    },
+                )
+                .await?
+            }
+        };
+        let plan_id = Uuid::new_v5(
+            &unit.id,
+            format!("stage-team-plan:v{}", input.plan.plan_version).as_bytes(),
+        );
+        let existing_plan = stage_teams::get_plan_for_unit_with_executor(&mut *tx, unit.id).await?;
+        let replayed = existing_plan.is_some();
+        let plan = match existing_plan {
+            Some(existing) => {
+                if existing.id != plan_id
+                    || existing.operation_id != input.base.operation_id
+                    || existing.stage_execution_id != input.base.stage_execution_id
+                    || existing.scope_snapshot_id != scope.snapshot.id
+                    || existing.organization_id != scope_unit.organization_id
+                    || existing.plan_hash != input.plan.plan_hash
+                    || existing.created_from_stage_spec_hash
+                        != input.plan.created_from_stage_spec_hash
+                {
+                    return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                        code: "stage_team_plan_replay_mismatch",
+                    });
+                }
+                existing
+            }
+            None => {
+                stage_teams::insert_plan_with_executor(
+                    &mut *tx,
+                    &stage_teams::NewStageTeamPlan {
+                        id: plan_id,
+                        operation_id: input.base.operation_id,
+                        stage_execution_id: input.base.stage_execution_id,
+                        stage_run_unit_id: unit.id,
+                        scope_snapshot_id: scope.snapshot.id,
+                        organization_id: scope_unit.organization_id,
+                        stage_kind: input.base.stage_kind.clone(),
+                        unit_generation: input.base.unit_generation,
+                        schema_version: input.plan.schema_version,
+                        plan_version: input.plan.plan_version,
+                        plan_hash: input.plan.plan_hash.clone(),
+                        leader_role: input.plan.leader_role.clone(),
+                        aggregator_kind: input.plan.aggregator_kind.clone(),
+                        aggregator_role: input.plan.aggregator_role.clone(),
+                        allowed_worker_roles: serde_json::json!(input.plan.allowed_roles.clone()),
+                        max_workers_total: input.plan.max_workers_total,
+                        max_workers_active: input.plan.max_workers_active,
+                        dynamic_requests_allowed: input.plan.dynamic_requests_enabled,
+                        dynamic_request_policy: input.plan.dynamic_request_policy.clone(),
+                        final_submitter_kind: input.plan.final_submitter_kind.clone(),
+                        created_from_stage_spec_hash: input
+                            .plan
+                            .created_from_stage_spec_hash
+                            .clone(),
+                    },
+                )
+                .await?
+            }
+        };
+        let existing_items = stage_teams::list_work_items_with_executor(&mut *tx, plan.id).await?;
+        let existing_static_items = existing_items
+            .iter()
+            .filter(|item| item.created_by == "server_seed")
+            .collect::<Vec<_>>();
+        let mut work_items = Vec::with_capacity(input.work_items.len());
+        for seed in &input.work_items {
+            let item_id = Uuid::new_v5(
+                &plan.id,
+                format!("{}:{}", seed.work_item_kind, seed.stable_key).as_bytes(),
+            );
+            let item = match existing_static_items
+                .iter()
+                .copied()
+                .find(|item| item.id == item_id)
+            {
+                Some(existing) => {
+                    if !static_stage_work_item_replays_exactly(existing, seed, &plan, &unit) {
+                        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                            code: "stage_team_work_item_replay_mismatch",
+                        });
+                    }
+                    existing.clone()
+                }
+                None if replayed => {
+                    return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                        code: "stage_team_work_item_replay_missing",
+                    });
+                }
+                None => {
+                    stage_teams::insert_work_item_with_executor(
+                        &mut *tx,
+                        &stage_teams::NewStageWorkItem {
+                            id: item_id,
+                            team_plan_id: plan.id,
+                            operation_id: input.base.operation_id,
+                            stage_execution_id: input.base.stage_execution_id,
+                            stage_run_unit_id: unit.id,
+                            scope_snapshot_id: scope.snapshot.id,
+                            organization_id: scope_unit.organization_id,
+                            dispatch_epoch: plan.dispatch_epoch,
+                            kind: seed.work_item_kind.clone(),
+                            stable_key: seed.stable_key.clone(),
+                            role: seed.role.clone(),
+                            input_manifest_hash: seed.input_manifest_hash.clone(),
+                            input_refs: serde_json::json!([seed.input_manifest.clone()]),
+                            required_for_barrier: seed.required_for_barrier,
+                            conflict_key: seed.conflict_key.clone(),
+                            priority: seed.priority,
+                            attempt_policy: seed.attempt_policy.clone(),
+                            budget: seed.budget.clone(),
+                            output_schema: seed.output_schema.clone(),
+                            created_by: seed.created_by.clone(),
+                        },
+                    )
+                    .await?
+                }
+            };
+            work_items.push(item);
+        }
+        if replayed && existing_static_items.len() != input.work_items.len() {
+            return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                code: "stage_team_work_item_replay_extra",
+            });
+        }
+        if replayed {
+            for extra in existing_items
+                .iter()
+                .filter(|item| item.created_by != "server_seed")
+            {
+                validate_stage_team_replay_extra(&mut tx, &plan, extra).await?;
+            }
+        }
+        seeded.push(SeededStageTeamRuntimeRow {
+            unit,
+            plan,
+            work_items,
+            organization_name: scope_unit.organization_name_at_freeze.clone(),
+            scope_hash: scope.snapshot.scope_hash.clone(),
+            replayed,
+        });
+    }
+    tx.commit().await?;
+    Ok(seeded)
+}
+
+fn stage_worker_request_output_schema(value: &Value) -> RuntimeMemoryStoreResult<String> {
+    if value.is_null() {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "invalid_stage_worker_request",
+        });
+    }
+    Ok(value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| operation_scope_decisions::canonical_json(value)))
+}
+
+pub fn stage_worker_request_payload_hash(input: &RequestStageWorkerRow) -> String {
+    let material = serde_json::json!({
+        "budget_hint": input.budget_hint,
+        "dedupe_key": input.dedupe_key,
+        "dispatch_epoch": input.expected_dispatch_epoch,
+        "operation_id": input.fence.operation_id,
+        "output_schema": input.output_schema,
+        "parent_work_item_id": input.parent_work_item_id,
+        "reason": input.reason,
+        "requested_kind": input.requested_kind,
+        "requested_role": input.requested_role,
+        "stage_execution_id": input.fence.stage_execution_id,
+        "stage_run_unit_id": input.fence.stage_run_unit_id,
+        "stage_team_plan_id": input.stage_team_plan_id,
+        "subject_refs": input.subject_refs,
+    });
+    format!(
+        "sha256:{}",
+        operation_scope_decisions::sha256_json(&material)
+    )
+}
+
+fn controller_request_envelope(reason: &str) -> (String, Option<String>) {
+    let Ok(value) = serde_json::from_str::<Value>(reason) else {
+        return (reason.to_string(), None);
+    };
+    if value.get("schema").and_then(Value::as_str) != Some("stage_team_controller_request.v1") {
+        return (reason.to_string(), None);
+    }
+    let objective = value
+        .get("objective")
+        .and_then(Value::as_str)
+        .filter(|objective| !objective.trim().is_empty())
+        .unwrap_or(reason)
+        .to_string();
+    let parent_request_id = value
+        .get("parent_tool_request_id")
+        .and_then(Value::as_str)
+        .filter(|request_id| !request_id.trim().is_empty())
+        .map(str::to_string);
+    (objective, parent_request_id)
+}
+
+fn dynamic_request_rejection(
+    plan: &stage_teams::StageTeamPlanRow,
+    input: &RequestStageWorkerRow,
+    accepted_requests: i64,
+    work_item_count: i64,
+    allow_implicit_organization_scope: bool,
+) -> Option<&'static str> {
+    if plan.requests_closed_at.is_some() {
+        return Some("stage_team_request_epoch_closed");
+    }
+    if !plan.dynamic_requests_allowed {
+        return Some("stage_team_dynamic_requests_disabled");
+    }
+    if plan
+        .dynamic_request_policy
+        .get("canonical_subject_refs_only")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Some("stage_team_dynamic_request_contract_unversioned");
+    }
+    if plan.aggregator_role.as_deref() == Some(input.requested_role.as_str()) {
+        return Some("stage_team_aggregator_role_is_server_owned");
+    }
+    let allowed_roles = plan
+        .allowed_worker_roles
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    if !allowed_roles.contains(input.requested_role.as_str()) {
+        return Some("stage_team_worker_role_not_allowed");
+    }
+    let max_requests = plan
+        .dynamic_request_policy
+        .get("max_requests")
+        .or_else(|| plan.dynamic_request_policy.get("max_dynamic_requests"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if max_requests <= 0 || accepted_requests >= max_requests {
+        return Some("stage_team_dynamic_request_limit_reached");
+    }
+    if work_item_count >= i64::from(plan.max_workers_total) {
+        return Some("stage_team_worker_total_limit_reached");
+    }
+    let max_subject_refs = plan
+        .dynamic_request_policy
+        .get("max_subject_refs")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if max_subject_refs == 0
+        || (!allow_implicit_organization_scope && input.subject_refs.is_empty())
+        || input.subject_refs.len() as u64 > max_subject_refs
+    {
+        return Some("stage_team_request_subject_limit_reached");
+    }
+    let Some(allowed_kinds) = plan
+        .dynamic_request_policy
+        .get("allowed_request_kinds")
+        .and_then(Value::as_array)
+        .filter(|kinds| !kinds.is_empty())
+    else {
+        return Some("stage_team_dynamic_request_contract_unversioned");
+    };
+    if !allowed_kinds
+        .iter()
+        .filter_map(Value::as_str)
+        .any(|kind| kind == input.requested_kind)
+    {
+        return Some("stage_team_request_kind_not_allowed");
+    }
+    None
+}
+
+async fn dynamic_request_subject_rejection(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    plan: &stage_teams::StageTeamPlanRow,
+    unit: &stage_run_units::StageRunUnitRow,
+    input: &RequestStageWorkerRow,
+    allow_implicit_organization_scope: bool,
+) -> RuntimeMemoryStoreResult<Option<&'static str>> {
+    if allow_implicit_organization_scope && input.subject_refs.is_empty() {
+        return Ok(None);
+    }
+    let keys = match input
+        .subject_refs
+        .iter()
+        .cloned()
+        .map(serde_json::from_value::<CanonicalFactKey>)
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(keys) if !keys.is_empty() => keys,
+        _ => return Ok(Some("stage_team_request_subject_not_canonical")),
+    };
+    let project_path_at_freeze: Option<String> = sqlx::query_scalar(
+        "SELECT project_path_at_freeze FROM operation_org_scope_snapshots
+          WHERE id=$1 AND operation_id=$2 AND sealed_at IS NOT NULL FOR SHARE",
+    )
+    .bind(plan.scope_snapshot_id)
+    .bind(plan.operation_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(project_path_at_freeze) = project_path_at_freeze else {
+        return Ok(Some("stage_team_request_scope_not_authorized"));
+    };
+    let Some(freshness_floor) = unit.started_at else {
+        return Ok(Some("stage_team_request_scope_not_authorized"));
+    };
+    match canonical_fact_refs::resolve_for_handoff(
+        tx,
+        plan.operation_id,
+        plan.organization_id,
+        &project_path_at_freeze,
+        freshness_floor,
+        &keys,
+    )
+    .await
+    {
+        Ok(resolved) if resolved.len() == keys.len() => Ok(None),
+        Ok(_) | Err(canonical_fact_refs::CanonicalFactRefError::Rejected { .. }) => {
+            Ok(Some("stage_team_request_subject_not_authorized"))
+        }
+        Err(canonical_fact_refs::CanonicalFactRefError::Sqlx(error)) => {
+            Err(RuntimeMemoryStoreError::Sqlx(error))
+        }
+    }
+}
+
+/// Persist one context-bound dynamic sibling request.  Both acceptance and
+/// rejection are durable decisions; an accepted WorkItem is inserted in this
+/// same transaction and receives a server-owned stable identity.
+pub async fn request_stage_worker(
+    pool: &sqlx::PgPool,
+    input: &RequestStageWorkerRow,
+) -> RuntimeMemoryStoreResult<RequestedStageWorkerRow> {
+    if input.requested_role.trim().is_empty()
+        || input.requested_kind.trim().is_empty()
+        || input.reason.trim().is_empty()
+        || input.dedupe_key.trim().is_empty()
+        || !input.budget_hint.is_object()
+        || input.subject_refs.iter().any(Value::is_null)
+        || stage_worker_request_payload_hash(input) != input.request_sha256
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "invalid_stage_worker_request",
+        });
+    }
+    let requested_output_schema = stage_worker_request_output_schema(&input.output_schema)?;
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.fence.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&operation)?;
+    if frozen_runtime_contract(&operation)? != runtime_memory_rollout::RuntimeMemoryContract::V2Only
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_requires_v2_only",
+        });
+    }
+    let unit = load_runtime_unit_for_update(
+        &mut tx,
+        input.fence.operation_id,
+        input.fence.stage_execution_id,
+        input.fence.stage_run_unit_id,
+    )
+    .await?;
+    validate_runtime_stage_execution(
+        &mut tx,
+        &operation,
+        input.fence.stage_execution_id,
+        &unit.stage_kind,
+    )
+    .await?;
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.stage_team_plan_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.stage_execution_id)
+    .bind(input.fence.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    if plan.dispatch_epoch != input.expected_dispatch_epoch {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_dispatch_epoch_mismatch",
+        });
+    }
+    if unit.status != "running" {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_parent_unit_not_running",
+        });
+    }
+    let parent_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "SELECT * FROM stage_work_items
+          WHERE id=$1 AND team_plan_id=$2 AND operation_id=$3
+            AND stage_execution_id=$4 AND stage_run_unit_id=$5 FOR UPDATE",
+    )
+    .bind(input.parent_work_item_id)
+    .bind(plan.id)
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_work_items",
+    })?;
+    let is_company_controller = plan
+        .dynamic_request_policy
+        .get("coordination_mode")
+        .and_then(Value::as_str)
+        == Some("company_controller")
+        && parent_item.stable_key == "leader:primary"
+        && parent_item.role == plan.leader_role
+        && plan.aggregator_role.as_deref() == Some(parent_item.role.as_str());
+    if parent_item.status != "running"
+        || (plan.aggregator_role.as_deref() == Some(parent_item.role.as_str())
+            && !is_company_controller)
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_parent_work_item_not_running",
+        });
+    }
+    // Request identity is stable across a legal retry of the parent WorkItem,
+    // but authority is not.  Validate the caller's *current* WorkerRun fence
+    // before either creating or replaying the durable request.
+    let parent_worker = sqlx::query_as::<_, StageWorkerRunRow>(
+        r#"SELECT * FROM stage_worker_runs
+            WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+              AND stage_run_unit_id=$4 AND work_item_id=$5 AND lease_token=$6
+              AND attempt_epoch=$7 AND checkpoint_version=$8 AND status='running'
+              AND lease_expires_at > NOW()
+            FOR UPDATE"#,
+    )
+    .bind(input.fence.worker_run_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.stage_execution_id)
+    .bind(input.fence.stage_run_unit_id)
+    .bind(parent_item.id)
+    .bind(input.fence.lease_token)
+    .bind(input.fence.attempt_epoch)
+    .bind(input.fence.expected_checkpoint_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::LeaseLost {
+        worker_run_id: input.fence.worker_run_id,
+        attempt_epoch: input.fence.attempt_epoch,
+    })?;
+    let (expected_output_schema, expected_budget, allow_implicit_organization_scope) =
+        if is_company_controller {
+            let output_schema = plan
+                .dynamic_request_policy
+                .get("child_output_schema")
+                .and_then(Value::as_str)
+                .filter(|schema| !schema.trim().is_empty())
+                .ok_or(RuntimeMemoryStoreError::Conflict {
+                    code: "stage_team_dynamic_request_contract_unversioned",
+                })?
+                .to_string();
+            let budget = plan
+                .dynamic_request_policy
+                .get("child_budget")
+                .filter(|budget| budget.is_object())
+                .cloned()
+                .ok_or(RuntimeMemoryStoreError::Conflict {
+                    code: "stage_team_dynamic_request_contract_unversioned",
+                })?;
+            let implicit_scope = plan
+                .dynamic_request_policy
+                .get("organization_scope_implicit")
+                .and_then(Value::as_bool)
+                == Some(true);
+            (output_schema, budget, implicit_scope)
+        } else {
+            (
+                requested_output_schema.clone(),
+                input.budget_hint.clone(),
+                false,
+            )
+        };
+    let existing = sqlx::query_as::<_, stage_teams::StageWorkerRequestRow>(
+        "SELECT * FROM stage_worker_requests
+          WHERE team_plan_id=$1 AND dispatch_epoch=$2 AND dedupe_key=$3 FOR SHARE",
+    )
+    .bind(plan.id)
+    .bind(plan.dispatch_epoch)
+    .bind(&input.dedupe_key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(existing) = existing {
+        if existing.operation_id != input.fence.operation_id
+            || existing.stage_execution_id != input.fence.stage_execution_id
+            || existing.stage_run_unit_id != input.fence.stage_run_unit_id
+            || existing.parent_work_item_id != input.parent_work_item_id
+            || existing.requested_role != input.requested_role
+            || existing.request_kind != input.requested_kind
+            || existing.bounded_subject_refs != Value::Array(input.subject_refs.clone())
+            || existing.reason_code != input.reason
+            || existing.expected_output_schema != expected_output_schema
+            || existing.budget_hint != expected_budget
+            || existing.request_payload_hash != input.request_sha256
+        {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_worker_request_replay_mismatch",
+            });
+        }
+        let work_item = if let Some(work_item_id) = existing.accepted_work_item_id {
+            Some(
+                sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+                    "SELECT * FROM stage_work_items WHERE id=$1 FOR SHARE",
+                )
+                .bind(work_item_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(RuntimeMemoryStoreError::Missing {
+                    entity: "stage_work_items",
+                })?,
+            )
+        } else {
+            None
+        };
+        tx.commit().await?;
+        return Ok(RequestedStageWorkerRow {
+            plan,
+            request: existing,
+            work_item,
+            replayed: true,
+        });
+    }
+    let accepted_requests: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stage_worker_requests WHERE team_plan_id=$1 AND status='accepted'",
+    )
+    .bind(plan.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let work_item_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM stage_work_items WHERE team_plan_id=$1")
+            .bind(plan.id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let subject_rejection = dynamic_request_subject_rejection(
+        &mut tx,
+        &plan,
+        &unit,
+        input,
+        allow_implicit_organization_scope,
+    )
+    .await?;
+    let request_shape_rejection = if !is_company_controller
+        && (expected_output_schema != parent_item.output_schema
+            || input.budget_hint != parent_item.budget)
+    {
+        Some("stage_team_request_cannot_expand_parent_contract")
+    } else {
+        None
+    };
+    let rejection = dynamic_request_rejection(
+        &plan,
+        input,
+        accepted_requests,
+        work_item_count,
+        allow_implicit_organization_scope,
+    )
+    .or(request_shape_rejection)
+    .or(subject_rejection);
+    let request_id = Uuid::new_v5(
+        &plan.id,
+        format!(
+            "stage-worker-request:{}:{}",
+            plan.dispatch_epoch, input.dedupe_key
+        )
+        .as_bytes(),
+    );
+    let mut work_item = None;
+    let accepted_work_item_id = if rejection.is_none() {
+        let work_item_id = Uuid::new_v5(&request_id, b"accepted-stage-work-item-v1");
+        let (controller_objective, _) = controller_request_envelope(&input.reason);
+        let input_material = serde_json::json!({
+            "parent_work_item_id": parent_item.id,
+            "parent_worker_run_id": parent_worker.id,
+            "reason": controller_objective.clone(),
+            "subject_refs": input.subject_refs,
+        });
+        let child_input_refs = if is_company_controller {
+            serde_json::json!([{
+                "assignment_schema": "stage_team_controller_assignment.v1",
+                "objective": controller_objective,
+                "subject_refs": input.subject_refs,
+            }])
+        } else {
+            Value::Array(input.subject_refs.clone())
+        };
+        let priority: i32 = sqlx::query_scalar(
+            r#"SELECT COALESCE(MAX(priority),-1)+1 FROM stage_work_items
+                WHERE team_plan_id=$1 AND role IS DISTINCT FROM $2"#,
+        )
+        .bind(plan.id)
+        .bind(&plan.aggregator_role)
+        .fetch_one(&mut *tx)
+        .await?;
+        let attempt_policy = stage_team_dynamic_attempt_policy(&plan);
+        work_item = Some(
+            stage_teams::insert_work_item_with_executor(
+                &mut *tx,
+                &stage_teams::NewStageWorkItem {
+                    id: work_item_id,
+                    team_plan_id: plan.id,
+                    operation_id: plan.operation_id,
+                    stage_execution_id: plan.stage_execution_id,
+                    stage_run_unit_id: plan.stage_run_unit_id,
+                    scope_snapshot_id: plan.scope_snapshot_id,
+                    organization_id: plan.organization_id,
+                    dispatch_epoch: plan.dispatch_epoch,
+                    kind: input.requested_kind.clone(),
+                    stable_key: format!("dynamic:{request_id}"),
+                    role: input.requested_role.clone(),
+                    input_manifest_hash: format!(
+                        "sha256:{}",
+                        operation_scope_decisions::sha256_json(&input_material)
+                    ),
+                    input_refs: child_input_refs,
+                    required_for_barrier: true,
+                    conflict_key: None,
+                    priority,
+                    attempt_policy,
+                    budget: expected_budget.clone(),
+                    output_schema: expected_output_schema.clone(),
+                    created_by: "accepted_worker_request".to_string(),
+                },
+            )
+            .await?,
+        );
+        if is_company_controller {
+            sqlx::query(
+                r#"INSERT INTO stage_work_item_dependencies (
+                       team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+                       scope_snapshot_id,organization_id,work_item_id,depends_on_work_item_id
+                   ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+                   ON CONFLICT (work_item_id,depends_on_work_item_id) DO NOTHING"#,
+            )
+            .bind(plan.id)
+            .bind(plan.operation_id)
+            .bind(plan.stage_execution_id)
+            .bind(plan.stage_run_unit_id)
+            .bind(plan.scope_snapshot_id)
+            .bind(plan.organization_id)
+            .bind(parent_item.id)
+            .bind(work_item_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        Some(work_item_id)
+    } else {
+        None
+    };
+    let request = sqlx::query_as::<_, stage_teams::StageWorkerRequestRow>(
+        r#"INSERT INTO stage_worker_requests(
+               id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,parent_work_item_id,parent_worker_run_id,
+               dispatch_epoch,requested_role,request_kind,bounded_subject_refs,reason_code,
+               expected_output_schema,budget_hint,dedupe_key,request_payload_hash,status,
+               decision_reason_code,accepted_work_item_id
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+           RETURNING *"#,
+    )
+    .bind(request_id)
+    .bind(plan.id)
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .bind(plan.scope_snapshot_id)
+    .bind(plan.organization_id)
+    .bind(parent_item.id)
+    .bind(parent_worker.id)
+    .bind(plan.dispatch_epoch)
+    .bind(&input.requested_role)
+    .bind(&input.requested_kind)
+    .bind(Value::Array(input.subject_refs.clone()))
+    .bind(&input.reason)
+    .bind(&expected_output_schema)
+    .bind(&expected_budget)
+    .bind(&input.dedupe_key)
+    .bind(&input.request_sha256)
+    .bind(if rejection.is_some() {
+        "rejected"
+    } else {
+        "accepted"
+    })
+    .bind(rejection)
+    .bind(accepted_work_item_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(RequestedStageWorkerRow {
+        plan,
+        request,
+        work_item,
+        replayed: false,
+    })
+}
+
+pub async fn close_stage_request_epoch(
+    pool: &sqlx::PgPool,
+    input: &CloseStageRequestEpochRow,
+) -> RuntimeMemoryStoreResult<ClosedStageRequestEpochRow> {
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&operation)?;
+    if frozen_runtime_contract(&operation)? != runtime_memory_rollout::RuntimeMemoryContract::V2Only
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_requires_v2_only",
+        });
+    }
+    let unit = load_runtime_unit_for_update(
+        &mut tx,
+        input.operation_id,
+        input.stage_execution_id,
+        input.stage_run_unit_id,
+    )
+    .await?;
+    validate_runtime_stage_execution(
+        &mut tx,
+        &operation,
+        input.stage_execution_id,
+        &unit.stage_kind,
+    )
+    .await?;
+    let current = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.stage_team_plan_id)
+    .bind(input.operation_id)
+    .bind(input.stage_execution_id)
+    .bind(input.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    if current.dispatch_epoch != input.expected_dispatch_epoch {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_dispatch_epoch_mismatch",
+        });
+    }
+    let replayed = current.requests_closed_at.is_some();
+    let plan = if replayed {
+        if current.row_version < input.expected_plan_row_version {
+            return Err(RuntimeMemoryStoreError::StaleVersion {
+                entity: "stage_team_plans",
+                expected: input.expected_plan_row_version,
+                actual: current.row_version,
+            });
+        }
+        current
+    } else {
+        if current.row_version != input.expected_plan_row_version {
+            return Err(RuntimeMemoryStoreError::StaleVersion {
+                entity: "stage_team_plans",
+                expected: input.expected_plan_row_version,
+                actual: current.row_version,
+            });
+        }
+        sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+            "UPDATE stage_team_plans
+                SET requests_closed_at=NOW(),row_version=row_version+1,updated_at=NOW()
+              WHERE id=$1 AND dispatch_epoch=$2 AND row_version=$3
+                AND requests_closed_at IS NULL AND final_submitter_worker_run_id IS NULL
+              RETURNING *",
+        )
+        .bind(current.id)
+        .bind(input.expected_dispatch_epoch)
+        .bind(input.expected_plan_row_version)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::StaleVersion {
+            entity: "stage_team_plans",
+            expected: input.expected_plan_row_version,
+            actual: current.row_version,
+        })?
+    };
+    let barrier = stage_teams::load_barrier_with_connection(&mut tx, plan.id).await?;
+    tx.commit().await?;
+    Ok(ClosedStageRequestEpochRow {
+        plan,
+        barrier,
+        replayed,
+    })
+}
+
+pub async fn load_stage_team_barrier(
+    pool: &sqlx::PgPool,
+    input: &LoadStageTeamBarrierRow,
+) -> RuntimeMemoryStoreResult<stage_teams::StageTeamBarrierRow> {
+    let mut tx = pool.begin().await?;
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.stage_team_plan_id)
+    .bind(input.operation_id)
+    .bind(input.stage_execution_id)
+    .bind(input.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    if plan.dispatch_epoch != input.dispatch_epoch {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_dispatch_epoch_mismatch",
+        });
+    }
+    let barrier = stage_teams::load_barrier_with_connection(&mut tx, plan.id).await?;
+    tx.commit().await?;
+    Ok(barrier)
+}
+
 async fn load_runtime_unit_for_update(
     connection: &mut sqlx::PgConnection,
     operation_id: Uuid,
@@ -2057,9 +3686,1846 @@ async fn frozen_organization_name(
     })
 }
 
+enum StageTeamExpiredRecovery {
+    None,
+    Requeued { previous_worker_run_id: Uuid },
+    RecoveryRequired,
+}
+
+fn retry_safe_terminal_worker_tool(
+    tool_name: &str,
+    tool_status: &str,
+    result: Option<&str>,
+) -> bool {
+    tool_name == "recon_list_providers"
+        && tool_status == "failed"
+        && result
+            .is_some_and(|value| value.starts_with("worker tool result rejected by lease fence:"))
+}
+
+/// A local provider-registry read may finish successfully while its worker
+/// fence transaction is rolled back by PostgreSQL. The generic tool row is
+/// then terminal failed, so there is no in-flight side effect left to resolve,
+/// but the Worker still points at it. Requeue only this exact local/read-only
+/// split state; all network-capable tools remain operator-owned recovery.
+async fn recover_retry_safe_terminal_stage_team_tool(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    plan: &stage_teams::StageTeamPlanRow,
+    aggregator: bool,
+) -> RuntimeMemoryStoreResult<Option<Uuid>> {
+    let candidate = sqlx::query_as::<_, (Uuid, Uuid, String, String, Option<String>)>(
+        r#"SELECT item.id,worker.id,item.status,tool.status::text,tool.result
+             FROM stage_work_items AS item
+             JOIN stage_worker_runs AS worker ON worker.work_item_id=item.id
+             JOIN tool_calls AS tool
+               ON tool.id=worker.active_tool_call_id
+              AND tool.worker_run_id=worker.id
+              AND tool.operation_id=worker.operation_id
+              AND tool.stage_execution_id=worker.stage_execution_id
+              AND tool.stage_run_unit_id=worker.stage_run_unit_id
+              AND tool.organization_id=worker.organization_id
+              AND tool.attempt_epoch=worker.attempt_epoch
+              AND tool.lease_token=worker.lease_token
+            WHERE item.team_plan_id=$1
+              AND item.status IN ('running','recovery_required')
+              AND worker.status IN ('running','recovery_required')
+              AND (worker.status='recovery_required' OR worker.lease_expires_at<=NOW())
+              AND (
+                    ($2 AND item.role=$3)
+                    OR (NOT $2 AND item.role IS DISTINCT FROM $3)
+                  )
+            ORDER BY item.priority,item.created_at,item.id
+            LIMIT 1 FOR UPDATE OF item,worker,tool SKIP LOCKED"#,
+    )
+    .bind(plan.id)
+    .bind(aggregator)
+    .bind(&plan.aggregator_role)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((item_id, worker_id, item_status, tool_status, tool_result)) = candidate else {
+        return Ok(None);
+    };
+    let item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "SELECT * FROM stage_work_items WHERE id=$1",
+    )
+    .bind(item_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let worker =
+        sqlx::query_as::<_, StageWorkerRunRow>("SELECT * FROM stage_worker_runs WHERE id=$1")
+            .bind(worker_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let tool_name = sqlx::query_scalar::<_, String>("SELECT name FROM tool_calls WHERE id=$1")
+        .bind(
+            worker
+                .active_tool_call_id
+                .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
+                    code: "stage_team_terminal_tool_recovery_identity_mismatch",
+                })?,
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+    if !retry_safe_terminal_worker_tool(&tool_name, &tool_status, tool_result.as_deref()) {
+        return Ok(None);
+    }
+    if item.status != item_status
+        || worker.work_item_id != Some(item.id)
+        || worker.organization_id != plan.organization_id
+        || worker.stage_run_unit_id != plan.stage_run_unit_id
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_terminal_tool_recovery_identity_mismatch",
+        });
+    }
+    let attempts_used: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE work_item_id=$1")
+            .bind(item.id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let total_workers: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE stage_run_unit_id=$1")
+            .bind(plan.stage_run_unit_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let max_attempts = stage_teams::work_item_max_attempts(&item)?;
+    if attempts_used >= max_attempts || total_workers >= i64::from(plan.max_workers_total) {
+        return Ok(None);
+    }
+    let active_tool_call_id =
+        worker
+            .active_tool_call_id
+            .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
+                code: "stage_team_terminal_tool_recovery_identity_mismatch",
+            })?;
+    let recovery_checkpoint = serde_json::json!({
+        "previous_checkpoint": worker.checkpoint,
+        "stage_team_terminal_tool_fence_recovery": {
+            "kind": "retry_safe_local_tool",
+            "schema_version": 1,
+            "tool_call_record_id": active_tool_call_id,
+            "tool_name": tool_name,
+        }
+    });
+    let worker_rows = sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET status='superseded',checkpoint=$5,
+                  checkpoint_version=checkpoint_version+1,
+                  active_tool_call_id=NULL,active_tool_started_at=NULL,
+                  lease_token=NULL,lease_owner=NULL,lease_acquired_at=NULL,
+                  lease_expires_at=NULL,heartbeat_at=NULL,
+                  terminal_at=NOW(),updated_at=NOW()
+            WHERE id=$1 AND status=$2 AND attempt_epoch=$3
+              AND checkpoint_version=$4 AND active_tool_call_id=$6"#,
+    )
+    .bind(worker.id)
+    .bind(&worker.status)
+    .bind(worker.attempt_epoch)
+    .bind(worker.checkpoint_version)
+    .bind(&recovery_checkpoint)
+    .bind(active_tool_call_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    if worker_rows != 1 {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_terminal_tool_recovery_worker_cas_failed",
+        });
+    }
+    let queued_rows = if item.status == "recovery_required" {
+        sqlx::query(
+            "UPDATE stage_work_items
+                SET status='queued',row_version=row_version+1,terminal_at=NULL,updated_at=NOW()
+              WHERE id=$1 AND status='recovery_required' AND row_version=$2",
+        )
+        .bind(item.id)
+        .bind(item.row_version)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected()
+    } else {
+        let retry_version: i64 = sqlx::query_scalar(
+            "UPDATE stage_work_items
+                SET status='retry_pending',row_version=row_version+1,updated_at=NOW()
+              WHERE id=$1 AND status='running' AND row_version=$2
+              RETURNING row_version",
+        )
+        .bind(item.id)
+        .bind(item.row_version)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::StaleVersion {
+            entity: "stage_work_items",
+            expected: item.row_version,
+            actual: -1,
+        })?;
+        sqlx::query(
+            "UPDATE stage_work_items
+                SET status='queued',row_version=row_version+1,terminal_at=NULL,updated_at=NOW()
+              WHERE id=$1 AND status='retry_pending' AND row_version=$2",
+        )
+        .bind(item.id)
+        .bind(retry_version)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected()
+    };
+    if queued_rows != 1 {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_terminal_tool_recovery_item_cas_failed",
+        });
+    }
+    Ok(Some(worker.id))
+}
+
+async fn recover_expired_stage_team_item(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    plan: &stage_teams::StageTeamPlanRow,
+    aggregator: bool,
+) -> RuntimeMemoryStoreResult<StageTeamExpiredRecovery> {
+    if let Some(previous_worker_run_id) =
+        recover_retry_safe_terminal_stage_team_tool(tx, plan, aggregator).await?
+    {
+        return Ok(StageTeamExpiredRecovery::Requeued {
+            previous_worker_run_id,
+        });
+    }
+    let expired = sqlx::query_as::<_, (Uuid, i64, Uuid, i64, Option<Uuid>)>(
+        r#"SELECT item.id,item.row_version,worker.id,worker.attempt_epoch,
+                  worker.active_tool_call_id
+             FROM stage_work_items AS item
+             JOIN stage_worker_runs AS worker ON worker.work_item_id=item.id
+            WHERE item.team_plan_id=$1 AND item.status='running'
+              AND worker.status='running' AND worker.lease_expires_at <= NOW()
+              AND (
+                    ($2 AND item.role=$3)
+                    OR (NOT $2 AND item.role IS DISTINCT FROM $3)
+                  )
+            ORDER BY item.priority,item.created_at,item.id
+            LIMIT 1 FOR UPDATE OF item,worker SKIP LOCKED"#,
+    )
+    .bind(plan.id)
+    .bind(aggregator)
+    .bind(&plan.aggregator_role)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((item_id, item_row_version, worker_id, worker_attempt_epoch, active_tool_call_id)) =
+        expired
+    else {
+        return Ok(StageTeamExpiredRecovery::None);
+    };
+    if active_tool_call_id.is_some() {
+        sqlx::query(
+            "UPDATE stage_worker_runs
+                SET status='recovery_required',updated_at=NOW()
+              WHERE id=$1 AND status='running' AND attempt_epoch=$2",
+        )
+        .bind(worker_id)
+        .bind(worker_attempt_epoch)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "UPDATE stage_work_items
+                SET status='recovery_required',row_version=row_version+1,updated_at=NOW()
+              WHERE id=$1 AND status='running' AND row_version=$2",
+        )
+        .bind(item_id)
+        .bind(item_row_version)
+        .execute(&mut **tx)
+        .await?;
+        return Ok(StageTeamExpiredRecovery::RecoveryRequired);
+    }
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET status='superseded',lease_token=NULL,lease_owner=NULL,
+                lease_acquired_at=NULL,lease_expires_at=NULL,heartbeat_at=NULL,
+                terminal_at=NOW(),updated_at=NOW()
+          WHERE id=$1 AND status='running' AND attempt_epoch=$2
+            AND active_tool_call_id IS NULL",
+    )
+    .bind(worker_id)
+    .bind(worker_attempt_epoch)
+    .execute(&mut **tx)
+    .await?;
+    let retry_version: i64 = sqlx::query_scalar(
+        "UPDATE stage_work_items
+            SET status='retry_pending',row_version=row_version+1,updated_at=NOW()
+          WHERE id=$1 AND status='running' AND row_version=$2
+          RETURNING row_version",
+    )
+    .bind(item_id)
+    .bind(item_row_version)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::StaleVersion {
+        entity: "stage_work_items",
+        expected: item_row_version,
+        actual: -1,
+    })?;
+    sqlx::query(
+        "UPDATE stage_work_items
+            SET status='queued',row_version=row_version+1,updated_at=NOW()
+          WHERE id=$1 AND status='retry_pending' AND row_version=$2",
+    )
+    .bind(item_id)
+    .bind(retry_version)
+    .execute(&mut **tx)
+    .await?;
+    Ok(StageTeamExpiredRecovery::Requeued {
+        previous_worker_run_id: worker_id,
+    })
+}
+
 /// Claim the exact worker, start/restart its Unit, create and bind its initial
 /// provider-safe chain when absent, and persist the initial checkpoint in one
 /// transaction. No provider call is permitted before this function commits.
+async fn claim_stage_team_item(
+    pool: &sqlx::PgPool,
+    input: &ClaimStageWorkItemRow,
+    aggregator: Option<(i64, &str)>,
+    leader: bool,
+) -> RuntimeMemoryStoreResult<Option<ClaimedStageWorkItemRow>> {
+    if input.lease_owner.trim().is_empty()
+        || input.lease_seconds <= 0
+        || input.parent_chain_id.is_some()
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "invalid_stage_team_work_item_claim",
+        });
+    }
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&operation)?;
+    if frozen_runtime_contract(&operation)? != runtime_memory_rollout::RuntimeMemoryContract::V2Only
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_requires_v2_only",
+        });
+    }
+    let locked_unit = load_runtime_unit_for_update(
+        &mut tx,
+        input.operation_id,
+        input.stage_execution_id,
+        input.stage_run_unit_id,
+    )
+    .await?;
+    if !matches!(locked_unit.status.as_str(), "queued" | "running") {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_unit_not_runnable",
+        });
+    }
+    validate_runtime_stage_execution(
+        &mut tx,
+        &operation,
+        input.stage_execution_id,
+        &locked_unit.stage_kind,
+    )
+    .await?;
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.stage_team_plan_id)
+    .bind(input.operation_id)
+    .bind(input.stage_execution_id)
+    .bind(input.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    let is_aggregator_claim = aggregator.is_some();
+    let is_leader_claim = leader;
+    if is_aggregator_claim && is_leader_claim {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "invalid_stage_team_work_item_claim",
+        });
+    }
+    if is_aggregator_claim
+        && (plan.aggregator_kind != "worker" || plan.final_submitter_kind != "worker")
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_aggregator_is_not_worker_owned",
+        });
+    }
+    if is_leader_claim
+        && (plan.requests_closed_at.is_some()
+            || plan.aggregator_kind != "worker"
+            || plan.aggregator_role.as_deref() != Some(plan.leader_role.as_str())
+            || plan
+                .dynamic_request_policy
+                .get("coordination_mode")
+                .and_then(Value::as_str)
+                != Some("company_controller"))
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_leader_not_claimable",
+        });
+    }
+    let mut startup_reaped_final_submitter = None;
+    if let Some((expected_epoch, expected_manifest_hash)) = aggregator {
+        if plan.dispatch_epoch != expected_epoch || plan.requests_closed_at.is_none() {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_aggregator_epoch_not_closed",
+            });
+        }
+        if let Some(final_submitter_worker_run_id) = plan.final_submitter_worker_run_id {
+            let existing_worker = sqlx::query_as::<_, StageWorkerRunRow>(
+                "SELECT * FROM stage_worker_runs WHERE id=$1 FOR UPDATE",
+            )
+            .bind(final_submitter_worker_run_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(RuntimeMemoryStoreError::Missing {
+                entity: "stage_worker_runs",
+            })?;
+            let existing_work_item_id =
+                existing_worker
+                    .work_item_id
+                    .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
+                        code: "stage_team_final_submitter_identity_mismatch",
+                    })?;
+            let existing_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+                "SELECT * FROM stage_work_items WHERE id=$1 FOR UPDATE",
+            )
+            .bind(existing_work_item_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(RuntimeMemoryStoreError::Missing {
+                entity: "stage_work_items",
+            })?;
+            if existing_item.team_plan_id != plan.id
+                || plan.aggregator_role.as_deref() != Some(existing_item.role.as_str())
+            {
+                return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                    code: "stage_team_final_submitter_identity_mismatch",
+                });
+            }
+            if existing_worker.status == "running"
+                && existing_worker
+                    .lease_expires_at
+                    .is_some_and(|expires_at| expires_at > chrono::Utc::now())
+            {
+                if existing_worker.lease_owner.as_deref() != Some(input.lease_owner.as_str())
+                    || existing_item.status != "running"
+                {
+                    return Err(RuntimeMemoryStoreError::Conflict {
+                        code: "stage_team_aggregator_claim_replay_mismatch",
+                    });
+                }
+                let chain_id = existing_worker.message_chain_id.ok_or(
+                    RuntimeMemoryStoreError::IdentityMismatch {
+                        code: "stage_team_aggregator_chain_missing",
+                    },
+                )?;
+                let barrier = stage_teams::load_barrier_with_connection_ignoring_worker(
+                    &mut tx,
+                    plan.id,
+                    Some(existing_worker.id),
+                )
+                .await?;
+                if !barrier.ready_to_finalize() || barrier.manifest_hash != expected_manifest_hash {
+                    return Err(RuntimeMemoryStoreError::Conflict {
+                        code: "stage_team_sibling_barrier_not_ready",
+                    });
+                }
+                tx.commit().await?;
+                return Ok(Some(ClaimedStageWorkItemRow {
+                    unit: locked_unit.clone(),
+                    plan,
+                    work_item: existing_item,
+                    worker: existing_worker,
+                    message_chain_id: chain_id,
+                }));
+            }
+            if existing_worker.status == "recovery_required" {
+                return Err(RuntimeMemoryStoreError::Conflict {
+                    code: "stage_team_worker_recovery_required",
+                });
+            }
+            if existing_worker.status == "superseded" && existing_item.status == "queued" {
+                // Startup recovery may have already superseded the expired
+                // Aggregator and requeued its stable WorkItem.  Preserve the
+                // old pointer as the exact CAS witness for the replacement.
+                startup_reaped_final_submitter = Some(existing_worker.id);
+            } else if existing_worker.status != "running" {
+                return Err(RuntimeMemoryStoreError::Conflict {
+                    code: "stage_team_final_submitter_not_replaceable",
+                });
+            }
+        }
+    }
+    let recovered = recover_expired_stage_team_item(&mut tx, &plan, is_aggregator_claim).await?;
+    if matches!(recovered, StageTeamExpiredRecovery::RecoveryRequired) {
+        tx.commit().await?;
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_worker_recovery_required",
+        });
+    }
+    let replaced_final_submitter = match recovered {
+        StageTeamExpiredRecovery::Requeued {
+            previous_worker_run_id,
+        } if is_aggregator_claim => Some(previous_worker_run_id),
+        _ => startup_reaped_final_submitter,
+    };
+    if is_leader_claim {
+        let leader_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+            "SELECT * FROM stage_work_items
+              WHERE team_plan_id=$1 AND role=$2 AND stable_key='leader:primary'
+              FOR UPDATE",
+        )
+        .bind(plan.id)
+        .bind(&plan.leader_role)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "stage_work_items",
+        })?;
+        if matches!(
+            leader_item.status.as_str(),
+            "running" | "waiting_dependency"
+        ) {
+            let leader_worker = sqlx::query_as::<_, StageWorkerRunRow>(
+                "SELECT * FROM stage_worker_runs
+                  WHERE work_item_id=$1
+                    AND status IN ('running','waiting_background','recovery_required')
+                  ORDER BY worker_generation DESC,id DESC LIMIT 1 FOR UPDATE",
+            )
+            .bind(leader_item.id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(RuntimeMemoryStoreError::Missing {
+                entity: "stage_worker_runs",
+            })?;
+            if leader_worker.status == "recovery_required" {
+                return Err(RuntimeMemoryStoreError::Conflict {
+                    code: "stage_team_worker_recovery_required",
+                });
+            }
+            let chain_id = leader_worker.message_chain_id.ok_or(
+                RuntimeMemoryStoreError::IdentityMismatch {
+                    code: "stage_team_leader_chain_missing",
+                },
+            )?;
+            if leader_item.status == "running" {
+                if leader_worker.status != "running" {
+                    return Err(RuntimeMemoryStoreError::Conflict {
+                        code: "stage_team_leader_claim_replay_mismatch",
+                    });
+                }
+                if leader_worker
+                    .lease_expires_at
+                    .is_some_and(|expires_at| expires_at > chrono::Utc::now())
+                {
+                    if leader_worker.lease_owner.as_deref() != Some(input.lease_owner.as_str()) {
+                        return Err(RuntimeMemoryStoreError::Conflict {
+                            code: "stage_team_leader_claim_replay_mismatch",
+                        });
+                    }
+                    tx.commit().await?;
+                    return Ok(Some(ClaimedStageWorkItemRow {
+                        unit: locked_unit.clone(),
+                        plan,
+                        work_item: leader_item,
+                        worker: leader_worker,
+                        message_chain_id: chain_id,
+                    }));
+                }
+                if leader_worker.active_tool_call_id.is_some() {
+                    sqlx::query(
+                        "UPDATE stage_worker_runs
+                            SET status='recovery_required',updated_at=NOW()
+                          WHERE id=$1 AND status='running' AND attempt_epoch=$2",
+                    )
+                    .bind(leader_worker.id)
+                    .bind(leader_worker.attempt_epoch)
+                    .execute(&mut *tx)
+                    .await?;
+                    sqlx::query(
+                        "UPDATE stage_work_items
+                            SET status='recovery_required',row_version=row_version+1,updated_at=NOW()
+                          WHERE id=$1 AND status='running' AND row_version=$2",
+                    )
+                    .bind(leader_item.id)
+                    .bind(leader_item.row_version)
+                    .execute(&mut *tx)
+                    .await?;
+                    tx.commit().await?;
+                    return Err(RuntimeMemoryStoreError::Conflict {
+                        code: "stage_team_worker_recovery_required",
+                    });
+                }
+                let lease_token = Uuid::new_v4();
+                let resumed_worker = sqlx::query_as::<_, StageWorkerRunRow>(
+                    r#"UPDATE stage_worker_runs
+                          SET lease_token=$7,lease_owner=$8,lease_acquired_at=NOW(),
+                              lease_expires_at=NOW()+make_interval(secs => $9),heartbeat_at=NOW(),
+                              attempt_epoch=attempt_epoch+1,updated_at=NOW()
+                        WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+                          AND stage_run_unit_id=$4 AND work_item_id=$5
+                          AND organization_id=$6 AND status='running' AND attempt_epoch=$10
+                          AND checkpoint_version=$11 AND active_tool_call_id IS NULL
+                          AND lease_expires_at<=NOW()
+                        RETURNING *"#,
+                )
+                .bind(leader_worker.id)
+                .bind(plan.operation_id)
+                .bind(plan.stage_execution_id)
+                .bind(plan.stage_run_unit_id)
+                .bind(leader_item.id)
+                .bind(plan.organization_id)
+                .bind(lease_token)
+                .bind(&input.lease_owner)
+                .bind(input.lease_seconds)
+                .bind(leader_worker.attempt_epoch)
+                .bind(leader_worker.checkpoint_version)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(RuntimeMemoryStoreError::LeaseLost {
+                    worker_run_id: leader_worker.id,
+                    attempt_epoch: leader_worker.attempt_epoch,
+                })?;
+                tx.commit().await?;
+                return Ok(Some(ClaimedStageWorkItemRow {
+                    unit: locked_unit.clone(),
+                    plan,
+                    work_item: leader_item,
+                    worker: resumed_worker,
+                    message_chain_id: chain_id,
+                }));
+            }
+            if leader_worker.status != "waiting_background" {
+                return Err(RuntimeMemoryStoreError::Conflict {
+                    code: "stage_team_leader_wait_state_mismatch",
+                });
+            }
+            let dependencies_ready: bool = sqlx::query_scalar(
+                r#"SELECT NOT EXISTS (
+                       SELECT 1
+                         FROM stage_work_item_dependencies AS dependency
+                         JOIN stage_work_items AS child
+                           ON child.id=dependency.depends_on_work_item_id
+                        WHERE dependency.work_item_id=$1
+                          AND child.status NOT IN ('completed','exhausted','superseded')
+                   ) AND NOT EXISTS (
+                       SELECT 1
+                         FROM stage_work_item_dependencies AS dependency
+                         JOIN stage_work_items AS child
+                           ON child.id=dependency.depends_on_work_item_id
+                         LEFT JOIN stage_worker_outputs AS output
+                           ON output.work_item_id=child.id
+                        WHERE dependency.work_item_id=$1
+                          AND child.status='completed' AND output.id IS NULL
+                   )"#,
+            )
+            .bind(leader_item.id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !dependencies_ready {
+                tx.commit().await?;
+                return Ok(None);
+            }
+            let resumed_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+                "UPDATE stage_work_items
+                    SET status='running',row_version=row_version+1,updated_at=NOW()
+                  WHERE id=$1 AND status='waiting_dependency' AND row_version=$2
+                  RETURNING *",
+            )
+            .bind(leader_item.id)
+            .bind(leader_item.row_version)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(RuntimeMemoryStoreError::StaleVersion {
+                entity: "stage_work_items",
+                expected: leader_item.row_version,
+                actual: -1,
+            })?;
+            let lease_token = Uuid::new_v4();
+            let resumed_worker = stage_worker_runs::claim_cas(
+                &mut *tx,
+                leader_worker.id,
+                plan.stage_run_unit_id,
+                stage_worker_runs::StageWorkerRunStatus::WaitingBackground,
+                leader_worker.attempt_epoch,
+                lease_token,
+                &input.lease_owner,
+                input.lease_seconds,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(Some(ClaimedStageWorkItemRow {
+                unit: locked_unit.clone(),
+                plan,
+                work_item: resumed_item,
+                worker: resumed_worker,
+                message_chain_id: chain_id,
+            }));
+        }
+    }
+    if let Some((_expected_epoch, expected_manifest_hash)) = aggregator {
+        let barrier = stage_teams::load_barrier_with_connection_ignoring_worker(
+            &mut tx,
+            plan.id,
+            replaced_final_submitter,
+        )
+        .await?;
+        if !barrier.ready_to_finalize() || barrier.manifest_hash != expected_manifest_hash {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_sibling_barrier_not_ready",
+            });
+        }
+    }
+    let active_workers: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stage_worker_runs
+          WHERE stage_run_unit_id=$1
+            AND status IN ('queued','running','waiting_background')",
+    )
+    .bind(input.stage_run_unit_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if active_workers >= i64::from(plan.max_workers_active) {
+        return Ok(None);
+    }
+    let total_workers: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE stage_run_unit_id=$1")
+            .bind(input.stage_run_unit_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if total_workers >= i64::from(plan.max_workers_total) {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_worker_lifetime_budget_exhausted",
+        });
+    }
+    let item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        r#"SELECT item.*
+             FROM stage_work_items AS item
+            WHERE item.team_plan_id=$1 AND item.status='queued'
+              AND (
+                    ($2 AND item.role=$3)
+                    OR ($4 AND item.role=$5 AND item.stable_key='leader:primary')
+                    OR (NOT $2 AND NOT $4 AND item.role IS DISTINCT FROM $3)
+                  )
+              AND NOT EXISTS (
+                    SELECT 1
+                      FROM stage_work_item_dependencies AS dependency
+                      JOIN stage_work_items AS prerequisite
+                        ON prerequisite.id=dependency.depends_on_work_item_id
+                     WHERE dependency.work_item_id=item.id
+                       AND prerequisite.status NOT IN ('completed','exhausted','superseded')
+                  )
+            ORDER BY item.priority,item.created_at,item.id
+            LIMIT 1 FOR UPDATE OF item SKIP LOCKED"#,
+    )
+    .bind(plan.id)
+    .bind(is_aggregator_claim)
+    .bind(&plan.aggregator_role)
+    .bind(is_leader_claim)
+    .bind(&plan.leader_role)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(item) = item else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    let item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "UPDATE stage_work_items
+            SET status='running',started_at=COALESCE(started_at,NOW()),
+                row_version=row_version+1,updated_at=NOW()
+          WHERE id=$1 AND status='queued' AND row_version=$2
+          RETURNING *",
+    )
+    .bind(item.id)
+    .bind(item.row_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::StaleVersion {
+        entity: "stage_work_items",
+        expected: item.row_version,
+        actual: -1,
+    })?;
+    let unit = if locked_unit.status == "queued" {
+        stage_run_units::transition_cas(
+            &mut *tx,
+            locked_unit.id,
+            locked_unit.operation_id,
+            locked_unit.stage_execution_id,
+            locked_unit.organization_id,
+            stage_run_units::StageRunUnitStatus::Queued,
+            locked_unit.row_version,
+            stage_run_units::StageRunUnitStatus::Running,
+            None,
+        )
+        .await?
+    } else {
+        locked_unit
+    };
+    let worker_generation_i64: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE work_item_id=$1")
+            .bind(item.id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let worker_generation =
+        i32::try_from(worker_generation_i64).map_err(|_| RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_worker_generation_overflow",
+        })?;
+    let parent_request_id = if item.created_by == "accepted_worker_request" {
+        let reason = sqlx::query_scalar::<_, String>(
+            "SELECT reason_code FROM stage_worker_requests
+              WHERE accepted_work_item_id=$1 AND team_plan_id=$2",
+        )
+        .bind(item.id)
+        .bind(plan.id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        reason.and_then(|reason| controller_request_envelope(&reason).1)
+    } else {
+        None
+    };
+    let worker = stage_worker_runs::insert_with_executor(
+        &mut *tx,
+        &stage_worker_runs::NewStageWorkerRun {
+            id: Uuid::new_v4(),
+            operation_id: plan.operation_id,
+            stage_execution_id: plan.stage_execution_id,
+            stage_run_unit_id: plan.stage_run_unit_id,
+            work_item_id: Some(item.id),
+            organization_id: plan.organization_id,
+            worker_generation,
+            specialist: item.role.clone(),
+            work_item_kind: item.kind.clone(),
+            work_item_key: item.stable_key.clone(),
+            agent_path: format!(
+                "main>stage_run:{}>org:{}>{}:{}",
+                plan.stage_kind, plan.organization_id, item.role, item.stable_key
+            ),
+            parent_request_id,
+        },
+    )
+    .await?;
+    let lease_token = Uuid::new_v4();
+    let claimed = stage_worker_runs::claim_cas(
+        &mut *tx,
+        worker.id,
+        unit.id,
+        stage_worker_runs::StageWorkerRunStatus::Queued,
+        0,
+        lease_token,
+        &input.lease_owner,
+        input.lease_seconds,
+    )
+    .await?;
+    let chain_id = Uuid::new_v4();
+    message_chains::create_bound_with_executor(
+        &mut *tx,
+        chain_id,
+        input.session_id,
+        input.operation_id,
+        input.subtask_id,
+        input.agent,
+        input.model.as_deref(),
+        input.provider.as_deref(),
+        &input.initial_chain,
+    )
+    .await?;
+    let bound = stage_worker_runs::bind_message_chain_cas(
+        &mut *tx,
+        claimed.id,
+        unit.id,
+        lease_token,
+        claimed.attempt_epoch,
+        chain_id,
+    )
+    .await?;
+    let worker = stage_worker_runs::checkpoint_cas(
+        &mut *tx,
+        &RuntimeMemoryTxFence {
+            operation_id: plan.operation_id,
+            stage_execution_id: plan.stage_execution_id,
+            stage_run_unit_id: plan.stage_run_unit_id,
+            worker_run_id: bound.id,
+            lease_token,
+            attempt_epoch: bound.attempt_epoch,
+            expected_checkpoint_version: bound.checkpoint_version,
+        },
+        &input.initial_checkpoint,
+    )
+    .await?;
+    let plan = if is_aggregator_claim {
+        sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+            "UPDATE stage_team_plans
+                SET final_submitter_worker_run_id=$2,row_version=row_version+1,updated_at=NOW()
+              WHERE id=$1 AND final_submitter_worker_run_id IS NOT DISTINCT FROM $3
+              RETURNING *",
+        )
+        .bind(plan.id)
+        .bind(worker.id)
+        .bind(replaced_final_submitter)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_final_submitter_already_claimed",
+        })?
+    } else {
+        plan
+    };
+    tx.commit().await?;
+    Ok(Some(ClaimedStageWorkItemRow {
+        unit,
+        plan,
+        work_item: item,
+        worker,
+        message_chain_id: chain_id,
+    }))
+}
+
+/// Park the exact Company Controller behind its already accepted durable
+/// children.  WorkItem, WorkerRun, checkpoint and lease release move together
+/// so a crash cannot leave an LLM turn live without queue authority.
+pub async fn park_stage_team_leader(
+    pool: &sqlx::PgPool,
+    input: &ParkStageTeamLeaderRow,
+) -> RuntimeMemoryStoreResult<ParkedStageTeamLeaderRow> {
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.fence.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&operation)?;
+    if frozen_runtime_contract(&operation)? != runtime_memory_rollout::RuntimeMemoryContract::V2Only
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_requires_v2_only",
+        });
+    }
+    let unit = load_runtime_unit_for_update(
+        &mut tx,
+        input.fence.operation_id,
+        input.fence.stage_execution_id,
+        input.fence.stage_run_unit_id,
+    )
+    .await?;
+    if unit.status != "running" {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_parent_unit_not_running",
+        });
+    }
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.stage_team_plan_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.stage_execution_id)
+    .bind(input.fence.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    if plan.requests_closed_at.is_some()
+        || plan.aggregator_role.as_deref() != Some(plan.leader_role.as_str())
+        || plan
+            .dynamic_request_policy
+            .get("coordination_mode")
+            .and_then(Value::as_str)
+            != Some("company_controller")
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_leader_not_parkable",
+        });
+    }
+    let item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "SELECT * FROM stage_work_items
+          WHERE id=$1 AND team_plan_id=$2 AND operation_id=$3
+            AND stage_execution_id=$4 AND stage_run_unit_id=$5 FOR UPDATE",
+    )
+    .bind(input.leader_work_item_id)
+    .bind(plan.id)
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_work_items",
+    })?;
+    if item.role != plan.leader_role
+        || item.stable_key != "leader:primary"
+        || item.row_version != input.expected_work_item_row_version
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_leader_identity_mismatch",
+        });
+    }
+    let dependency_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stage_work_item_dependencies
+          WHERE work_item_id=$1",
+    )
+    .bind(item.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if dependency_count == 0 {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_leader_has_no_dependencies",
+        });
+    }
+    if item.status == "waiting_dependency" {
+        let worker = sqlx::query_as::<_, StageWorkerRunRow>(
+            "SELECT * FROM stage_worker_runs WHERE id=$1 AND work_item_id=$2 FOR SHARE",
+        )
+        .bind(input.fence.worker_run_id)
+        .bind(item.id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "stage_worker_runs",
+        })?;
+        if worker.status == "waiting_background"
+            && worker.attempt_epoch == input.fence.attempt_epoch
+            && worker.checkpoint_version
+                == input.fence.expected_checkpoint_version.saturating_add(1)
+            && worker.checkpoint == input.checkpoint
+        {
+            tx.commit().await?;
+            return Ok(ParkedStageTeamLeaderRow {
+                plan,
+                work_item: item,
+                worker,
+                dependency_count,
+            });
+        }
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_leader_park_replay_mismatch",
+        });
+    }
+    if item.status != "running" {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_leader_not_running",
+        });
+    }
+    let worker = sqlx::query_as::<_, StageWorkerRunRow>(
+        r#"SELECT * FROM stage_worker_runs
+            WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+              AND stage_run_unit_id=$4 AND work_item_id=$5 AND lease_token=$6
+              AND attempt_epoch=$7 AND checkpoint_version=$8 AND status='running'
+              AND active_tool_call_id IS NULL AND lease_expires_at > NOW()
+            FOR UPDATE"#,
+    )
+    .bind(input.fence.worker_run_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.stage_execution_id)
+    .bind(input.fence.stage_run_unit_id)
+    .bind(item.id)
+    .bind(input.fence.lease_token)
+    .bind(input.fence.attempt_epoch)
+    .bind(input.fence.expected_checkpoint_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::LeaseLost {
+        worker_run_id: input.fence.worker_run_id,
+        attempt_epoch: input.fence.attempt_epoch,
+    })?;
+    let parked_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "UPDATE stage_work_items
+            SET status='waiting_dependency',row_version=row_version+1,updated_at=NOW()
+          WHERE id=$1 AND status='running' AND row_version=$2
+          RETURNING *",
+    )
+    .bind(item.id)
+    .bind(item.row_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::StaleVersion {
+        entity: "stage_work_items",
+        expected: item.row_version,
+        actual: -1,
+    })?;
+    let parked_worker = stage_worker_runs::finish_attempt_cas(
+        &mut *tx,
+        &input.fence,
+        stage_worker_runs::StageWorkerRunStatus::Running,
+        stage_worker_runs::StageWorkerRunStatus::WaitingBackground,
+        &input.checkpoint,
+        worker.evidence_watermark,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(ParkedStageTeamLeaderRow {
+        plan,
+        work_item: parked_item,
+        worker: parked_worker,
+        dependency_count,
+    })
+}
+
+/// After the Controller explicitly prepares final submission and the request
+/// epoch is closed, bind that already-running exact WorkerRun as the sole Unit
+/// submitter.  No replacement Aggregator is created.
+pub async fn bind_stage_team_leader_final_submitter(
+    pool: &sqlx::PgPool,
+    input: &BindStageTeamLeaderFinalSubmitterRow,
+) -> RuntimeMemoryStoreResult<BoundStageTeamLeaderFinalSubmitterRow> {
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.fence.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&operation)?;
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.stage_team_plan_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.stage_execution_id)
+    .bind(input.fence.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    if plan.dispatch_epoch != input.expected_dispatch_epoch
+        || plan.requests_closed_at.is_none()
+        || plan.aggregator_role.as_deref() != Some(plan.leader_role.as_str())
+        || plan
+            .dynamic_request_policy
+            .get("coordination_mode")
+            .and_then(Value::as_str)
+            != Some("company_controller")
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_leader_final_submitter_not_bindable",
+        });
+    }
+    let item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "SELECT * FROM stage_work_items
+          WHERE id=$1 AND team_plan_id=$2 AND role=$3
+            AND stable_key='leader:primary' AND status='running' FOR SHARE",
+    )
+    .bind(input.leader_work_item_id)
+    .bind(plan.id)
+    .bind(&plan.leader_role)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_work_items",
+    })?;
+    let worker = sqlx::query_as::<_, StageWorkerRunRow>(
+        r#"SELECT * FROM stage_worker_runs
+            WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+              AND stage_run_unit_id=$4 AND work_item_id=$5 AND lease_token=$6
+              AND attempt_epoch=$7 AND checkpoint_version=$8 AND status='running'
+              AND active_tool_call_id IS NULL AND lease_expires_at > NOW()
+            FOR SHARE"#,
+    )
+    .bind(input.fence.worker_run_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.stage_execution_id)
+    .bind(input.fence.stage_run_unit_id)
+    .bind(item.id)
+    .bind(input.fence.lease_token)
+    .bind(input.fence.attempt_epoch)
+    .bind(input.fence.expected_checkpoint_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::LeaseLost {
+        worker_run_id: input.fence.worker_run_id,
+        attempt_epoch: input.fence.attempt_epoch,
+    })?;
+    let barrier = stage_teams::load_barrier_with_connection_ignoring_worker(
+        &mut tx,
+        plan.id,
+        Some(worker.id),
+    )
+    .await?;
+    if !barrier.ready_to_finalize() || barrier.manifest_hash != input.expected_manifest_hash {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_sibling_barrier_not_ready",
+        });
+    }
+    if plan.final_submitter_worker_run_id == Some(worker.id) {
+        if plan.row_version == input.expected_plan_row_version
+            || plan.row_version == input.expected_plan_row_version.saturating_add(1)
+        {
+            tx.commit().await?;
+            return Ok(BoundStageTeamLeaderFinalSubmitterRow {
+                plan,
+                barrier,
+                replayed: true,
+            });
+        }
+        return Err(RuntimeMemoryStoreError::StaleVersion {
+            entity: "stage_team_plans",
+            expected: input.expected_plan_row_version,
+            actual: plan.row_version,
+        });
+    }
+    if plan.final_submitter_worker_run_id.is_some() {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_final_submitter_already_claimed",
+        });
+    }
+    if plan.row_version != input.expected_plan_row_version {
+        return Err(RuntimeMemoryStoreError::StaleVersion {
+            entity: "stage_team_plans",
+            expected: input.expected_plan_row_version,
+            actual: plan.row_version,
+        });
+    }
+    let bound = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "UPDATE stage_team_plans
+            SET final_submitter_worker_run_id=$2,row_version=row_version+1,updated_at=NOW()
+          WHERE id=$1 AND final_submitter_worker_run_id IS NULL AND row_version=$3
+          RETURNING *",
+    )
+    .bind(plan.id)
+    .bind(worker.id)
+    .bind(plan.row_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::StaleVersion {
+        entity: "stage_team_plans",
+        expected: plan.row_version,
+        actual: -1,
+    })?;
+    tx.commit().await?;
+    Ok(BoundStageTeamLeaderFinalSubmitterRow {
+        plan: bound,
+        barrier,
+        replayed: false,
+    })
+}
+
+fn controller_gate_block_checkpoint(
+    input: &ReopenStageTeamLeaderAfterGateBlockRow,
+    repair_generation: i32,
+    fuel_exhausted: bool,
+) -> serde_json::Value {
+    let runtime_gate = serde_json::json!({
+        "deliverable_submission_id": input.deliverable_submission_id,
+        "fuel_exhausted": fuel_exhausted,
+        "gap_manifest_hash": input.gap_manifest_hash,
+        "gate_decision_hash": input.gate_decision_hash,
+        "repair_generation": repair_generation,
+        "request_id": input.request_id.trim(),
+        "schema_version": 1,
+        "source_dispatch_epoch": input.expected_dispatch_epoch,
+        "source_manifest_hash": input.expected_manifest_hash,
+    });
+    match &input.checkpoint {
+        serde_json::Value::Object(object) => {
+            let mut checkpoint = object.clone();
+            checkpoint.insert("_runtime_stage_team_gate_block".to_string(), runtime_gate);
+            serde_json::Value::Object(checkpoint)
+        }
+        checkpoint => serde_json::json!({
+            "_runtime_stage_team_gate_block": runtime_gate,
+            "controller_checkpoint": checkpoint,
+        }),
+    }
+}
+
+fn controller_gate_gap_replays_exactly(
+    gap: &stage_teams::StageTeamUnitGapRow,
+    input: &ReopenStageTeamLeaderAfterGateBlockRow,
+) -> bool {
+    gap.team_plan_id == input.stage_team_plan_id
+        && gap.operation_id == input.fence.operation_id
+        && gap.stage_execution_id == input.fence.stage_execution_id
+        && gap.stage_run_unit_id == input.fence.stage_run_unit_id
+        && gap.source_dispatch_epoch == input.expected_dispatch_epoch
+        && gap.source_manifest_hash == input.expected_manifest_hash
+        && gap.source_attempt_epoch == input.fence.attempt_epoch
+        && gap.source_checkpoint_version == input.fence.expected_checkpoint_version
+        && gap.source_lease_token == input.fence.lease_token
+        && gap.source_aggregator_work_item_id == input.leader_work_item_id
+        && gap.source_aggregator_worker_run_id == input.fence.worker_run_id
+        && gap.deliverable_submission_id == input.deliverable_submission_id
+        && gap.gate_decision_hash == input.gate_decision_hash
+        && gap.gap_manifest_hash == input.gap_manifest_hash
+        && gap.gap_manifest == input.gap_manifest
+}
+
+/// Persist a deterministic Gate BLOCK for a Company Controller.  A repairable
+/// BLOCK reopens the plan and parks the exact same WorkerRun/message chain;
+/// fuel exhaustion terminalizes that same Controller and its Unit.  This path
+/// never creates a replacement Aggregator or another Controller WorkerRun.
+pub async fn reopen_stage_team_leader_after_gate_block(
+    pool: &sqlx::PgPool,
+    input: &ReopenStageTeamLeaderAfterGateBlockRow,
+) -> RuntimeMemoryStoreResult<ReopenedStageTeamLeaderAfterGateBlockRow> {
+    let expected_gap_hash = format!(
+        "sha256:{}",
+        operation_scope_decisions::sha256_json(&input.gap_manifest)
+    );
+    if input.request_id.trim().is_empty()
+        || input.request_id.len() > 256
+        || !input.gap_manifest.is_object()
+        || input.gap_manifest_hash != expected_gap_hash
+        || input
+            .gap_manifest
+            .get("gate_decision_hash")
+            .and_then(Value::as_str)
+            != Some(input.gate_decision_hash.as_str())
+        || input.expected_manifest_hash.len() != 71
+        || !input.expected_manifest_hash.starts_with("sha256:")
+        || input.gate_decision_hash.len() != 71
+        || !input.gate_decision_hash.starts_with("sha256:")
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "invalid_stage_team_controller_gate_gap",
+        });
+    }
+
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.fence.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&operation)?;
+    if frozen_runtime_contract(&operation)? != runtime_memory_rollout::RuntimeMemoryContract::V2Only
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_requires_v2_only",
+        });
+    }
+
+    let gap_sql = format!(
+        "SELECT {} FROM stage_team_unit_gaps WHERE request_id=$1 FOR UPDATE",
+        stage_teams::UNIT_GAP_COLUMNS
+    );
+    if let Some(gap) = sqlx::query_as::<_, stage_teams::StageTeamUnitGapRow>(&gap_sql)
+        .bind(input.request_id.trim())
+        .fetch_optional(&mut *tx)
+        .await?
+    {
+        if !controller_gate_gap_replays_exactly(&gap, input) || gap.disposition != "opened" {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_controller_gate_replay_mismatch",
+            });
+        }
+        let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+            "SELECT * FROM stage_team_plans WHERE id=$1 FOR SHARE",
+        )
+        .bind(input.stage_team_plan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let unit = load_runtime_unit_for_update(
+            &mut tx,
+            input.fence.operation_id,
+            input.fence.stage_execution_id,
+            input.fence.stage_run_unit_id,
+        )
+        .await?;
+        let leader_work_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+            "SELECT * FROM stage_work_items WHERE id=$1 AND team_plan_id=$2 FOR SHARE",
+        )
+        .bind(input.leader_work_item_id)
+        .bind(input.stage_team_plan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let leader_worker = sqlx::query_as::<_, StageWorkerRunRow>(
+            "SELECT * FROM stage_worker_runs WHERE id=$1 AND work_item_id=$2 FOR SHARE",
+        )
+        .bind(input.fence.worker_run_id)
+        .bind(input.leader_work_item_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let expected_checkpoint =
+            controller_gate_block_checkpoint(input, gap.repair_generation, false);
+        if plan.dispatch_epoch != input.expected_dispatch_epoch.saturating_add(1)
+            || plan.requests_closed_at.is_some()
+            || plan.final_submitter_worker_run_id.is_some()
+            || unit.status != "running"
+            || leader_work_item.status != "waiting_dependency"
+            || leader_worker.status != "waiting_background"
+            || leader_worker.checkpoint_version
+                != input.fence.expected_checkpoint_version.saturating_add(1)
+            || leader_worker.checkpoint != expected_checkpoint
+        {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_controller_gate_replay_state_mismatch",
+            });
+        }
+        let repair_generation = gap.repair_generation;
+        tx.commit().await?;
+        return Ok(ReopenedStageTeamLeaderAfterGateBlockRow {
+            plan,
+            unit,
+            gap: Some(gap),
+            repair_generation,
+            fuel_exhausted: false,
+            leader_work_item,
+            leader_worker,
+            replayed: true,
+        });
+    }
+
+    let unit = load_runtime_unit_for_update(
+        &mut tx,
+        input.fence.operation_id,
+        input.fence.stage_execution_id,
+        input.fence.stage_run_unit_id,
+    )
+    .await?;
+    if !matches!(unit.status.as_str(), "running" | "gate_blocked") {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_controller_unit_not_gate_repairable",
+        });
+    }
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.stage_team_plan_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.stage_execution_id)
+    .bind(input.fence.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    if plan.dispatch_epoch != input.expected_dispatch_epoch
+        || plan.requests_closed_at.is_none()
+        || plan.final_submitter_worker_run_id != Some(input.fence.worker_run_id)
+        || plan.aggregator_kind != "worker"
+        || plan.final_submitter_kind != "worker"
+        || plan.aggregator_role.as_deref() != Some(plan.leader_role.as_str())
+        || plan
+            .dynamic_request_policy
+            .get("coordination_mode")
+            .and_then(Value::as_str)
+            != Some("company_controller")
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_controller_gate_not_reopenable",
+        });
+    }
+    let leader_work_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "SELECT * FROM stage_work_items
+          WHERE id=$1 AND team_plan_id=$2 AND operation_id=$3
+            AND stage_execution_id=$4 AND stage_run_unit_id=$5 FOR UPDATE",
+    )
+    .bind(input.leader_work_item_id)
+    .bind(plan.id)
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_work_items",
+    })?;
+    if leader_work_item.status == "superseded" && unit.status == "gate_blocked" {
+        let leader_worker = sqlx::query_as::<_, StageWorkerRunRow>(
+            "SELECT * FROM stage_worker_runs WHERE id=$1 AND work_item_id=$2 FOR SHARE",
+        )
+        .bind(input.fence.worker_run_id)
+        .bind(leader_work_item.id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "stage_worker_runs",
+        })?;
+        let repair_generation = leader_worker
+            .checkpoint
+            .pointer("/_runtime_stage_team_gate_block/repair_generation")
+            .and_then(Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_controller_gate_replay_state_mismatch",
+            })?;
+        let expected_checkpoint = controller_gate_block_checkpoint(input, repair_generation, true);
+        let submission_is_exact = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM stage_deliverable_submissions
+                    WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+                      AND stage_run_unit_id=$4 AND organization_id=$5 AND worker_run_id=$6
+                      AND attempt_epoch=$7 AND lease_token=$8
+               )"#,
+        )
+        .bind(input.deliverable_submission_id)
+        .bind(plan.operation_id)
+        .bind(plan.stage_execution_id)
+        .bind(plan.stage_run_unit_id)
+        .bind(plan.organization_id)
+        .bind(leader_worker.id)
+        .bind(input.fence.attempt_epoch)
+        .bind(input.fence.lease_token)
+        .fetch_one(&mut *tx)
+        .await?;
+        if leader_work_item.role != plan.leader_role
+            || leader_work_item.stable_key != "leader:primary"
+            || leader_work_item.required_for_barrier
+            || leader_worker.status != "gate_blocked"
+            || leader_worker.attempt_epoch != input.fence.attempt_epoch
+            || leader_worker.checkpoint_version
+                != input.fence.expected_checkpoint_version.saturating_add(1)
+            || leader_worker.checkpoint != expected_checkpoint
+            || leader_worker.lease_token.is_some()
+            || leader_worker.active_tool_call_id.is_some()
+            || !submission_is_exact
+        {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_controller_gate_replay_state_mismatch",
+            });
+        }
+        tx.commit().await?;
+        return Ok(ReopenedStageTeamLeaderAfterGateBlockRow {
+            plan,
+            unit,
+            gap: None,
+            repair_generation,
+            fuel_exhausted: true,
+            leader_work_item,
+            leader_worker,
+            replayed: true,
+        });
+    }
+    if leader_work_item.role != plan.leader_role
+        || leader_work_item.stable_key != "leader:primary"
+        || leader_work_item.required_for_barrier
+        || leader_work_item.status != "running"
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_controller_gate_leader_mismatch",
+        });
+    }
+    let leader_worker = sqlx::query_as::<_, StageWorkerRunRow>(
+        r#"SELECT * FROM stage_worker_runs
+            WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+              AND stage_run_unit_id=$4 AND work_item_id=$5 AND lease_token=$6
+              AND attempt_epoch=$7 AND checkpoint_version=$8 AND status='running'
+              AND active_tool_call_id IS NULL AND lease_expires_at > NOW()
+            FOR UPDATE"#,
+    )
+    .bind(input.fence.worker_run_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.stage_execution_id)
+    .bind(input.fence.stage_run_unit_id)
+    .bind(leader_work_item.id)
+    .bind(input.fence.lease_token)
+    .bind(input.fence.attempt_epoch)
+    .bind(input.fence.expected_checkpoint_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::LeaseLost {
+        worker_run_id: input.fence.worker_run_id,
+        attempt_epoch: input.fence.attempt_epoch,
+    })?;
+    if leader_worker.message_chain_id.is_none() {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_controller_chain_missing",
+        });
+    }
+    let submission_is_exact = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM stage_deliverable_submissions
+                WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+                  AND stage_run_unit_id=$4 AND organization_id=$5 AND worker_run_id=$6
+                  AND attempt_epoch=$7 AND lease_token=$8
+           )"#,
+    )
+    .bind(input.deliverable_submission_id)
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .bind(plan.organization_id)
+    .bind(leader_worker.id)
+    .bind(input.fence.attempt_epoch)
+    .bind(input.fence.lease_token)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !submission_is_exact {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_controller_gate_submission_mismatch",
+        });
+    }
+    let barrier = stage_teams::load_barrier_with_connection_ignoring_worker(
+        &mut tx,
+        plan.id,
+        Some(leader_worker.id),
+    )
+    .await?;
+    if !barrier.ready_to_finalize() || barrier.manifest_hash != input.expected_manifest_hash {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_sibling_barrier_not_ready",
+        });
+    }
+
+    let prior_repairs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stage_team_repair_generations WHERE team_plan_id=$1",
+    )
+    .bind(plan.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let max_repairs = plan
+        .dynamic_request_policy
+        .get("max_controller_gate_repairs")
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            plan.dynamic_request_policy
+                .get("max_repair_generations")
+                .and_then(Value::as_i64)
+        })
+        .unwrap_or(1)
+        .clamp(0, 3);
+    let fuel_available = prior_repairs < max_repairs;
+    let repair_generation = i32::try_from(prior_repairs.saturating_add(1)).map_err(|_| {
+        RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_controller_repair_generation_overflow",
+        }
+    })?;
+    let checkpoint = controller_gate_block_checkpoint(input, repair_generation, !fuel_available);
+
+    if !fuel_available {
+        let leader_worker = stage_worker_runs::finish_attempt_cas(
+            &mut *tx,
+            &input.fence,
+            stage_worker_runs::StageWorkerRunStatus::Running,
+            stage_worker_runs::StageWorkerRunStatus::GateBlocked,
+            &checkpoint,
+            leader_worker.evidence_watermark,
+        )
+        .await?;
+        let leader_work_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+            "UPDATE stage_work_items
+                SET status='superseded',terminal_at=NOW(),row_version=row_version+1,updated_at=NOW()
+              WHERE id=$1 AND status='running' AND row_version=$2
+              RETURNING *",
+        )
+        .bind(leader_work_item.id)
+        .bind(leader_work_item.row_version)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::StaleVersion {
+            entity: "stage_work_items",
+            expected: leader_work_item.row_version,
+            actual: -1,
+        })?;
+        let unit = if unit.status == "running" {
+            stage_run_units::transition_cas(
+                &mut *tx,
+                unit.id,
+                unit.operation_id,
+                unit.stage_execution_id,
+                unit.organization_id,
+                stage_run_units::StageRunUnitStatus::Running,
+                unit.row_version,
+                stage_run_units::StageRunUnitStatus::GateBlocked,
+                None,
+            )
+            .await?
+        } else {
+            unit
+        };
+        tx.commit().await?;
+        return Ok(ReopenedStageTeamLeaderAfterGateBlockRow {
+            plan,
+            unit,
+            gap: None,
+            repair_generation,
+            fuel_exhausted: true,
+            leader_work_item,
+            leader_worker,
+            replayed: false,
+        });
+    }
+
+    let gap_id = Uuid::new_v5(&plan.id, input.request_id.trim().as_bytes());
+    let gap_sql = format!(
+        r#"INSERT INTO stage_team_unit_gaps(
+               id,request_id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,source_dispatch_epoch,source_manifest_hash,source_attempt_epoch,
+               source_checkpoint_version,source_lease_token,source_aggregator_work_item_id,
+               source_aggregator_worker_run_id,deliverable_submission_id,gate_decision_hash,
+               gap_manifest,gap_manifest_hash,repair_generation,disposition
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'opened')
+           RETURNING {}"#,
+        stage_teams::UNIT_GAP_COLUMNS
+    );
+    let gap = sqlx::query_as::<_, stage_teams::StageTeamUnitGapRow>(&gap_sql)
+        .bind(gap_id)
+        .bind(input.request_id.trim())
+        .bind(plan.id)
+        .bind(plan.operation_id)
+        .bind(plan.stage_execution_id)
+        .bind(plan.stage_run_unit_id)
+        .bind(plan.scope_snapshot_id)
+        .bind(plan.organization_id)
+        .bind(plan.dispatch_epoch)
+        .bind(&input.expected_manifest_hash)
+        .bind(input.fence.attempt_epoch)
+        .bind(input.fence.expected_checkpoint_version)
+        .bind(input.fence.lease_token)
+        .bind(leader_work_item.id)
+        .bind(leader_worker.id)
+        .bind(input.deliverable_submission_id)
+        .bind(&input.gate_decision_hash)
+        .bind(&input.gap_manifest)
+        .bind(&input.gap_manifest_hash)
+        .bind(repair_generation)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    let dispatch_epoch = plan.dispatch_epoch.saturating_add(1);
+    let generation_manifest = serde_json::json!({
+        "dispatch_epoch": dispatch_epoch,
+        "gap_manifest_hash": gap.gap_manifest_hash,
+        "kind": "company_controller_gate_reopen",
+        "leader_work_item_id": leader_work_item.id,
+        "leader_worker_run_id": leader_worker.id,
+        "repair_generation": repair_generation,
+        "schema_version": 1,
+        "source_dispatch_epoch": gap.source_dispatch_epoch,
+        "source_gap_id": gap.id,
+    });
+    let generation_manifest_hash = format!(
+        "sha256:{}",
+        operation_scope_decisions::sha256_json(&generation_manifest)
+    );
+    let generation_id = Uuid::new_v5(&gap.id, b"company-controller-repair-generation-v1");
+    sqlx::query(
+        r#"INSERT INTO stage_team_repair_generations(
+               id,team_plan_id,source_gap_id,operation_id,stage_execution_id,
+               stage_run_unit_id,scope_snapshot_id,organization_id,dispatch_epoch,
+               manifest,manifest_hash,status
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'building')"#,
+    )
+    .bind(generation_id)
+    .bind(plan.id)
+    .bind(gap.id)
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .bind(plan.scope_snapshot_id)
+    .bind(plan.organization_id)
+    .bind(dispatch_epoch)
+    .bind(generation_manifest)
+    .bind(generation_manifest_hash)
+    .execute(&mut *tx)
+    .await?;
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "UPDATE stage_team_plans
+            SET dispatch_epoch=$2,requests_closed_at=NULL,final_submitter_worker_run_id=NULL,
+                row_version=row_version+1,updated_at=NOW()
+          WHERE id=$1 AND dispatch_epoch=$3 AND requests_closed_at IS NOT NULL
+            AND final_submitter_worker_run_id=$4 AND row_version=$5
+          RETURNING *",
+    )
+    .bind(plan.id)
+    .bind(dispatch_epoch)
+    .bind(input.expected_dispatch_epoch)
+    .bind(leader_worker.id)
+    .bind(plan.row_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Conflict {
+        code: "stage_team_controller_repair_epoch_advance_cas_failed",
+    })?;
+    let leader_work_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "UPDATE stage_work_items
+            SET status='waiting_dependency',row_version=row_version+1,updated_at=NOW()
+          WHERE id=$1 AND status='running' AND row_version=$2
+          RETURNING *",
+    )
+    .bind(leader_work_item.id)
+    .bind(leader_work_item.row_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::StaleVersion {
+        entity: "stage_work_items",
+        expected: leader_work_item.row_version,
+        actual: -1,
+    })?;
+    let leader_worker = stage_worker_runs::finish_attempt_cas(
+        &mut *tx,
+        &input.fence,
+        stage_worker_runs::StageWorkerRunStatus::Running,
+        stage_worker_runs::StageWorkerRunStatus::WaitingBackground,
+        &checkpoint,
+        leader_worker.evidence_watermark,
+    )
+    .await?;
+    let unit = if unit.status == "gate_blocked" {
+        stage_run_units::transition_cas(
+            &mut *tx,
+            unit.id,
+            unit.operation_id,
+            unit.stage_execution_id,
+            unit.organization_id,
+            stage_run_units::StageRunUnitStatus::GateBlocked,
+            unit.row_version,
+            stage_run_units::StageRunUnitStatus::Running,
+            None,
+        )
+        .await?
+    } else {
+        unit
+    };
+    tx.commit().await?;
+    Ok(ReopenedStageTeamLeaderAfterGateBlockRow {
+        plan,
+        unit,
+        gap: Some(gap),
+        repair_generation,
+        fuel_exhausted: false,
+        leader_work_item,
+        leader_worker,
+        replayed: false,
+    })
+}
+
+pub async fn claim_stage_work_item(
+    pool: &sqlx::PgPool,
+    input: &ClaimStageWorkItemRow,
+) -> RuntimeMemoryStoreResult<Option<ClaimedStageWorkItemRow>> {
+    claim_stage_team_item(pool, input, None, false).await
+}
+
+pub async fn claim_stage_team_leader(
+    pool: &sqlx::PgPool,
+    input: &ClaimStageTeamLeaderRow,
+) -> RuntimeMemoryStoreResult<Option<ClaimedStageWorkItemRow>> {
+    claim_stage_team_item(pool, &input.claim, None, true).await
+}
+
+pub async fn claim_stage_aggregator(
+    pool: &sqlx::PgPool,
+    input: &ClaimStageAggregatorRow,
+) -> RuntimeMemoryStoreResult<ClaimedStageWorkItemRow> {
+    claim_stage_team_item(
+        pool,
+        &input.claim,
+        Some((input.expected_dispatch_epoch, &input.expected_manifest_hash)),
+        false,
+    )
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Conflict {
+        code: "stage_team_aggregator_not_claimable",
+    })
+}
+
 pub async fn claim_worker_and_bind_chain(
     pool: &sqlx::PgPool,
     input: &ClaimWorkerAndBindChainRow,
@@ -2332,14 +5798,31 @@ pub async fn checkpoint_bound_worker_chain(
     pool: &sqlx::PgPool,
     input: &CheckpointBoundWorkerChainRow,
 ) -> RuntimeMemoryStoreResult<StageWorkerRunRow> {
+    let mut tx = pool.begin().await?;
+    let (worker, contract) = checkpoint_bound_worker_chain_in_transaction(&mut tx, input).await?;
+    tx.commit().await?;
+    if contract_writes_legacy_mirror(contract) {
+        reconcile_deployment_rollouts_best_effort(pool, "checkpoint_bound_worker_chain").await;
+    }
+    Ok(worker)
+}
+
+/// Transaction-owned variant used by the Candidate terminal barrier. The
+/// caller appends the immutable barrier before committing, so the chain,
+/// Worker checkpoint and barrier can never become partially visible.
+pub(super) async fn checkpoint_bound_worker_chain_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    input: &CheckpointBoundWorkerChainRow,
+) -> RuntimeMemoryStoreResult<(
+    StageWorkerRunRow,
+    runtime_memory_rollout::RuntimeMemoryContract,
+)> {
     if !input.chain.is_array() {
         return Err(RuntimeMemoryStoreError::Conflict {
             code: "invalid_bound_chain_shape",
         });
     }
-    let mut tx = pool.begin().await?;
-    let (operation, contract, unit) =
-        lock_operation_and_unit_for_fence(&mut tx, &input.fence).await?;
+    let (operation, contract, unit) = lock_operation_and_unit_for_fence(tx, &input.fence).await?;
     let exact_worker = sqlx::query_scalar::<_, Uuid>(
         r#"SELECT id FROM stage_worker_runs
             WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
@@ -2358,7 +5841,7 @@ pub async fn checkpoint_bound_worker_chain(
     .bind(input.fence.attempt_epoch)
     .bind(input.fence.expected_checkpoint_version)
     .bind(input.message_chain_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     if exact_worker.is_none() {
         return Err(RuntimeMemoryStoreError::LeaseLost {
@@ -2367,7 +5850,7 @@ pub async fn checkpoint_bound_worker_chain(
         });
     }
     let chain_rows = message_chains::update_bound_chain_cas_with_executor(
-        &mut *tx,
+        &mut **tx,
         input.message_chain_id,
         input.fence.operation_id,
         &input.chain,
@@ -2379,9 +5862,9 @@ pub async fn checkpoint_bound_worker_chain(
         });
     }
     let worker =
-        stage_worker_runs::checkpoint_cas(&mut *tx, &input.fence, &input.checkpoint).await?;
+        stage_worker_runs::checkpoint_cas(&mut **tx, &input.fence, &input.checkpoint).await?;
     mirror_worker_if_required(
-        &mut tx,
+        tx,
         &operation,
         contract,
         &unit,
@@ -2389,11 +5872,7 @@ pub async fn checkpoint_bound_worker_chain(
         "checkpoint_bound_chain",
     )
     .await?;
-    tx.commit().await?;
-    if contract_writes_legacy_mirror(contract) {
-        reconcile_deployment_rollouts_best_effort(pool, "checkpoint_bound_worker_chain").await;
-    }
-    Ok(worker)
+    Ok((worker, contract))
 }
 
 pub async fn heartbeat_worker(
@@ -2428,7 +5907,7 @@ pub async fn begin_worker_tool(
     Ok(worker)
 }
 
-pub async fn finish_worker_tool(
+async fn finish_worker_tool_once(
     pool: &sqlx::PgPool,
     fence: &RuntimeMemoryTxFence,
     tool_call_record_id: Uuid,
@@ -2442,6 +5921,37 @@ pub async fn finish_worker_tool(
         reconcile_deployment_rollouts_best_effort(pool, "finish_worker_tool").await;
     }
     Ok(worker)
+}
+
+pub async fn finish_worker_tool(
+    pool: &sqlx::PgPool,
+    fence: &RuntimeMemoryTxFence,
+    tool_call_record_id: Uuid,
+) -> RuntimeMemoryStoreResult<StageWorkerRunRow> {
+    for attempt in 1..=FINISH_WORKER_TOOL_TRANSACTION_ATTEMPTS {
+        match finish_worker_tool_once(pool, fence, tool_call_record_id).await {
+            Ok(worker) => return Ok(worker),
+            Err(error)
+                if attempt < FINISH_WORKER_TOOL_TRANSACTION_ATTEMPTS
+                    && is_retryable_runtime_transaction_error(&error) =>
+            {
+                tracing::warn!(
+                    worker_run_id = %fence.worker_run_id,
+                    tool_call_record_id = %tool_call_record_id,
+                    attempt,
+                    max_attempts = FINISH_WORKER_TOOL_TRANSACTION_ATTEMPTS,
+                    error = %error,
+                    "retrying transient worker tool-fence transaction"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    5 * u64::try_from(attempt).unwrap_or(1),
+                ))
+                .await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded worker tool-fence transaction loop always returns")
 }
 
 pub async fn finish_worker_attempt(
@@ -2476,6 +5986,17 @@ pub async fn finish_worker_attempt(
     let mut tx = pool.begin().await?;
     let (operation, contract, locked_unit) =
         lock_operation_and_unit_for_fence(&mut tx, &input.fence).await?;
+    let stage_team_plan_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM stage_team_plans WHERE stage_run_unit_id=$1 FOR SHARE",
+    )
+    .bind(input.fence.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if stage_team_plan_id.is_some() {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_worker_requires_team_lifecycle",
+        });
+    }
     if locked_unit.status != input.expected_unit_status.as_str()
         || locked_unit.row_version != input.expected_unit_row_version
     {
@@ -2972,7 +6493,7 @@ struct FinalSealEvidenceRow {
     run_id: Option<Uuid>,
 }
 
-async fn validate_final_seal_evidence(
+pub(super) async fn validate_final_seal_evidence(
     connection: &mut sqlx::PgConnection,
     evidence_ids: &[i64],
     operation_id: Uuid,
@@ -3425,6 +6946,7 @@ async fn close_final_seal_memory_episode(
 async fn finalize_unit_pass_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     input: &FinalizeUnitPassRow,
+    stage_team_authority: Option<Uuid>,
 ) -> RuntimeMemoryStoreResult<FinalizedUnitPassRow> {
     let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
         .bind(input.fence.operation_id)
@@ -3439,6 +6961,26 @@ async fn finalize_unit_pass_in_transaction(
         return Err(RuntimeMemoryStoreError::Conflict {
             code: "runtime_v2_not_enabled",
         });
+    }
+    let persisted_team_plan_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM stage_team_plans WHERE stage_run_unit_id=$1 FOR SHARE",
+    )
+    .bind(input.fence.stage_run_unit_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    match (persisted_team_plan_id, stage_team_authority) {
+        (Some(persisted), Some(authorized)) if persisted == authorized => {}
+        (Some(_), _) => {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_finalizer_required",
+            });
+        }
+        (None, Some(_)) => {
+            return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                code: "stage_team_finalizer_authority_mismatch",
+            });
+        }
+        (None, None) => {}
     }
     let attack_contract = frozen_attack_execution_contract(tx, input.fence.operation_id).await?;
     let locked_unit = load_runtime_unit_for_update(
@@ -3739,7 +7281,7 @@ pub async fn finalize_unit_pass_with_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     input: &FinalizeUnitPassRow,
 ) -> RuntimeMemoryStoreResult<FinalizedUnitPassRow> {
-    finalize_unit_pass_in_transaction(tx, input).await
+    finalize_unit_pass_in_transaction(tx, input, None).await
 }
 
 /// The only compound runtime-memory path that may turn a post-Scoping Unit and
@@ -3753,6 +7295,905 @@ pub async fn finalize_unit_pass(
     tx.commit().await?;
     reconcile_deployment_rollouts_best_effort(pool, "finalize_unit_pass").await;
     Ok(finalized)
+}
+
+/// Persist a deterministic Aggregator Gate BLOCK and, while frozen repair
+/// fuel remains, atomically advance to a new request epoch containing one
+/// bounded repair WorkItem and one fresh Aggregator WorkItem.  The source
+/// epoch, submission, gap, Aggregator Worker and lease/checkpoint fence are
+/// retained immutably; the old Worker is never made runnable again.
+pub async fn open_stage_team_repair(
+    pool: &sqlx::PgPool,
+    input: &OpenStageTeamRepairRow,
+) -> RuntimeMemoryStoreResult<OpenedStageTeamRepairRow> {
+    let expected_gap_hash = format!(
+        "sha256:{}",
+        operation_scope_decisions::sha256_json(&input.gap_manifest)
+    );
+    if input.request_id.trim().is_empty()
+        || input.request_id.len() > 256
+        || !input.gap_manifest.is_object()
+        || input.gap_manifest_hash != expected_gap_hash
+        || input
+            .gap_manifest
+            .get("gate_decision_hash")
+            .and_then(Value::as_str)
+            != Some(input.gate_decision_hash.as_str())
+        || input.expected_manifest_hash.len() != 71
+        || !input.expected_manifest_hash.starts_with("sha256:")
+        || input.gate_decision_hash.len() != 71
+        || !input.gate_decision_hash.starts_with("sha256:")
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "invalid_stage_team_repair_gap",
+        });
+    }
+    let mut tx = pool.begin().await?;
+    let gap_sql = format!(
+        "SELECT {} FROM stage_team_unit_gaps WHERE request_id=$1 FOR UPDATE",
+        stage_teams::UNIT_GAP_COLUMNS
+    );
+    if let Some(gap) = sqlx::query_as::<_, stage_teams::StageTeamUnitGapRow>(&gap_sql)
+        .bind(input.request_id.trim())
+        .fetch_optional(&mut *tx)
+        .await?
+    {
+        if gap.team_plan_id != input.stage_team_plan_id
+            || gap.operation_id != input.fence.operation_id
+            || gap.stage_execution_id != input.fence.stage_execution_id
+            || gap.stage_run_unit_id != input.fence.stage_run_unit_id
+            || gap.source_dispatch_epoch != input.expected_dispatch_epoch
+            || gap.source_manifest_hash != input.expected_manifest_hash
+            || gap.source_attempt_epoch != input.fence.attempt_epoch
+            || gap.source_checkpoint_version != input.fence.expected_checkpoint_version
+            || gap.source_lease_token != input.fence.lease_token
+            || gap.source_aggregator_work_item_id != input.aggregator_work_item_id
+            || gap.source_aggregator_worker_run_id != input.fence.worker_run_id
+            || gap.deliverable_submission_id != input.deliverable_submission_id
+            || gap.gate_decision_hash != input.gate_decision_hash
+            || gap.gap_manifest_hash != input.gap_manifest_hash
+            || gap.gap_manifest != input.gap_manifest
+        {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_repair_replay_mismatch",
+            });
+        }
+        let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+            "SELECT * FROM stage_team_plans WHERE id=$1",
+        )
+        .bind(input.stage_team_plan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if plan.scope_snapshot_id != gap.scope_snapshot_id
+            || plan.operation_id != gap.operation_id
+            || plan.stage_execution_id != gap.stage_execution_id
+            || plan.stage_run_unit_id != gap.stage_run_unit_id
+            || plan.organization_id != gap.organization_id
+        {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_repair_replay_owner_mismatch",
+            });
+        }
+        let unit = load_runtime_unit_for_update(
+            &mut tx,
+            input.fence.operation_id,
+            input.fence.stage_execution_id,
+            input.fence.stage_run_unit_id,
+        )
+        .await?;
+        let aggregator_worker =
+            sqlx::query_as::<_, StageWorkerRunRow>("SELECT * FROM stage_worker_runs WHERE id=$1")
+                .bind(input.fence.worker_run_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let generation_sql = format!(
+            "SELECT {} FROM stage_team_repair_generations WHERE source_gap_id=$1",
+            stage_teams::REPAIR_GENERATION_COLUMNS
+        );
+        let generation =
+            sqlx::query_as::<_, stage_teams::StageTeamRepairGenerationRow>(&generation_sql)
+                .bind(gap.id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let (repair_work_item, aggregator_work_item) = if let Some(generation) = &generation {
+            let repair_id =
+                generation
+                    .repair_work_item_id
+                    .ok_or(RuntimeMemoryStoreError::Conflict {
+                        code: "stage_team_repair_generation_not_sealed",
+                    })?;
+            let aggregator_id =
+                generation
+                    .aggregator_work_item_id
+                    .ok_or(RuntimeMemoryStoreError::Conflict {
+                        code: "stage_team_repair_generation_not_sealed",
+                    })?;
+            (
+                Some(
+                    sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+                        "SELECT * FROM stage_work_items WHERE id=$1",
+                    )
+                    .bind(repair_id)
+                    .fetch_one(&mut *tx)
+                    .await?,
+                ),
+                Some(
+                    sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+                        "SELECT * FROM stage_work_items WHERE id=$1",
+                    )
+                    .bind(aggregator_id)
+                    .fetch_one(&mut *tx)
+                    .await?,
+                ),
+            )
+        } else {
+            (None, None)
+        };
+        tx.commit().await?;
+        return Ok(OpenedStageTeamRepairRow {
+            plan,
+            unit,
+            gap,
+            generation,
+            repair_work_item,
+            aggregator_work_item,
+            aggregator_worker,
+            replayed: true,
+        });
+    }
+
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.fence.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&operation)?;
+    if frozen_runtime_contract(&operation)? != runtime_memory_rollout::RuntimeMemoryContract::V2Only
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_requires_v2_only",
+        });
+    }
+    let unit = load_runtime_unit_for_update(
+        &mut tx,
+        input.fence.operation_id,
+        input.fence.stage_execution_id,
+        input.fence.stage_run_unit_id,
+    )
+    .await?;
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.stage_team_plan_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.stage_execution_id)
+    .bind(input.fence.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    let aggregator_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "SELECT * FROM stage_work_items WHERE id=$1 AND team_plan_id=$2 FOR UPDATE",
+    )
+    .bind(input.aggregator_work_item_id)
+    .bind(plan.id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_work_items",
+    })?;
+    let aggregator_worker = sqlx::query_as::<_, StageWorkerRunRow>(
+        "SELECT * FROM stage_worker_runs WHERE id=$1 FOR UPDATE",
+    )
+    .bind(input.fence.worker_run_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_worker_runs",
+    })?;
+    if unit.status != "running"
+        || plan.dispatch_epoch != input.expected_dispatch_epoch
+        || plan.requests_closed_at.is_none()
+        || plan.final_submitter_worker_run_id != Some(input.fence.worker_run_id)
+        || plan.aggregator_role.as_deref() != Some(aggregator_item.role.as_str())
+        || aggregator_item.required_for_barrier
+        || aggregator_item.status != "running"
+        || aggregator_worker.work_item_id != Some(aggregator_item.id)
+        || aggregator_worker.status != "running"
+        || aggregator_worker.lease_token != Some(input.fence.lease_token)
+        || aggregator_worker.attempt_epoch != input.fence.attempt_epoch
+        || aggregator_worker.checkpoint_version != input.fence.expected_checkpoint_version
+        || aggregator_worker.active_tool_call_id.is_some()
+        || aggregator_worker
+            .lease_expires_at
+            .is_none_or(|expires_at| expires_at <= chrono::Utc::now())
+    {
+        return Err(RuntimeMemoryStoreError::LeaseLost {
+            worker_run_id: input.fence.worker_run_id,
+            attempt_epoch: input.fence.attempt_epoch,
+        });
+    }
+    let submission_is_exact = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM stage_deliverable_submissions
+                WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+                  AND stage_run_unit_id=$4 AND organization_id=$5 AND worker_run_id=$6
+           )"#,
+    )
+    .bind(input.deliverable_submission_id)
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .bind(plan.organization_id)
+    .bind(aggregator_worker.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !submission_is_exact {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_repair_submission_mismatch",
+        });
+    }
+    let barrier = stage_teams::load_barrier_with_connection_ignoring_worker(
+        &mut tx,
+        plan.id,
+        Some(aggregator_worker.id),
+    )
+    .await?;
+    if !barrier.ready_to_finalize() || barrier.manifest_hash != input.expected_manifest_hash {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_sibling_barrier_not_ready",
+        });
+    }
+    let prior_generations: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stage_team_repair_generations WHERE team_plan_id=$1",
+    )
+    .bind(plan.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let max_repair_generations = plan
+        .dynamic_request_policy
+        .get("max_repair_generations")
+        .and_then(Value::as_i64)
+        .unwrap_or(1)
+        .clamp(0, 3);
+    let fuel_available = prior_generations < max_repair_generations;
+    let repair_generation = i32::try_from(prior_generations.saturating_add(1)).map_err(|_| {
+        RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_repair_generation_overflow",
+        }
+    })?;
+    let gate_checkpoint = serde_json::json!({
+        "stage_team_gate_block": {
+            "gate_decision_hash": input.gate_decision_hash,
+            "gap_manifest_hash": input.gap_manifest_hash,
+            "repair_generation": repair_generation,
+            "schema_version": 1,
+        }
+    });
+    let aggregator_worker = stage_worker_runs::finish_attempt_cas(
+        &mut *tx,
+        &input.fence,
+        stage_worker_runs::StageWorkerRunStatus::Running,
+        stage_worker_runs::StageWorkerRunStatus::GateBlocked,
+        &gate_checkpoint,
+        aggregator_worker.evidence_watermark,
+    )
+    .await?;
+    let aggregator_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "UPDATE stage_work_items
+            SET status='superseded',terminal_at=NOW(),row_version=row_version+1,updated_at=NOW()
+          WHERE id=$1 AND team_plan_id=$2 AND status='running' AND row_version=$3
+          RETURNING *",
+    )
+    .bind(aggregator_item.id)
+    .bind(plan.id)
+    .bind(aggregator_item.row_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::StaleVersion {
+        entity: "stage_work_items",
+        expected: aggregator_item.row_version,
+        actual: -1,
+    })?;
+    let gap_id = Uuid::new_v5(&plan.id, input.request_id.trim().as_bytes());
+    let gap_sql = format!(
+        r#"INSERT INTO stage_team_unit_gaps(
+               id,request_id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+               scope_snapshot_id,organization_id,source_dispatch_epoch,source_manifest_hash,source_attempt_epoch,
+               source_checkpoint_version,source_lease_token,source_aggregator_work_item_id,
+               source_aggregator_worker_run_id,deliverable_submission_id,gate_decision_hash,
+               gap_manifest,gap_manifest_hash,repair_generation,disposition
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+           RETURNING {}"#,
+        stage_teams::UNIT_GAP_COLUMNS
+    );
+    let gap = sqlx::query_as::<_, stage_teams::StageTeamUnitGapRow>(&gap_sql)
+        .bind(gap_id)
+        .bind(input.request_id.trim())
+        .bind(plan.id)
+        .bind(plan.operation_id)
+        .bind(plan.stage_execution_id)
+        .bind(plan.stage_run_unit_id)
+        .bind(plan.scope_snapshot_id)
+        .bind(plan.organization_id)
+        .bind(plan.dispatch_epoch)
+        .bind(&input.expected_manifest_hash)
+        .bind(input.fence.attempt_epoch)
+        .bind(input.fence.expected_checkpoint_version)
+        .bind(input.fence.lease_token)
+        .bind(aggregator_item.id)
+        .bind(aggregator_worker.id)
+        .bind(input.deliverable_submission_id)
+        .bind(&input.gate_decision_hash)
+        .bind(&input.gap_manifest)
+        .bind(&input.gap_manifest_hash)
+        .bind(repair_generation)
+        .bind(if fuel_available {
+            "opened"
+        } else {
+            "fuel_exhausted"
+        })
+        .fetch_one(&mut *tx)
+        .await?;
+    let gate_blocked_unit = stage_run_units::transition_cas(
+        &mut *tx,
+        unit.id,
+        unit.operation_id,
+        unit.stage_execution_id,
+        unit.organization_id,
+        stage_run_units::StageRunUnitStatus::Running,
+        unit.row_version,
+        stage_run_units::StageRunUnitStatus::GateBlocked,
+        None,
+    )
+    .await?;
+    if !fuel_available {
+        tx.commit().await?;
+        return Ok(OpenedStageTeamRepairRow {
+            plan,
+            unit: gate_blocked_unit,
+            gap,
+            generation: None,
+            repair_work_item: None,
+            aggregator_work_item: None,
+            aggregator_worker,
+            replayed: false,
+        });
+    }
+
+    let dispatch_epoch = plan.dispatch_epoch.saturating_add(1);
+    let repair_role = plan
+        .allowed_worker_roles
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .find(|role| Some(*role) != plan.aggregator_role.as_deref())
+        .ok_or(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_repair_role_missing",
+        })?
+        .to_string();
+    let repair_work_item_id = Uuid::new_v5(&gap.id, b"stage-team-repair-work-item-v1");
+    let aggregator_work_item_id = Uuid::new_v5(&gap.id, b"stage-team-repair-aggregator-v1");
+    let repair_input_refs = serde_json::json!([{
+        "gap_id": gap.id,
+        "gap_manifest": gap.gap_manifest,
+        "gap_manifest_hash": gap.gap_manifest_hash,
+        "gate_decision_hash": gap.gate_decision_hash,
+        "kind": "stage_team_gate_gap",
+        "source_dispatch_epoch": gap.source_dispatch_epoch,
+    }]);
+    let aggregator_input_refs = serde_json::json!([{
+        "kind": "stage_team_repair_generation",
+        "repair_generation": repair_generation,
+        "source_gap_id": gap.id,
+    }]);
+    let repair_input_hash = format!(
+        "sha256:{}",
+        operation_scope_decisions::sha256_json(&repair_input_refs)
+    );
+    let aggregator_input_hash = format!(
+        "sha256:{}",
+        operation_scope_decisions::sha256_json(&aggregator_input_refs)
+    );
+    let generation_manifest = serde_json::json!({
+        "aggregator_input_hash": aggregator_input_hash,
+        "aggregator_work_item_id": aggregator_work_item_id,
+        "dispatch_epoch": dispatch_epoch,
+        "gap_manifest_hash": gap.gap_manifest_hash,
+        "repair_generation": repair_generation,
+        "repair_input_hash": repair_input_hash,
+        "repair_role": repair_role,
+        "repair_work_item_id": repair_work_item_id,
+        "schema_version": 1,
+        "source_dispatch_epoch": gap.source_dispatch_epoch,
+        "source_gap_id": gap.id,
+    });
+    let generation_manifest_hash = format!(
+        "sha256:{}",
+        operation_scope_decisions::sha256_json(&generation_manifest)
+    );
+    let generation_id = Uuid::new_v5(&gap.id, b"stage-team-repair-generation-v1");
+    let generation_sql = format!(
+        r#"INSERT INTO stage_team_repair_generations(
+               id,team_plan_id,source_gap_id,operation_id,stage_execution_id,
+               stage_run_unit_id,scope_snapshot_id,organization_id,dispatch_epoch,
+               manifest,manifest_hash,status
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'building') RETURNING {}"#,
+        stage_teams::REPAIR_GENERATION_COLUMNS
+    );
+    sqlx::query_as::<_, stage_teams::StageTeamRepairGenerationRow>(&generation_sql)
+        .bind(generation_id)
+        .bind(plan.id)
+        .bind(gap.id)
+        .bind(plan.operation_id)
+        .bind(plan.stage_execution_id)
+        .bind(plan.stage_run_unit_id)
+        .bind(plan.scope_snapshot_id)
+        .bind(plan.organization_id)
+        .bind(dispatch_epoch)
+        .bind(&generation_manifest)
+        .bind(&generation_manifest_hash)
+        .fetch_one(&mut *tx)
+        .await?;
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "UPDATE stage_team_plans
+            SET dispatch_epoch=$2,requests_closed_at=NULL,final_submitter_worker_run_id=NULL,
+                row_version=row_version+1,updated_at=NOW()
+          WHERE id=$1 AND dispatch_epoch=$3 AND requests_closed_at IS NOT NULL
+            AND final_submitter_worker_run_id=$4 AND row_version=$5
+          RETURNING *",
+    )
+    .bind(plan.id)
+    .bind(dispatch_epoch)
+    .bind(input.expected_dispatch_epoch)
+    .bind(aggregator_worker.id)
+    .bind(plan.row_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Conflict {
+        code: "stage_team_repair_epoch_advance_cas_failed",
+    })?;
+    let repair_work_item = stage_teams::insert_work_item_with_executor(
+        &mut *tx,
+        &stage_teams::NewStageWorkItem {
+            id: repair_work_item_id,
+            team_plan_id: plan.id,
+            operation_id: plan.operation_id,
+            stage_execution_id: plan.stage_execution_id,
+            stage_run_unit_id: plan.stage_run_unit_id,
+            scope_snapshot_id: plan.scope_snapshot_id,
+            organization_id: plan.organization_id,
+            dispatch_epoch,
+            kind: "gate_repair".to_string(),
+            stable_key: format!("gate-repair:{dispatch_epoch}:{}", gap.gap_manifest_hash),
+            role: repair_role,
+            input_manifest_hash: repair_input_hash,
+            input_refs: repair_input_refs,
+            required_for_barrier: true,
+            conflict_key: Some("stage_unit_gate_repair".to_string()),
+            priority: i32::MIN,
+            attempt_policy: serde_json::json!({"max_attempts": 2}),
+            budget: serde_json::json!({"repair_generation": repair_generation}),
+            output_schema: "stage_worker_output.v1".to_string(),
+            created_by: "gate_repair".to_string(),
+        },
+    )
+    .await?;
+    let aggregator_work_item = stage_teams::insert_work_item_with_executor(
+        &mut *tx,
+        &stage_teams::NewStageWorkItem {
+            id: aggregator_work_item_id,
+            team_plan_id: plan.id,
+            operation_id: plan.operation_id,
+            stage_execution_id: plan.stage_execution_id,
+            stage_run_unit_id: plan.stage_run_unit_id,
+            scope_snapshot_id: plan.scope_snapshot_id,
+            organization_id: plan.organization_id,
+            dispatch_epoch,
+            kind: "stage_aggregate".to_string(),
+            stable_key: format!("aggregator:repair:{dispatch_epoch}"),
+            role: plan.aggregator_role.clone().ok_or(
+                RuntimeMemoryStoreError::IdentityMismatch {
+                    code: "stage_team_repair_aggregator_role_missing",
+                },
+            )?,
+            input_manifest_hash: aggregator_input_hash,
+            input_refs: aggregator_input_refs,
+            required_for_barrier: false,
+            conflict_key: Some("stage_unit_finalizer".to_string()),
+            priority: i32::MAX,
+            attempt_policy: serde_json::json!({"max_attempts": 2}),
+            budget: serde_json::json!({"repair_generation": repair_generation}),
+            output_schema: "stage_unit_aggregate.v1".to_string(),
+            created_by: "gate_repair".to_string(),
+        },
+    )
+    .await?;
+    let generation_sql = format!(
+        "UPDATE stage_team_repair_generations
+            SET repair_work_item_id=$2,aggregator_work_item_id=$3,status='sealed',sealed_at=NOW()
+          WHERE id=$1 AND status='building'
+          RETURNING {}",
+        stage_teams::REPAIR_GENERATION_COLUMNS
+    );
+    let generation =
+        sqlx::query_as::<_, stage_teams::StageTeamRepairGenerationRow>(&generation_sql)
+            .bind(generation_id)
+            .bind(repair_work_item.id)
+            .bind(aggregator_work_item.id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_repair_generation_seal_failed",
+            })?;
+    let unit = stage_run_units::transition_cas(
+        &mut *tx,
+        gate_blocked_unit.id,
+        gate_blocked_unit.operation_id,
+        gate_blocked_unit.stage_execution_id,
+        gate_blocked_unit.organization_id,
+        stage_run_units::StageRunUnitStatus::GateBlocked,
+        gate_blocked_unit.row_version,
+        stage_run_units::StageRunUnitStatus::Running,
+        None,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(OpenedStageTeamRepairRow {
+        plan,
+        unit,
+        gap,
+        generation: Some(generation),
+        repair_work_item: Some(repair_work_item),
+        aggregator_work_item: Some(aggregator_work_item),
+        aggregator_worker,
+        replayed: false,
+    })
+}
+
+/// Deterministically close a Team Unit as GateBlocked when the closed producer
+/// manifest contains at least one immutable blocked output.  No model
+/// deliverable or Aggregator claim is accepted on this path: the barrier and
+/// output ledger are the complete server authority.
+pub async fn block_stage_team_unit(
+    pool: &sqlx::PgPool,
+    input: &BlockStageTeamUnitRow,
+) -> RuntimeMemoryStoreResult<BlockedStageTeamUnitRow> {
+    if input.expected_manifest_hash.len() != 71
+        || !input.expected_manifest_hash.starts_with("sha256:")
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "invalid_stage_team_manifest_hash",
+        });
+    }
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&operation)?;
+    if frozen_runtime_contract(&operation)? != runtime_memory_rollout::RuntimeMemoryContract::V2Only
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_requires_v2_only",
+        });
+    }
+    let unit = load_runtime_unit_for_update(
+        &mut tx,
+        input.operation_id,
+        input.stage_execution_id,
+        input.stage_run_unit_id,
+    )
+    .await?;
+    validate_runtime_stage_execution(
+        &mut tx,
+        &operation,
+        input.stage_execution_id,
+        &unit.stage_kind,
+    )
+    .await?;
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.stage_team_plan_id)
+    .bind(input.operation_id)
+    .bind(input.stage_execution_id)
+    .bind(input.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    if plan.dispatch_epoch != input.expected_dispatch_epoch
+        || plan.requests_closed_at.is_none()
+        || plan.final_submitter_worker_run_id.is_some()
+        || plan.aggregator_kind != "worker"
+        || plan.final_submitter_kind != "worker"
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_block_authority_mismatch",
+        });
+    }
+    let barrier = stage_teams::load_barrier_with_connection(&mut tx, plan.id).await?;
+    if !barrier.ready_to_finalize() || barrier.manifest_hash != input.expected_manifest_hash {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_sibling_barrier_not_ready",
+        });
+    }
+    let blocked_outputs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stage_worker_outputs
+          WHERE team_plan_id=$1 AND business_disposition='blocked'",
+    )
+    .bind(plan.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if blocked_outputs == 0 {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_block_requires_blocked_output",
+        });
+    }
+    let aggregator_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "SELECT * FROM stage_work_items
+          WHERE team_plan_id=$1 AND role=$2 AND dispatch_epoch=$3
+            AND required_for_barrier=FALSE
+          ORDER BY id FOR UPDATE",
+    )
+    .bind(plan.id)
+    .bind(&plan.aggregator_role)
+    .bind(plan.dispatch_epoch)
+    .fetch_one(&mut *tx)
+    .await?;
+    let replayed = unit.status == "gate_blocked" && aggregator_item.status == "superseded";
+    let (unit, aggregator_item) = if replayed {
+        (unit, aggregator_item)
+    } else {
+        if unit.status != "running" || aggregator_item.status != "queued" {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_team_block_lifecycle_mismatch",
+            });
+        }
+        let aggregator_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+            "UPDATE stage_work_items
+                SET status='superseded',terminal_at=NOW(),row_version=row_version+1,
+                    updated_at=NOW()
+              WHERE id=$1 AND team_plan_id=$2 AND status='queued' AND row_version=$3
+              RETURNING *",
+        )
+        .bind(aggregator_item.id)
+        .bind(plan.id)
+        .bind(aggregator_item.row_version)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::StaleVersion {
+            entity: "stage_work_items",
+            expected: aggregator_item.row_version,
+            actual: -1,
+        })?;
+        let unit = stage_run_units::transition_cas(
+            &mut *tx,
+            unit.id,
+            unit.operation_id,
+            unit.stage_execution_id,
+            unit.organization_id,
+            stage_run_units::StageRunUnitStatus::Running,
+            unit.row_version,
+            stage_run_units::StageRunUnitStatus::GateBlocked,
+            None,
+        )
+        .await?;
+        (unit, aggregator_item)
+    };
+    tx.commit().await?;
+    Ok(BlockedStageTeamUnitRow {
+        plan,
+        aggregator_work_item: aggregator_item,
+        unit,
+        barrier,
+        replayed,
+    })
+}
+
+/// Team-mode final seal.  The producer barrier, exact final submitter and the
+/// ordinary Unit seal are all re-locked and committed together, so no sibling
+/// can change the closed manifest between validation and PASS.
+pub async fn finalize_stage_team_unit(
+    pool: &sqlx::PgPool,
+    input: &FinalizeStageTeamUnitRow,
+) -> RuntimeMemoryStoreResult<FinalizedStageTeamUnitRow> {
+    if input.expected_manifest_hash.len() != 71
+        || !input.expected_manifest_hash.starts_with("sha256:")
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "invalid_stage_team_manifest_hash",
+        });
+    }
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.final_seal.fence.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&operation)?;
+    if frozen_runtime_contract(&operation)? != runtime_memory_rollout::RuntimeMemoryContract::V2Only
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_requires_v2_only",
+        });
+    }
+    let unit = load_runtime_unit_for_update(
+        &mut tx,
+        input.final_seal.fence.operation_id,
+        input.final_seal.fence.stage_execution_id,
+        input.final_seal.fence.stage_run_unit_id,
+    )
+    .await?;
+    validate_runtime_stage_execution(
+        &mut tx,
+        &operation,
+        input.final_seal.fence.stage_execution_id,
+        &unit.stage_kind,
+    )
+    .await?;
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.stage_team_plan_id)
+    .bind(input.final_seal.fence.operation_id)
+    .bind(input.final_seal.fence.stage_execution_id)
+    .bind(input.final_seal.fence.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    if plan.dispatch_epoch != input.expected_dispatch_epoch
+        || plan.requests_closed_at.is_none()
+        || plan.aggregator_kind != "worker"
+        || plan.final_submitter_kind != "worker"
+        || plan.final_submitter_worker_run_id != Some(input.final_seal.fence.worker_run_id)
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_final_submitter_identity_mismatch",
+        });
+    }
+    let aggregator_item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "SELECT * FROM stage_work_items
+          WHERE id=$1 AND team_plan_id=$2 AND operation_id=$3
+            AND stage_execution_id=$4 AND stage_run_unit_id=$5 FOR UPDATE",
+    )
+    .bind(input.aggregator_work_item_id)
+    .bind(plan.id)
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_work_items",
+    })?;
+    if plan.aggregator_role.as_deref() != Some(aggregator_item.role.as_str())
+        || aggregator_item.required_for_barrier
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_aggregator_work_item_mismatch",
+        });
+    }
+    let aggregator_worker = sqlx::query_as::<_, StageWorkerRunRow>(
+        "SELECT * FROM stage_worker_runs WHERE id=$1 FOR UPDATE",
+    )
+    .bind(input.final_seal.fence.worker_run_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_worker_runs",
+    })?;
+    if aggregator_worker.work_item_id != Some(aggregator_item.id)
+        || aggregator_worker.operation_id != plan.operation_id
+        || aggregator_worker.stage_execution_id != plan.stage_execution_id
+        || aggregator_worker.stage_run_unit_id != plan.stage_run_unit_id
+        || aggregator_worker.organization_id != plan.organization_id
+        || aggregator_worker.attempt_epoch != input.final_seal.fence.attempt_epoch
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_final_submitter_identity_mismatch",
+        });
+    }
+    let replayed_state = unit.status == "passed"
+        && aggregator_item.status == "completed"
+        && aggregator_worker.status == "passed";
+    if !replayed_state
+        && (unit.status != "running"
+            || aggregator_item.status != "running"
+            || aggregator_worker.status != "running"
+            || aggregator_worker.lease_token != Some(input.final_seal.fence.lease_token)
+            || aggregator_worker.checkpoint_version
+                != input.final_seal.fence.expected_checkpoint_version
+            || aggregator_worker.active_tool_call_id.is_some()
+            || aggregator_worker
+                .lease_expires_at
+                .is_none_or(|expires_at| expires_at <= chrono::Utc::now()))
+    {
+        return Err(RuntimeMemoryStoreError::LeaseLost {
+            worker_run_id: input.final_seal.fence.worker_run_id,
+            attempt_epoch: input.final_seal.fence.attempt_epoch,
+        });
+    }
+    let live_worker_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM stage_worker_runs
+          WHERE stage_run_unit_id=$1
+            AND status IN ('queued','running','waiting_background')
+          ORDER BY id FOR UPDATE",
+    )
+    .bind(plan.stage_run_unit_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    if (!replayed_state && live_worker_ids.as_slice() != [input.final_seal.fence.worker_run_id])
+        || (replayed_state && !live_worker_ids.is_empty())
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_final_submitter_not_unique_live_worker",
+        });
+    }
+    let barrier = stage_teams::load_barrier_with_connection_ignoring_worker(
+        &mut tx,
+        plan.id,
+        Some(aggregator_worker.id),
+    )
+    .await?;
+    if !barrier.ready_to_finalize() || barrier.manifest_hash != input.expected_manifest_hash {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_sibling_barrier_not_ready",
+        });
+    }
+    let finalized = finalize_unit_pass_in_transaction(
+        &mut tx,
+        &input.final_seal,
+        Some(input.stage_team_plan_id),
+    )
+    .await?;
+    let aggregator_item = if aggregator_item.status == "completed" {
+        aggregator_item
+    } else {
+        sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+            "UPDATE stage_work_items
+                SET status='completed',terminal_at=NOW(),row_version=row_version+1,
+                    updated_at=NOW()
+              WHERE id=$1 AND team_plan_id=$2 AND status='running' AND row_version=$3
+              RETURNING *",
+        )
+        .bind(aggregator_item.id)
+        .bind(plan.id)
+        .bind(aggregator_item.row_version)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::StaleVersion {
+            entity: "stage_work_items",
+            expected: aggregator_item.row_version,
+            actual: -1,
+        })?
+    };
+    tx.commit().await?;
+    reconcile_deployment_rollouts_best_effort(pool, "finalize_stage_team_unit").await;
+    Ok(FinalizedStageTeamUnitRow {
+        plan,
+        aggregator_work_item: aggregator_item,
+        finalized,
+    })
 }
 
 /// Wave-aware V2 Gate PASS close. The exact running wave, Worker landing and
@@ -3860,7 +8301,7 @@ pub async fn close_wave_gate_pass(
                 code: "stage_asset_wave_final_replay_mismatch",
             });
         }
-        let replayed = finalize_unit_pass_in_transaction(&mut tx, &input.final_seal).await?;
+        let replayed = finalize_unit_pass_in_transaction(&mut tx, &input.final_seal, None).await?;
         tx.commit().await?;
         return Ok(ClosedWaveGatePassRow::Finalized(replayed));
     }
@@ -4036,7 +8477,7 @@ pub async fn close_wave_gate_pass(
         });
     }
 
-    let finalized = finalize_unit_pass_in_transaction(&mut tx, &input.final_seal).await?;
+    let finalized = finalize_unit_pass_in_transaction(&mut tx, &input.final_seal, None).await?;
     tx.commit().await?;
     if contract_writes_legacy_mirror(contract) || input.final_seal.candidate_acceptance.is_some() {
         reconcile_deployment_rollouts_best_effort(pool, "close_wave_gate_pass").await;
@@ -4049,6 +8490,173 @@ pub(crate) struct StartupWorkerReaperStats {
     pub requeued: u64,
     pub recovery_required: u64,
     pub shadow_samples_written: u64,
+}
+
+/// Reconcile Team-owned Workers by their exact WorkItem/TeamPlan identity.
+/// A Team Unit deliberately does not share one specialist with all sibling
+/// roles, so the legacy `worker.specialist = unit.specialist` join is invalid
+/// for these rows.  Active tools are preserved for manual recovery; a cleanly
+/// expired attempt is superseded and its stable WorkItem is requeued for a new
+/// WorkerRun/message chain.
+async fn reap_expired_stage_team_workers_on_startup(
+    connection: &mut sqlx::PgConnection,
+    operation_id: Uuid,
+    cutoff: chrono::DateTime<chrono::Utc>,
+) -> RuntimeMemoryStoreResult<(Vec<StageWorkerRunRow>, Vec<StageWorkerRunRow>)> {
+    let expired = sqlx::query_as::<_, (Uuid, i64, Option<Uuid>, Uuid, i64, Uuid)>(
+        r#"SELECT worker.id,worker.attempt_epoch,worker.active_tool_call_id,
+                  item.id,item.row_version,plan.id
+             FROM tasks AS task
+             JOIN operation_state AS operation ON operation.operation_id=task.id
+             JOIN stage_runs AS execution
+               ON execution.operation_id=operation.operation_id
+              AND execution.stage_kind=operation.current_stage
+              AND execution.status='started'
+             JOIN stage_run_units AS unit
+               ON unit.operation_id=operation.operation_id
+              AND unit.stage_execution_id=execution.id
+             JOIN stage_team_plans AS plan
+               ON plan.operation_id=operation.operation_id
+              AND plan.stage_execution_id=execution.id
+              AND plan.stage_run_unit_id=unit.id
+              AND plan.scope_snapshot_id=unit.scope_snapshot_id
+              AND plan.organization_id=unit.organization_id
+             JOIN stage_work_items AS item
+               ON item.team_plan_id=plan.id
+              AND item.operation_id=plan.operation_id
+              AND item.stage_execution_id=plan.stage_execution_id
+              AND item.stage_run_unit_id=plan.stage_run_unit_id
+              AND item.scope_snapshot_id=plan.scope_snapshot_id
+              AND item.organization_id=plan.organization_id
+             JOIN stage_worker_runs AS worker
+               ON worker.work_item_id=item.id
+              AND worker.operation_id=item.operation_id
+              AND worker.stage_execution_id=item.stage_execution_id
+              AND worker.stage_run_unit_id=item.stage_run_unit_id
+              AND worker.organization_id=item.organization_id
+              AND worker.specialist=item.role
+             JOIN operation_org_scope_snapshots AS snapshot
+               ON snapshot.operation_id=operation.operation_id
+              AND snapshot.id=unit.scope_snapshot_id
+              AND snapshot.project_scope_id=operation.project_scope_id
+              AND snapshot.sealed_at IS NOT NULL
+             JOIN operation_org_scope_units AS member
+               ON member.snapshot_id=snapshot.id
+              AND member.organization_id=unit.organization_id
+            WHERE task.status IN ('running','waiting')
+              AND task.updated_at<$1
+              AND operation.operation_id=$2
+              AND operation.superseded_by IS NULL
+              AND operation.runtime_memory_contract='v2_only'
+              AND item.status='running'
+              AND worker.status IN ('running','waiting_background','gate_blocked')
+              AND worker.lease_token IS NOT NULL
+              AND worker.lease_expires_at<=NOW()
+            ORDER BY plan.id,item.priority,item.id,worker.id
+            FOR UPDATE OF item,worker"#,
+    )
+    .bind(cutoff)
+    .bind(operation_id)
+    .fetch_all(&mut *connection)
+    .await?;
+
+    let mut recovery_required = Vec::new();
+    let mut requeued = Vec::new();
+    for (worker_id, attempt_epoch, active_tool_call_id, item_id, item_row_version, plan_id) in
+        expired
+    {
+        if let Some(active_tool_call_id) = active_tool_call_id {
+            let exact_active_tool = sqlx::query_scalar::<_, bool>(
+                r#"SELECT EXISTS (
+                       SELECT 1
+                         FROM tool_calls AS active_tool
+                         JOIN stage_worker_runs AS worker ON worker.id=$1
+                        WHERE active_tool.id=$2
+                          AND active_tool.worker_run_id=worker.id
+                          AND active_tool.operation_id=worker.operation_id
+                          AND active_tool.stage_execution_id=worker.stage_execution_id
+                          AND active_tool.stage_run_unit_id=worker.stage_run_unit_id
+                          AND active_tool.organization_id=worker.organization_id
+                          AND active_tool.attempt_epoch=worker.attempt_epoch
+                          AND active_tool.lease_token=worker.lease_token
+                          AND active_tool.status IN ('received','running')
+                   )"#,
+            )
+            .bind(worker_id)
+            .bind(active_tool_call_id)
+            .fetch_one(&mut *connection)
+            .await?;
+            if !exact_active_tool {
+                // Keep malformed authority untouched so the shared task
+                // predicate fails the operation closed instead of inventing a
+                // recoverable shape.
+                continue;
+            }
+            let worker = sqlx::query_as::<_, StageWorkerRunRow>(
+                r#"UPDATE stage_worker_runs
+                      SET status='recovery_required',updated_at=NOW()
+                    WHERE id=$1 AND attempt_epoch=$2
+                      AND status IN ('running','waiting_background','gate_blocked')
+                    RETURNING *"#,
+            )
+            .bind(worker_id)
+            .bind(attempt_epoch)
+            .fetch_optional(&mut *connection)
+            .await?
+            .ok_or(RuntimeMemoryStoreError::Conflict {
+                code: "startup_team_worker_recovery_cas_failed",
+            })?;
+            let rows = sqlx::query(
+                r#"UPDATE stage_work_items
+                      SET status='recovery_required',row_version=row_version+1,updated_at=NOW()
+                    WHERE id=$1 AND status='running' AND row_version=$2"#,
+            )
+            .bind(item_id)
+            .bind(item_row_version)
+            .execute(&mut *connection)
+            .await?
+            .rows_affected();
+            if rows != 1 {
+                return Err(RuntimeMemoryStoreError::StaleVersion {
+                    entity: "stage_work_items",
+                    expected: item_row_version,
+                    actual: -1,
+                });
+            }
+            recovery_required.push(worker);
+            continue;
+        }
+
+        let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+            "SELECT * FROM stage_team_plans WHERE id=$1 FOR UPDATE",
+        )
+        .bind(plan_id)
+        .fetch_one(&mut *connection)
+        .await?;
+        let item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+            "SELECT * FROM stage_work_items WHERE id=$1 FOR UPDATE",
+        )
+        .bind(item_id)
+        .fetch_one(&mut *connection)
+        .await?;
+        let worker = sqlx::query_as::<_, StageWorkerRunRow>(
+            "SELECT * FROM stage_worker_runs WHERE id=$1 FOR UPDATE",
+        )
+        .bind(worker_id)
+        .fetch_one(&mut *connection)
+        .await?;
+        if item.row_version != item_row_version || worker.attempt_epoch != attempt_epoch {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "startup_team_worker_reap_cas_failed",
+            });
+        }
+        let resolved =
+            stage_teams::reap_expired_clean_stage_worker(connection, &plan, &item, &worker).await?;
+        if resolved.retry_scheduled {
+            requeued.push(resolved.worker);
+        }
+    }
+    Ok((recovery_required, requeued))
 }
 
 /// Reconcile expired V2 WorkerRuns while the startup task reaper owns one
@@ -4075,7 +8683,6 @@ pub(crate) async fn reap_expired_workers_on_startup(
           AND worker.stage_execution_id=execution.id
           AND worker.stage_run_unit_id=unit.id
           AND worker.organization_id=unit.organization_id
-          AND worker.specialist=unit.specialist
          JOIN operation_org_scope_snapshots snapshot
            ON snapshot.operation_id=operation.operation_id
           AND snapshot.id=unit.scope_snapshot_id
@@ -4096,6 +8703,27 @@ pub(crate) async fn reap_expired_workers_on_startup(
           AND worker.status IN ('running','waiting_background','gate_blocked')
           AND worker.lease_token IS NOT NULL
           AND worker.lease_expires_at<=NOW()
+          AND (
+              (
+                  worker.specialist=unit.specialist
+                  AND NOT EXISTS (
+                      SELECT 1 FROM stage_team_plans legacy_plan
+                      WHERE legacy_plan.stage_run_unit_id=unit.id
+                  )
+              )
+              OR EXISTS (
+                  SELECT 1
+                    FROM stage_team_plans team_plan
+                    JOIN stage_work_items team_item
+                      ON team_item.team_plan_id=team_plan.id
+                   WHERE team_plan.stage_run_unit_id=unit.id
+                     AND team_plan.operation_id=worker.operation_id
+                     AND team_plan.stage_execution_id=worker.stage_execution_id
+                     AND team_item.id=worker.work_item_id
+                     AND team_item.organization_id=worker.organization_id
+                     AND team_item.role=worker.specialist
+              )
+          )
         ORDER BY operation.operation_id"#,
     )
     .bind(cutoff)
@@ -4124,6 +8752,10 @@ pub(crate) async fn reap_expired_workers_on_startup(
           AND worker.stage_run_unit_id=unit.id
           AND worker.organization_id=unit.organization_id
           AND worker.specialist=unit.specialist
+          AND NOT EXISTS (
+              SELECT 1 FROM stage_team_plans team_plan
+              WHERE team_plan.stage_run_unit_id=unit.id
+          )
           AND task.status IN ('running','waiting')
           AND task.updated_at<$1
           AND operation.operation_id=$2
@@ -4187,8 +8819,12 @@ pub(crate) async fn reap_expired_workers_on_startup(
             .bind(operation_id)
             .fetch_all(&mut *connection)
             .await?;
+        let (team_recovery_required, team_requeued) =
+            reap_expired_stage_team_workers_on_startup(connection, operation_id, cutoff).await?;
         stats.recovery_required += recovery_required.len() as u64;
         stats.requeued += requeued.len() as u64;
+        stats.recovery_required += team_recovery_required.len() as u64;
+        stats.requeued += team_requeued.len() as u64;
 
         if contract_writes_legacy_mirror(contract)
             && (!recovery_required.is_empty() || !requeued.is_empty())
@@ -5489,6 +10125,115 @@ mod tests {
                 code: "active_stage_execution_mismatch"
             })
         ));
+
+        db.stop().await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn runtime_memory_store_terminal_stage_completion_closes_exact_execution_and_task_atomically(
+    ) {
+        let (mut db, _data_dir) = fixture("terminal-stage-completion").await;
+        let (operation_id, stage_execution_id) =
+            create_operation_at(&db, "terminal-stage-completion", "attack_candidate").await;
+        tasks::update_status(db.pool(), operation_id, crate::models::TaskStatus::Running)
+            .await
+            .expect("mark terminal fixture task running");
+
+        let completed = complete_terminal_stage_execution(
+            db.pool(),
+            &CompleteTerminalStageExecutionRow {
+                operation_id,
+                current_stage_execution_id: stage_execution_id,
+                terminal_stage: "attack_candidate".to_string(),
+                task_result: "Candidate slice complete".to_string(),
+            },
+        )
+        .await
+        .expect("atomically complete exact terminal execution and task");
+
+        assert_eq!(completed.id, stage_execution_id);
+        assert_eq!(completed.operation_id, operation_id);
+        assert_eq!(completed.stage_kind, "attack_candidate");
+        assert_eq!(completed.status, "completed");
+        assert!(completed.completed_at.is_some());
+        assert!(
+            stage_runs::get_exact_active_for_operation(db.pool(), operation_id)
+                .await
+                .is_err()
+        );
+        let task = tasks::get(db.pool(), operation_id)
+            .await
+            .expect("load completed task")
+            .expect("completed task exists");
+        assert_eq!(task.status, crate::models::TaskStatus::Finished);
+        assert_eq!(task.result.as_deref(), Some("Candidate slice complete"));
+        let operation = operation_state::get(db.pool(), operation_id)
+            .await
+            .expect("load terminal operation")
+            .expect("terminal operation exists");
+        assert_eq!(operation.current_stage, "attack_candidate");
+
+        let replay = complete_terminal_stage_execution(
+            db.pool(),
+            &CompleteTerminalStageExecutionRow {
+                operation_id,
+                current_stage_execution_id: stage_execution_id,
+                terminal_stage: "attack_candidate".to_string(),
+                task_result: "Candidate slice complete".to_string(),
+            },
+        )
+        .await
+        .expect("exact response-loss replay returns the same terminal row");
+        assert_eq!(replay.id, completed.id);
+        assert_eq!(replay.completed_at, completed.completed_at);
+
+        db.stop().await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn runtime_memory_store_terminal_stage_completion_rolls_back_both_rows_on_failure() {
+        let (mut db, _data_dir) = fixture("terminal-stage-completion-rollback").await;
+        let (operation_id, stage_execution_id) = create_operation_at(
+            &db,
+            "terminal-stage-completion-rollback",
+            "attack_candidate",
+        )
+        .await;
+        tasks::update_status(db.pool(), operation_id, crate::models::TaskStatus::Running)
+            .await
+            .expect("mark rollback fixture task running");
+
+        let result = complete_terminal_stage_execution_inner(
+            db.pool(),
+            &CompleteTerminalStageExecutionRow {
+                operation_id,
+                current_stage_execution_id: stage_execution_id,
+                terminal_stage: "attack_candidate".to_string(),
+                task_result: "must roll back".to_string(),
+            },
+            true,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(RuntimeMemoryStoreError::Conflict {
+                code: "injected_after_terminal_stage_close"
+            })
+        ));
+
+        let active = stage_runs::get_exact_active_for_operation(db.pool(), operation_id)
+            .await
+            .expect("stage close must roll back");
+        assert_eq!(active.id, stage_execution_id);
+        assert_eq!(active.status, "started");
+        let task = tasks::get(db.pool(), operation_id)
+            .await
+            .expect("load rolled-back task")
+            .expect("rolled-back task exists");
+        assert_eq!(task.status, crate::models::TaskStatus::Running);
+        assert!(task.result.is_none());
 
         db.stop().await;
     }

@@ -933,13 +933,13 @@ mod tests {
         let with = load_stage_spec_from_json(
             r#"{"id":"vuln_triage","kind":"vuln_triage","risk_level":"high",
                 "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
-                "expected_techniques":["WSTG-INPV-05","WSTG-ATHZ-04"]}"#,
+                "expected_techniques":["WSTG-INPV-05","WSTG-ATHN-04"]}"#,
         )
         .unwrap();
         let charter = stage_charter(&with, &ScopingPolicy::default());
         assert!(charter.contains("Coverage (per in-scope asset)"));
         assert!(charter.contains("WSTG-INPV-05"));
-        assert!(charter.contains("WSTG-ATHZ-04"));
+        assert!(charter.contains("WSTG-ATHN-04"));
         // 分母覆盖契约（设计 2026-06-05-vuln-triage-technique-matrix §5）。
         assert!(charter.contains("tested_units"));
         assert!(charter.contains("total_units"));

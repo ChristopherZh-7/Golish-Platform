@@ -708,7 +708,7 @@ mod tests {
             },
             ce("WSTG-INPV-01"),
             ce("WSTG-INPV-12"),
-            ce("WSTG-ATHZ-04"),
+            ce("WSTG-ATHN-04"),
             ce("WSTG-ATHN-02"),
             ce("WSTG-SESS-02"),
             ce("WSTG-CONF-05"),
@@ -718,25 +718,31 @@ mod tests {
         ]
     }
 
-    /// GateContext carrying the DB Empty facts the 4 authoritative vuln_triage
-    /// classes now require (Phase 4 scoped authoritative flip): GOLISH-NDAY /
-    /// WSTG-CONF-05 / WSTG-ATHN-02 / WSTG-CRYP-03 are `checked_empty` in the
-    /// fixture, so in authoritative mode their cells only close with a real
-    /// technique_outcomes Empty fact (what the nuclei handler upserts on a
-    /// covered-but-no-hit scan). The other 6 classes stay legacy self-report.
+    /// GateContext carrying the authoritative outcomes all ten Vuln Triage
+    /// classes require. Hand-written coverage is descriptive only.
     fn vuln_triage_authoritative_ctx(asset: &str) -> super::rule_engine::GateContext {
         use super::rule_engine::{EvidenceFact, EvidenceOutcome, GateContext};
         let facts = [
-            "GOLISH-NDAY",
-            "WSTG-CONF-05",
+            "WSTG-INPV-05",
+            "WSTG-INPV-01",
+            "WSTG-INPV-12",
+            "WSTG-ATHN-04",
             "WSTG-ATHN-02",
+            "WSTG-SESS-02",
+            "WSTG-CONF-05",
             "WSTG-CRYP-03",
+            "WSTG-INFO",
+            "GOLISH-NDAY",
         ]
         .into_iter()
         .map(|t| EvidenceFact {
             asset: asset.to_string(),
             technique: t.to_string(),
-            outcome: EvidenceOutcome::Empty,
+            outcome: if t == "WSTG-INPV-05" {
+                EvidenceOutcome::Found
+            } else {
+                EvidenceOutcome::Empty
+            },
             evidence_id: 1,
         })
         .collect();
@@ -800,12 +806,17 @@ mod tests {
             pass.reasons
         );
 
-        // 删掉 WSTG-INFO 那格（legacy 自报类，ctx 无其 DB 事实）→ 既无自报 cell 也无
-        // 账本事实 → coverage_complete 应 Block 且 reason 含该缺口。（不删 4 个 authoritative
-        // 类：它们即使删了 cell 也会被 ctx 的 Empty 事实经 derive_from_evidence 补齐，不构成缺口。）
+        // 同时删掉 WSTG-INFO 的描述格与权威事实 → coverage_complete 必须 Block。
         let mut incomplete = pass_deliverable.clone();
         incomplete.coverage.retain(|c| c.technique != "WSTG-INFO");
-        let blocked = validate_stage_gate_with_context(&incomplete, &spec, None, None, &ctx);
+        let mut incomplete_ctx = ctx.clone();
+        incomplete_ctx
+            .evidence_facts
+            .as_mut()
+            .expect("authoritative facts")
+            .retain(|fact| fact.technique != "WSTG-INFO");
+        let blocked =
+            validate_stage_gate_with_context(&incomplete, &spec, None, None, &incomplete_ctx);
         assert!(!blocked.allowed);
         assert!(
             blocked
@@ -846,9 +857,8 @@ mod tests {
         let spec = load_embedded_stage_spec(StageKind::VulnTriage).unwrap();
         let eid = EvidenceAuditId::new(1);
         let asset = "api.example.com";
-        // The 4 authoritative classes now need DB Empty facts to close (Phase 4);
-        // the cell we mutate below (first checked_empty = a legacy self-report
-        // class) exercises the denominator gate independently.
+        // All ten classes need authoritative outcomes; the descriptive cell
+        // still carries the tested/total denominator asserted below.
         let ctx = vuln_triage_authoritative_ctx(asset);
 
         // 基线全覆盖（每格 tested==total）→ Pass。

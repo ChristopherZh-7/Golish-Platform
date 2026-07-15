@@ -33,7 +33,7 @@
 
 ## 依赖
 
-- **内部**：**几乎所有 crate**——5 个 `*-app`（vuln/recon/pentest/agent/platform）+ `golish-app-core` + agent 栈（kit/runtime/bridge/sub-agents）+ 基础设施（db/graphiti/indexer/pty/sidecar/context/session/settings/models/tools/skills/mcp/llm-providers/synthesis/prompts/events/projects/scan-runner/pentest/vuln-intel/intel-providers/integrations/js-analyzer/auth-probe/artifacts/cli-output/core/platform）+ `vtcode-indexer`
+- **内部**：**几乎所有 crate**——5 个 `*-app`（vuln/recon/pentest/agent/platform）+ `golish-app-core` + agent 栈（kit/runtime/bridge/sub-agents）+ 基础设施（db/graphiti/indexer/pty/sidecar/context/session/settings/models/tools/skills/mcp/llm-providers/synthesis/prompts/events/projects/scan-runner/pentest/vuln-intel/intel-providers/integrations/js-analyzer/artifacts/cli-output/core/platform）+ `vtcode-indexer`
 - **外部**：`tauri`（+ dialog/shell/notification 插件）、`clap`、`rig-core`、`graph-flow`、`opentelemetry*`（Langfuse）、`sqlx`、`ts-rs`、`rustls`、`notify`、`nucleo-matcher`
 
 ## 被谁依赖 / 改动影响面

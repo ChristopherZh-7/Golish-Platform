@@ -176,12 +176,10 @@ impl Tool for SubmitCandidateAttemptTool {
             })
             .await;
         match persisted {
-            Ok(persisted) => Ok(json!({
-                "status": "submitted",
-                "attempt_id": persisted.attempt_id,
-                "result_hash": persisted.result_hash,
-                "replayed": persisted.replayed,
-            })),
+            // The repository persisted this exact value inside TerminalIntent
+            // before returning. Do not decorate it: the finished ToolCall and
+            // checkpoint barrier compare the serialized ToolResult byte-for-byte.
+            Ok(persisted) => Ok(persisted.tool_result),
             Err(error) => Ok(json!({
                 "status": "rejected",
                 "code": "ATTACK_ATTEMPT_SUBMISSION_REJECTED",

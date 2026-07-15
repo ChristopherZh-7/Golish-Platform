@@ -73,7 +73,7 @@ interface OrgTreeProps {
   selectedHostId: string | null;
   setSelectedHostId: Dispatch<SetStateAction<string | null>>;
   onToggleScope: (target: Target) => Promise<void>;
-  onDelete: (id: string) => Promise<void>;
+  onDelete: (id: string) => void;
   onUpdateNotes: (id: string, notes: string) => void;
   orgFormName: string;
   setOrgFormName: Dispatch<SetStateAction<string>>;

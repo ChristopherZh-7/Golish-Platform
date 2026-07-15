@@ -90,7 +90,7 @@ fn render_timeline_summarizes_candidate_pipeline_traces_without_sensitive_materi
     );
     assert!(
         out.contains(
-            "attack_wave wave-1 -> wave-2 opened_next_wave accepted=1 rejected=2 residuals=0 replayed=true"
+            "attack_wave wave-1 -> wave-2 opened_next_wave accepted=1 rejected=2 residuals=0 pending=0 replayed=true"
         ),
         "render: {out}"
     );

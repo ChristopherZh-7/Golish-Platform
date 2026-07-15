@@ -386,29 +386,35 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         }
       }),
 
-    updateSubAgentThinking: (sessionId: string, parentRequestId: string, text: string) =>
+    updateSubAgentThinking: (
+      sessionId: string,
+      parentRequestId: string,
+      text: string,
+      timing?: { startedAt: number; endedAt: number }
+    ) =>
       set((state) => {
         const agents = state.activeSubAgents[sessionId];
         if (!agents) return;
         const agent = agents.find((a) => a.parentRequestId === parentRequestId);
         if (agent) {
-          const now = Date.now();
+          const endedAt = timing?.endedAt ?? Date.now();
+          const startedAt = timing?.startedAt ?? endedAt;
           agent.thinking = text;
-          agent.thinkingStartedAt ??= now;
-          agent.thinkingEndedAt = now;
+          agent.thinkingStartedAt ??= startedAt;
+          agent.thinkingEndedAt = endedAt;
           if (
             !updateAccumulatedEntry(agent.entries, "thinking", text, {
               kind: "thinking",
               text,
-              startedAt: now,
-              endedAt: now,
+              startedAt,
+              endedAt,
             })
           ) {
             agent.entries.push({
               kind: "thinking",
               text,
-              startedAt: now,
-              endedAt: now,
+              startedAt,
+              endedAt,
             });
           }
         }

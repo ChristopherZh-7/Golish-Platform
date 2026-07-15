@@ -1,11 +1,9 @@
 //! Tests for the trait surface and pure helpers in golish-scan-runner.
 //!
-//! We exercise the `ScanStorage` trait via a mock implementation and verify
-//! that the global `NUCLEI_CANCELLED` cancellation flag round-trips through
-//! the public API. Network/process-spawning paths require external tools and
-//! are intentionally excluded.
+//! We exercise the `ScanStorage` trait via a mock implementation. Network and
+//! process-spawning paths require external tools and are intentionally
+//! excluded.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -14,7 +12,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use golish_db::repo::scoped::TargetWriteGuard;
-use golish_scan_runner::{ScanRunnerResult, ScanStorage, NUCLEI_CANCELLED};
+use golish_scan_runner::{ScanRunnerResult, ScanStorage};
 
 #[derive(Default)]
 struct MockScanStorage {
@@ -90,19 +88,6 @@ async fn mock_storage_records_directory_entry() {
     let recorded = calls.lock().clone();
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0], "feroxbuster|https://example.com/admin|200");
-}
-
-#[test]
-fn nuclei_cancellation_flag_round_trips() {
-    // Ensure clean baseline (other tests might have flipped it).
-    NUCLEI_CANCELLED.store(false, Ordering::SeqCst);
-    assert!(!NUCLEI_CANCELLED.load(Ordering::SeqCst));
-
-    NUCLEI_CANCELLED.store(true, Ordering::SeqCst);
-    assert!(NUCLEI_CANCELLED.load(Ordering::SeqCst));
-
-    NUCLEI_CANCELLED.store(false, Ordering::SeqCst);
-    assert!(!NUCLEI_CANCELLED.load(Ordering::SeqCst));
 }
 
 #[tokio::test]

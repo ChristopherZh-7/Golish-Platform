@@ -71,6 +71,15 @@ pub async fn execute_security_analysis_tool(
         )));
     }
 
+    // Per-target detail is an operation-scoped read. Without a confirmed
+    // engagement organization, a model-authored UUID could otherwise select a
+    // target belonging to another workspace/engagement from the shared DB.
+    if tool_name == "query_target_data" && harness_org_id.is_none() {
+        return Some(error_result(
+            "query_target_data requires an active organization binding",
+        ));
+    }
+
     let repo = match db_tracker.and_then(|t| t.repo()) {
         Some(r) => r,
         None => {
@@ -821,7 +830,7 @@ pub async fn execute_security_analysis_tool(
                 json!({
                     "recent_evidence": rows,
                     "count": count,
-                    "contract": "These are this run's REAL evidence-ledger ids (newest first). Put the evidence_id values whose tool/asset/technique backs each claim into that claim's evidence_ids and the top-level evidence_refs. Never invent ids, copy placeholders (1,2,3), or use submit_stage_deliverable to discover missing ids.",
+                    "contract": "These are this run's REAL evidence-ledger ids (newest first). Put the evidence_id values whose tool/asset/technique backs each claim into that claim's evidence_ids and the top-level evidence_refs. Never invent ids, copy placeholders (1,2,3), or use submit_stage_deliverable to discover missing ids. Interpret outcome literally: blocked means the check did not complete; it is not a negative result and does not prove WAF, rate limiting, or target resistance. Name a blocker cause only when trusted evidence explicitly provides that exact cause.",
                 }),
                 true,
             ))
@@ -861,23 +870,28 @@ fn validate_stage_coverage_read_context(
     if let Some(error) = context.wave_error.as_ref() {
         return Err(error.clone());
     }
-    if stage != crate::harness::StageKind::Enumeration.as_str() {
+    let Some(strict_stage) = crate::harness::StageKind::try_parse(stage).filter(|stage| {
+        matches!(
+            stage,
+            crate::harness::StageKind::Enumeration | crate::harness::StageKind::VulnTriage
+        )
+    }) else {
         return Ok(());
-    }
+    };
     if session_id.is_none_or(|run_id| run_id.trim().is_empty()) {
-        return Err(
-            "Enumeration worklist requires the active run/session; latest or unscoped outcome fallback is forbidden"
-                .to_string(),
-        );
+        return Err(format!(
+            "{} worklist requires the active run/session; latest or unscoped outcome fallback is forbidden",
+            strict_stage.as_str()
+        ));
     }
     if !crate::harness::org_gate::stage_accepts_outcome_projection(
-        crate::harness::StageKind::Enumeration,
+        strict_stage,
         context.stage_started_at.is_some(),
     ) {
-        return Err(
-            "Enumeration worklist requires an active Enumeration operation with a current stage_started_at freshness cutoff"
-                .to_string(),
-        );
+        return Err(format!(
+            "{} worklist requires an active operation with a current stage_started_at freshness cutoff",
+            strict_stage.as_str()
+        ));
     }
     Ok(())
 }
@@ -1516,6 +1530,21 @@ fn eas_web_cell_has_missing_exact_origins(stage: &str, cell: &Value) -> bool {
             .is_some_and(|origins| !origins.is_empty())
 }
 
+fn target_intel_organization_asset_key(stage: &str, asset_row: &Value) -> Option<String> {
+    if stage != "target_intel" {
+        return None;
+    }
+    crate::harness::org_gate::target_intel_organization_asset_key(
+        asset_row.get("target_type").and_then(Value::as_str),
+        asset_row.get("target_id").and_then(Value::as_str),
+    )
+}
+
+fn terminal_exception_asset_matches(stage: &str, asset_row: &Value, asset: &str) -> bool {
+    asset_row.get("value").and_then(Value::as_str) == Some(asset)
+        || target_intel_organization_asset_key(stage, asset_row).as_deref() == Some(asset)
+}
+
 fn refresh_preview_asset_summary(snapshot: &mut Value) {
     let Some(assets) = snapshot.get("assets").and_then(Value::as_array) else {
         return;
@@ -1628,12 +1657,23 @@ fn preview_terminal_exceptions(
                 "terminal_exceptions[{index}].status '{status}' is invalid; preview accepts only checked_empty, blocked, or not_applicable (found is DB-owned)"
             ));
         }
-        if !seen.insert((asset.to_string(), technique.to_string())) {
-            return Err(format!(
-                "terminal_exceptions contains duplicate cell ({asset}, {technique})"
-            ));
+        if let Some(reason_kind) = object.get("reason_kind") {
+            if let Err(error) = serde_json::from_value::<Option<crate::harness::types::ReasonKind>>(
+                reason_kind.clone(),
+            ) {
+                rejected_terminal_exceptions.push(json!({
+                    "index": index,
+                    "asset": asset,
+                    "technique": technique,
+                    "status": status,
+                    "reason_kind": reason_kind,
+                    "reason": format!(
+                        "terminal_exceptions[{index}].reason_kind is not accepted by the StageDeliverable reason_kind contract: {error}"
+                    )
+                }));
+                continue;
+            }
         }
-
         let evidence_refs = match object.get("evidence_refs").filter(|value| !value.is_null()) {
             None => Vec::new(),
             Some(value) => value
@@ -1670,12 +1710,19 @@ fn preview_terminal_exceptions(
 
         let asset_row = assets
             .iter_mut()
-            .find(|row| row.get("value").and_then(Value::as_str) == Some(asset))
+            .find(|row| terminal_exception_asset_matches(&stage, row, asset))
             .ok_or_else(|| {
                 format!(
                     "terminal_exceptions[{index}] asset '{asset}' is not in the authoritative current worklist"
                 )
             })?;
+        let submission_asset = target_intel_organization_asset_key(&stage, asset_row)
+            .unwrap_or_else(|| asset.to_string());
+        if !seen.insert((submission_asset.clone(), technique.to_string())) {
+            return Err(format!(
+                "terminal_exceptions contains duplicate cell ({submission_asset}, {technique})"
+            ));
+        }
         let cell = asset_row
             .get_mut("coverage")
             .and_then(Value::as_array_mut)
@@ -1698,6 +1745,13 @@ fn preview_terminal_exceptions(
                 "terminal_exceptions[{index}] cell ({asset}, {technique}) is already terminal as '{current}'; omit it and keep DB truth"
             ));
         }
+        // EAS WEB has a stricter exact-origin denominator than the compact
+        // parent asset cell. Reject every otherwise well-shaped parent-cell
+        // exception before applying generic checked-empty transition rules:
+        // a partial WEB cell is expected while exact origins remain, and the
+        // preview must preserve that gap instead of returning a fatal parse-like
+        // error for checked_empty while returning structured rejection for the
+        // other terminal statuses.
         if eas_web_cell_has_missing_exact_origins(&stage, cell) {
             rejected_terminal_exceptions.push(json!({
                 "index": index,
@@ -1709,6 +1763,30 @@ fn preview_terminal_exceptions(
             }));
             continue;
         }
+        if status == "checked_empty" {
+            if matches!(current, "error" | "partial") {
+                return Err(format!(
+                    "terminal_exceptions[{index}] cannot replace non-terminal {current} truth with checked_empty; finish the exact producer or use an honest blocked/not_applicable cell with a concrete note"
+                ));
+            }
+            let current_evidence_refs = cell
+                .get("evidence_refs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_i64)
+                .filter(|id| *id > 0)
+                .collect::<BTreeSet<_>>();
+            if current_evidence_refs.is_empty()
+                || evidence_refs
+                    .iter()
+                    .any(|id| !current_evidence_refs.contains(id))
+            {
+                return Err(format!(
+                    "terminal_exceptions[{index}] checked_empty lacks current exact-technique Empty truth for ({asset}, {technique}); arbitrary evidence ids cannot turn an unattempted cell into checked-empty. Run the exact producer or use blocked/not_applicable with a concrete note"
+                ));
+            }
+        }
 
         cell["state"] = json!(status);
         cell["source"] = json!("submit_stage_deliverable_preview");
@@ -1719,7 +1797,9 @@ fn preview_terminal_exceptions(
         }
         blocked_cells += usize::from(status == "blocked");
         not_applicable_cells += usize::from(status == "not_applicable");
-        coverage_to_submit.push(entry.clone());
+        let mut accepted_entry = entry.clone();
+        accepted_entry["asset"] = json!(submission_asset);
+        coverage_to_submit.push(accepted_entry);
     }
 
     refresh_preview_asset_summary(&mut snapshot);
@@ -1879,7 +1959,8 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
         }
     }
 
-    let missing_vuln_triage_denominator = stage == "vuln_triage" && total_cells == 0;
+    let (authoritative_zero_input, missing_vuln_triage_denominator) =
+        vuln_triage_denominator_state(&snapshot, total_cells);
     let ready_to_submit = !missing_vuln_triage_denominator
         && pending_cells == 0
         && error_cells == 0
@@ -1895,6 +1976,7 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
         "prefer": preferred_states,
         "ready_to_submit": ready_to_submit,
         "coverage_denominator_missing": missing_vuln_triage_denominator,
+        "authoritative_zero_input": authoritative_zero_input,
         "summary": snapshot.get("summary").cloned().unwrap_or_else(|| json!({})),
         "cell_summary": {
             "total_cells": total_cells,
@@ -1918,7 +2000,9 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
             "Items are derived from DB/gate truth. Close the suggested_capabilities for each asset x technique cell; suggested_tools are implementation hints. Then call stage_worklist_next/status again; do not mark work complete by natural-language assertion."
         },
         "next_action": if missing_vuln_triage_denominator {
-            "Do not submit: vuln_triage returned an empty asset x technique denominator. Refresh the stage coverage snapshot/worklist before submitting; the gate requires formulaic scan cells for each in-scope asset."
+            "Do not submit: vuln_triage returned zero cells without an explicit authoritative total_assets=0 plus assets=[]. Refresh the operation-scoped stage coverage snapshot; missing or malformed denominator state must fail closed."
+        } else if authoritative_zero_input {
+            "The final-sealed Enumeration surface is authoritatively empty. Submit findings: [] and coverage: []; the server seals an explicit zero-input Vuln handoff without fabricated scan cells or evidence."
         } else if ready_to_submit && is_enumeration {
             "No pending/error/partial Enumeration work items remain. Submit summary claims, findings: [], and coverage: []; current-run producer/preflight/recovery evidence and trusted context own every terminal cell."
         } else if ready_to_submit {
@@ -2022,13 +2106,16 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
 
     let omitted_gap_count = pending_cells + error_cells + partial_cells;
     let omitted_gap_count = omitted_gap_count.saturating_sub(gaps.len());
-    let missing_vuln_triage_denominator = stage == "vuln_triage" && total_cells == 0;
+    let (authoritative_zero_input, missing_vuln_triage_denominator) =
+        vuln_triage_denominator_state(&snapshot, total_cells);
     let ready_to_submit = !missing_vuln_triage_denominator
         && pending_cells == 0
         && error_cells == 0
         && partial_cells == 0;
     let next_action = if missing_vuln_triage_denominator {
-        "Do not submit: vuln_triage returned an empty asset x technique denominator. Refresh the stage coverage snapshot/worklist before submitting; the gate requires formulaic scan cells for each in-scope asset."
+        "Do not submit: vuln_triage returned zero cells without an explicit authoritative total_assets=0 plus assets=[]. Refresh the operation-scoped stage coverage snapshot; missing or malformed denominator state must fail closed."
+    } else if authoritative_zero_input {
+        "The final-sealed Enumeration surface is authoritatively empty. Submit findings: [] and coverage: []; the server seals an explicit zero-input Vuln handoff without fabricated scan cells or evidence."
     } else if ready_to_submit {
         if next_wave_cells > 0 {
             if is_enumeration {
@@ -2051,6 +2138,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
     let mut out = json!({
         "ready_to_submit": ready_to_submit,
         "coverage_denominator_missing": missing_vuln_triage_denominator,
+        "authoritative_zero_input": authoritative_zero_input,
         "stage": snapshot.get("stage").cloned().unwrap_or(Value::Null),
         "organization_id": snapshot.get("organization_id").cloned().unwrap_or(Value::Null),
         "session_id": snapshot.get("session_id").cloned().unwrap_or(Value::Null),
@@ -2098,6 +2186,28 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
     out
 }
 
+/// Distinguish a trusted zero-input Vuln snapshot from a missing/malformed
+/// denominator. The DB-backed provider only returns the former after it has
+/// resolved the operation-scoped, final-sealed Enumeration handoff. Keeping
+/// this check structural prevents a generic `{assets: []}` fallback from
+/// becoming a vacuous PASS.
+fn vuln_triage_denominator_state(snapshot: &Value, total_cells: usize) -> (bool, bool) {
+    if snapshot.get("stage").and_then(Value::as_str) != Some("vuln_triage") || total_cells > 0 {
+        return (false, false);
+    }
+
+    let authoritative_zero_input = snapshot
+        .get("summary")
+        .and_then(|summary| summary.get("total_assets"))
+        .and_then(Value::as_u64)
+        == Some(0)
+        && snapshot
+            .get("assets")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty);
+    (authoritative_zero_input, !authoritative_zero_input)
+}
+
 fn enumeration_gap_focus(technique: &str) -> &'static str {
     match technique {
         "GOLISH-ENUM-JS" => {
@@ -2137,10 +2247,11 @@ fn eas_gap_focus(technique: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_stage_asset_coverage, enumeration_web_roots_worklist, filter_rows_to_current_wave,
-        in_scope_rows_own_target, preview_terminal_exceptions, resolve_coverage_org_id,
-        stage_worklist_next, stage_worklist_status, validate_stage_coverage_read_context,
-        web_root_url_from_meta, StageCoverageReadContext,
+        compact_stage_asset_coverage, enumeration_web_roots_worklist,
+        execute_security_analysis_tool, filter_rows_to_current_wave, in_scope_rows_own_target,
+        preview_terminal_exceptions, resolve_coverage_org_id, stage_worklist_next,
+        stage_worklist_status, validate_stage_coverage_read_context, web_root_url_from_meta,
+        StageCoverageReadContext,
     };
 
     #[test]
@@ -2255,7 +2366,7 @@ mod tests {
                 "coverage": [
                     {"technique": "GOLISH-INTEL-ASN", "state": "pending"},
                     {"technique": "GOLISH-INTEL-CT", "state": "pending"},
-                    {"technique": "GOLISH-INTEL-OSINT", "state": "pending"}
+                    {"technique": "GOLISH-INTEL-OSINT", "state": "pending", "evidence_refs": [4]}
                 ]
             }]
         });
@@ -2297,6 +2408,146 @@ mod tests {
     }
 
     #[test]
+    fn target_intel_terminal_preview_rejects_unknown_deliverable_reason_kind() {
+        let snapshot = json!({
+            "stage": "target_intel",
+            "organization_id": "org-current",
+            "session_id": "run-current",
+            "summary": {
+                "total_assets": 1,
+                "done_assets": 0,
+                "pending_assets": 1,
+                "blocked_assets": 0
+            },
+            "assets": [{
+                "target_id": "target-moresec",
+                "value": "moresec.cn",
+                "target_type": "domain",
+                "coverage": [{
+                    "technique": "GOLISH-INTEL-OSINT",
+                    "state": "pending"
+                }]
+            }]
+        });
+        let exceptions = json!([{
+            "asset": "moresec.cn",
+            "technique": "GOLISH-INTEL-OSINT",
+            "status": "blocked",
+            "note": "The provider is unavailable from the current environment",
+            "reason_kind": "env_unavailable"
+        }]);
+
+        let (projected, preview) =
+            preview_terminal_exceptions(snapshot, Some(&exceptions)).unwrap();
+        let compact = compact_stage_asset_coverage(projected.clone(), 25, false);
+
+        assert_eq!(preview["provided_cells"], 1);
+        assert_eq!(preview["accepted_cells"], 0);
+        assert_eq!(preview["rejected_cells"], 1);
+        assert_eq!(preview["coverage_to_submit"], json!([]));
+        assert_eq!(
+            preview["rejected_terminal_exceptions"][0]["reason_kind"],
+            "env_unavailable"
+        );
+        assert!(preview["rejected_terminal_exceptions"][0]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("StageDeliverable reason_kind"));
+        assert_eq!(projected["assets"][0]["coverage"][0]["state"], "pending");
+        assert_eq!(compact["ready_to_submit"], false);
+    }
+
+    #[test]
+    fn target_intel_terminal_preview_preserves_credential_missing_for_quake_401() {
+        let snapshot = json!({
+            "stage": "target_intel",
+            "organization_id": "org-current",
+            "session_id": "run-current",
+            "summary": {
+                "total_assets": 1,
+                "done_assets": 0,
+                "pending_assets": 1,
+                "blocked_assets": 0
+            },
+            "assets": [{
+                "target_id": "target-moresec",
+                "value": "moresec.cn",
+                "target_type": "domain",
+                "coverage": [{
+                    "technique": "GOLISH-INTEL-OSINT",
+                    "state": "error"
+                }]
+            }]
+        });
+        let exceptions = json!([{
+            "asset": "moresec.cn",
+            "technique": "GOLISH-INTEL-OSINT",
+            "status": "blocked",
+            "note": "Quake returned HTTP 401 for the configured credential",
+            "reason_kind": "credential_missing"
+        }]);
+
+        let (projected, preview) =
+            preview_terminal_exceptions(snapshot, Some(&exceptions)).unwrap();
+        let compact = compact_stage_asset_coverage(projected, 25, false);
+
+        assert_eq!(preview["accepted_cells"], 1);
+        assert_eq!(preview["rejected_cells"], 0);
+        assert_eq!(preview["coverage_to_submit"], exceptions);
+        assert_eq!(compact["ready_to_submit"], true);
+    }
+
+    #[test]
+    fn target_intel_organization_preview_returns_final_gate_asset_key() {
+        let organization_id = "84e789bf-3dcf-4580-9861-b3849c0d9474";
+        let organization_key = format!("organization:{organization_id}");
+        let snapshot = json!({
+            "stage": "target_intel",
+            "assets": [{
+                "target_id": organization_id,
+                "value": "广州有创网络科技有限公司",
+                "target_type": "organization",
+                "coverage": [
+                    {"technique": "GOLISH-INTEL-ASN", "state": "pending"},
+                    {"technique": "GOLISH-INTEL-OSINT", "state": "error", "evidence_refs": [27784]}
+                ]
+            }]
+        });
+        let exceptions = json!([
+            {
+                "asset": "广州有创网络科技有限公司",
+                "technique": "GOLISH-INTEL-ASN",
+                "status": "blocked",
+                "note": "No configured source declares an ASN capability",
+                "reason_kind": "provider_missing"
+            },
+            {
+                "asset": organization_key,
+                "technique": "GOLISH-INTEL-OSINT",
+                "status": "blocked",
+                "note": "The configured provider set is incomplete because Quake returned 401",
+                "reason_kind": "provider_missing"
+            }
+        ]);
+
+        let (projected, preview) =
+            preview_terminal_exceptions(snapshot, Some(&exceptions)).unwrap();
+
+        assert_eq!(preview["accepted_cells"], 2);
+        assert_eq!(
+            preview["coverage_to_submit"][0]["asset"],
+            json!(organization_key)
+        );
+        assert_eq!(
+            preview["coverage_to_submit"][1]["asset"],
+            json!(organization_key)
+        );
+        assert!(stage_worklist_status(projected)["ready_to_submit"]
+            .as_bool()
+            .unwrap_or(false));
+    }
+
+    #[test]
     fn target_intel_checked_empty_preview_requires_evidence_and_known_cell() {
         let snapshot = json!({
             "stage": "target_intel",
@@ -2325,6 +2576,82 @@ mod tests {
         assert!(preview_terminal_exceptions(snapshot, Some(&foreign_asset))
             .unwrap_err()
             .contains("not in the authoritative current worklist"));
+    }
+
+    #[test]
+    fn target_intel_checked_empty_preview_requires_current_exact_empty_truth() {
+        let pending = json!({
+            "stage": "target_intel",
+            "assets": [{
+                "value": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
+                "coverage": [{
+                    "technique": "GOLISH-INTEL-ASN",
+                    "state": "pending",
+                    "evidence_refs": []
+                }]
+            }]
+        });
+        let checked_empty = json!([{
+            "asset": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
+            "technique": "GOLISH-INTEL-ASN",
+            "status": "checked_empty",
+            "evidence_refs": [27784]
+        }]);
+        assert!(preview_terminal_exceptions(pending, Some(&checked_empty))
+            .unwrap_err()
+            .contains("exact-technique Empty truth"));
+
+        let errored = json!({
+            "stage": "target_intel",
+            "assets": [{
+                "value": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
+                "coverage": [{
+                    "technique": "GOLISH-INTEL-OSINT",
+                    "state": "error",
+                    "evidence_refs": [27784]
+                }]
+            }]
+        });
+        let checked_empty = json!([{
+            "asset": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
+            "technique": "GOLISH-INTEL-OSINT",
+            "status": "checked_empty",
+            "evidence_refs": [27784]
+        }]);
+        assert!(preview_terminal_exceptions(errored, Some(&checked_empty))
+            .unwrap_err()
+            .contains("non-terminal error"));
+
+        let unresolved = json!({
+            "stage": "target_intel",
+            "assets": [{
+                "value": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
+                "coverage": [
+                    {"technique": "GOLISH-INTEL-ASN", "state": "pending", "evidence_refs": []},
+                    {"technique": "GOLISH-INTEL-OSINT", "state": "error", "evidence_refs": [27784]}
+                ]
+            }]
+        });
+        let honest_blocks = json!([
+            {
+                "asset": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
+                "technique": "GOLISH-INTEL-ASN",
+                "status": "blocked",
+                "note": "No configured source declares an ASN capability"
+            },
+            {
+                "asset": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
+                "technique": "GOLISH-INTEL-OSINT",
+                "status": "blocked",
+                "note": "The configured provider set is incomplete because Quake returned 401"
+            }
+        ]);
+        let (projected, preview) =
+            preview_terminal_exceptions(unresolved, Some(&honest_blocks)).unwrap();
+        assert_eq!(preview["coverage_to_submit"], honest_blocks);
+        assert!(stage_worklist_status(projected)["ready_to_submit"]
+            .as_bool()
+            .unwrap_or(false));
     }
 
     #[test]
@@ -2529,29 +2856,29 @@ mod tests {
     }
 
     #[test]
-    fn enumeration_worklists_require_active_current_run_context() {
+    fn enumeration_and_vuln_worklists_require_active_current_run_context() {
         let missing_cutoff = StageCoverageReadContext::default();
-        assert!(validate_stage_coverage_read_context(
-            "enumeration",
-            Some("run-current"),
-            &missing_cutoff,
-        )
-        .is_err());
-
         let active = StageCoverageReadContext {
             stage_started_at: Some(Utc::now()),
             ..StageCoverageReadContext::default()
         };
-        assert!(validate_stage_coverage_read_context("enumeration", None, &active).is_err());
-        assert!(validate_stage_coverage_read_context("enumeration", Some("   "), &active).is_err());
-        assert!(
-            validate_stage_coverage_read_context("enumeration", Some("run-current"), &active,)
-                .is_ok()
-        );
+        for stage in ["enumeration", "vuln_triage"] {
+            assert!(validate_stage_coverage_read_context(
+                stage,
+                Some("run-current"),
+                &missing_cutoff,
+            )
+            .is_err());
+            assert!(validate_stage_coverage_read_context(stage, None, &active).is_err());
+            assert!(validate_stage_coverage_read_context(stage, Some("   "), &active).is_err());
+            assert!(
+                validate_stage_coverage_read_context(stage, Some("run-current"), &active).is_ok()
+            );
+        }
 
-        // This P0 only tightens Enumeration. Other stages retain their current
-        // read-context behaviour; in particular, do not silently alter EAS wave
-        // semantics while fixing the Enumeration worklist.
+        // Other stages retain their current read-context behaviour; in
+        // particular, do not silently alter EAS wave semantics while tightening
+        // the two exact-origin stages.
         assert!(validate_stage_coverage_read_context(
             "external_attack_surface",
             None,
@@ -2697,7 +3024,7 @@ mod tests {
     }
 
     #[test]
-    fn vuln_triage_preflight_does_not_pass_empty_denominator() {
+    fn vuln_triage_preflight_accepts_only_authoritative_zero_input() {
         let compact = compact_stage_asset_coverage(
             json!({
                 "stage": "vuln_triage",
@@ -2710,12 +3037,13 @@ mod tests {
             false,
         );
 
-        assert_eq!(compact["ready_to_submit"], false);
-        assert_eq!(compact["coverage_denominator_missing"], true);
+        assert_eq!(compact["ready_to_submit"], true);
+        assert_eq!(compact["coverage_denominator_missing"], false);
+        assert_eq!(compact["authoritative_zero_input"], true);
         assert!(compact["next_action"]
             .as_str()
             .unwrap()
-            .contains("empty asset x technique denominator"));
+            .contains("zero-input Vuln handoff"));
 
         let worklist = stage_worklist_next(
             json!({
@@ -2729,9 +3057,36 @@ mod tests {
             &["pending".to_string(), "error".to_string()],
         );
 
-        assert_eq!(worklist["ready_to_submit"], false);
-        assert_eq!(worklist["coverage_denominator_missing"], true);
+        assert_eq!(worklist["ready_to_submit"], true);
+        assert_eq!(worklist["coverage_denominator_missing"], false);
+        assert_eq!(worklist["authoritative_zero_input"], true);
         assert_eq!(worklist["next_action"], compact["next_action"]);
+
+        for malformed in [
+            json!({
+                "stage": "vuln_triage",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {},
+                "assets": []
+            }),
+            json!({
+                "stage": "vuln_triage",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 1},
+                "assets": []
+            }),
+        ] {
+            let malformed = compact_stage_asset_coverage(malformed, 10, false);
+            assert_eq!(malformed["ready_to_submit"], false);
+            assert_eq!(malformed["coverage_denominator_missing"], true);
+            assert_eq!(malformed["authoritative_zero_input"], false);
+            assert!(malformed["next_action"]
+                .as_str()
+                .unwrap()
+                .contains("missing or malformed denominator"));
+        }
     }
 
     #[test]
@@ -3544,6 +3899,42 @@ mod tests {
         assert!(methodology.contains("at most 200 cells"));
         assert!(methodology.contains("at most 50 distinct"));
         assert!(!methodology.contains("terminal_exceptions_preview.coverage_to_submit"));
+    }
+
+    #[test]
+    fn candidate_reasoning_never_invents_a_blocker_cause() {
+        let methodology =
+            include_str!("../../../../../resources/harness/stages/attack_candidate/methodology.md");
+        let source = include_str!("security.rs");
+
+        assert!(methodology.contains("`blocked` means the check did not"));
+        assert!(methodology.contains("never rewrite"));
+        assert!(methodology.contains("blocked by WAF"));
+        assert!(source.contains("blocked means the check did not complete"));
+        assert!(source.contains("does not prove WAF"));
+    }
+
+    #[tokio::test]
+    async fn query_target_data_rejects_unbound_org_before_repo_lookup() {
+        let target_id = uuid::Uuid::new_v4();
+        let (value, success) = execute_security_analysis_tool(
+            "query_target_data",
+            &json!({"target_id": target_id.to_string()}),
+            None,
+            None,
+            None,
+            None,
+            Some(crate::harness::StageKind::Scoping),
+            None,
+        )
+        .await
+        .expect("query_target_data is a recognized security tool");
+
+        assert!(!success);
+        assert_eq!(
+            value["error"],
+            "query_target_data requires an active organization binding"
+        );
     }
 
     #[test]

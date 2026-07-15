@@ -6,7 +6,13 @@ const pendingThinkingBatches = new Map<string, string>();
 const pendingConversationThinkingBatches = new Map<string, string>();
 const pendingSubAgentThinkingBatches = new Map<
   string,
-  { sessionId: string; parentRequestId: string; text: string }
+  {
+    sessionId: string;
+    parentRequestId: string;
+    text: string;
+    startedAt: number;
+    endedAt: number;
+  }
 >();
 const pendingToolOutputBatches = new Map<
   string,
@@ -70,7 +76,10 @@ function flushRealtimeBatchesWhere(predicate?: (sessionId: string) => boolean) {
 
   for (const [key, entry] of Array.from(pendingSubAgentThinkingBatches.entries())) {
     if (predicate && !predicate(entry.sessionId)) continue;
-    state.updateSubAgentThinking(entry.sessionId, entry.parentRequestId, entry.text);
+    state.updateSubAgentThinking(entry.sessionId, entry.parentRequestId, entry.text, {
+      startedAt: entry.startedAt,
+      endedAt: entry.endedAt,
+    });
     pendingSubAgentThinkingBatches.delete(key);
   }
 
@@ -146,10 +155,15 @@ export function batchConversationThinking(convId: string, content: string) {
 }
 
 export function batchSubAgentThinking(sessionId: string, parentRequestId: string, text: string) {
-  pendingSubAgentThinkingBatches.set(`${sessionId}\0${parentRequestId}`, {
+  const key = `${sessionId}\0${parentRequestId}`;
+  const now = Date.now();
+  const pending = pendingSubAgentThinkingBatches.get(key);
+  pendingSubAgentThinkingBatches.set(key, {
     sessionId,
     parentRequestId,
     text,
+    startedAt: pending?.startedAt ?? now,
+    endedAt: now,
   });
   scheduleRealtimeBatchFlush();
 }

@@ -26,7 +26,7 @@
 | `DbState` | 命令接收的窄 DB 状态句柄 |
 | `domain::operator::{OperatorId, OperatorChannel, TrustedOperatorPrincipal, TrustedOperatorPrincipalProvider}` | 不可 serde、字段私有的服务端操作员身份；特权请求不能携带 actor UUID |
 | `TauriEventEmitter` | 包 `tauri::AppHandle` 的事件发射适配器 |
-| `ports`（vuln/platform/pentest/agent/recon） | provider 端服务 ports（S1-2），如 `VaultReadPort`/`PgVaultAdapter` |
+| `ports`（vuln/platform/pentest/agent/recon） | provider 端服务 ports（S1-2），如 `VaultReadPort`/`PgVaultAdapter`；Vault read 面只保留 project-scoped list/get-secret，旧单值 token resolver 已随授权探针移除 |
 | `pty_interactive` | PTY 输出 tap + `run_pty_cmd` Tool 实现；启动后台 job 时捕获当前 agent tool context；提供 `check_job` / `kill_job` / `wait_for_background_jobs` 后台控制工具 |
 | `runtime`（`TauriRuntime` / `CliRuntime`） | `GolishRuntime` 适配器 |
 | `scoping` / `domain` / `state` / `background_jobs` | IDOR 守卫 / domain DTO（ts-rs）/ 状态 / 后台任务；后台任务广播 completion + live stdout/stderr chunks |

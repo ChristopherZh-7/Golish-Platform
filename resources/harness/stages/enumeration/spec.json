@@ -64,6 +64,24 @@
 
   "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout \u00a73.2): specialist = the per-org sub-agent stage_run fans out (enumeration \u2192 enumerator, the ACTIVE content-enumeration specialist split from Pentester, mirroring prober for EAS); coverage_axis = the human-readable technique columns StageRunView renders per org row (one per expected technique: js / dir / param / jsapi).",
   "specialist": "enumerator",
+  "$comment_team_scheduler": "2026-07-16 downstream convergence: every company uses one durable Company Controller with the frozen Enumerator wrapper/worklist authority. Child delegation does not alter exact-origin scope, evidence ownership, or deterministic coverage closure.",
+  "team_scheduler": {
+    "schema_version": 1,
+    "enabled_in_v2_only": true,
+    "allowed_roles": ["company_stage_controller", "enumerator"],
+    "aggregator_kind": "aggregate_stage_unit",
+    "aggregator_role": "company_stage_controller",
+    "max_company_units_active": 2,
+    "global_provider_cap": 4,
+    "max_workers": 3,
+    "max_dynamic_requests": 8,
+    "allowed_dynamic_request_kinds": [
+      "content_enumeration",
+      "coverage_recheck"
+    ],
+    "max_dynamic_subject_refs": 32,
+    "risk_lane": "active_recon"
+  },
   "runtime_memory": {
     "schema_version": 2,
     "unit_identity": "stage_execution_organization",

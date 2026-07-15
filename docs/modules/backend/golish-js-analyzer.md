@@ -1,6 +1,6 @@
 # golish-js-analyzer
 
-> **一句话职责**：JS bundle 静态分析器——从 JS 源码抽取 API 端点调用点、脱敏后的敏感/config/framework 候选和 rule-based signal 命中，供下游 pentest 工具和 AI 复核直接消费，不用花 LLM token「读」每个 bundle。
+> **一句话职责**：JS bundle 静态分析器——从 JS 源码抽取保留 callee/receiver/byte span 的 API 调用点候选、脱敏后的敏感/config/framework 候选和 rule-based signal 命中，供下游 pentest 工具和 AI 复核直接消费，不用花 LLM token「读」每个 bundle。
 
 - **类型**：crate（Layer 2/3，叶子）
 - **路径**：`backend/crates/golish-js-analyzer/`
@@ -16,16 +16,18 @@
 
 ## 职责
 
-用**正则 + AST-grep call-site filter** 从 JS 抽取端点调用点。识别 `fetch` / `axios.<verb>` / 自定义客户端 `client.<verb>`（如 `Wr.post('/system/auth/login')`）/ `axios(config)` / `$.ajax` / `new Request`。结果带 `confidence`，调用方可按置信度过滤。另有 `signals` 扫描器提取 JWT/API key/token/private key/internal URL、API base/runtime config、常见框架和库，并加载 `resources/js-analysis/js-signal-rules.yml` 的 rule-based signal 命中。输出只含 preview/hash/source_file/line；CLI 的 AI context snippets 也必须经过敏感值脱敏，避免把完整 secret 放进 prompt。
+用**正则 + AST-grep call-site filter** 从 JS 抽取端点调用点。识别 `fetch` / `axios.<verb>` / 自定义客户端 `client.<verb>`（如 `Wr.post('/system/auth/login')`）/ `axios(config)` / `$.ajax` / `new Request`。candidate API 保留每个调用 occurrence 的 callee、receiver 和精确 byte span；它还保留命名 custom-client 的相对 path，以及 `this.api` / `this?.api` 等完整 member-chain，供下游判 unresolved 而不误绑 leaf。旧 `Endpoint` API 仍从 candidate 投影，并过滤这两类 context-only 增量，保持兼容。结果带 `confidence`，调用方可按置信度过滤。另有 `signals` 扫描器提取 JWT/API key/token/private key/internal URL、API base/runtime config、常见框架和库，并加载 `resources/js-analysis/js-signal-rules.yml` 的 rule-based signal 命中。输出只含 preview/hash/source_file/line；CLI 的 AI context snippets 也必须经过敏感值脱敏，避免把完整 secret 放进 prompt。
 
 ## 公开接口 / 关键类型
 
 | 符号 | 说明 |
 |---|---|
 | `extract_endpoints(...)` | 抽取端点 |
+| `extract_candidates_from_source(...)` / `extract_candidates_from_files(...)` | 抽取 occurrence-preserving 调用点候选，供 contextual resolver 消费 |
 | `analyze_signals_from_files(...)` / `analyze_signals_from_source(...)` | 抽取脱敏后的 secret/config/framework/library 候选与 rule-based signal 命中 |
 | `Endpoint` | `{method, path, auth, source_file, line, confidence, kind, url_kind, has_path_params, id_param_position, source}` |
-| `AuthHint` / `CallSiteKind` / `UrlKind` / `EndpointSource` | 端点元信息（`EndpointSource` = `regex`/`ai`，标记该端点来自确定性 regex 还是 AI 补抽） |
+| `EndpointCandidate` / `CallSiteContext` / `SourceSpan` / `CandidateExtractReport` | raw endpoint + callee/receiver/span；`candidates` 保留 occurrence，`unique` 只统计 raw `(method,path)` |
+| `AuthHint` / `CallSiteKind` / `UrlKind` / `EndpointSource` | 端点元信息（`EndpointSource` = `regex`/`hae`/`ai`） |
 | `SecretCandidate` / `ConfigCandidate` / `FrameworkCandidate` / `LibraryCandidate` | JS 分析候选，带 source_file/line/confidence |
 | `RuleMatchCandidate` / `RuleMatchKind` / `RuleMatchSeverity` | HAE-style 第一层规则候选，带 rule_name/source_rule/group/kind/color/scope/severity/preview/hash/line/ai_review |
 
@@ -35,7 +37,7 @@
 
 ## 被谁依赖 / 改动影响面
 
-`golish`、`golish-pentest-app`、`golish-auth-probe`（消费 `Endpoint`）。
+`golish`（继续消费 legacy `Endpoint`）、`golish-pentest-app`（contextual resolver 消费 `EndpointCandidate`）。
 
 ## 关键文件（无目录子模块）
 
@@ -50,10 +52,11 @@
 - `scripts/js_api_pipeline_test.mjs --ai-filter true` 的 DeepSeek/AI 复核是抽样 triage：payload 带 `sampling`，结果带 `input_sampling`。AI 分类只能解释已包含的 sample，不能覆盖 deterministic `endpoints_total` / `secret_candidates_total` 全量统计。
 - `#![forbid(unsafe_code)]` + `#![deny(warnings)]`：改动不能引入 warning。
 - 低置信度行由 `Endpoint::confidence` 标记，别当成确定端点。
-- `Endpoint.source`（`EndpointSource{Regex,Ai}`，`#[serde(default)]=Regex`）：regex 抽取一律标 `Regex`；AI 补抽（在 `golish-pentest-app::js_extract_apis` 的 AI-B pass 内构造，设计 2026-06-30-jsapi-ai-tools）标 `Ai`。旧的 `js_analysis_results` JSON 没有该键 → 反序列化回退 `Regex`，向后兼容；新增字段不得破坏旧行解析。
+- `CandidateExtractReport.unique` 只是 raw `(method,path)` 指标；`candidates` 必须保留每个 occurrence，不能在 client/base 上下文解析前据此去重，最终去重键属于 resolved URL。
+- `Endpoint.source`（`EndpointSource{Regex,Hae,Ai}`，`#[serde(default)]=Regex`）：regex 抽取标 `Regex`，HaE 机械提升标 `Hae`，AI 补抽（在 `golish-pentest-app::js_extract_apis` 的 AI-B pass 内构造，设计 2026-06-30-jsapi-ai-tools）标 `Ai`。旧的 `js_analysis_results` JSON 没有该键 → 反序列化回退 `Regex`，向后兼容；新增字段不得破坏旧行解析。
 
 ## 测试入口
 
 ```bash
-cd backend && cargo nextest run -p golish-js-analyzer
+cd backend && cargo nextest run -p golish-js-analyzer --lib --status-level fail
 ```

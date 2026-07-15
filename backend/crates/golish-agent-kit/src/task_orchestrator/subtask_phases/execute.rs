@@ -38,6 +38,9 @@ enum PhaseGateDecision {
     Rework(String),
 }
 
+const SCOPING_SCOPE_SNAPSHOT_ID_V1: &[u8] = b"golish:scoping-scope-snapshot:v1";
+const SCOPING_ROOT_UNIT_ID_V1: &[u8] = b"golish:scoping-root-unit:v1";
+
 /// The generic reflector bound and the request-scoped `stage_run` circuit
 /// breaker are independent limits. A gate BLOCK may open another automatic
 /// repair turn only while both still permit it. A later explicit user
@@ -392,8 +395,16 @@ impl TaskOrchestrator {
                     };
                     if let Some(mut outcome) = gate_outcome {
                         outcome.trusted_submission = trusted_submission;
-                        self.enforce_trusted_submission(&mut outcome, exec_ctx)
-                            .await;
+                        // Fan-out aggregate closeout is DB-authoritative: every
+                        // org unit already owns an immutable worker submission,
+                        // and try_specialist_stage_gate recomputes the token from
+                        // current-operation completion rows. Requiring another
+                        // unit-bound submission from the unit-less coordinator
+                        // would reject the intended identity shape.
+                        if !specialist_gated {
+                            self.enforce_trusted_submission(&mut outcome, exec_ctx)
+                                .await;
+                        }
                         self.enforce_cleanup_closeout_gate(task_id, &mut outcome)
                             .await;
                         // P0 · reject deliverables citing fabricated evidence ids
@@ -611,8 +622,10 @@ impl TaskOrchestrator {
         };
         if let Some(mut outcome) = gate_outcome {
             outcome.trusted_submission = trusted_submission;
-            self.enforce_trusted_submission(&mut outcome, exec_ctx)
-                .await;
+            if !specialist_gated {
+                self.enforce_trusted_submission(&mut outcome, exec_ctx)
+                    .await;
+            }
             self.enforce_cleanup_closeout_gate(task_id, &mut outcome)
                 .await;
             self.enforce_evidence_existence(&mut outcome).await;
@@ -848,6 +861,14 @@ impl TaskOrchestrator {
             reopen_wave: false,
             durable_wave_cursor: false,
         };
+        if outcome.gated_stage == crate::harness::StageKind::Scoping && outcome.gate_allowed {
+            if let Err(reason) = self
+                .finalize_scoping_pass_if_v2_writing(task_id, outcome)
+                .await
+            {
+                return (StageFlowOutcome::blocked(), Some(reason));
+            }
+        }
         if outcome.gated_stage != crate::harness::StageKind::Verification {
             return (ordinary(), None);
         }
@@ -956,30 +977,50 @@ impl TaskOrchestrator {
             );
         }
         let exact = crate::harness::operation_flow::exact_verification_flow_outcome(&truth);
-        let (reopen_wave, made_progress) = match consolidated.decision_kind.as_str() {
-            "opened_next_wave"
-                if consolidated.target_wave_run_id.is_some()
-                    && consolidated.accepted_fact_delta_count > 0 =>
-            {
-                (true, true)
-            }
-            "closed_no_delta"
-                if consolidated.target_wave_run_id.is_none()
-                    && consolidated.accepted_fact_delta_count == 0 =>
-            {
-                (false, exact.made_progress)
-            }
-            "exhausted" if consolidated.target_wave_run_id.is_none() => (false, false),
-            _ => {
-                return (
-                    StageFlowOutcome::blocked(),
-                    Some(format!(
-                        "Verification Wave consolidation returned invalid decision '{}'",
-                        consolidated.decision_kind
-                    )),
-                );
-            }
-        };
+        let (reopen_wave, made_progress, pending_enrichment_block) =
+            match consolidated.decision_kind.as_str() {
+                "opened_next_wave"
+                    if consolidated.target_wave_run_id.is_some()
+                        && consolidated.accepted_fact_delta_count > 0
+                        && consolidated.residual_risk_count == 0
+                        && consolidated.pending_enrichment_count == 0 =>
+                {
+                    (true, true, false)
+                }
+                "closed_no_delta"
+                    if consolidated.target_wave_run_id.is_none()
+                        && consolidated.residual_risk_count == 0
+                        && consolidated.pending_enrichment_count == 0 =>
+                {
+                    // Accepted refutations are real FactDelta truth but deliberately
+                    // create no attack WorkItem, so the accepted count may be > 0.
+                    (false, exact.made_progress, false)
+                }
+                "pending_enrichment"
+                    if consolidated.target_wave_run_id.is_none()
+                        && consolidated.pending_enrichment_count > 0
+                        && consolidated.accepted_fact_delta_count
+                            >= consolidated.pending_enrichment_count
+                        && consolidated.residual_risk_count == 0 =>
+                {
+                    (false, false, true)
+                }
+                "exhausted"
+                    if consolidated.target_wave_run_id.is_none()
+                        && consolidated.pending_enrichment_count == 0 =>
+                {
+                    (false, false, false)
+                }
+                _ => {
+                    return (
+                        StageFlowOutcome::blocked(),
+                        Some(format!(
+                            "Verification Wave consolidation returned invalid decision '{}'",
+                            consolidated.decision_kind
+                        )),
+                    );
+                }
+            };
         let accepted_fact_delta_count = match u32::try_from(consolidated.accepted_fact_delta_count)
         {
             Ok(count) => count,
@@ -1009,6 +1050,15 @@ impl TaskOrchestrator {
                 );
             }
         };
+        let pending_enrichment_count = match u32::try_from(consolidated.pending_enrichment_count) {
+            Ok(count) => count,
+            Err(_) => {
+                return (
+                    StageFlowOutcome::blocked(),
+                    Some("Verification Wave consolidation count overflow".to_string()),
+                );
+            }
+        };
         self.emit(AiEvent::HarnessTrace {
             operation_id: task_id.to_string(),
             stage: outcome.gated_stage.as_str().to_string(),
@@ -1022,9 +1072,19 @@ impl TaskOrchestrator {
                 accepted_fact_delta_count,
                 rejected_fact_delta_count,
                 residual_risk_count,
+                pending_enrichment_count,
                 replayed: consolidated.replayed,
             },
         });
+
+        if pending_enrichment_block {
+            return (
+                StageFlowOutcome::blocked(),
+                Some(format!(
+                    "ATTACK_FACT_DELTA_ENRICHMENT_REQUIRED: {pending_enrichment_count} accepted FactDelta item(s) still require a classifier-supported typed observation; the source Wave remains open"
+                )),
+            );
+        }
 
         (
             StageFlowOutcome {
@@ -1035,6 +1095,112 @@ impl TaskOrchestrator {
             },
             None,
         )
+    }
+
+    /// A V2-writing Scoping PASS is not authoritative until the approved org
+    /// scope, trusted submission binding, and synthetic root unit are frozen in
+    /// one repository transaction. This runs before the GateDecision event and
+    /// `stage_passed`, so any lookup, write, or identity mismatch turns the
+    /// otherwise-positive gate into a deterministic BLOCK.
+    async fn finalize_scoping_pass_if_v2_writing(
+        &self,
+        task_id: Uuid,
+        outcome: &HarnessGateOutcome,
+    ) -> Result<(), String> {
+        use crate::runtime_memory::RuntimeMemoryWriteStrategy;
+
+        let contract = self
+            .runtime_repo
+            .runtime_memory_contract_for_operation(task_id)
+            .await
+            .map_err(|error| {
+                format!("Scoping finalization could not resolve the runtime contract: {error}")
+            })?;
+        if contract.policy().write == RuntimeMemoryWriteStrategy::LegacyOnly {
+            return Ok(());
+        }
+
+        let submission = outcome.trusted_submission.as_ref().ok_or_else(|| {
+            "V2-writing Scoping finalization requires the trusted deliverable submission."
+                .to_string()
+        })?;
+        if submission.operation_id != task_id {
+            return Err(
+                "V2-writing Scoping finalization received a submission from another operation."
+                    .to_string(),
+            );
+        }
+        let root_organization_id = outcome.engagement_org_id.ok_or_else(|| {
+            "V2-writing Scoping finalization requires the gate-approved root organization id."
+                .to_string()
+        })?;
+        let operation = crate::db_shim::operation_state::get(&*self.repo, task_id)
+            .await
+            .map_err(|error| {
+                format!("Scoping finalization could not load operation state: {error}")
+            })?
+            .ok_or_else(|| "Scoping finalization is missing operation state.".to_string())?;
+        if operation.operation_id != task_id {
+            return Err(
+                "Scoping finalization loaded operation state with mismatched identity.".to_string(),
+            );
+        }
+        if operation
+            .engagement_org_id
+            .is_some_and(|trusted_org| trusted_org != root_organization_id)
+        {
+            return Err(
+                "V2-writing Scoping finalization root organization does not match the operation's trusted organization binding."
+                    .to_string(),
+            );
+        }
+        let project_scope_id = operation.project_scope_id.ok_or_else(|| {
+            "V2-writing Scoping finalization requires a durable project scope id.".to_string()
+        })?;
+        let input = crate::db_traits::FinalizeScopingScope {
+            operation_id: task_id,
+            project_scope_id,
+            stage_execution_id: submission.stage_execution_id,
+            root_organization_id,
+            deliverable_submission_id: submission.deliverable_submission_id,
+            scope_snapshot_id: Uuid::new_v5(
+                &submission.deliverable_submission_id,
+                SCOPING_SCOPE_SNAPSHOT_ID_V1,
+            ),
+            scoping_root_unit_id: Uuid::new_v5(
+                &submission.deliverable_submission_id,
+                SCOPING_ROOT_UNIT_ID_V1,
+            ),
+        };
+        let finalized = self
+            .runtime_repo
+            .finalize_scoping_scope(input.clone())
+            .await
+            .map_err(|error| format!("V2-writing Scoping finalization failed: {error}"))?;
+        if finalized.operation_id != input.operation_id
+            || finalized.project_scope_id != input.project_scope_id
+            || finalized.stage_execution_id != input.stage_execution_id
+            || finalized.root_organization_id != input.root_organization_id
+            || finalized.deliverable_submission_id != input.deliverable_submission_id
+            || finalized.scope_snapshot_id != input.scope_snapshot_id
+            || finalized.scoping_root_unit_id != input.scoping_root_unit_id
+        {
+            return Err(
+                "V2-writing Scoping finalization returned mismatched authority identity."
+                    .to_string(),
+            );
+        }
+
+        tracing::info!(
+            target: "harness::hook",
+            operation_id = %task_id,
+            deliverable_submission_id = %submission.deliverable_submission_id,
+            scope_snapshot_id = %finalized.scope_snapshot_id,
+            scoping_root_unit_id = %finalized.scoping_root_unit_id,
+            replayed = finalized.replayed,
+            "V2-writing Scoping scope finalized before gate publication"
+        );
+        Ok(())
     }
 
     /// Post-gate handling for the Executor-driven stage loop, shared by both gate
@@ -1203,7 +1369,8 @@ impl TaskOrchestrator {
         // this operation to its scoping-confirmed engagement root org. Prefer the
         // explicitly-set id (CLI seed path) and persist it to operation_state for
         // resume; otherwise recover the previously-persisted id (resume path).
-        // `None` ⇒ no binding yet (legacy whole-DB axis; downstream fails open).
+        // `None` means no binding yet. Org-keyed reads and active-recon entry
+        // both fail closed until Scoping establishes the engagement root.
         self.harness_org_id = match self.harness_org_id {
             Some(id) => {
                 let _ = crate::db_shim::operation_state::set_engagement_org(
@@ -1399,6 +1566,21 @@ impl TaskOrchestrator {
                         planner_subtasks = indices.len(),
                         "graph-flow: entering stage"
                     );
+                    // Defense in depth for a direct CLI stage slice (or any
+                    // restored cursor) whose entry node is already EAS. The
+                    // normal full-profile path checks the same invariant before
+                    // TargetIntel crosses into EAS; checking again here closes
+                    // the direct-entry bypass and the TOCTOU gap. Return a
+                    // blocked flow before rotating stage identity or invoking
+                    // the executor so the graph persists a resumable Interrupt.
+                    if req.stage == crate::harness::StageKind::ExternalAttackSurface
+                        && !self.active_recon_trusted_target_ready(task_id).await
+                    {
+                        let _ = req.reply.send(
+                            crate::harness::operation_flow::StageFlowOutcome::blocked(),
+                        );
+                        continue;
+                    }
                     // Stage work is permitted only after the exact durable
                     // execution identity has been loaded or atomically rotated.
                     // Propagating this error drops the request without invoking
@@ -1483,6 +1665,17 @@ impl TaskOrchestrator {
             return Ok(paused);
         }
 
+        match &final_outcome {
+            Ok(crate::harness::graph_engine::RunOutcome::Completed(_)) => {}
+            Ok(crate::harness::graph_engine::RunOutcome::Failed { node, error, .. }) => {
+                anyhow::bail!("graph-flow failed at {node}: {error}");
+            }
+            Ok(crate::harness::graph_engine::RunOutcome::Interrupted { .. }) => {
+                unreachable!("interrupted graph-flow returned before terminal completion")
+            }
+            Err(error) => anyhow::bail!("graph-flow executor failed: {error}"),
+        }
+
         let report = match executor.generate_report(&exec_ctx).await {
             Ok(r) => r.content,
             Err(e) => {
@@ -1490,13 +1683,33 @@ impl TaskOrchestrator {
                 exec_ctx.summary()
             }
         };
-        crate::db_shim::tasks::set_result(
-            &*self.repo,
-            task_id,
-            &report,
-            crate::db_traits::TaskStatus::Finished,
-        )
-        .await?;
+        let terminal_stage = exec_ctx
+            .harness_stage
+            .context("completed graph-flow has no terminal stage identity")?;
+        let terminal_stage_execution_id = exec_ctx
+            .stage_execution_id
+            .context("completed graph-flow has no terminal stage execution identity")?;
+        let completed = self
+            .runtime_repo
+            .complete_terminal_stage_execution(
+                crate::task_orchestrator::stage_execution::CompleteTerminalStageExecution {
+                    operation_id: task_id,
+                    current_stage_execution_id: terminal_stage_execution_id,
+                    terminal_stage,
+                    task_result: report.clone(),
+                },
+            )
+            .await
+            .map_err(anyhow::Error::new)
+            .context("atomically complete terminal stage execution and task")?;
+        anyhow::ensure!(
+            completed.id == terminal_stage_execution_id
+                && completed.operation_id == task_id
+                && completed.stage == terminal_stage
+                && completed.status
+                    == crate::task_orchestrator::stage_execution::StageExecutionStatus::Completed,
+            "repository returned an invalid terminal stage completion"
+        );
         self.emit_plan_update(queue, queue.len(), StepStatus::Completed);
         self.emit(AiEvent::TaskProgress {
             task_id: task_id.to_string(),
@@ -1841,6 +2054,17 @@ impl TaskOrchestrator {
         if !outcome.gate_allowed {
             return PhaseGateDecision::Allowed;
         }
+        // Resolve the projected successor before consulting any crossing-only
+        // barrier. A CLI/GUI stage slice whose current stage is the projected
+        // terminal has nothing to cross into; in particular, Candidate review
+        // protects entry into Verification and must not hold `--to
+        // attack_candidate` after the Candidate Gate has already passed.
+        let Some(next) = crate::harness::operation_flow::branch_target(
+            &dag.next_stages(from_stage),
+            outcome.made_progress,
+        ) else {
+            return PhaseGateDecision::Allowed;
+        };
         let exact_candidate_v2 = if from_stage == crate::harness::StageKind::AttackCandidate {
             match self.exact_candidate_v2_operation(task_id).await {
                 Ok(enabled) => enabled,
@@ -1930,15 +2154,19 @@ impl TaskOrchestrator {
             });
             return PhaseGateDecision::Held;
         }
+        if from_stage == crate::harness::StageKind::TargetIntel
+            && next == crate::harness::StageKind::ExternalAttackSurface
+        {
+            return if self.ensure_active_recon_target_scope(task_id).await {
+                // The exact target review is the authorization boundary. Do not
+                // ask for a second generic `before_active_scan` approval.
+                PhaseGateDecision::Allowed
+            } else {
+                PhaseGateDecision::Held
+            };
+        }
         let Some(profile) = profile else {
             return PhaseGateDecision::Allowed;
-        };
-        // 引擎将走的下一 stage（与引擎条件边同源 branch_target 规则）。
-        let Some(next) = crate::harness::operation_flow::branch_target(
-            &dag.next_stages(from_stage),
-            outcome.made_progress,
-        ) else {
-            return PhaseGateDecision::Allowed; // 终点，无跨界
         };
         let pm = match crate::harness::load_embedded_phase_map() {
             Ok(pm) => pm,
@@ -2101,6 +2329,8 @@ impl TaskOrchestrator {
     /// errors, or no authoritative Enumeration coverage snapshot exists. A
     /// successful Enumeration snapshot preserves `Some([])`: it proves the
     /// stage denominator is genuinely empty and therefore vacuously complete.
+    /// VulnTriage is intentionally absent: only its stage_run specialist gate
+    /// may consume the operation-scoped final-sealed Enumeration surface.
     async fn fetch_in_scope_assets_for_gate(
         &self,
         planned: &PlannedSubtask,
@@ -2142,17 +2372,18 @@ impl TaskOrchestrator {
                             )
                             .await
                         {
-                            if snapshot
-                                .get("assets")
-                                .and_then(serde_json::Value::as_array)
-                                .is_some()
-                            {
-                                let (origins, _) = crate::harness::org_gate::enumeration_axis_from_coverage_snapshot(&snapshot);
+                            if let Ok((origins, _)) = crate::harness::org_gate::validated_exact_web_origin_axis_from_coverage_snapshot(
+                                &snapshot,
+                                stage,
+                                org_id,
+                                Some(session_id),
+                            ) {
                                 tracing::info!(
                                     target: "harness::hook",
                                     asset_count = origins.len(),
                                     org_id = %org_id,
-                                    "injecting exact Web Origin axis into Enumeration gate"
+                                    stage = stage.as_str(),
+                                    "injecting exact Web Origin axis into stage gate"
                                 );
                                 return Some(origins);
                             }
@@ -2364,6 +2595,23 @@ impl TaskOrchestrator {
                     .await;
                 let pairs =
                     crate::harness::org_gate::eas_service_not_applicable_from_port_outcomes(&rows);
+                (!pairs.is_empty()).then_some(pairs)
+            }
+            crate::harness::StageKind::VulnTriage => {
+                let sid = self.chat_session_id.as_deref()?;
+                let run_start = self
+                    .active_stage_started_at_for_gate(planned, task_id)
+                    .await;
+                let rows = self
+                    .repo
+                    .technique_outcome_facts_fresh_with_evidence_session(
+                        org_id,
+                        &task_id.to_string(),
+                        sid,
+                        run_start,
+                    )
+                    .await;
+                let pairs = crate::harness::org_gate::vuln_not_applicable_from_outcomes(&rows);
                 (!pairs.is_empty()).then_some(pairs)
             }
             _ => None,
@@ -2761,9 +3009,20 @@ impl TaskOrchestrator {
                     run_start.is_some(),
                 ) =>
             {
-                self.repo
-                    .technique_outcome_facts_fresh(org_id, sid, run_start)
-                    .await
+                if stage == crate::harness::StageKind::VulnTriage {
+                    self.repo
+                        .technique_outcome_facts_fresh_with_evidence_session(
+                            org_id,
+                            &task_id.to_string(),
+                            sid,
+                            run_start,
+                        )
+                        .await
+                } else {
+                    self.repo
+                        .technique_outcome_facts_fresh(org_id, sid, run_start)
+                        .await
+                }
             }
             _ => Vec::new(),
         };
@@ -3605,6 +3864,15 @@ fn apply_harness_gate_hook(
         return (content, None);
     };
 
+    // VulnTriage no longer has a generic/manual close path. Its two Nuclei
+    // wrappers, operation-scoped evidence projection, and final-sealed
+    // Enumeration denominator are assembled only by stage_run's per-org
+    // specialist gate. Reaching this hook means that authoritative path was not
+    // used, so fail closed before parsing any model-authored deliverable.
+    if stage_hint.stage_kind == crate::harness::StageKind::VulnTriage {
+        return (content, specialist_only_vuln_gate_outcome());
+    }
+
     tracing::info!(
         target: "harness::hook",
         stage_kind = ?stage_hint.stage_kind,
@@ -4079,6 +4347,21 @@ fn missing_deliverable_gate_outcome(
     })
 }
 
+fn specialist_only_vuln_gate_outcome() -> Option<HarnessGateOutcome> {
+    let mut outcome =
+        missing_deliverable_gate_outcome(crate::harness::StageKind::VulnTriage, false)?;
+    outcome.missing_deliverable = false;
+    outcome.gate_reasons = vec![
+        "vuln_triage must close through stage_run's vuln_scanner specialist and its authoritative operation-scoped Nuclei gate; generic/manual deliverables are unsupported"
+            .to_string(),
+    ];
+    outcome.repair_correction = Some(
+        "Run vuln_triage through stage_run so vuln_scanner can execute the two guarded Nuclei wrappers and submit DB-derived coverage=[]"
+            .to_string(),
+    );
+    Some(outcome)
+}
+
 /// S2 (DAG-strict) · synthesize one stage-scoped [`PlannedSubtask`] for a stage
 /// the planner produced no subtask for, so the stage actually executes + gets
 /// gated instead of being vacuously passed. The description is a per-stage
@@ -4151,69 +4434,9 @@ fn resolve_scoping_review_org(
     }
 }
 
-fn canonical_scoping_target(row: &crate::db_traits::ScopingReviewedTarget) -> Option<String> {
-    let target_type = row.target_type.trim().to_ascii_lowercase();
-    let scope = row.scope.trim().to_ascii_lowercase();
-    if !matches!(scope.as_str(), "in" | "out") {
-        return None;
-    }
-    let raw = row.value.trim();
-    let identity = match target_type.as_str() {
-        "url" => golish_pentest_domain::canonical_web_origin(raw)?.key,
-        "wildcard" => {
-            let base = raw.strip_prefix("*.")?;
-            let key = golish_pentest_domain::canonical_asset_key(base)?;
-            if key.class != golish_pentest_domain::AssetClass::Domain {
-                return None;
-            }
-            format!("*.{}", key.key)
-        }
-        "domain" => {
-            if raw.to_ascii_lowercase().starts_with("http://")
-                || raw.to_ascii_lowercase().starts_with("https://")
-                || raw.starts_with("*.")
-            {
-                return None;
-            }
-            let key = golish_pentest_domain::canonical_asset_key(raw)?;
-            (key.class == golish_pentest_domain::AssetClass::Domain).then_some(key.key)?
-        }
-        "ip" => {
-            let key = golish_pentest_domain::canonical_asset_key(raw)?;
-            (key.class == golish_pentest_domain::AssetClass::Ip).then_some(key.key)?
-        }
-        "cidr" => canonical_scoping_cidr(raw)?,
-        _ => return None,
-    };
-    Some(format!("{scope}|{target_type}|{identity}"))
-}
-
-fn canonical_scoping_cidr(raw: &str) -> Option<String> {
-    let (address, prefix) = raw.trim().split_once('/')?;
-    let address: std::net::IpAddr = address.trim().parse().ok()?;
-    let prefix: u8 = prefix.trim().parse().ok()?;
-    match address {
-        std::net::IpAddr::V4(address) if prefix <= 32 => {
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u32::MAX << (32 - prefix)
-            };
-            let network = std::net::Ipv4Addr::from(u32::from(address) & mask);
-            Some(format!("{network}/{prefix}"))
-        }
-        std::net::IpAddr::V6(address) if prefix <= 128 => {
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u128::MAX << (128 - prefix)
-            };
-            let network = std::net::Ipv6Addr::from(u128::from(address) & mask);
-            Some(format!("{network}/{prefix}"))
-        }
-        _ => None,
-    }
-}
+#[cfg(test)]
+use crate::task_orchestrator::active_recon_scope::canonical_scoping_cidr;
+use crate::task_orchestrator::active_recon_scope::canonical_scoping_target;
 
 fn evaluate_scope_review_alignment(
     seen: &crate::db_traits::ScopingActionsSeen,
@@ -5201,6 +5424,43 @@ mod harness_gate_hook_tests {
     }
 
     #[test]
+    fn generic_vuln_triage_gate_is_rejected_in_favor_of_stage_run_specialist() {
+        let p = planned_with_harness(StageKind::VulnTriage);
+        let ctx = ExecutionContext::default();
+        let content =
+            r#"{"stage_id":"vuln_triage","claims":[],"findings":[],"coverage":[]}"#.to_string();
+        let (_, outcome) = apply_harness_gate_hook(
+            &p,
+            &ctx,
+            content,
+            Some(Vec::new()),
+            None,
+            None,
+            None,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        );
+        let outcome = outcome.expect("generic VulnTriage must return an explicit BLOCK");
+
+        assert!(!outcome.gate_allowed);
+        assert!(
+            !outcome.missing_deliverable,
+            "the unsupported generic path must not be misclassified as a submit-only missing deliverable"
+        );
+        assert!(outcome
+            .gate_reasons
+            .iter()
+            .any(|reason| reason.contains("generic/manual deliverables are unsupported")));
+        assert!(outcome
+            .repair_correction
+            .as_deref()
+            .is_some_and(|correction| correction.contains("stage_run")));
+    }
+
+    #[test]
     fn embedded_registry_loads_external_stage_and_assessment_profile() {
         // 替代旧的 const include_str! 测试: 经嵌入 registry 加载.
         assert!(crate::harness::load_embedded_profile("assessment")
@@ -5623,7 +5883,7 @@ mod missing_deliverable_fail_closed_tests {
         assert!(db_truth_facts_to_evidence(vec![]).is_empty());
     }
 
-    // ── missing deliverable = fail-closed BLOCK（一切 stage，无例外） ────────
+    // ── generic deliverable stages: missing deliverable = fail-closed BLOCK ──
 
     #[test]
     fn hook_blocks_missing_deliverable_even_with_ledger_facts() {
@@ -5631,11 +5891,7 @@ mod missing_deliverable_fail_closed_tests {
         // substantive stage 一致——账本有真证据也不投影，BLOCK 后由 Refiner 的
         // A 类 submit-only 锁驱动 agent 自己提交（live run 两连截胡的根治）。
         let ctx = ExecutionContext::default();
-        for stage in [
-            StageKind::TargetIntel,
-            StageKind::ExternalAttackSurface,
-            StageKind::VulnTriage,
-        ] {
+        for stage in [StageKind::TargetIntel, StageKind::ExternalAttackSurface] {
             let p = planned(stage);
             let facts = vec![fact("a", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 7)];
             let (out, outcome) = apply_harness_gate_hook(

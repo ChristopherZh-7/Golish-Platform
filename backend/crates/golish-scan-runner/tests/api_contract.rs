@@ -11,8 +11,8 @@ fn assert_send_sync<T: Send + Sync>() {}
 fn public_types_are_send_sync() {
     assert_send_sync::<ScanProgress>();
     assert_send_sync::<ScanResult>();
-    assert_send_sync::<PocMatch>();
-    assert_send_sync::<NucleiScanOptions>();
+    assert_send_sync::<NucleiTemplateSelection>();
+    assert_send_sync::<NucleiTemplateRationale>();
     assert_send_sync::<WhatWebOptions>();
     assert_send_sync::<FeroxScanOptions>();
 }

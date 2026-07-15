@@ -435,13 +435,24 @@ describe("AskHumanInline auto-confirm countdown", () => {
   };
 
   it("renders an auto-confirm progress bar with a seconds label", () => {
-    render(<AskHumanInline request={req()} onSubmit={vi.fn()} onSkip={vi.fn()} />);
+    render(
+      <AskHumanInline request={req()} onSubmit={vi.fn()} onSkip={vi.fn()} autoResolve />
+    );
     expect(screen.getByText(/Auto-confirming in \d+s/)).toBeInTheDocument();
+  });
+
+  it("never auto-confirms while the approval mode is ask", () => {
+    const onSubmit = vi.fn();
+    render(<AskHumanInline request={req()} onSubmit={onSubmit} onSkip={vi.fn()} />);
+
+    expect(screen.queryByText(/Auto-confirming in/)).not.toBeInTheDocument();
+    runOutClock();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("auto-submits the affirmative default ('yes') for a confirmation when the clock runs out", () => {
     const onSubmit = vi.fn();
-    render(<AskHumanInline request={req()} onSubmit={onSubmit} onSkip={vi.fn()} />);
+    render(<AskHumanInline request={req()} onSubmit={onSubmit} onSkip={vi.fn()} autoResolve />);
     expect(onSubmit).not.toHaveBeenCalled();
     runOutClock();
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -455,6 +466,7 @@ describe("AskHumanInline auto-confirm countdown", () => {
         request={req({ inputType: "choice", options: ["Production", "Staging"] })}
         onSubmit={onSubmit}
         onSkip={vi.fn()}
+        autoResolve
       />
     );
     runOutClock();
@@ -475,6 +487,7 @@ describe("AskHumanInline auto-confirm countdown", () => {
         })}
         onSubmit={onSubmit}
         onSkip={onSkip}
+        autoResolve
       />
     );
     runOutClock();
@@ -494,13 +507,14 @@ describe("AskHumanInline auto-confirm countdown", () => {
         })}
         onSubmit={onSubmit}
         onSkip={vi.fn()}
+        autoResolve
       />
     );
     runOutClock();
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("falls back to Skip when a choice has no options and nothing was typed", () => {
+  it("keeps a choice with no selectable default waiting for explicit input", () => {
     const onSubmit = vi.fn();
     const onSkip = vi.fn();
     render(
@@ -508,11 +522,86 @@ describe("AskHumanInline auto-confirm countdown", () => {
         request={req({ inputType: "choice", options: [] })}
         onSubmit={onSubmit}
         onSkip={onSkip}
+        autoResolve
       />
     );
+    expect(screen.queryByText(/Auto-confirming in/)).not.toBeInTheDocument();
     runOutClock();
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(onSkip).toHaveBeenCalledTimes(1);
+    expect(onSkip).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["scope_review", "[]"],
+    ["unit_review", "[]"],
+    ["credentials", ""],
+    ["freetext", ""],
+    ["unexpected", ""],
+  ])("keeps %s requests waiting for an explicit human action", (inputType, context) => {
+    const onSubmit = vi.fn();
+    const onSkip = vi.fn();
+    render(
+      <AskHumanInline
+        request={req({
+          inputType: inputType as AskHumanState["inputType"],
+          options: [],
+          context,
+        })}
+        onSubmit={onSubmit}
+        onSkip={onSkip}
+        autoResolve
+      />
+    );
+
+    expect(screen.queryByText(/Auto-confirming in/)).not.toBeInTheDocument();
+    runOutClock();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSkip).not.toHaveBeenCalled();
+  });
+
+  it.each(["freetext", "unexpected"])(
+    "renders %s with options as a choice but never auto-selects its first option",
+    (rawInputType) => {
+      const onSubmit = vi.fn();
+      render(
+        <AskHumanInline
+          request={req({
+            rawInputType,
+            inputType: "choice",
+            options: ["Production", "Staging"],
+          })}
+          onSubmit={onSubmit}
+          onSkip={vi.fn()}
+          autoResolve
+        />
+      );
+
+      expect(screen.getByRole("button", { name: /Production/ })).toBeInTheDocument();
+      expect(screen.queryByText(/Auto-confirming in/)).not.toBeInTheDocument();
+      runOutClock();
+      expect(onSubmit).not.toHaveBeenCalled();
+    }
+  );
+
+  it("never auto-confirms a phase-boundary confirmation even in run-all mode", () => {
+    const onSubmit = vi.fn();
+    render(
+      <AskHumanInline
+        request={req({
+          inputType: "confirmation",
+          question:
+            "Approve entering the next phase (crossing target_intel → external_attack_surface)?",
+          context: "Phase-boundary gate: Confirm to let the agent proceed.",
+        })}
+        onSubmit={onSubmit}
+        onSkip={vi.fn()}
+        autoResolve
+      />
+    );
+
+    expect(screen.queryByText(/Auto-confirming in/)).not.toBeInTheDocument();
+    runOutClock();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("keeps review tables waiting for an explicit human decision", () => {
@@ -523,6 +612,7 @@ describe("AskHumanInline auto-confirm countdown", () => {
         request={req({ inputType: "unit_review", options: [], context: '[{"name":"Acme Sub"}]' })}
         onSubmit={onSubmit}
         onSkip={onSkip}
+        autoResolve
       />
     );
     expect(screen.getByText("Waiting for your review")).toBeInTheDocument();
@@ -533,7 +623,7 @@ describe("AskHumanInline auto-confirm countdown", () => {
 
   it("fires the default action only once even past the deadline", () => {
     const onSubmit = vi.fn();
-    render(<AskHumanInline request={req()} onSubmit={onSubmit} onSkip={vi.fn()} />);
+    render(<AskHumanInline request={req()} onSubmit={onSubmit} onSkip={vi.fn()} autoResolve />);
     runOutClock();
     runOutClock();
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -542,7 +632,7 @@ describe("AskHumanInline auto-confirm countdown", () => {
   it("pauses while hovered and resumes (then fires) on mouse leave", () => {
     const onSubmit = vi.fn();
     const { container } = render(
-      <AskHumanInline request={req()} onSubmit={onSubmit} onSkip={vi.fn()} />
+      <AskHumanInline request={req()} onSubmit={onSubmit} onSkip={vi.fn()} autoResolve />
     );
     const box = container.firstChild as HTMLElement;
 

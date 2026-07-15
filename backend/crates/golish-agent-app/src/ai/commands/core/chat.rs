@@ -233,50 +233,35 @@ async fn execute_task_mode_with_continuity(
     request: golish_agent_bridge::TopLevelRequestLease,
 ) -> anyhow::Result<String> {
     use anyhow::Context;
-    use golish_agent_bridge::bridge_executor::BridgeAgentExecutor;
-    use golish_agent_kit::task_orchestrator::TaskOrchestrator;
     use golish_core::events::AiEvent;
-    use golish_db::{models::NewSession, repo::sessions};
+
+    use crate::ai::task_operation::{
+        prepare_task_operation, FreshOperationEntry, FreshOperationScope, FreshTaskOperationLaunch,
+        SubsidiaryScopePolicy, TaskOperationConfig,
+    };
 
     let task_input = extract_user_message_from_wrapped_prompt(prompt);
     let continuity_decision =
         continuity_decision_from_prompt(task_input).unwrap_or(continuity_decision);
-
-    // Anchor the chat-panel session string to one stable `sessions` row (Task
-    // 断线恢复 · L1). Upserting by `chat_session_key` (instead of creating a row
-    // per message) is what lets us find + resume this chat's prior operation
-    // below; it also satisfies the `tasks.session_id` FK. Same chat session →
-    // same DB session id on every message.
-    let session_row = sessions::upsert_by_chat_key(
-        &state.db_pool,
+    let profile_override = bridge.get_harness_profile().await;
+    let profile_id = profile_override
+        .clone()
+        .unwrap_or_else(|| golish_agent_kit::harness::active_profile_id().to_string());
+    let prepared = prepare_task_operation(
+        bridge.clone(),
+        state.db_pool.clone(),
         _session_id,
-        NewSession {
-            title: Some(truncate_for_title(task_input, 80)),
-            workspace_path: None,
-            workspace_label: None,
-            model: Some(bridge.model_name().to_string()),
-            provider: Some(bridge.provider_name().to_string()),
-            project_path: None,
-        },
+        task_input,
+        request.clone(),
     )
-    .await
-    .context("Failed to upsert session row for task mode (FK precondition for tasks)")?;
-    let uuid_session_id = session_row.id;
+    .await?;
+    let uuid_session_id = prepared.session_id();
     tracing::info!(
         target: "harness::task_mode",
         session_db_id = %uuid_session_id,
         chat_session_id = %_session_id,
-        "task mode session row created"
+        "shared task operation context prepared"
     );
-    // The bridge is configured before the durable TaskMode session row exists, so
-    // its DB tracker initially carries a random UUID. Rebind the shared tracker
-    // identity now, before constructing/executing the stage runner, so every
-    // ask_human lifecycle row is visible to the session-scoped Scoping gate.
-    bridge.set_tracker_session_uuid(uuid_session_id);
-    let executor = BridgeAgentExecutor::from_request(bridge.clone(), request.clone())
-        .context("upgrade owned request into Task execution")?;
-
-    let event_tx = bridge.get_or_create_event_tx();
 
     // Echo the user's task input into the event stream (chat-mode parity).
     // Progress feedback is surfaced by the orchestrator's TaskProgress events.
@@ -285,22 +270,10 @@ async fn execute_task_mode_with_continuity(
     });
 
     let start_time = std::time::Instant::now();
-    let provider = std::sync::Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
-        state.db_pool.clone(),
-    ));
-    let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> = provider.clone();
-    let runtime_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository> =
-        provider;
-    let db_repo_for_scope_authorization = db_repo.clone();
-    let runtime_repo_for_scope_authorization = runtime_repo.clone();
-    let profile_override = bridge.get_harness_profile().await;
-    let profile_id = profile_override
-        .clone()
-        .unwrap_or_else(|| golish_agent_kit::harness::active_profile_id().to_string());
     let continuity_plan = match continuity_decision {
         golish_agent_kit::harness::ContinuityDecision::StartFresh => None,
         _ => match golish_agent_kit::task_orchestrator::build_existing_db_continuity_plan(
-            &*db_repo,
+            prepared.db_repo(),
             &profile_id,
             None,
         )
@@ -318,17 +291,6 @@ async fn execute_task_mode_with_continuity(
             }
         },
     };
-    let mut orchestrator = TaskOrchestrator::new(db_repo, runtime_repo, uuid_session_id, event_tx);
-    orchestrator.set_profile_override(profile_override.clone());
-    // Scope evidence-ledger lookups to THIS chat session so gate repair
-    // corrections can name the operation's real evidence ids (the string
-    // `_session_id` is what both evidence write paths stamp on `audit_log`).
-    orchestrator.set_chat_session_id(_session_id);
-    // Wire the HITL coordinator so the two-level phase-approval gate can request a
-    // clickable Confirm/Skip decision (the same `ask_human` channel) instead of
-    // the legacy text channel, which has no production feeder and would otherwise
-    // leave the run stuck at "Waiting for approval" with no way to approve.
-    orchestrator.set_approval_coordinator(bridge.coordinator().cloned());
 
     // Resume-aware entry (Task 断线恢复 · L2): if this chat session has a
     // non-terminal operation with a persisted harness checkpoint, resume it from
@@ -363,77 +325,76 @@ async fn execute_task_mode_with_continuity(
                 ContinuityAdoptionDecision::StartFresh => {}
                 ContinuityAdoptionDecision::TextFallback(message) => {
                     emit_immediate_task_response(&bridge, &message, "continuity_offer");
-                    return Ok(message);
+                    return prepared.finish(Ok(message)).await;
                 }
             }
         }
     }
-    orchestrator.set_continuity_adoption(continuity_adoption);
-
-    let workspace = bridge.workspace().read().await.clone();
-    let (canonical_path, path_sha256) =
-        golish_agent_kit::runtime_memory::canonical_workspace_identity(&workspace)
-            .map_err(anyhow::Error::new)
-            .context("Resolve trusted workspace identity for runtime operation")?;
-    let current_project_scope = runtime_repo_for_scope_authorization
-        .project_scope_register_first_open(&canonical_path, &path_sha256)
-        .await
-        .map_err(anyhow::Error::new)
-        .context("Register trusted project scope for runtime operation")?;
-
     let result = match resumable {
         Some(task) => {
-            tracing::info!(
-                target: "harness::task_mode",
-                task_id = %task.id,
-                "task mode: resuming prior operation for this chat session"
-            );
-            if looks_like_bare_stage_run_resume_prompt(task_input) {
+            let resume_result = async {
+                let current_project_scope = prepared.register_project_scope().await?;
+                let mut orchestrator = prepared.build_orchestrator(TaskOperationConfig {
+                    profile_override: profile_override.clone(),
+                    ..TaskOperationConfig::default()
+                });
                 tracing::info!(
                     target: "harness::task_mode",
                     task_id = %task.id,
-                    "bare continuation prompt: enabling one-shot stage_run fast resume"
+                    "task mode: resuming prior operation for this chat session"
                 );
-                orchestrator.set_force_stage_run_on_resume_once(true);
+                if looks_like_bare_stage_run_resume_prompt(task_input) {
+                    tracing::info!(
+                        target: "harness::task_mode",
+                        task_id = %task.id,
+                        "bare continuation prompt: enabling one-shot stage_run fast resume"
+                    );
+                    orchestrator.set_force_stage_run_on_resume_once(true);
+                }
+                super::operation_resume::authorize_operation_resume(
+                    prepared.db_repo(),
+                    task.id,
+                    &current_project_scope,
+                )
+                .await?;
+                let resume_source = super::operation_resume::select_exact_resume_runtime_source(
+                    state.db_pool.as_ref(),
+                    task.id,
+                    uuid_session_id,
+                )
+                .await?;
+                super::operation_resume::claim_exact_resume_runtime_source(
+                    state.db_pool.as_ref(),
+                    task.id,
+                    uuid_session_id,
+                    resume_source,
+                )
+                .await?;
+                orchestrator.set_resume_runtime_memory_source(resume_source);
+                orchestrator.set_resume_task_preclaimed(true);
+                bridge.set_resume_runtime_memory_source(resume_source).await;
+                orchestrator
+                    .resume(task.id, task_input, prepared.executor())
+                    .await
             }
-            super::operation_resume::authorize_operation_resume(
-                db_repo_for_scope_authorization.as_ref(),
-                task.id,
-                &current_project_scope,
-            )
-            .await?;
-            let resume_source = super::operation_resume::select_exact_resume_runtime_source(
-                state.db_pool.as_ref(),
-                task.id,
-                uuid_session_id,
-            )
-            .await?;
-            super::operation_resume::claim_exact_resume_runtime_source(
-                state.db_pool.as_ref(),
-                task.id,
-                uuid_session_id,
-                resume_source,
-            )
-            .await?;
-            orchestrator.set_resume_runtime_memory_source(resume_source);
-            orchestrator.set_resume_task_preclaimed(true);
-            bridge.set_resume_runtime_memory_source(resume_source).await;
-            orchestrator.resume(task.id, task_input, &executor).await
+            .await;
+            prepared.finish(resume_result).await
         }
         None => {
-            orchestrator
-                .run(task_input, current_project_scope, &executor)
+            let launch = FreshTaskOperationLaunch::new(
+                task_input,
+                profile_id,
+                FreshOperationEntry::FullProfile,
+                FreshOperationScope::unconfirmed_subject(task_input)?,
+                SubsidiaryScopePolicy::default(),
+                continuity_adoption,
+            )?;
+            prepared
+                .run_fresh(launch)
                 .await
+                .map(|outcome| outcome.response)
         }
     };
-
-    // The executor (and outer GUI request) still hold ownership here. Clear the
-    // harness side-channels before any planner-declined Chat fallback can build a
-    // loop context, and before the top-level command releases the lease.
-    bridge
-        .clear_top_level_request_state(&request)
-        .await
-        .context("clear Task request-local bridge state")?;
 
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -1128,20 +1089,6 @@ fn extract_user_message_from_wrapped_prompt(prompt: &str) -> &str {
         .trim()
 }
 
-/// Truncate a string to at most `max_bytes` bytes without splitting a
-/// multi-byte UTF-8 character. Used to derive a short session title from
-/// the user prompt; never panics on Chinese/emoji input.
-fn truncate_for_title(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s[..end].to_string()
-}
-
 #[cfg(test)]
 mod chat_title_tests {
     use super::{
@@ -1150,8 +1097,9 @@ mod chat_title_tests {
         is_conversational_planner_failure, looks_like_bare_stage_run_resume_prompt,
         looks_like_resume_operation_prompt, render_continuity_offer,
         should_auto_start_task_operation, task_profile_lead_instructions,
-        task_prompt_from_start_operation, truncate_for_title,
+        task_prompt_from_start_operation,
     };
+    use crate::ai::task_operation::truncate_session_title as truncate_for_title;
 
     #[tokio::test]
     async fn task_mode_tracker_rebind_updates_existing_runtime_clones() {

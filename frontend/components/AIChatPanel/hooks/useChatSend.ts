@@ -153,7 +153,11 @@ export function useChatSend(opts: UseChatSendOptions) {
         const isTaskMode = executionModeId !== "chat";
         if (isTaskMode) taskInProgressRef.current = true;
 
-        await setExecutionModeBackend(conv.aiSessionId, executionModeId).catch(() => {});
+        // The selected profile is execution authority, not a best-effort UI
+        // preference. If the backend cannot accept it, fail this send before
+        // any prompt/tool work starts; otherwise GUI may display Pentest while
+        // the operation actually runs under a stale Chat/profile context.
+        await setExecutionModeBackend(conv.aiSessionId, executionModeId);
 
         const attachmentsForSend = hasPromptOverride ? [] : imageAttachments;
         if (attachmentsForSend.length > 0) {

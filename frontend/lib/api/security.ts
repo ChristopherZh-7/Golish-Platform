@@ -127,9 +127,6 @@ export const securityApi = {
       projectPath,
     }),
 
-  // Nuclei
-  nucleiCancel: () => invoke("nuclei_cancel"),
-
   // Targets
   targetList: (projectPath: string | null) =>
     invoke<{ targets: Array<{ id: string; value: string; type: string; scope: string }> }>(

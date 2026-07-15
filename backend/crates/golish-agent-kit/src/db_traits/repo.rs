@@ -47,6 +47,7 @@ pub struct AttackV2WaveConsolidationView {
     pub accepted_fact_delta_count: usize,
     pub rejected_fact_delta_count: usize,
     pub residual_risk_count: usize,
+    pub pending_enrichment_count: usize,
     pub replayed: bool,
 }
 
@@ -84,11 +85,22 @@ pub struct ScopingActionsSeen {
     pub scope_review_targets: Vec<ScopingReviewedTarget>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScopingReviewedTarget {
     pub value: String,
+    #[serde(rename = "type")]
     pub target_type: String,
     pub scope: String,
+}
+
+/// Exact human decision applied at the passive-intel -> active-recon boundary.
+/// `selected` must be a non-empty unchanged subset of `presented`; the DB
+/// implementation revalidates that invariant under the operation row lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveReconScopeReviewApproval {
+    pub request_id: String,
+    pub presented: Vec<ScopingReviewedTarget>,
+    pub selected: Vec<ScopingReviewedTarget>,
 }
 
 /// Parse the persisted `ask_human` tool result for a scope-review response.
@@ -691,6 +703,40 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(0)
     }
 
+    /// Append organization-bound evidence for a stage worker. The trusted
+    /// runtime supplies `organization_id`; it is not model input. Production
+    /// implementations persist that ownership witness inside the hash-bound
+    /// evidence detail so a same-operation sibling org cannot cite the row.
+    /// Test doubles may retain the legacy behavior by inheriting this default.
+    #[allow(clippy::too_many_arguments)]
+    async fn evidence_append_for_organization(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_run_id: Option<Uuid>,
+        session_id: Option<&str>,
+        project_path: Option<&str>,
+        tool_name: &str,
+        kind: &str,
+        subject: &str,
+        raw_output: &str,
+        facts: Option<(&str, &str, &str)>,
+    ) -> anyhow::Result<i64> {
+        let _ = organization_id;
+        self.evidence_append(
+            operation_id,
+            stage_run_id,
+            session_id,
+            project_path,
+            tool_name,
+            kind,
+            subject,
+            raw_output,
+            facts,
+        )
+        .await
+    }
+
     /// PR-C step2b（#4 / E3，设计 2026-06-23-technique-outcomes-provenance）：把一条
     /// 覆盖结局 + provenance upsert 进 `technique_outcomes`（命令路径 / enrich 落库点
     /// 调用）。`asset` 由 app 层过 `canonical_asset_key` 归一（E1）；`outcome` ∈
@@ -882,6 +928,39 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> Vec<TechniqueOutcomeFact> {
         let _ = since;
         self.technique_outcome_facts(organization_id, run_id).await
+    }
+
+    /// Strict projection variant for producers whose durable outcome `run_id`
+    /// is operation-scoped while the evidence ledger remains chat-session
+    /// scoped. The default preserves existing providers; the app repository
+    /// overrides it to validate the exact target-bound evidence tuple from the
+    /// separate evidence session.
+    async fn technique_outcome_facts_fresh_with_evidence_session(
+        &self,
+        organization_id: Uuid,
+        outcome_run_id: &str,
+        evidence_session_id: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<TechniqueOutcomeFact> {
+        let _ = evidence_session_id;
+        self.technique_outcome_facts_fresh(organization_id, outcome_run_id, since)
+            .await
+    }
+
+    /// Fail-closed existence projection used only while building a V2 final
+    /// seal. Unlike the gate-facing gray-read methods above, this must preserve
+    /// every exact `(organization, run)` row and propagate repository failures:
+    /// coverage truth remains fully hash-bound, while canonical references may
+    /// name only rows that the final handoff transaction can actually resolve.
+    /// Freshness and ownership are re-checked under lock by the canonical-fact
+    /// resolver, so this seam intentionally has no per-wave cutoff.
+    async fn final_seal_technique_outcome_facts(
+        &self,
+        organization_id: Uuid,
+        run_id: &str,
+    ) -> anyhow::Result<Vec<TechniqueOutcomeFact>> {
+        let _ = (organization_id, run_id);
+        anyhow::bail!("final-seal technique outcome projection is not implemented")
     }
 
     /// #5（source_query_log gate-read）：从 `source_query_log` 读某 `(org, run)` 的
@@ -1201,6 +1280,40 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
         let _ = organization_id;
         Ok(Vec::new())
+    }
+
+    /// Provider-derived exact targets refreshed in this operation's current
+    /// Target Intel window. These are review candidates, never authority.
+    async fn active_recon_scope_review_candidates(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
+        let _ = (operation_id, organization_id);
+        Ok(Vec::new())
+    }
+
+    /// Atomically promote the selected unchanged subset to trusted intake,
+    /// exclude the unselected rows, and persist an operation-bound approval.
+    async fn active_recon_scope_review_apply(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        approval: ActiveReconScopeReviewApproval,
+    ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
+        let _ = (operation_id, organization_id, approval);
+        anyhow::bail!("ACTIVE_RECON_SCOPE_REPO_UNAVAILABLE")
+    }
+
+    /// Verify that a company-only resume owns an exact authorization written
+    /// by this same operation and that it still matches trusted target truth.
+    async fn active_recon_scope_review_authorized(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let _ = (operation_id, organization_id);
+        anyhow::bail!("ACTIVE_RECON_SCOPE_REPO_UNAVAILABLE")
     }
 
     // ── Candidate V2 manifest authority ────────────────────────────────

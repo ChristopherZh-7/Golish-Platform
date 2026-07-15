@@ -50,6 +50,8 @@ describe("handleHarnessTrace", () => {
         stage: "target_intel",
         agent_path: "main",
         kind: "stage_run_org_progress",
+        stage_execution_id: "execution-1",
+        stage_run_unit_id: "unit-1",
         org_id: "org-1",
         org_name: "平安科技",
         agent_request_id: "op::org::org-1",
@@ -73,6 +75,8 @@ describe("handleHarnessTrace", () => {
     expect(sid).toBe("sess-1");
     expect(row.id).toBe("org-1");
     expect(row.operationId).toBe("op");
+    expect(row.stageExecutionId).toBe("execution-1");
+    expect(row.stageRunUnitId).toBe("unit-1");
     expect(row.name).toBe("平安科技");
     expect(row.agentRequestId).toBe("op::org::org-1");
     expect(row.ownershipPercent).toBe(100);
@@ -88,6 +92,13 @@ describe("handleHarnessTrace", () => {
 
   it("extracts the stage_run tool request id from an org agent request id", () => {
     expect(stageRunRequestIdFromAgentRequestId("tool-13::org::org-1")).toBe("tool-13");
+    expect(stageRunRequestIdFromAgentRequestId("tool-14::team::org-2")).toBe("tool-14");
+    expect(
+      stageRunRequestIdFromAgentRequestId("tool-14::team::org-2::worker:worker-1")
+    ).toBe("tool-14");
+    expect(
+      stageRunRequestIdFromAgentRequestId("tool-14::team::org-2::aggregator:worker-2")
+    ).toBe("tool-14");
     expect(stageRunRequestIdFromAgentRequestId("tool-13")).toBeNull();
     expect(stageRunRequestIdFromAgentRequestId(null)).toBeNull();
   });

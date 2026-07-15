@@ -10,8 +10,11 @@ use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
 
+use golish_agent_kit::harness::wstg_mapping::{
+    FORMULAIC_TECHNIQUES, GENERAL_NUCLEI_TECHNIQUES, GOLISH_NDAY, WSTG_ANONYMOUS_ACCESS,
+};
 use golish_agent_kit::harness::SourceQueryFact;
-use golish_pentest::evidence_ledger::append::{append, EvidenceInput};
+use golish_pentest::evidence_ledger::append::{append, append_for_organization, EvidenceInput};
 use golish_pentest::evidence_ledger::{InMemoryScopeService, ScopeVersion};
 
 use super::GolishDbRepoProvider;
@@ -27,6 +30,56 @@ const ENUM_COLLECTION_RECOVERY_BLOCKED_KIND: &str = "enumeration_collection_reco
 const EAS_WEB_BLOCKED_TOOL: &str = "whatweb";
 const EAS_WEB_BLOCKED_KIND: &str = "eas.fingerprint_web_stack";
 const EAS_WEB_BLOCKED_SOURCE: &str = "eas_fingerprint_web_stack";
+const VULN_NUCLEI_EVIDENCE_KIND: &str = "vuln.nuclei_observation";
+const VULN_NUCLEI_GENERAL_TOOL: &str = "vuln_nuclei_general";
+const VULN_NUCLEI_TARGETED_TOOL: &str = "vuln_nuclei_fingerprint_targeted";
+const VULN_ANONYMOUS_ACCESS_EVIDENCE_KIND: &str = "vuln.anonymous_access_observation";
+const VULN_ANONYMOUS_ACCESS_TOOL: &str = "vuln_probe_anonymous_access";
+
+fn is_vuln_technique(technique: &str) -> bool {
+    FORMULAIC_TECHNIQUES.contains(&technique)
+}
+
+fn is_vuln_terminal_outcome(technique: &str, outcome: &str) -> bool {
+    is_vuln_technique(technique)
+        && matches!(outcome, "found" | "empty" | "blocked" | "not_applicable")
+}
+
+fn vuln_terminal_source_is_authoritative(
+    technique: &str,
+    outcome: &str,
+    source: Option<&str>,
+) -> bool {
+    if !is_vuln_terminal_outcome(technique, outcome) {
+        return true;
+    }
+    match technique {
+        GOLISH_NDAY => source == Some(VULN_NUCLEI_TARGETED_TOOL),
+        WSTG_ANONYMOUS_ACCESS => source == Some(VULN_ANONYMOUS_ACCESS_TOOL),
+        technique if GENERAL_NUCLEI_TECHNIQUES.contains(&technique) => {
+            source == Some(VULN_NUCLEI_GENERAL_TOOL)
+        }
+        _ => false,
+    }
+}
+
+fn vuln_terminal_evidence_kind_is_authoritative(
+    technique: &str,
+    outcome: &str,
+    evidence_kind: Option<&str>,
+) -> bool {
+    if !is_vuln_terminal_outcome(technique, outcome) {
+        return true;
+    }
+    match technique {
+        WSTG_ANONYMOUS_ACCESS => evidence_kind == Some(VULN_ANONYMOUS_ACCESS_EVIDENCE_KIND),
+        GOLISH_NDAY => evidence_kind == Some(VULN_NUCLEI_EVIDENCE_KIND),
+        technique if GENERAL_NUCLEI_TECHNIQUES.contains(&technique) => {
+            evidence_kind == Some(VULN_NUCLEI_EVIDENCE_KIND)
+        }
+        _ => false,
+    }
+}
 
 fn is_enumeration_technique(technique: &str) -> bool {
     matches!(
@@ -111,6 +164,9 @@ fn strict_evidence_asset_key(asset: &str, technique: &str) -> Option<String> {
             | golish_db::repo::coverage_truth::TECH_ENUM_PARAM
             | golish_db::repo::coverage_truth::TECH_ENUM_JSAPI
     ) {
+        return golish_pentest_domain::canonical_web_origin(asset).map(|origin| origin.key);
+    }
+    if is_vuln_technique(technique) {
         return golish_pentest_domain::canonical_web_origin(asset).map(|origin| origin.key);
     }
     if technique == golish_db::repo::coverage_truth::TECH_EAS_LIVENESS {
@@ -329,6 +385,45 @@ pub(crate) fn enumeration_target_bound_evidence_fact_set(
         .collect()
 }
 
+pub(crate) fn vuln_target_bound_evidence_fact_set(
+    organization_id: Uuid,
+    rows: impl IntoIterator<Item = golish_db::repo::audit::TargetBoundEvidenceFactRow>,
+) -> TargetBoundEvidenceFactSet {
+    rows.into_iter()
+        .filter(|row| {
+            row.target_organization_id == Some(organization_id)
+                && row.evidence_organization_id == organization_id.to_string()
+        })
+        .filter(row_has_matching_producer_and_current_org)
+        .filter(|row| target_row_still_authorizes_origin(row, &row.evidence_asset))
+        .filter(|row| {
+            vuln_terminal_evidence_kind_is_authoritative(
+                &row.evidence_technique,
+                &row.evidence_outcome,
+                row.evidence_kind.as_deref(),
+            ) && vuln_terminal_source_is_authoritative(
+                &row.evidence_technique,
+                &row.evidence_outcome,
+                row.tool_name.as_deref(),
+            )
+        })
+        .filter_map(|row| {
+            if row.evidence_id <= 0
+                || !is_vuln_terminal_outcome(&row.evidence_technique, &row.evidence_outcome)
+            {
+                return None;
+            }
+            let asset = strict_evidence_asset_key(&row.evidence_asset, &row.evidence_technique)?;
+            Some((
+                asset,
+                row.evidence_technique,
+                row.evidence_outcome,
+                row.evidence_id,
+            ))
+        })
+        .collect()
+}
+
 pub(crate) fn eas_target_bound_evidence_fact_set(
     organization_id: Uuid,
     rows: impl IntoIterator<Item = golish_db::repo::audit::TargetBoundEvidenceFactRow>,
@@ -383,8 +478,12 @@ pub(crate) fn projected_technique_outcome_evidence_id(
     if !eas_terminal_source_is_authoritative(technique, outcome, source) {
         return None;
     }
+    if !vuln_terminal_source_is_authoritative(technique, outcome, source) {
+        return None;
+    }
     if is_enumeration_terminal_outcome(technique, outcome)
         || is_eas_terminal_outcome(technique, outcome)
+        || is_vuln_terminal_outcome(technique, outcome)
     {
         let asset = strict_evidence_asset_key(asset, technique)?;
         return evidence_ids
@@ -419,6 +518,64 @@ impl GolishDbRepoProvider {
         raw_output: &str,
         facts: Option<(&str, &str, &str)>,
     ) -> anyhow::Result<i64> {
+        self.evidence_append_scoped_impl(
+            operation_id,
+            None,
+            stage_run_id,
+            session_id,
+            project_path,
+            tool_name,
+            kind,
+            subject,
+            raw_output,
+            facts,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn evidence_append_for_organization_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_run_id: Option<Uuid>,
+        session_id: Option<&str>,
+        project_path: Option<&str>,
+        tool_name: &str,
+        kind: &str,
+        subject: &str,
+        raw_output: &str,
+        facts: Option<(&str, &str, &str)>,
+    ) -> anyhow::Result<i64> {
+        self.evidence_append_scoped_impl(
+            operation_id,
+            Some(organization_id),
+            stage_run_id,
+            session_id,
+            project_path,
+            tool_name,
+            kind,
+            subject,
+            raw_output,
+            facts,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn evidence_append_scoped_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Option<Uuid>,
+        stage_run_id: Option<Uuid>,
+        session_id: Option<&str>,
+        project_path: Option<&str>,
+        tool_name: &str,
+        kind: &str,
+        subject: &str,
+        raw_output: &str,
+        facts: Option<(&str, &str, &str)>,
+    ) -> anyhow::Result<i64> {
         // MVP scope service: InMemory default-InScope. The production
         // `organizations.scope_rules` lookup is the deferred Task 7 of the P0
         // plan; swapping it in later does not change this call site.
@@ -441,9 +598,13 @@ impl GolishDbRepoProvider {
             asset,
             outcome,
         };
-        let eid = append(&self.pool, &scope, input)
-            .await
-            .map_err(|e| anyhow::anyhow!("evidence append failed: {e}"))?;
+        let eid = match organization_id {
+            Some(organization_id) => {
+                append_for_organization(&self.pool, &scope, input, organization_id).await
+            }
+            None => append(&self.pool, &scope, input).await,
+        }
+        .map_err(|e| anyhow::anyhow!("evidence append failed: {e}"))?;
         Ok(eid.as_i64())
     }
 
@@ -704,6 +865,37 @@ impl GolishDbRepoProvider {
             .await
     }
 
+    /// Raw, fail-closed row-existence projection for the V2 final-seal catalog.
+    /// Gate completion keeps using the guarded projection below; this method is
+    /// deliberately narrower and only proves which exact canonical keys exist.
+    pub(crate) async fn final_seal_technique_outcome_facts_impl(
+        &self,
+        organization_id: uuid::Uuid,
+        run_id: &str,
+    ) -> anyhow::Result<Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact>> {
+        let rows =
+            golish_db::repo::technique_outcomes::list_for_run(&self.pool, organization_id, run_id)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let evidence_id = row
+                    .evidence_ids
+                    .iter()
+                    .copied()
+                    .find(|id| *id > 0)
+                    .unwrap_or(0);
+                golish_agent_kit::db_traits::TechniqueOutcomeFact::new(
+                    row.asset,
+                    row.technique,
+                    row.outcome,
+                    evidence_id,
+                    row.source,
+                )
+            })
+            .collect())
+    }
+
     /// 护栏 4（设计 2026-07-02-gate-capability-ledger Phase 1）：同
     /// [`Self::technique_outcome_facts_impl`]，但套 stage-run freshness cutoff——
     /// `since = None` → presence-only；`since = Some(cutoff)` → 只投影
@@ -715,10 +907,26 @@ impl GolishDbRepoProvider {
         run_id: &str,
         since: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact> {
+        self.technique_outcome_facts_fresh_with_evidence_session_impl(
+            organization_id,
+            run_id,
+            run_id,
+            since,
+        )
+        .await
+    }
+
+    pub(crate) async fn technique_outcome_facts_fresh_with_evidence_session_impl(
+        &self,
+        organization_id: uuid::Uuid,
+        outcome_run_id: &str,
+        evidence_session_id: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact> {
         let rows = match golish_db::repo::technique_outcomes::list_for_run_fresh(
             &self.pool,
             organization_id,
-            run_id,
+            outcome_run_id,
             since,
         )
         .await
@@ -737,11 +945,12 @@ impl GolishDbRepoProvider {
         let target_bound_evidence_facts = if rows.iter().any(|row| {
             is_enumeration_terminal_outcome(&row.technique, &row.outcome)
                 || is_eas_terminal_outcome(&row.technique, &row.outcome)
+                || is_vuln_terminal_outcome(&row.technique, &row.outcome)
         }) {
             match since {
                 Some(cutoff) => match golish_db::repo::audit::evidence_facts_for_session_org_fresh(
                     &self.pool,
-                    run_id,
+                    evidence_session_id,
                     organization_id,
                     cutoff,
                 )
@@ -749,14 +958,18 @@ impl GolishDbRepoProvider {
                 {
                     Ok(rows) => {
                         let mut facts = enumeration_target_bound_evidence_fact_set(rows.clone());
-                        facts.extend(eas_target_bound_evidence_fact_set(organization_id, rows));
+                        facts.extend(eas_target_bound_evidence_fact_set(
+                            organization_id,
+                            rows.clone(),
+                        ));
+                        facts.extend(vuln_target_bound_evidence_fact_set(organization_id, rows));
                         facts
                     }
                     Err(e) => {
                         tracing::warn!(
                             target: "harness::submit_tool",
                             error = %e,
-                            "org-bound fresh evidence facts read failed; strict EAS/Enumeration terminal outcomes remain unprojected"
+                            "org-bound fresh evidence facts read failed; strict EAS/Enumeration/Vuln terminal outcomes remain unprojected"
                         );
                         TargetBoundEvidenceFactSet::new()
                     }
@@ -764,7 +977,7 @@ impl GolishDbRepoProvider {
                 None => {
                     tracing::warn!(
                         target: "harness::submit_tool",
-                        "strict EAS/Enumeration terminal outcomes require a stage freshness cutoff"
+                        "strict EAS/Enumeration/Vuln terminal outcomes require a stage freshness cutoff"
                     );
                     TargetBoundEvidenceFactSet::new()
                 }
@@ -1212,6 +1425,22 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             .await
     }
 
+    async fn technique_outcome_facts_fresh_with_evidence_session(
+        &self,
+        org_id: uuid::Uuid,
+        outcome_run_id: &str,
+        evidence_session_id: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<golish_agent_kit::db_traits::TechniqueOutcomeFact> {
+        self.technique_outcome_facts_fresh_with_evidence_session_impl(
+            org_id,
+            outcome_run_id,
+            evidence_session_id,
+            since,
+        )
+        .await
+    }
+
     async fn source_query_facts(&self, org_id: uuid::Uuid, run_id: &str) -> Vec<SourceQueryFact> {
         match self.source_query_facts_impl(org_id, run_id).await {
             Ok(rows) => rows,
@@ -1267,6 +1496,21 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             .collect())
     }
 
+    async fn candidate_manifest_for_unit(
+        &self,
+        operation_id: uuid::Uuid,
+        stage_run_unit_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+    ) -> anyhow::Result<golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot>
+    {
+        self.attack_v2_candidate_manifest_for_unit_impl(
+            operation_id,
+            stage_run_unit_id,
+            organization_id,
+        )
+        .await
+    }
+
     async fn verification_truth_for_operation(
         &self,
         operation_id: uuid::Uuid,
@@ -1290,6 +1534,7 @@ mod tests {
         dns_empty_outcome_hosts, dns_error_outcome_hosts, dns_found_outcome_hosts,
         dns_partial_outcome_hosts, eas_target_bound_evidence_facts, enumeration_evidence_fact_set,
         enumeration_target_bound_evidence_fact_set, projected_technique_outcome_evidence_id,
+        vuln_target_bound_evidence_fact_set,
     };
     use uuid::Uuid;
 
@@ -1348,6 +1593,138 @@ mod tests {
             target_value: target_value.to_string(),
             target_ports: serde_json::json!([]),
         }
+    }
+
+    #[test]
+    fn vuln_terminal_evidence_requires_current_owner_and_exact_wrapper_tuple() {
+        let org = Uuid::new_v4();
+        let origin = "https://app.example.com:443";
+        let mut row = target_bound_row(org, origin, "WSTG-CONF-05", origin, "url");
+        row.evidence_outcome = "empty".to_string();
+        row.tool_name = Some("vuln_nuclei_general".to_string());
+        row.evidence_kind = Some("vuln.nuclei_observation".to_string());
+
+        let accepted = vuln_target_bound_evidence_fact_set(org, vec![row.clone()]);
+        assert!(accepted.contains(&(
+            origin.to_string(),
+            "WSTG-CONF-05".to_string(),
+            "empty".to_string(),
+            91,
+        )));
+
+        for forged in [
+            {
+                let mut forged = row.clone();
+                forged.target_organization_id = Some(Uuid::new_v4());
+                forged
+            },
+            {
+                let mut forged = row.clone();
+                forged.evidence_asset = "https://other.example.com:443".to_string();
+                forged
+            },
+            {
+                let mut forged = row.clone();
+                forged.evidence_kind = Some("legacy_shell_scan".to_string());
+                forged
+            },
+            {
+                let mut forged = row.clone();
+                forged.tool_name = Some("vuln_nuclei_fingerprint_targeted".to_string());
+                forged
+            },
+        ] {
+            assert!(
+                vuln_target_bound_evidence_fact_set(org, vec![forged.clone()]).is_empty(),
+                "mismatched Vuln evidence tuple must fail closed: {forged:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vuln_anonymous_access_terminal_evidence_requires_its_exact_wrapper_tuple() {
+        let org = Uuid::new_v4();
+        let origin = "https://app.example.com:443";
+        let mut row = target_bound_row(org, origin, "WSTG-ATHN-04", origin, "url");
+        row.evidence_outcome = "not_applicable".to_string();
+        row.tool_name = Some("vuln_probe_anonymous_access".to_string());
+        row.evidence_kind = Some("vuln.anonymous_access_observation".to_string());
+
+        let accepted = vuln_target_bound_evidence_fact_set(org, vec![row.clone()]);
+        assert!(accepted.contains(&(
+            origin.to_string(),
+            "WSTG-ATHN-04".to_string(),
+            "not_applicable".to_string(),
+            91,
+        )));
+
+        for forged in [
+            {
+                let mut forged = row.clone();
+                forged.tool_name = Some("vuln_nuclei_general".to_string());
+                forged
+            },
+            {
+                let mut forged = row.clone();
+                forged.evidence_kind = Some("vuln.nuclei_observation".to_string());
+                forged
+            },
+            {
+                let mut forged = row.clone();
+                forged.evidence_technique = "WSTG-UNKNOWN".to_string();
+                forged
+            },
+        ] {
+            assert!(
+                vuln_target_bound_evidence_fact_set(org, vec![forged.clone()]).is_empty(),
+                "mismatched anonymous-access tuple must fail closed: {forged:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vuln_outcome_projection_rejects_mismatched_id_and_source() {
+        let org = Uuid::new_v4();
+        let origin = "https://app.example.com:443";
+        let mut row = target_bound_row(org, origin, "GOLISH-NDAY", origin, "url");
+        row.evidence_outcome = "found".to_string();
+        row.tool_name = Some("vuln_nuclei_fingerprint_targeted".to_string());
+        row.evidence_kind = Some("vuln.nuclei_observation".to_string());
+        let guarded = vuln_target_bound_evidence_fact_set(org, vec![row]);
+
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                origin,
+                "GOLISH-NDAY",
+                "found",
+                &[91],
+                &guarded,
+                Some("vuln_nuclei_fingerprint_targeted"),
+            ),
+            Some(91)
+        );
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                origin,
+                "GOLISH-NDAY",
+                "found",
+                &[92],
+                &guarded,
+                Some("vuln_nuclei_fingerprint_targeted"),
+            ),
+            None
+        );
+        assert_eq!(
+            projected_technique_outcome_evidence_id(
+                origin,
+                "GOLISH-NDAY",
+                "found",
+                &[91],
+                &guarded,
+                Some("vuln_nuclei_general"),
+            ),
+            None
+        );
     }
 
     #[test]

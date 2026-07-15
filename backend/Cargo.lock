@@ -2508,7 +2508,6 @@ dependencies = [
  "golish-agent-runtime",
  "golish-app-core",
  "golish-artifacts",
- "golish-auth-probe",
  "golish-cleanup-app",
  "golish-cli-output",
  "golish-context",
@@ -2757,6 +2756,7 @@ dependencies = [
  "rig-openai-responses",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
  "tokenx-rs",
@@ -2809,21 +2809,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "golish-auth-probe"
-version = "0.2.43"
-dependencies = [
- "anyhow",
- "golish-js-analyzer",
- "reqwest 0.13.3",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -3191,7 +3176,6 @@ dependencies = [
  "futures",
  "golish-agent-kit",
  "golish-app-core",
- "golish-auth-probe",
  "golish-cleanup-app",
  "golish-cleanup-domain",
  "golish-core",
@@ -3203,6 +3187,7 @@ dependencies = [
  "golish-post-exploit-app",
  "golish-post-exploit-domain",
  "golish-pty",
+ "golish-scan-runner",
  "golish-settings",
  "parking_lot",
  "regex",

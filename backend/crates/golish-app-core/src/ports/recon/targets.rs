@@ -21,6 +21,23 @@ use golish_core::time::ts_from_dt;
 
 use crate::domain::targets::{detect_type, ReconUpdate, Scope, Target, TargetStatus, TargetType};
 
+fn is_trusted_scoping_intake_source(source: &str) -> bool {
+    matches!(
+        source.trim().to_ascii_lowercase().as_str(),
+        "manual" | "imported" | "customer_provided" | "stage-run-seed" | "seed" | "cli"
+    )
+}
+
+fn promote_existing_target_to_trusted_intake_sql() -> &'static str {
+    r#"UPDATE targets
+       SET organization_id = COALESCE(organization_id, $1),
+           source = $2,
+           updated_at = NOW()
+       WHERE id = $3
+         AND project_path IS NOT DISTINCT FROM $4
+         AND (organization_id = $1 OR organization_id IS NULL)"#
+}
+
 /// Outbound port for recon target reads + domain writes.
 #[async_trait]
 pub trait ReconTargetsPort: Send + Sync {
@@ -48,8 +65,10 @@ pub trait ReconTargetsPort: Send + Sync {
         project_path: Option<&str>,
     ) -> anyhow::Result<Vec<(String, serde_json::Value)>>;
 
-    /// Add a target (dedup by value within legacy visibility). Returns the
-    /// existing or freshly-created [`Target`]. Mirrors `db_target_add`.
+    /// Add a target (dedup by value within legacy visibility). Explicit trusted
+    /// UI/CLI intake upgrades an exact same-org discovery row in place instead
+    /// of creating a duplicate Target. Returns the existing/upgraded or freshly
+    /// created [`Target`].
     #[allow(clippy::too_many_arguments)]
     async fn target_add(
         &self,
@@ -278,14 +297,36 @@ impl ReconTargetsPort for PgReconTargetsAdapter {
             .unwrap_or("default");
         let own = owner.map(str::trim).unwrap_or("");
 
-        if let Some(r) = golish_db::repo::targets::find_row_by_value_legacy::<TargetRow>(
+        if let Some(mut r) = golish_db::repo::targets::find_row_by_value_legacy::<TargetRow>(
             self.pool.as_ref(),
             value,
             project_path,
         )
         .await?
         {
-            return Ok(Target::from(r));
+            if !is_trusted_scoping_intake_source(source) {
+                return Ok(Target::from(r));
+            }
+
+            let same_identity = r.target_type == tt.as_str()
+                && (r.organization_id == organization_id || r.organization_id.is_none());
+            if same_identity {
+                let promoted = sqlx::query(promote_existing_target_to_trusted_intake_sql())
+                    .bind(organization_id)
+                    .bind(source)
+                    .bind(r.id)
+                    .bind(project_path)
+                    .execute(self.pool.as_ref())
+                    .await?;
+                if promoted.rows_affected() == 1 {
+                    r.organization_id = r.organization_id.or(organization_id);
+                    r.source = source.to_string();
+                    return Ok(Target::from(r));
+                }
+            }
+            // The legacy visibility probe may have returned a global or
+            // different-org row. Trusted intake must not claim it; create an
+            // exact row in the caller's own project/org scope below.
         }
 
         let row: TargetRow = golish_db::repo::targets::insert_full(
@@ -407,5 +448,38 @@ mod tests {
     #[test]
     fn recon_targets_port_is_object_safe() {
         fn _assert(_: &dyn ReconTargetsPort) {}
+    }
+
+    #[test]
+    fn trusted_scoping_sources_match_the_active_recon_barrier_contract() {
+        for source in [
+            "manual",
+            "imported",
+            "customer_provided",
+            "stage-run-seed",
+            "seed",
+            "cli",
+        ] {
+            assert!(is_trusted_scoping_intake_source(source), "{source}");
+        }
+        for source in [
+            "asset_intel",
+            "active_discovered",
+            "external_attack_surface",
+        ] {
+            assert!(!is_trusted_scoping_intake_source(source), "{source}");
+        }
+    }
+
+    #[test]
+    fn trusted_intake_promotion_is_exact_project_and_org_scoped() {
+        let sql = promote_existing_target_to_trusted_intake_sql();
+        assert!(sql.contains("project_path IS NOT DISTINCT FROM $4"));
+        assert!(sql.contains("organization_id = $1 OR organization_id IS NULL"));
+        assert!(sql.contains("source = $2"));
+        assert!(
+            !sql.contains("scope ="),
+            "trusted re-add must not reactivate scope=out"
+        );
     }
 }

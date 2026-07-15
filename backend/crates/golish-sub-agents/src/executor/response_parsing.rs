@@ -18,8 +18,11 @@ use crate::definition::{SubAgentContext, SubAgentDefinition};
 use crate::executor_helpers::{epoch_secs, extract_file_path, is_write_tool};
 use crate::executor_types::{
     cancellation_requested, coverage_gap_action_instruction, normalize_probe_target,
-    wait_for_cancelled, CoverageGapAction, EasWebRepairTarget, SubAgentExecutorContext,
-    SubAgentToolObservation, SubmitRepairKind, SubmitRepairMode, ToolProvider, BARRIER_TOOL_NAME,
+    wait_for_cancelled, CoverageGapAction, EasWebRepairTarget, StageTeamLeaderBinding,
+    SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairKind, SubmitRepairMode,
+    ToolProvider, BARRIER_TOOL_NAME, STAGE_TEAM_DISPATCH_ACCEPTED_STATUS,
+    STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME, STAGE_TEAM_PREPARE_FINAL_STATUS,
+    STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME,
 };
 use crate::transcript::SubAgentTranscriptWriter;
 use golish_core::events::{AiEvent, ToolSource};
@@ -76,13 +79,96 @@ pub(super) fn stage_block_signature(tool_name: &str, result: &serde_json::Value)
     Some(joined)
 }
 
-/// An accepted stage submission is itself a deterministic terminal barrier for
-/// the specialist. The accepted deliverable has already been captured in the
-/// shared side channel; asking the model for another turn only lets it re-open
-/// completed work, mutate targets, or submit the same payload repeatedly.
-fn stage_submission_accepted(tool_name: &str, result: &serde_json::Value) -> bool {
-    tool_name == "submit_stage_deliverable"
-        && result.get("status").and_then(|value| value.as_str()) == Some("accepted")
+/// Return the host-visible barrier response for a durable stage submission.
+///
+/// Accepted submissions remain terminal for every specialist. A durable
+/// `needs_fix` submission is terminal only when the host explicitly owns the
+/// repair generation (currently the Stage Team Aggregator); ordinary stage
+/// workers continue their existing in-chain repair loop.
+pub(super) fn stage_submission_barrier_response(
+    tool_name: &str,
+    result: &serde_json::Value,
+    return_on_first_durable_submission: bool,
+) -> Option<String> {
+    if tool_name != "submit_stage_deliverable" {
+        return None;
+    }
+    let status = result.get("status").and_then(serde_json::Value::as_str)?;
+    let submission_id = result
+        .get("deliverable_submission_id")
+        .and_then(serde_json::Value::as_str);
+    match status {
+        "accepted" => Some(match submission_id {
+            Some(submission_id) => format!(
+                "Stage deliverable accepted; returning control to the stage orchestrator.\n\n[deliverable_submission_id: {submission_id}]"
+            ),
+            None => "Stage deliverable accepted without a durable submission id; returning control to the stage orchestrator."
+                .to_string(),
+        }),
+        "needs_fix" if return_on_first_durable_submission => submission_id.map(|submission_id| {
+            format!(
+                "Stage deliverable needs deterministic repair; returning the durable submission to the stage orchestrator.\n\n[deliverable_submission_id: {submission_id}]"
+            )
+        }),
+        _ => None,
+    }
+}
+
+/// A claimed Company Controller coordination turn is host-owned and can only
+/// return through one of its trusted router tools. `submit_result` is the
+/// generic specialist barrier; accepting it here would let model prose bypass
+/// the durable dispatch/prepare-final state machine.
+fn stage_team_controller_submit_result_rejection(
+    active_company_controller: bool,
+) -> Option<serde_json::Value> {
+    active_company_controller.then(|| {
+        serde_json::json!({
+            "error": "Company Controller coordination cannot end with submit_result. Call exactly one trusted coordination tool: stage_team_dispatch_workers or stage_team_prepare_final_submission.",
+            "code": "STAGE_TEAM_CONTROLLER_REQUIRES_ROUTER",
+            "blocked_by_controller_router": true,
+            "next_action": "Continue this same turn and call stage_team_dispatch_workers or stage_team_prepare_final_submission; do not call submit_result.",
+        })
+    })
+}
+
+/// Recognize only successful host-router control results for an exact Company
+/// Controller binding. The raw JSON is returned unchanged so the outer
+/// scheduler can consume its durable IDs/counts after the tool-result turn has
+/// been checkpointed.
+pub(super) fn stage_team_leader_router_barrier_response(
+    tool_name: &str,
+    result: &serde_json::Value,
+    binding: Option<&StageTeamLeaderBinding>,
+) -> Option<String> {
+    binding?;
+    let expected_status = match tool_name {
+        STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME => STAGE_TEAM_DISPATCH_ACCEPTED_STATUS,
+        STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME => STAGE_TEAM_PREPARE_FINAL_STATUS,
+        _ => return None,
+    };
+    (result.get("status").and_then(serde_json::Value::as_str) == Some(expected_status))
+        .then(|| serde_json::to_string(result).ok())
+        .flatten()
+}
+
+/// A Candidate terminal intent is a stricter barrier than an ordinary tool
+/// success: once persisted, the verifier may not perform any more external
+/// action. The host first checkpoints this tool result and then consumes the
+/// intent with server authority.
+fn candidate_terminal_intent_persisted(
+    tool_name: &str,
+    result: &serde_json::Value,
+) -> Option<String> {
+    (tool_name == "submit_candidate_attempt"
+        && result.get("status").and_then(|value| value.as_str())
+            == Some("terminal_intent_persisted"))
+    .then(|| {
+        result
+            .get("terminal_intent_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    })
+    .flatten()
 }
 
 /// Tracks consecutive identical stage-gate block signatures across loop
@@ -2274,6 +2360,10 @@ async fn begin_bound_worker_tool(
         })
 }
 
+fn bound_worker_lifecycle_request_id(event_request_id: &str) -> &str {
+    event_request_id
+}
+
 async fn finish_bound_worker_tool(
     bound: Option<&crate::executor_types::BoundWorkerChainContext>,
     tool_call_record_id: Option<uuid::Uuid>,
@@ -2415,6 +2505,40 @@ where
 
         // ── Barrier tool ────────────────────────────────────────────────
         if tool_name == BARRIER_TOOL_NAME {
+            if let Some(result_value) = stage_team_controller_submit_result_rejection(
+                ctx.bound_worker_chain
+                    .as_ref()
+                    .is_some_and(|bound| bound.stage_team_leader.is_some()),
+            ) {
+                tracing::warn!(
+                    target: "harness::stage_team_controller",
+                    agent_id = %agent_id,
+                    "rejected generic submit_result barrier from an active Company Controller"
+                );
+                let result_event = AiEvent::SubAgentToolResult {
+                    agent_id: agent_id.to_string(),
+                    tool_name: BARRIER_TOOL_NAME.to_string(),
+                    success: false,
+                    result: result_value.clone(),
+                    request_id: tool_call.id.clone(),
+                    parent_request_id: parent_request_id.to_string(),
+                };
+                let _ = ctx.event_tx.send(result_event.clone());
+                if let Some(ref writer) = transcript_writer {
+                    let writer = Arc::clone(writer);
+                    tokio::spawn(async move {
+                        if let Err(e) = writer.append(&result_event).await {
+                            tracing::warn!(
+                                "Failed to write rejected Controller barrier to transcript: {}",
+                                e
+                            );
+                        }
+                    });
+                }
+                tool_results.push(tool_result_for_history(&tool_call, result_value));
+                last_activity.store(epoch_secs(), Ordering::Relaxed);
+                continue;
+            }
             let args = &tool_call.function.arguments;
             let result_text = args
                 .get("result")
@@ -2670,21 +2794,29 @@ where
             .bound_worker_chain
             .as_ref()
             .and_then(|bound| bound.candidate_attempt.as_ref());
-        let mut lifecycle_start_error =
-            golish_core::check_candidate_tool_boundary(candidate, tool_name, &tool_args)
-                .err()
-                .map(|error| {
-                    serde_json::json!({
-                        "error": error.to_string(),
-                        "code": error.code(),
-                    })
-                });
+        let candidate_submit_only = ctx
+            .bound_worker_chain
+            .as_ref()
+            .is_some_and(|bound| bound.candidate_submit_only);
+        let mut lifecycle_start_error = golish_core::check_candidate_tool_boundary_mode(
+            candidate,
+            candidate_submit_only,
+            tool_name,
+            &tool_args,
+        )
+        .err()
+        .map(|error| {
+            serde_json::json!({
+                "error": error.to_string(),
+                "code": error.code(),
+            })
+        });
         let lifecycle_record_id = if lifecycle_start_error.is_some() {
             None
         } else {
             match begin_bound_worker_tool(
                 ctx.bound_worker_chain.as_ref(),
-                &tool_id,
+                bound_worker_lifecycle_request_id(&request_id),
                 tool_name,
                 &tool_args,
             )
@@ -2703,6 +2835,7 @@ where
 
         let tool_timeout = idle_timeout.unwrap_or(tool_fallback_timeout);
         let use_outer_tool_timeout = use_sub_agent_outer_tool_timeout(tool_name);
+        let mut stage_team_router_barrier_response = None;
         let tool_result = if let Some(error) = lifecycle_start_error {
             Ok((error, false))
         } else {
@@ -2897,7 +3030,21 @@ where
                                         None => None,
                                     };
                                     match routed {
-                                        Some((value, success)) => (value, success),
+                                        Some((value, success)) => {
+                                            if success {
+                                                stage_team_router_barrier_response =
+                                                    stage_team_leader_router_barrier_response(
+                                                        tool_name,
+                                                        &value,
+                                                        ctx.bound_worker_chain.as_ref().and_then(
+                                                            |bound| {
+                                                                bound.stage_team_leader.as_ref()
+                                                            },
+                                                        ),
+                                                    );
+                                            }
+                                            (value, success)
+                                        }
                                         None => {
                                             match execute_registry_tool_with_active_org(
                                                 ctx,
@@ -3050,22 +3197,43 @@ where
             &mut submit_repair_update_seen,
             submit_repair_update,
         );
-        if stage_submission_accepted(tool_name, &result_value) {
+        if let Some(response) = stage_submission_barrier_response(
+            tool_name,
+            &result_value,
+            ctx.bound_worker_chain
+                .as_ref()
+                .is_some_and(|bound| bound.return_on_first_durable_stage_submission),
+        ) {
             barrier_hit = true;
-            barrier_response = Some(match result_value
-                .get("deliverable_submission_id")
-                .and_then(serde_json::Value::as_str)
-            {
-                Some(submission_id) => format!(
-                    "Stage deliverable accepted; returning control to the stage orchestrator.\n\n[deliverable_submission_id: {submission_id}]"
-                ),
-                None => "Stage deliverable accepted without a durable submission id; returning control to the stage orchestrator."
-                    .to_string(),
-            });
+            barrier_response = Some(response);
             tracing::info!(
                 target: "harness::submit_tool",
                 agent_id = %agent_id,
-                "accepted stage deliverable ended the specialist loop"
+                "durable stage deliverable ended the host-owned specialist loop"
+            );
+        }
+        if success {
+            if let Some(response) = stage_team_router_barrier_response.take() {
+                barrier_hit = true;
+                barrier_response = Some(response);
+                tracing::info!(
+                    target: "harness::stage_team_controller",
+                    agent_id = %agent_id,
+                    tool = %tool_name,
+                    "trusted Company Controller control result returned to the outer scheduler"
+                );
+            }
+        }
+        if let Some(intent_id) = candidate_terminal_intent_persisted(tool_name, &result_value) {
+            barrier_hit = true;
+            barrier_response = Some(format!(
+                "Candidate terminal intent persisted; no further external action is allowed. Returning control for the host checkpoint barrier.\n\n[terminal_intent_id: {intent_id}]"
+            ));
+            tracing::info!(
+                target: "harness::candidate_terminal_intent",
+                agent_id = %agent_id,
+                terminal_intent_id = %intent_id,
+                "persisted Candidate terminal intent ended the verifier loop"
             );
         }
 
@@ -3256,17 +3424,37 @@ fn inject_harness_org_id_arg(
 mod tests {
     use super::{
         annotate_list_tools_with_guard, background_failure_runtime_correction,
-        begin_bound_worker_tool, execute_registry_tool_with_active_org, finish_bound_worker_tool,
-        inject_harness_org_id_arg, model_visible_tool_result,
-        refine_eas_web_repair_mode_from_worklist, registry_tool_outcome, stage_submission_accepted,
-        structured_storage_hook_payload, submit_coverage_gap_repair_mode_from_reasons,
-        submit_needs_fix_runtime_correction, submit_repair_mode_from_submit_result,
-        submit_repair_update, submit_repair_update_after_tool_result, tool_result_for_history,
+        begin_bound_worker_tool, bound_worker_lifecycle_request_id,
+        candidate_terminal_intent_persisted, execute_registry_tool_with_active_org,
+        finish_bound_worker_tool, inject_harness_org_id_arg, model_visible_tool_result,
+        refine_eas_web_repair_mode_from_worklist, registry_tool_outcome,
+        stage_submission_barrier_response, stage_team_controller_submit_result_rejection,
+        stage_team_leader_router_barrier_response, structured_storage_hook_payload,
+        submit_coverage_gap_repair_mode_from_reasons, submit_needs_fix_runtime_correction,
+        submit_repair_mode_from_submit_result, submit_repair_update,
+        submit_repair_update_after_tool_result, tool_result_for_history,
         update_submit_repair_mode_in_batch, use_sub_agent_outer_tool_timeout,
         SubmitRepairModeUpdate, MAX_ROUTE_PROBE_MODEL_BATCH_BYTES,
         MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
     };
-    use crate::{BoundWorkerChainContext, BoundWorkerToolLifecycle, SubmitRepairKind};
+
+    #[test]
+    fn bound_worker_lifecycle_uses_the_same_event_request_id_as_tool_context() {
+        let provider_tool_id = "call_provider_submit_1";
+        let event_request_id = "event-correlation-uuid";
+
+        assert_eq!(
+            bound_worker_lifecycle_request_id(event_request_id),
+            event_request_id
+        );
+        assert_ne!(
+            bound_worker_lifecycle_request_id(event_request_id),
+            provider_tool_id
+        );
+    }
+    use crate::{
+        BoundWorkerChainContext, BoundWorkerToolLifecycle, StageTeamLeaderBinding, SubmitRepairKind,
+    };
     use golish_core::Tool;
     use golish_tools::ToolRegistry;
     use rig::message::{ToolCall, ToolFunction, UserContent};
@@ -3275,6 +3463,72 @@ mod tests {
     use std::sync::{Arc, RwLock as StdRwLock};
     use tokio::sync::{mpsc, Mutex, RwLock};
     use uuid::Uuid;
+
+    fn stage_team_leader_binding() -> StageTeamLeaderBinding {
+        StageTeamLeaderBinding {
+            stage_team_plan_id: Uuid::new_v4(),
+            leader_work_item_id: Uuid::new_v4(),
+            expected_dispatch_epoch: 3,
+            expected_plan_row_version: 5,
+            expected_work_item_row_version: 7,
+        }
+    }
+
+    #[test]
+    fn only_trusted_leader_router_statuses_transfer_control_to_the_scheduler() {
+        let dispatch = serde_json::json!({
+            "status": "dispatch_accepted",
+            "accepted": 2,
+        });
+        let prepare_final = serde_json::json!({
+            "status": "prepare_final",
+            "request_epoch_closed": true,
+        });
+        let binding = stage_team_leader_binding();
+
+        assert!(stage_team_leader_router_barrier_response(
+            "stage_team_dispatch_workers",
+            &dispatch,
+            None,
+        )
+        .is_none());
+        assert_eq!(
+            stage_team_leader_router_barrier_response(
+                "stage_team_dispatch_workers",
+                &dispatch,
+                Some(&binding),
+            )
+            .as_deref(),
+            Some(r#"{"accepted":2,"status":"dispatch_accepted"}"#)
+        );
+        assert_eq!(
+            stage_team_leader_router_barrier_response(
+                "stage_team_prepare_final_submission",
+                &prepare_final,
+                Some(&binding),
+            )
+            .as_deref(),
+            Some(r#"{"request_epoch_closed":true,"status":"prepare_final"}"#)
+        );
+        assert!(stage_team_leader_router_barrier_response(
+            "stage_team_dispatch_workers",
+            &serde_json::json!({"status": "rejected"}),
+            Some(&binding),
+        )
+        .is_none());
+        assert!(stage_team_leader_router_barrier_response(
+            "query_target_data",
+            &dispatch,
+            Some(&binding),
+        )
+        .is_none());
+        assert!(stage_team_leader_router_barrier_response(
+            "update_plan",
+            &serde_json::json!({"success":true,"plan":[]}),
+            Some(&binding),
+        )
+        .is_none());
+    }
 
     struct ObserveActiveOrgTool {
         active_org_id: Arc<RwLock<Option<Uuid>>>,
@@ -3327,6 +3581,9 @@ mod tests {
                 attempt_epoch: 1,
             },
             candidate_attempt: None,
+            candidate_submit_only: false,
+            return_on_first_durable_stage_submission: false,
+            stage_team_leader: None,
             chain_id: Uuid::new_v4(),
             session_id: Uuid::new_v4(),
             agent_type: "recon".to_string(),
@@ -4758,7 +5015,7 @@ mod tests {
     }
 
     #[test]
-    fn coverage_gap_repair_uses_vuln_wrapper_not_raw_pentest_run() {
+    fn coverage_gap_repair_uses_exact_nuclei_wrappers_not_raw_pentest_run() {
         let v = serde_json::json!({
             "status": "needs_fix",
             "reasons": ["vuln_triage incomplete: never attempted"],
@@ -4767,13 +5024,19 @@ mod tests {
                     "asset": "https://app.example.com",
                     "technique": "WSTG-INPV-05",
                     "reason": "missing_terminal_coverage",
-                    "suggested_tools": ["vuln_run_formulaic_sweep"]
+                    "suggested_tools": ["vuln_nuclei_general"]
                 },
                 {
                     "asset": "https://other.example.com",
-                    "technique": "WSTG-INPV-01",
+                    "technique": "GOLISH-NDAY",
                     "reason": "missing_terminal_coverage",
-                    "suggested_tools": ["vuln_run_formulaic_sweep"]
+                    "suggested_tools": ["vuln_nuclei_fingerprint_targeted"]
+                },
+                {
+                    "asset": "https://api.example.com",
+                    "technique": "WSTG-ATHN-04",
+                    "reason": "missing_terminal_coverage",
+                    "suggested_tools": ["vuln_probe_anonymous_access"]
                 }
             ]
         });
@@ -4783,50 +5046,123 @@ mod tests {
             panic!("expected Set repair mode");
         };
 
-        assert!(mode.allows("vuln_run_formulaic_sweep"));
+        assert!(mode.allows("vuln_nuclei_general"));
+        assert!(mode.allows("vuln_nuclei_fingerprint_targeted"));
+        assert!(mode.allows("vuln_probe_anonymous_access"));
         assert!(!mode.allows("pentest_run"));
         assert!(mode
             .block_result_with_args(
-                "vuln_run_formulaic_sweep",
+                "vuln_nuclei_general",
                 &serde_json::json!({
-                    "targets": ["https://app.example.com"],
+                    "target_id": "11111111-1111-1111-1111-111111111111",
+                    "target_url": "https://app.example.com",
                     "techniques": ["WSTG-INPV-05"]
                 }),
             )
             .is_none());
+        assert!(mode
+            .block_result_with_args(
+                "vuln_nuclei_fingerprint_targeted",
+                &serde_json::json!({
+                    "target_id": "22222222-2222-2222-2222-222222222222",
+                    "target_url": "https://other.example.com",
+                    "techniques": ["GOLISH-NDAY"]
+                }),
+            )
+            .is_none());
+        assert!(mode
+            .block_result_with_args(
+                "vuln_probe_anonymous_access",
+                &serde_json::json!({
+                    "target_id": "33333333-3333-3333-3333-333333333333",
+                    "target_url": "https://api.example.com",
+                    "reviewed_endpoint_ids": [
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                    ],
+                    "selected_probes": [{
+                        "endpoint_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "query_values": {"account_id": "acct_01-safe"},
+                        "rationale": "Account endpoint is likely to expose authenticated data."
+                    }],
+                    "timeout_secs": 30
+                }),
+            )
+            .is_none());
+
+        let caller_authored_request = mode
+            .block_result_with_args(
+                "vuln_probe_anonymous_access",
+                &serde_json::json!({
+                    "target_id": "33333333-3333-3333-3333-333333333333",
+                    "target_url": "https://api.example.com",
+                    "reviewed_endpoint_ids": [
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+                    ],
+                    "selected_probes": [{
+                        "endpoint_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "query_values": {},
+                        "rationale": "Sensitive profile endpoint.",
+                        "url": "https://api.example.com/api/me"
+                    }]
+                }),
+            )
+            .expect("caller-authored per-endpoint request controls must be blocked");
+        assert!(caller_authored_request["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("only endpoint_id, query_values, and rationale"));
+
+        let incomplete_review_shape = mode
+            .block_result_with_args(
+                "vuln_probe_anonymous_access",
+                &serde_json::json!({
+                    "target_id": "33333333-3333-3333-3333-333333333333",
+                    "target_url": "https://api.example.com",
+                    "selected_probes": []
+                }),
+            )
+            .expect("the complete endpoint review witness is mandatory");
+        assert!(incomplete_review_shape["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("reviewed_endpoint_ids"));
 
         let raw = mode
             .block_result_with_args(
                 "pentest_run",
                 &serde_json::json!({
-                    "tool_name": "sqlmap",
-                    "args": "-u https://app.example.com --batch"
+                    "tool_name": "nuclei",
+                    "args": "-u https://app.example.com"
                 }),
             )
             .expect("raw vuln CLI should be blocked");
         assert!(raw["blocked_reason"]
             .as_str()
             .unwrap()
-            .contains("vuln_run_formulaic_sweep"));
+            .contains("vuln_nuclei_general"));
 
-        let broad = mode
+        let missing_target_id = mode
             .block_result_with_args(
-                "vuln_run_formulaic_sweep",
+                "vuln_nuclei_general",
                 &serde_json::json!({
-                    "targets": ["https://app.example.com", "https://other.example.com"],
+                    "target_url": "https://app.example.com",
                     "techniques": ["WSTG-INPV-05"]
                 }),
             )
-            .expect("unlisted vuln target should be blocked");
-        assert!(broad["blocked_reason"]
+            .expect("the guarded wrapper requires target_id");
+        assert!(missing_target_id["blocked_reason"]
             .as_str()
             .unwrap()
-            .contains("target/technique pair"));
+            .contains("target_id"));
 
         let default_all = mode
             .block_result_with_args(
-                "vuln_run_formulaic_sweep",
-                &serde_json::json!({"targets": ["https://app.example.com"]}),
+                "vuln_nuclei_general",
+                &serde_json::json!({
+                    "target_id": "11111111-1111-1111-1111-111111111111",
+                    "target_url": "https://app.example.com"
+                }),
             )
             .expect("gap repair must name techniques explicitly");
         assert!(default_all["blocked_reason"]
@@ -4836,10 +5172,11 @@ mod tests {
 
         let wrong_pair = mode
             .block_result_with_args(
-                "vuln_run_formulaic_sweep",
+                "vuln_nuclei_general",
                 &serde_json::json!({
-                    "targets": ["https://app.example.com"],
-                    "techniques": ["WSTG-INPV-01"]
+                    "target_id": "11111111-1111-1111-1111-111111111111",
+                    "target_url": "https://app.example.com",
+                    "techniques": ["GOLISH-NDAY"]
                 }),
             )
             .expect("unlisted target/technique pair should be blocked");
@@ -4847,6 +5184,21 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("target/technique pair"));
+
+        let wrong_targeted_technique = mode
+            .block_result_with_args(
+                "vuln_nuclei_fingerprint_targeted",
+                &serde_json::json!({
+                    "target_id": "11111111-1111-1111-1111-111111111111",
+                    "target_url": "https://app.example.com",
+                    "techniques": ["WSTG-INPV-05"]
+                }),
+            )
+            .expect("fingerprint-targeted wrapper is N-day only");
+        assert!(wrong_targeted_technique["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .contains("GOLISH-NDAY"));
     }
 
     #[test]
@@ -5616,19 +5968,75 @@ mod tests {
     }
 
     #[test]
-    fn accepted_stage_submission_is_a_terminal_barrier() {
-        assert!(stage_submission_accepted(
+    fn host_owned_stage_submission_returns_on_first_durable_result() {
+        assert!(stage_submission_barrier_response(
             "submit_stage_deliverable",
-            &serde_json::json!({"status": "accepted"})
-        ));
-        assert!(!stage_submission_accepted(
+            &serde_json::json!({"status": "accepted", "deliverable_submission_id": uuid::Uuid::new_v4()}),
+            false,
+        )
+        .is_some());
+        assert!(stage_submission_barrier_response(
             "submit_stage_deliverable",
-            &serde_json::json!({"status": "received"})
-        ));
-        assert!(!stage_submission_accepted(
+            &serde_json::json!({"status": "needs_fix", "deliverable_submission_id": "submission-1"}),
+            true,
+        )
+        .is_some());
+        assert!(stage_submission_barrier_response(
+            "submit_stage_deliverable",
+            &serde_json::json!({"status": "needs_fix", "deliverable_submission_id": "submission-1"}),
+            false,
+        )
+        .is_none());
+        assert!(stage_submission_barrier_response(
+            "submit_stage_deliverable",
+            &serde_json::json!({"status": "needs_fix"}),
+            true,
+        )
+        .is_none());
+        assert!(stage_submission_barrier_response(
             "stage_worklist_status",
-            &serde_json::json!({"status": "accepted"})
-        ));
+            &serde_json::json!({"status": "accepted"}),
+            true,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn company_controller_submit_result_is_rejected_until_router_barrier() {
+        let rejected = stage_team_controller_submit_result_rejection(true)
+            .expect("an active Company Controller must not terminate through submit_result");
+        assert_eq!(
+            rejected.get("code").and_then(serde_json::Value::as_str),
+            Some("STAGE_TEAM_CONTROLLER_REQUIRES_ROUTER")
+        );
+        assert_eq!(
+            rejected.get("blocked_by_controller_router"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert!(stage_team_controller_submit_result_rejection(false).is_none());
+    }
+
+    #[test]
+    fn candidate_terminal_intent_is_a_no_more_external_action_barrier() {
+        let intent_id = uuid::Uuid::new_v4();
+        let intent_id_text = intent_id.to_string();
+        assert_eq!(
+            candidate_terminal_intent_persisted(
+                "submit_candidate_attempt",
+                &serde_json::json!({
+                    "status": "terminal_intent_persisted",
+                    "terminal_intent_id": intent_id,
+                }),
+            ),
+            Some(intent_id_text)
+        );
+        assert_eq!(
+            candidate_terminal_intent_persisted(
+                "submit_candidate_attempt",
+                &serde_json::json!({"status": "rejected"}),
+            ),
+            None
+        );
     }
 
     #[test]

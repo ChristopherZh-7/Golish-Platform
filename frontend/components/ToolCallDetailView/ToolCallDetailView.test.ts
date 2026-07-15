@@ -8,6 +8,7 @@ import {
   isAttackCandidateStageRun,
   isCleanupStageRun,
   isShellLikeToolForDetail,
+  stageTeamAgentRequestIdsByWorker,
   TOOL_DETAIL_STATUS_BADGE_STYLES,
 } from "./ToolCallDetailView";
 
@@ -140,6 +141,20 @@ describe("getShellOutputForDetail", () => {
         undefined
       )
     ).toBeNull();
+  });
+
+  it("indexes exact Stage Team Controller and child identities by WorkerRun", () => {
+    expect(
+      stageTeamAgentRequestIdsByWorker([
+        { parentRequestId: "tool-1::team::org-1" },
+        { parentRequestId: "tool-1::team::org-1::lead:leader-worker" },
+        { parentRequestId: "tool-1::team::org-1::worker:worker-1" },
+        { parentRequestId: "unrelated" },
+      ])
+    ).toEqual({
+      "leader-worker": "tool-1::team::org-1::lead:leader-worker",
+      "worker-1": "tool-1::team::org-1::worker:worker-1",
+    });
   });
 });
 

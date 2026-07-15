@@ -15,7 +15,11 @@ use crate::db_traits::{FinalizeUnitPass, RuntimeStageUnitStatus, RuntimeWorkerFe
 pub const MAX_CANONICAL_REFS: usize = 256;
 pub const MAX_TYPED_CLAIMS: usize = 128;
 pub const MAX_EVIDENCE_IDS: usize = 1024;
-pub const MAX_HANDOFF_INPUT_BYTES: usize = 256 * 1024;
+pub const MAX_HANDOFF_PAYLOAD_BYTES: usize = 256 * 1024;
+/// Matches the durable provider-history ceiling. The terminal checkpoint is
+/// worker resume state, not downstream handoff payload, but remains bounded
+/// independently and hash-bound into the final seal.
+pub const MAX_TERMINAL_CHECKPOINT_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -189,18 +193,29 @@ pub fn build_server_final_seal(
             })
         })
         .collect::<Vec<_>>();
-    let bounded = serde_json::json!({
+    if canonical_json(&input.terminal_checkpoint).len() > MAX_TERMINAL_CHECKPOINT_BYTES {
+        return Err(HandoffCatalogError::TooLarge);
+    }
+    let handoff_payload = serde_json::json!({
         "canonical_fact_keys": input.canonical_fact_keys,
         "typed_claims": typed_claims,
         "coverage_watermark": input.coverage_watermark,
         "evidence_ids": input.evidence_ids,
-        "terminal_checkpoint": input.terminal_checkpoint,
         "deterministic_gate_details": input.deterministic_gate_details,
         "candidate_acceptance": input.candidate_acceptance,
     });
-    if canonical_json(&bounded).len() > MAX_HANDOFF_INPUT_BYTES {
+    if canonical_json(&handoff_payload).len() > MAX_HANDOFF_PAYLOAD_BYTES {
         return Err(HandoffCatalogError::TooLarge);
     }
+    let bounded = serde_json::json!({
+        "canonical_fact_keys": handoff_payload["canonical_fact_keys"].clone(),
+        "typed_claims": handoff_payload["typed_claims"].clone(),
+        "coverage_watermark": handoff_payload["coverage_watermark"].clone(),
+        "evidence_ids": handoff_payload["evidence_ids"].clone(),
+        "terminal_checkpoint": input.terminal_checkpoint,
+        "deterministic_gate_details": handoff_payload["deterministic_gate_details"].clone(),
+        "candidate_acceptance": handoff_payload["candidate_acceptance"].clone(),
+    });
     let gate_decision = serde_json::json!({
         "outcome": "pass",
         "operation_id": input.fence.operation_id,
@@ -293,6 +308,62 @@ mod tests {
         assert_eq!(seal.deliverable_submission_id, deliverable_submission_id);
         assert_eq!(seal.gate_decision["outcome"], "pass");
         assert_eq!(seal.gate_decision_hash.len(), 64);
+    }
+
+    #[test]
+    fn terminal_checkpoint_has_a_separate_budget_from_handoff_payload() {
+        let input = ServerFinalSealInput {
+            fence: RuntimeWorkerFence {
+                operation_id: Uuid::new_v4(),
+                stage_execution_id: Uuid::new_v4(),
+                stage_run_unit_id: Uuid::new_v4(),
+                worker_run_id: Uuid::new_v4(),
+                lease_token: Uuid::new_v4(),
+                attempt_epoch: 1,
+                expected_checkpoint_version: 3,
+            },
+            deliverable_submission_id: Uuid::new_v4(),
+            expected_unit_row_version: 2,
+            scope_hash: "scope-sha".to_string(),
+            aggregate_pass_token_hash: None,
+            canonical_fact_keys: vec![],
+            typed_claims: vec![],
+            coverage_watermark: serde_json::json!({"cells": 0}),
+            evidence_ids: vec![],
+            terminal_checkpoint: serde_json::json!({
+                "provider_safe_history": "x".repeat(MAX_HANDOFF_PAYLOAD_BYTES + 1),
+            }),
+            deterministic_gate_details: serde_json::json!({"rules": ["coverage"]}),
+            candidate_acceptance: None,
+        };
+        let mut drifted = input.clone();
+        drifted.terminal_checkpoint = serde_json::json!({
+            "provider_safe_history": "y".repeat(MAX_HANDOFF_PAYLOAD_BYTES + 1),
+        });
+        let mut oversized = input.clone();
+        oversized.terminal_checkpoint = serde_json::json!({
+            "provider_safe_history": "z".repeat(MAX_TERMINAL_CHECKPOINT_BYTES + 1),
+        });
+        let mut oversized_handoff = input.clone();
+        oversized_handoff.coverage_watermark = serde_json::json!({
+            "projection": "w".repeat(MAX_HANDOFF_PAYLOAD_BYTES + 1),
+        });
+        let expected_checkpoint = input.terminal_checkpoint.clone();
+
+        let seal = build_server_final_seal(input)
+            .expect("a valid resumable checkpoint must not consume the handoff payload budget");
+        let drifted = build_server_final_seal(drifted).expect("same-size checkpoint remains valid");
+
+        assert_eq!(seal.terminal_checkpoint, expected_checkpoint);
+        assert_ne!(seal.gate_decision_hash, drifted.gate_decision_hash);
+        assert!(matches!(
+            build_server_final_seal(oversized),
+            Err(HandoffCatalogError::TooLarge)
+        ));
+        assert!(matches!(
+            build_server_final_seal(oversized_handoff),
+            Err(HandoffCatalogError::TooLarge)
+        ));
     }
 
     #[test]

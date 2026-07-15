@@ -284,6 +284,8 @@ struct LockedWorkItem {
     seed_id: Uuid,
     work_item_key: String,
     technique: String,
+    observation: serde_json::Value,
+    observation_hash: String,
     organization_id: Uuid,
     target_live_id: Option<Uuid>,
     target_type_at_time: String,
@@ -293,6 +295,21 @@ struct LockedWorkItem {
     candidate_id: Option<Uuid>,
     no_candidate_reason_code: Option<String>,
     no_candidate_detail: Option<String>,
+}
+
+fn canonical_manifest_item_projection(
+    item: &LockedWorkItem,
+    evidence_ids: Vec<i64>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "evidence_ids": evidence_ids,
+        "observation": item.observation,
+        "observation_hash": item.observation_hash,
+        "target_identity_hash": item.target_identity_hash,
+        "technique": item.technique,
+        "work_item_id": item.id,
+        "work_item_key": item.work_item_key,
+    })
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -474,13 +491,7 @@ async fn canonical_manifest_hash(
         .bind(item.id)
         .fetch_all(&mut *connection)
         .await?;
-        projection.push(serde_json::json!({
-            "evidence_ids": evidence_ids,
-            "target_identity_hash": item.target_identity_hash,
-            "technique": item.technique,
-            "work_item_id": item.id,
-            "work_item_key": item.work_item_key,
-        }));
+        projection.push(canonical_manifest_item_projection(item, evidence_ids));
     }
     canonical_execution_plan_hash(&serde_json::Value::Array(projection))
 }
@@ -658,6 +669,7 @@ pub async fn accept_gate_passed_candidate_batch_with_connection(
     }
     let work_items = sqlx::query_as::<_, LockedWorkItem>(
         r#"SELECT item.id,item.seed_id,item.work_item_key,seed.technique,
+                  seed.observation,seed.observation_hash,
                   item.organization_id,item.target_live_id,item.target_type_at_time,
                   item.target_value_at_time,item.target_identity_hash,item.decision_kind,
                   item.candidate_id,item.no_candidate_reason_code,item.no_candidate_detail
@@ -1096,6 +1108,26 @@ pub async fn update_disposition(
 mod tests {
     use super::*;
 
+    fn locked_work_item(observation: serde_json::Value, observation_hash: &str) -> LockedWorkItem {
+        LockedWorkItem {
+            id: Uuid::new_v4(),
+            seed_id: Uuid::new_v4(),
+            work_item_key: "scanner_observation:fixture".to_string(),
+            technique: "GOLISH-NDAY".to_string(),
+            observation,
+            observation_hash: observation_hash.to_string(),
+            organization_id: Uuid::new_v4(),
+            target_live_id: None,
+            target_type_at_time: "url".to_string(),
+            target_value_at_time: "https://app.example.test:443".to_string(),
+            target_identity_hash: "sha256:target".to_string(),
+            decision_kind: None,
+            candidate_id: None,
+            no_candidate_reason_code: None,
+            no_candidate_detail: None,
+        }
+    }
+
     #[test]
     fn hypothesis_hash_is_deterministic_and_normalizes() {
         let a = hypothesis_hash(
@@ -1141,6 +1173,42 @@ mod tests {
             hypothesis_hash("a", None, "h"),
             hypothesis_hash("a", Some(""), "h")
         );
+    }
+
+    #[test]
+    fn acceptance_manifest_projection_covers_observation_and_declared_hash() {
+        let first = locked_work_item(
+            serde_json::json!({"schema": "nuclei_match_v1", "template_id": "one"}),
+            "sha256:one",
+        );
+        let second = LockedWorkItem {
+            id: first.id,
+            seed_id: first.seed_id,
+            work_item_key: first.work_item_key.clone(),
+            technique: first.technique.clone(),
+            observation: serde_json::json!({
+                "schema": "nuclei_match_v1",
+                "template_id": "two"
+            }),
+            observation_hash: "sha256:two".to_string(),
+            organization_id: first.organization_id,
+            target_live_id: first.target_live_id,
+            target_type_at_time: first.target_type_at_time.clone(),
+            target_value_at_time: first.target_value_at_time.clone(),
+            target_identity_hash: first.target_identity_hash.clone(),
+            decision_kind: None,
+            candidate_id: None,
+            no_candidate_reason_code: None,
+            no_candidate_detail: None,
+        };
+
+        let first_hash =
+            canonical_execution_plan_hash(&canonical_manifest_item_projection(&first, vec![1]))
+                .unwrap();
+        let second_hash =
+            canonical_execution_plan_hash(&canonical_manifest_item_projection(&second, vec![1]))
+                .unwrap();
+        assert_ne!(first_hash, second_hash);
     }
 
     #[test]

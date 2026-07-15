@@ -22,6 +22,17 @@ fn runtime_tool_identity_to_db(
     }
 }
 
+fn agent_log_persistence_type(agent_id: &str) -> &str {
+    match agent_id.trim() {
+        // These runtime-specialist ids intentionally remain precise in events
+        // and the Stage Team read model. The legacy `agent_logs.agent_type`
+        // enum predates them, so its compatibility boundary stores the
+        // existing broad pentest role instead of dropping the log row.
+        "vuln_scanner" | "attack_analyst" | "candidate_verifier" => "pentester",
+        supported => supported,
+    }
+}
+
 impl PgTrackingBackend {
     pub(super) async fn record_tool_call_start_impl(
         &self,
@@ -167,6 +178,8 @@ impl PgTrackingBackend {
         duration_ms: i32,
         project_path: &str,
     ) {
+        let initiator = agent_log_persistence_type(initiator);
+        let executor = agent_log_persistence_type(executor);
         let res = sqlx::query(
             r#"INSERT INTO agent_logs (session_id, initiator, executor, task, result, duration_ms, project_path)
                VALUES ($1, $2::agent_type, $3::agent_type, $4, $5, $6, $7)"#,
@@ -236,7 +249,7 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
-    use super::{runtime_tool_identity_to_db, PgTrackingBackend};
+    use super::{agent_log_persistence_type, runtime_tool_identity_to_db, PgTrackingBackend};
 
     #[derive(Clone)]
     struct AlwaysReady;
@@ -279,6 +292,18 @@ mod tests {
         assert_eq!(row.organization_id, identity.organization_id);
         assert_eq!(row.attempt_epoch, identity.attempt_epoch);
         assert_eq!(row.lease_token, identity.lease_token);
+    }
+
+    #[test]
+    fn agent_log_persistence_keeps_supported_specialists_and_folds_new_stage_roles() {
+        assert_eq!(agent_log_persistence_type("prober"), "prober");
+        assert_eq!(agent_log_persistence_type("enumerator"), "enumerator");
+        assert_eq!(agent_log_persistence_type("vuln_scanner"), "pentester");
+        assert_eq!(agent_log_persistence_type("attack_analyst"), "pentester");
+        assert_eq!(
+            agent_log_persistence_type("candidate_verifier"),
+            "pentester"
+        );
     }
 
     #[tokio::test]

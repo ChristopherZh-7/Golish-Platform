@@ -15,7 +15,8 @@ interface ThinkingBlockProps {
 
 function formatThinkingDuration(ms: number | null): string {
   if (ms == null) return "";
-  if (ms < 950) return `${Math.max(1, Math.round(ms / 100) * 100) / 1000}s`;
+  if (ms < 100) return "<0.1s";
+  if (ms < 950) return `${Math.round(ms / 100) / 10}s`;
   const seconds = ms / 1000;
   if (seconds < 60) {
     return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
@@ -106,7 +107,8 @@ export function ThinkingBlock({
     previousScrollTopRef.current = el.scrollTop;
   };
 
-  const durationMs = startedAt && endedAt && endedAt >= startedAt ? endedAt - startedAt : null;
+  const durationMs =
+    startedAt != null && endedAt != null && endedAt > startedAt ? endedAt - startedAt : null;
   const collapsedLabel = isActive
     ? "Thinking"
     : durationMs != null

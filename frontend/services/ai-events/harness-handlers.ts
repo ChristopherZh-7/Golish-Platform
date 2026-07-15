@@ -53,10 +53,11 @@ function toCoverage(pairs: [string, string][]): Record<string, TechniqueState> {
 
 export function stageRunRequestIdFromAgentRequestId(agentRequestId?: string | null): string | null {
   if (!agentRequestId) return null;
-  const marker = "::org::";
-  const idx = agentRequestId.indexOf(marker);
-  if (idx <= 0) return null;
-  return agentRequestId.slice(0, idx);
+  const indexes = ["::org::", "::team::"]
+    .map((marker) => agentRequestId.indexOf(marker))
+    .filter((index) => index > 0);
+  if (indexes.length === 0) return null;
+  return agentRequestId.slice(0, Math.min(...indexes));
 }
 
 /**
@@ -130,6 +131,8 @@ export const handleHarnessTrace: EventHandler<Extract<AiEvent, { type: "harness_
   const row: StageRunRow = {
     id: event.org_id,
     operationId: event.operation_id,
+    stageExecutionId: event.stage_execution_id ?? undefined,
+    stageRunUnitId: event.stage_run_unit_id ?? undefined,
     name: event.org_name,
     ownershipPercent: event.ownership_percent ?? null,
     status: toStageRunStatus(event.status),

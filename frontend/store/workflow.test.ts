@@ -614,6 +614,24 @@ describe("Store Workflow Actions — sub-agent streaming entries", () => {
     ]);
   });
 
+  it("preserves the reasoning batch arrival window instead of timing only the flush", () => {
+    const store = useStore.getState();
+
+    store.updateSubAgentThinking(sessionId, parentRequestId, "Thought through the probe.", {
+      startedAt: 1_000,
+      endedAt: 1_240,
+    });
+
+    expect(entries()).toEqual([
+      expect.objectContaining({
+        kind: "thinking",
+        text: "Thought through the probe.",
+        startedAt: 1_000,
+        endedAt: 1_240,
+      }),
+    ]);
+  });
+
   it("keeps text entries separate across tool-call boundaries", () => {
     const store = useStore.getState();
 

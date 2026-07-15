@@ -30,7 +30,8 @@ pub struct Args {
 
     /// Override AI provider from settings
     ///
-    /// Options: vertex_ai, openrouter, anthropic, openai
+    /// Options: vertex_ai, vertex_gemini, openrouter, anthropic, openai,
+    /// ollama, gemini, groq, xai, zai_sdk, nvidia, deepseek, xiaomi
     #[arg(short = 'p', long)]
     pub provider: Option<String>,
 
@@ -42,9 +43,16 @@ pub struct Args {
     #[arg(long, env = "QBIT_API_KEY")]
     pub api_key: Option<String>,
 
-    /// Auto-approve all tool calls (DANGEROUS: for testing only)
+    /// Auto-approve tool calls and resolve only supported typed harness prompts
+    /// from explicit CLI policy (DANGEROUS: for testing only)
     #[arg(long)]
     pub auto_approve: bool,
+
+    /// Explicitly approve every profile-defined phase-boundary confirmation in
+    /// a headless stage run. This is the CLI equivalent of clicking Confirm on
+    /// the GUI phase card; `--auto-approve` is still required to deliver it.
+    #[arg(long, requires = "auto_approve")]
+    pub approve_phase_boundaries: bool,
 
     /// Output events as JSON lines (for scripting/parsing)
     #[arg(long)]
@@ -97,6 +105,12 @@ pub struct Args {
         ]
     )]
     pub stage_run_resume: Option<String>,
+
+    /// Optional inclusive terminal stage for an exact resume. When omitted,
+    /// resume remains limited to the persisted current stage. This never
+    /// changes the frozen profile or scope.
+    #[arg(long, value_name = "STAGE", requires = "stage_run_resume")]
+    pub resume_to: Option<String>,
 
     /// Explicitly assert that a `running` task is an orphan left by a dead
     /// process. Requires exact expected identities; never inferred from age.
@@ -193,7 +207,7 @@ pub struct Args {
     /// scope policy for prompts/diagnostics; the actual filter runs in the
     /// asset-intel promote layer driven by the provider's toolsconfig
     /// `promote_when` (enscan-go: scale >= 51).
-    #[arg(long, value_name = "PCT", default_value_t = 50)]
+    #[arg(long, value_name = "PCT", default_value_t = 51)]
     pub subsidiary_threshold: u8,
 }
 
@@ -222,6 +236,7 @@ mod tests {
         let args = Args::parse_from(["golish"]);
         assert_eq!(args.workspace, PathBuf::from("."));
         assert!(!args.auto_approve);
+        assert!(!args.approve_phase_boundaries);
         assert!(!args.json);
         assert!(!args.quiet);
         assert!(!args.verbose);
@@ -231,6 +246,29 @@ mod tests {
     fn test_args_execute_flag() {
         let args = Args::parse_from(["golish", "-e", "Hello world"]);
         assert_eq!(args.execute, Some("Hello world".to_string()));
+    }
+
+    #[test]
+    fn test_args_stage_run_accepts_explicit_phase_boundary_approval() {
+        let args = Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--to",
+            "attack_candidate",
+            "--auto-approve",
+            "--approve-phase-boundaries",
+        ])
+        .expect("explicit phase approval is valid for an automated stage slice");
+        assert!(args.approve_phase_boundaries);
+
+        assert!(Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--to",
+            "attack_candidate",
+            "--approve-phase-boundaries",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -358,6 +396,25 @@ mod tests {
         );
         assert_eq!(args.execute.as_deref(), Some("继续"));
         assert_eq!(args.workspace, PathBuf::from("/tmp/original-workspace"));
+    }
+
+    #[test]
+    fn test_args_stage_run_resume_accepts_explicit_terminal_stage() {
+        let args = Args::try_parse_from([
+            "golish",
+            "--stage-run-resume",
+            "stage-run-476558c3-c22a-4009-a82e-17e086a005de",
+            "--resume-to",
+            "attack_candidate",
+        ])
+        .expect("resume should accept an explicit continuation boundary");
+
+        assert_eq!(
+            args.stage_run_resume.as_deref(),
+            Some("stage-run-476558c3-c22a-4009-a82e-17e086a005de")
+        );
+        assert_eq!(args.resume_to.as_deref(), Some("attack_candidate"));
+        assert!(Args::try_parse_from(["golish", "--resume-to", "attack_candidate"]).is_err());
     }
 
     #[test]

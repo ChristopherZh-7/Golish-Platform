@@ -31,13 +31,16 @@ use golish_agent_kit::db_traits::{
 };
 use golish_agent_kit::harness::org_gate::{
     apply_technique_outcome_rows, eas_service_not_applicable_from_port_outcomes,
-    extract_pass_token, stage_accepts_outcome_projection, stage_accepts_source_query_completion,
+    stage_accepts_outcome_projection, stage_accepts_source_query_completion,
     stage_asset_axis_cutoff, stage_gate_expected_techniques,
-    validated_enumeration_axis_from_coverage_snapshot, TargetIntelOrganizationContext,
+    validated_enumeration_axis_from_coverage_snapshot,
+    validated_exact_web_origin_axis_from_coverage_snapshot, vuln_not_applicable_from_outcomes,
+    TargetIntelOrganizationContext, STAGE_RUN_PASS_TOKEN_KIND,
 };
 use golish_agent_kit::harness::{
     completed_from_guarded_outcomes, load_embedded_stage_spec, validate_stage_gate_with_context,
-    EvidenceFact, GateContext, GateContextBuilder, SourceQueryFact, StageDeliverable, StageKind,
+    EvidenceFact, GateContext, GateContextBuilder, SourceQueryFact, StageClaim, StageDeliverable,
+    StageKind,
 };
 use golish_agent_kit::runtime_memory::RuntimeMemoryWriteStrategy;
 use golish_core::Tool;
@@ -68,6 +71,18 @@ pub trait EvidenceLedgerQuery: Send + Sync {
         stage_run_unit_id: Uuid,
         organization_id: Uuid,
     ) -> Result<Vec<String>> {
+        let _ = (operation_id, stage_run_unit_id, organization_id);
+        anyhow::bail!("ATTACK_V2_REPO_UNAVAILABLE")
+    }
+
+    /// Complete immutable Candidate manifest used to validate decision evidence
+    /// before a worker is told that its submission was accepted.
+    async fn candidate_manifest_for_unit(
+        &self,
+        operation_id: Uuid,
+        stage_run_unit_id: Uuid,
+        organization_id: Uuid,
+    ) -> Result<golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot> {
         let _ = (operation_id, stage_run_unit_id, organization_id);
         anyhow::bail!("ATTACK_V2_REPO_UNAVAILABLE")
     }
@@ -310,6 +325,18 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     ) -> Vec<TechniqueOutcomeFact> {
         let _ = since;
         self.technique_outcome_facts(org_id, run_id).await
+    }
+
+    async fn technique_outcome_facts_fresh_with_evidence_session(
+        &self,
+        org_id: Uuid,
+        outcome_run_id: &str,
+        evidence_session_id: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<TechniqueOutcomeFact> {
+        let _ = evidence_session_id;
+        self.technique_outcome_facts_fresh(org_id, outcome_run_id, since)
+            .await
     }
 
     /// #5 source/provider terminal rows for source coverage. Default empty so
@@ -583,12 +610,36 @@ fn findings_allowed_for_attack_contract(
     statically_allowed: bool,
     contract: golish_core::AttackExecutionContract,
 ) -> bool {
-    statically_allowed
+    stage != StageKind::VulnTriage
+        && statically_allowed
         && !(contract.executes_v2_verifier()
             && matches!(
                 stage,
                 StageKind::VulnTriage | StageKind::AttackCandidate | StageKind::Verification
             ))
+}
+
+fn drop_disallowed_findings(deliverable: &mut StageDeliverable, findings_allowed: bool) -> usize {
+    if findings_allowed || deliverable.findings.is_empty() {
+        return 0;
+    }
+    let count = deliverable.findings.len();
+    deliverable.findings.clear();
+    count
+}
+
+/// Return the sole non-blank aggregate pass token. Other model-authored claims
+/// are intentionally ignored later, but multiple competing token claims are
+/// ambiguous and therefore cannot enter the coordinator closeout seam.
+fn unique_stage_run_pass_token(deliverable: &StageDeliverable) -> Option<String> {
+    let mut tokens = deliverable
+        .claims
+        .iter()
+        .filter(|claim| claim.kind == STAGE_RUN_PASS_TOKEN_KIND)
+        .map(|claim| claim.summary.trim())
+        .filter(|token| !token.is_empty());
+    let token = tokens.next()?.to_string();
+    tokens.next().is_none().then_some(token)
 }
 
 impl SubmitStageDeliverableTool {
@@ -669,6 +720,9 @@ impl SubmitStageDeliverableTool {
         stage: StageKind,
         statically_allowed: bool,
     ) -> Result<bool> {
+        if !statically_allowed {
+            return Ok(false);
+        }
         if !matches!(
             stage,
             StageKind::VulnTriage | StageKind::AttackCandidate | StageKind::Verification
@@ -687,6 +741,7 @@ impl SubmitStageDeliverableTool {
         &self,
         active_stage: StageKind,
         deliverable: &mut StageDeliverable,
+        coordinator_pass_token: Option<String>,
     ) -> Result<Option<CapturedStageSubmission>> {
         let Some(repo) = self.runtime_memory_repo.as_ref() else {
             // Explicit legacy fixture/direct-test seam. Production registers the
@@ -751,11 +806,57 @@ impl SubmitStageDeliverableTool {
             })
         })?;
 
+        // A specialist stage has two deliberately different closeout records:
+        // each org worker persists its immutable V2 StageDeliverable against a
+        // unit+lease, while the top-level coordinator only echoes the
+        // deterministic stage_run pass token. The latter is re-derived from
+        // org_stage_completions by the final gate and is not a second business
+        // deliverable, so it must not be forced into the per-unit submission
+        // table. Keep the bypass narrow to a trusted main-agent call with no
+        // unit/worker identity; a worker can never use it to evade its fence.
+        let is_trusted_coordinator_closeout = coordinator_pass_token.is_some()
+            && matches!(context.source, golish_core::events::ToolSource::Main)
+            && context.stage_run_unit_id.is_none()
+            && context.worker_lease.is_none()
+            && context.candidate_attempt.is_none();
+        if is_trusted_coordinator_closeout {
+            let pass_token = coordinator_pass_token.expect("checked coordinator pass token");
+            // Aggregate closeout carries no model-authored business facts. The
+            // org workers already persisted those under their exact units; the
+            // final gate needs only the server-normalized token to recompute.
+            deliverable.stage_id = active_stage.as_str().to_string();
+            deliverable.stage_run_id = stage_execution_id;
+            deliverable.claims = vec![StageClaim {
+                kind: STAGE_RUN_PASS_TOKEN_KIND.to_string(),
+                subject: active_stage.as_str().to_string(),
+                summary: pass_token,
+                evidence_ids: Vec::new(),
+                technique: None,
+            }];
+            deliverable.evidence_refs.clear();
+            deliverable.skipped_checks.clear();
+            deliverable.findings.clear();
+            deliverable.required_checks_done.clear();
+            deliverable.coverage.clear();
+            deliverable.candidates.clear();
+            deliverable.candidate_decisions.clear();
+            // The bridge prefers a typed durable capture over the legacy JSON
+            // capture. Remove any same-stage residue so the coordinator token
+            // written below is the payload seen by the aggregate closeout gate.
+            *self.captured_submission.write().await = None;
+            return Ok(None);
+        }
+
         let stage_run_unit_id = context.stage_run_unit_id;
-        let organization_id = context.organization_id;
+        let mut organization_id = context.organization_id;
         let worker = context.worker_lease.as_ref();
         if active_stage == StageKind::Scoping {
-            if stage_run_unit_id.is_some() != organization_id.is_some() {
+            if stage_run_unit_id.is_none() {
+                // A pre-bound engagement org is an authorization scope, not a
+                // durable unit owner. Preliminary Scoping submissions remain
+                // execution-only until scope freeze binds the root unit+org.
+                organization_id = None;
+            } else if organization_id.is_none() {
                 return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
                     code: "scoping_stage_unit_organization_shape_mismatch",
                 }));
@@ -1134,6 +1235,63 @@ impl SubmitStageDeliverableTool {
         Ok((Some(started_at), None))
     }
 
+    async fn candidate_decision_evidence_rejection(
+        &self,
+        deliverable: &StageDeliverable,
+    ) -> Result<Option<String>, String> {
+        let repo = self.evidence_repo.as_ref().ok_or_else(|| {
+            "attack_candidate submit preview requires the trusted DB repository".to_string()
+        })?;
+        let context = golish_core::current_agent_tool_context().ok_or_else(|| {
+            "attack_candidate submit preview requires trusted tool context".to_string()
+        })?;
+        let operation_id = context.operation_id.ok_or_else(|| {
+            "attack_candidate submit preview requires operation identity".to_string()
+        })?;
+        let stage_run_unit_id = context.stage_run_unit_id.ok_or_else(|| {
+            "attack_candidate submit preview requires StageRunUnit identity".to_string()
+        })?;
+        let organization_id = context.organization_id.ok_or_else(|| {
+            "attack_candidate submit preview requires organization identity".to_string()
+        })?;
+        let manifest = repo
+            .candidate_manifest_for_unit(operation_id, stage_run_unit_id, organization_id)
+            .await
+            .map_err(|error| format!("attack_candidate manifest load failed: {error}"))?;
+        if manifest.operation_id != operation_id || manifest.organization_id != organization_id {
+            return Err(
+                "attack_candidate manifest load returned a foreign operation or organization"
+                    .to_string(),
+            );
+        }
+
+        let mut by_key = HashMap::with_capacity(manifest.work_items.len());
+        for item in &manifest.work_items {
+            if by_key.insert(item.work_item_key.as_str(), item).is_some() {
+                return Err(
+                    "attack_candidate manifest contains duplicate work-item keys".to_string(),
+                );
+            }
+        }
+        for decision in &deliverable.candidate_decisions {
+            let Some(item) = by_key.get(decision.work_item_key.as_str()) else {
+                continue;
+            };
+            let frozen = item.evidence_ids.iter().copied().collect::<HashSet<_>>();
+            if decision
+                .evidence_refs
+                .iter()
+                .any(|evidence_id| !frozen.contains(evidence_id))
+            {
+                return Ok(Some(format!(
+                    "ATTACK_DECISION_EVIDENCE_UNGROUNDED: work item {} cites evidence outside its frozen manifest",
+                    decision.work_item_key
+                )));
+            }
+        }
+        Ok(None)
+    }
+
     /// Build the gate context for the submit-time preview by projecting the
     /// session's evidence facts into it. Without this the preview runs on an
     /// empty (`default`) context, so a stage with `authoritative_found` (e.g.
@@ -1152,15 +1310,17 @@ impl SubmitStageDeliverableTool {
         stage: StageKind,
         authoritative: bool,
     ) -> Result<GateContext, String> {
-        let active_session_id = if stage == StageKind::Enumeration {
+        let active_session_id = if matches!(stage, StageKind::Enumeration | StageKind::VulnTriage) {
             Some(
                 self.session_id
                     .as_deref()
                     .map(str::trim)
                     .filter(|session_id| !session_id.is_empty())
                     .ok_or_else(|| {
-                        "enumeration submit preview requires the active non-empty run/session id"
-                            .to_string()
+                        format!(
+                            "{} submit preview requires the active non-empty run/session id",
+                            stage.as_str()
+                        )
                     })?,
             )
         } else {
@@ -1170,6 +1330,7 @@ impl SubmitStageDeliverableTool {
             if matches!(
                 stage,
                 StageKind::Enumeration
+                    | StageKind::VulnTriage
                     | StageKind::AttackCandidate
                     | StageKind::Verification
                     | StageKind::Reporting
@@ -1209,6 +1370,12 @@ impl SubmitStageDeliverableTool {
             Some(src) => *src.read().await,
             None => None,
         };
+        let trusted_operation_id = golish_core::current_agent_tool_context()
+            .and_then(|context| context.operation_id)
+            .or(match self.operation_id_source.as_ref() {
+                Some(source) => *source.read().await,
+                None => None,
+            });
         let candidate_work_item_keys = if stage == StageKind::AttackCandidate {
             let context = golish_core::current_agent_tool_context().ok_or_else(|| {
                 "attack_candidate submit preview requires trusted tool context".to_string()
@@ -1284,9 +1451,15 @@ impl SubmitStageDeliverableTool {
         } else {
             None
         };
-        if stage == StageKind::Enumeration && org_id.is_none() {
+        if matches!(stage, StageKind::Enumeration | StageKind::VulnTriage) && org_id.is_none() {
+            return Err(format!(
+                "{} submit preview requires the active bound organization",
+                stage.as_str()
+            ));
+        }
+        if stage == StageKind::VulnTriage && trusted_operation_id.is_none() {
             return Err(
-                "enumeration submit preview requires the active bound organization".to_string(),
+                "vuln_triage submit preview requires trusted operation identity".to_string(),
             );
         }
         let stage_spec = load_embedded_stage_spec(stage).ok();
@@ -1306,11 +1479,13 @@ impl SubmitStageDeliverableTool {
             .is_some_and(|spec| spec.freshness_window)
             .then_some(stage_started_at)
             .flatten();
-        if stage == StageKind::Enumeration && freshness_cutoff.is_none() {
-            return Err(
-                "enumeration submit preview requires the current stage_started_at freshness cutoff"
-                    .to_string(),
-            );
+        if matches!(stage, StageKind::Enumeration | StageKind::VulnTriage)
+            && freshness_cutoff.is_none()
+        {
+            return Err(format!(
+                "{} submit preview requires the current stage_started_at freshness cutoff",
+                stage.as_str()
+            ));
         }
         let mut in_scope_assets: Vec<String> = Vec::new();
         let mut typed_assets: Vec<(String, String)> = Vec::new();
@@ -1391,11 +1566,10 @@ impl SubmitStageDeliverableTool {
                     .await,
                 );
             }
-            if stage == StageKind::Enumeration {
+            if matches!(stage, StageKind::Enumeration | StageKind::VulnTriage) {
                 let snapshot = repo
                     .stage_asset_coverage_for_operation(
-                        golish_core::current_agent_tool_context()
-                            .and_then(|context| context.operation_id),
+                        trusted_operation_id,
                         org_id,
                         stage,
                         active_session_id,
@@ -1405,20 +1579,37 @@ impl SubmitStageDeliverableTool {
                     )
                     .await
                     .map_err(|error| {
-                        format!("enumeration exact-origin coverage snapshot failed: {error}")
+                        format!(
+                            "{} exact-origin coverage snapshot failed: {error}",
+                            stage.as_str()
+                        )
                     })?;
                 let snapshot = snapshot.ok_or_else(|| {
-                    "enumeration exact-origin coverage snapshot is unavailable".to_string()
+                    format!(
+                        "{} exact-origin coverage snapshot is unavailable",
+                        stage.as_str()
+                    )
                 })?;
-                (in_scope_assets, typed_assets) =
+                (in_scope_assets, typed_assets) = if stage == StageKind::Enumeration {
                     validated_enumeration_axis_from_coverage_snapshot(
                         &snapshot,
                         org_id,
                         active_session_id,
                     )
-                    .map_err(|error| {
-                        format!("enumeration exact-origin coverage snapshot is invalid: {error}")
-                    })?;
+                } else {
+                    validated_exact_web_origin_axis_from_coverage_snapshot(
+                        &snapshot,
+                        stage,
+                        org_id,
+                        active_session_id,
+                    )
+                }
+                .map_err(|error| {
+                    format!(
+                        "{} exact-origin coverage snapshot is invalid: {error}",
+                        stage.as_str()
+                    )
+                })?;
                 authoritative_coverage_axis = true;
             }
             // (4) #4/E3: **始终**从 technique_outcomes union 进 facts（submit 预检；与
@@ -1426,13 +1617,28 @@ impl SubmitStageDeliverableTool {
             //     run_id = chat session；outcome blocked→Error（gate 无 Blocked outcome）。
             if let Some(sid) = active_session_id {
                 if stage_accepts_outcome_projection(stage, freshness_cutoff.is_some()) {
-                    outcome_rows = repo
-                        .technique_outcome_facts_fresh(org_id, sid, freshness_cutoff)
-                        .await;
+                    outcome_rows = if stage == StageKind::VulnTriage {
+                        let operation_run_id = trusted_operation_id
+                            .expect("Vuln operation identity checked above")
+                            .to_string();
+                        repo.technique_outcome_facts_fresh_with_evidence_session(
+                            org_id,
+                            &operation_run_id,
+                            sid,
+                            freshness_cutoff,
+                        )
+                        .await
+                    } else {
+                        repo.technique_outcome_facts_fresh(org_id, sid, freshness_cutoff)
+                            .await
+                    };
                 }
                 if stage == StageKind::ExternalAttackSurface {
                     not_applicable_coverage
                         .extend(eas_service_not_applicable_from_port_outcomes(&outcome_rows));
+                } else if stage == StageKind::VulnTriage {
+                    not_applicable_coverage
+                        .extend(vuln_not_applicable_from_outcomes(&outcome_rows));
                 }
                 if stage_accepts_source_query_completion(stage) {
                     source_queries = repo.source_query_facts(org_id, sid).await;
@@ -1568,7 +1774,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Optional security findings (vulnerabilities). ONLY for vulnerability stages (vuln_triage / verification). Recon / discovery stages (scoping, target_intel, external_attack_surface, enumeration) take NO findings: omit findings or submit [] and record discoveries (hosts / services / exposures) as claims + coverage cells instead — any findings sent in those stages are DROPPED. Evidence ids are optional; DB/ledger truth is resolved by the backend.",
+                    "description": "Submit [] for vuln_triage: Nuclei results are observation/evidence only and Candidate reasoning happens later. Recon/discovery and attack_candidate also take NO model-authored findings. Only a persisted legacy Verification contract may accept deliverable findings; V2 findings are created by the server-side CandidateAttempt terminalizer. Disallowed findings are DROPPED.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -1727,13 +1933,7 @@ impl Tool for SubmitStageDeliverableTool {
                 // junk never pollutes the stored deliverable or the stage-close gate;
                 // the accept note tells the model to put discoveries in `claims`.
                 // Design 2026-06-15-recon-stage-findings-suppression.
-                let dropped_findings = if !findings_allowed && !deliverable.findings.is_empty() {
-                    let n = deliverable.findings.len();
-                    deliverable.findings.clear();
-                    n
-                } else {
-                    0
-                };
+                let dropped_findings = drop_disallowed_findings(&mut deliverable, findings_allowed);
                 // Project the session's ledger evidence-facts into the gate so an
                 // authoritative_found stage credits real `found` cells (the
                 // per-org recon "never attempted" loop fix). Empty/no-DB ⇒ default
@@ -1742,27 +1942,26 @@ impl Tool for SubmitStageDeliverableTool {
                 // the stage-close口径 (env GOLISH_SUBMIT_PREVIEW_AUTHORITATIVE_CONTEXT=0 reverts).
                 self.backfill_required_checks_done_from_evidence(&mut deliverable, &spec)
                     .await;
+                let coordinator_pass_token = spec
+                    .specialist
+                    .as_ref()
+                    .and_then(|_| unique_stage_run_pass_token(&deliverable));
+                let is_aggregate_coordinator_closeout = coordinator_pass_token.is_some()
+                    && (self.runtime_memory_repo.is_none()
+                        || golish_core::current_agent_tool_context().is_some_and(|context| {
+                            matches!(context.source, golish_core::events::ToolSource::Main)
+                                && context.stage_run_unit_id.is_none()
+                                && context.worker_lease.is_none()
+                                && context.candidate_attempt.is_none()
+                        }));
                 // Persist after deterministic server normalization so the
                 // immutable row is the exact payload graded at stage close, not
                 // an earlier model draft. A Gate BLOCK still retains this row.
                 trusted_capture = self
-                    .persist_trusted_submission(kind, &mut deliverable)
+                    .persist_trusted_submission(kind, &mut deliverable, coordinator_pass_token)
                     .await?;
                 let authoritative = golish_agent_kit::harness::feature_flags::submit_preview_authoritative_context_enabled();
-                let ctx = match self.gate_context(kind, authoritative).await {
-                    Ok(ctx) => ctx,
-                    Err(reason) => {
-                        return Ok(Self::attach_submission_identity(
-                            json!({
-                                "status": "needs_fix",
-                                "reasons": [reason],
-                                "note": "the trusted current-wave context is invalid; repair/reset the wave before resubmitting."
-                            }),
-                            trusted_capture.as_ref(),
-                        ));
-                    }
-                };
-                if spec.specialist.is_some() && extract_pass_token(&deliverable).is_some() {
+                if is_aggregate_coordinator_closeout {
                     if trusted_capture.is_none() {
                         if let Ok(json_str) = serde_json::to_string(&deliverable) {
                             *self.last_deliverable.write().await = Some(json_str);
@@ -1795,6 +1994,25 @@ impl Tool for SubmitStageDeliverableTool {
                         trusted_capture.as_ref(),
                     ));
                 }
+                // A trusted coordinator pass token is an aggregate receipt for
+                // already-finalized per-org units. It deliberately has no worker
+                // lease or StageRunUnit identity of its own, so do not build a
+                // unit-scoped preview context (Candidate manifests in particular
+                // require one). The final fan-out gate re-derives the token from
+                // the durable org_stage_completions and remains authoritative.
+                let ctx = match self.gate_context(kind, authoritative).await {
+                    Ok(ctx) => ctx,
+                    Err(reason) => {
+                        return Ok(Self::attach_submission_identity(
+                            json!({
+                                "status": "needs_fix",
+                                "reasons": [reason],
+                                "note": "the trusted current-wave context is invalid; repair/reset the wave before resubmitting."
+                            }),
+                            trusted_capture.as_ref(),
+                        ));
+                    }
+                };
                 let result =
                     validate_stage_gate_with_context(&deliverable, &spec, None, None, &ctx);
                 // Stash the canonical JSON regardless — the stage-close gate is
@@ -1805,6 +2023,34 @@ impl Tool for SubmitStageDeliverableTool {
                     }
                 }
                 if result.allowed {
+                    if kind == StageKind::AttackCandidate {
+                        match self
+                            .candidate_decision_evidence_rejection(&deliverable)
+                            .await
+                        {
+                            Ok(Some(reason)) => {
+                                return Ok(Self::attach_submission_identity(
+                                    json!({
+                                        "status": "needs_fix",
+                                        "reasons": [reason],
+                                        "note": "each Candidate decision may cite only evidence frozen into its exact server-seeded work item."
+                                    }),
+                                    trusted_capture.as_ref(),
+                                ));
+                            }
+                            Ok(None) => {}
+                            Err(reason) => {
+                                return Ok(Self::attach_submission_identity(
+                                    json!({
+                                        "status": "needs_fix",
+                                        "reasons": [reason],
+                                        "note": "the trusted Candidate manifest context is invalid; repair the runtime unit before resubmitting."
+                                    }),
+                                    trusted_capture.as_ref(),
+                                ));
+                            }
+                        }
+                    }
                     if spec.expected_techniques.is_empty() && !deliverable.coverage.is_empty() {
                         let available = self.available_real_ids().await;
                         return Ok(Self::attach_submission_identity(
@@ -2044,8 +2290,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_uses_trusted_execution_and_persisted_tool_call_identity() {
+    async fn scoping_submit_projects_seeded_engagement_org_to_preliminary_identity() {
         let operation_id = Uuid::new_v4();
+        let engagement_org_id = Uuid::new_v4();
         let stage_execution_id = Uuid::new_v4();
         let tool_call_record_id = Uuid::new_v4();
         let submission_id = Uuid::new_v4();
@@ -2071,7 +2318,7 @@ mod tests {
             operation_id: Some(operation_id),
             stage_execution_id: Some(stage_execution_id),
             stage_run_unit_id: None,
-            organization_id: None,
+            organization_id: Some(engagement_org_id),
             worker_lease: None,
             candidate_attempt: None,
         };
@@ -2095,6 +2342,8 @@ mod tests {
             let write = &writes[0];
             assert_eq!(write.operation_id, operation_id);
             assert_eq!(write.stage_execution_id, stage_execution_id);
+            assert_eq!(write.stage_run_unit_id, None);
+            assert_eq!(write.organization_id, None);
             assert_eq!(write.tool_call_record_id, tool_call_record_id);
             assert_eq!(write.tool_request_id, "trusted-submit-request");
             assert!(write.canonical_deliverable_json.starts_with('{'));
@@ -2167,6 +2416,141 @@ mod tests {
         assert!(writes.lock().expect("trusted submission writes").is_empty());
     }
 
+    #[tokio::test]
+    async fn coordinator_stage_run_pass_token_skips_per_unit_submission() {
+        let operation_id = Uuid::new_v4();
+        let stage_execution_id = Uuid::new_v4();
+        let root_org_id = Uuid::new_v4();
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let repo = Arc::new(TrustedSubmissionRepo {
+            contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract::DualWriteV2Preferred,
+            submission_id: Uuid::new_v4(),
+            writes: Arc::clone(&writes),
+        });
+        let stage = Arc::new(RwLock::new(Some(StageKind::TargetIntel)));
+        let legacy_sink = Arc::new(RwLock::new(None));
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&legacy_sink))
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))))
+            .with_runtime_memory_repository(repo);
+        let captured = tool.captured_submission_handle();
+        let context = golish_core::AgentToolContext {
+            request_id: "coordinator-pass-token".to_string(),
+            tool_call_record_id: Some(Uuid::new_v4()),
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(stage_execution_id),
+            stage_run_unit_id: None,
+            organization_id: Some(root_org_id),
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let args = json!({
+            "stage_id": "target_intel",
+            "claims": [
+                {
+                    "kind": "stage_run_pass_token",
+                    "subject": "target_intel",
+                    "summary": "deterministic-token"
+                },
+                {
+                    "kind": "model_authored_extra",
+                    "subject": "example.com",
+                    "summary": "must not enter aggregate closeout",
+                    "evidence_ids": [99]
+                }
+            ],
+            "evidence_refs": [99],
+            "required_checks_done": ["model_authored_extra"]
+        });
+
+        let output =
+            golish_core::with_agent_tool_context(Some(context), tool.execute(args, Path::new(".")))
+                .await
+                .expect("trusted coordinator pass-token closeout");
+
+        assert_eq!(output["status"], "accepted");
+        assert!(
+            writes.lock().expect("trusted submission writes").is_empty(),
+            "aggregate pass-token closeout is not a second per-unit deliverable"
+        );
+        assert!(captured.read().await.is_none());
+        let legacy = legacy_sink
+            .read()
+            .await
+            .clone()
+            .expect("aggregate closeout capture");
+        let deliverable: StageDeliverable =
+            serde_json::from_str(&legacy).expect("aggregate closeout deliverable");
+        assert_eq!(deliverable.stage_run_id, stage_execution_id);
+        assert_eq!(deliverable.claims.len(), 1);
+        assert!(deliverable.evidence_refs.is_empty());
+        assert!(deliverable.required_checks_done.is_empty());
+        assert_eq!(
+            golish_agent_kit::harness::org_gate::extract_pass_token(&deliverable).as_deref(),
+            Some("deterministic-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn attack_candidate_coordinator_pass_token_does_not_require_worker_unit_context() {
+        let operation_id = Uuid::new_v4();
+        let stage_execution_id = Uuid::new_v4();
+        let root_org_id = Uuid::new_v4();
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let repo = Arc::new(TrustedSubmissionRepo {
+            contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract::DualWriteV2Preferred,
+            submission_id: Uuid::new_v4(),
+            writes: Arc::clone(&writes),
+        });
+        let stage = Arc::new(RwLock::new(Some(StageKind::AttackCandidate)));
+        let legacy_sink = Arc::new(RwLock::new(None));
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&legacy_sink))
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))))
+            .with_evidence_repo(Arc::new(MockLedger::existing(HashSet::new())))
+            .with_runtime_memory_repository(repo);
+        let context = golish_core::AgentToolContext {
+            request_id: "attack-candidate-coordinator-pass-token".to_string(),
+            tool_call_record_id: Some(Uuid::new_v4()),
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(stage_execution_id),
+            stage_run_unit_id: None,
+            organization_id: Some(root_org_id),
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+
+        let output = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.execute(
+                json!({
+                    "stage_id": "attack_candidate",
+                    "claims": [{
+                        "kind": "stage_run_pass_token",
+                        "subject": "attack_candidate",
+                        "summary": "deterministic-candidate-token"
+                    }]
+                }),
+                Path::new("."),
+            ),
+        )
+        .await
+        .expect("candidate coordinator pass-token closeout");
+
+        assert_eq!(output["status"], "accepted", "{output:?}");
+        assert!(
+            writes.lock().expect("trusted submission writes").is_empty(),
+            "aggregate Candidate closeout must not create another per-unit submission"
+        );
+        assert!(legacy_sink
+            .read()
+            .await
+            .as_deref()
+            .is_some_and(|payload| payload.contains("stage_run_pass_token")));
+    }
+
     #[test]
     fn parameters_describe_enumeration_slim_deliverable_contract() {
         let (stage, sink) = handles();
@@ -2181,6 +2565,19 @@ mod tests {
         assert!(params.contains("route_probe_paths recovery on DIR"));
         assert!(params.contains("browser_collect_js_api recovery on JS/JSAPI/PARAM"));
         assert!(params.contains("coverage=[]"));
+    }
+
+    #[test]
+    fn parameters_describe_vuln_triage_as_observation_only() {
+        let (stage, sink) = handles();
+        let schema = SubmitStageDeliverableTool::new(stage, sink).parameters();
+        let description = schema["properties"]["findings"]["description"]
+            .as_str()
+            .expect("findings description");
+
+        assert!(description.contains("Submit [] for vuln_triage"));
+        assert!(description.contains("observation/evidence only"));
+        assert!(description.contains("CandidateAttempt terminalizer"));
     }
 
     #[test]
@@ -2684,6 +3081,153 @@ mod tests {
         ) -> Result<Option<golish_agent_kit::harness::ReportingGateTruth>> {
             Ok(self.truth.clone())
         }
+    }
+
+    struct CandidateManifestMock {
+        manifest: golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot,
+        existing: HashSet<i64>,
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceLedgerQuery for CandidateManifestMock {
+        async fn existing_evidence_ids(&self, ids: &[i64]) -> Result<HashSet<i64>> {
+            Ok(ids
+                .iter()
+                .copied()
+                .filter(|id| self.existing.contains(id))
+                .collect())
+        }
+
+        async fn candidate_manifest_work_item_keys(
+            &self,
+            _operation_id: Uuid,
+            _stage_run_unit_id: Uuid,
+            _organization_id: Uuid,
+        ) -> Result<Vec<String>> {
+            Ok(self
+                .manifest
+                .work_items
+                .iter()
+                .map(|item| item.work_item_key.clone())
+                .collect())
+        }
+
+        async fn candidate_manifest_for_unit(
+            &self,
+            _operation_id: Uuid,
+            _stage_run_unit_id: Uuid,
+            _organization_id: Uuid,
+        ) -> Result<golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot>
+        {
+            Ok(self.manifest.clone())
+        }
+    }
+
+    fn candidate_manifest_fixture(
+        operation_id: Uuid,
+        organization_id: Uuid,
+        work_item_key: &str,
+    ) -> golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot {
+        use golish_agent_kit::harness::attack_execution::{
+            CandidateManifestSnapshot, CandidateManifestWorkItem,
+            CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE,
+        };
+
+        let target_id = Uuid::new_v4();
+        let observation = json!({
+            "schema": "surface_analysis_v1",
+            "target_id": target_id,
+            "target_identity": {
+                "type": "url",
+                "value": "https://youchuang7.com:443",
+                "sha256": "sha256:b950",
+            },
+            "formulaic_coverage": [],
+            "upstream_query_required": true,
+        });
+        CandidateManifestSnapshot {
+            operation_id,
+            scope_snapshot_id: Uuid::new_v4(),
+            wave_run_id: Uuid::new_v4(),
+            wave_unit_id: Uuid::new_v4(),
+            organization_id,
+            manifest_hash: "sha256:manifest".to_string(),
+            work_items: vec![CandidateManifestWorkItem {
+                work_item_id: Uuid::new_v4(),
+                work_item_key: work_item_key.to_string(),
+                target_live_id: Some(target_id),
+                target_type_at_time: "url".to_string(),
+                target_value_at_time: "https://youchuang7.com:443".to_string(),
+                target_identity_hash: "sha256:b950".to_string(),
+                technique: CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE.to_string(),
+                source_fact_delta_id: None,
+                delta_kind: None,
+                observation_kind: "surface_analysis_v1".to_string(),
+                allowed_techniques: vec!["WSTG-INFO".to_string()],
+                enrichment_required: false,
+                observation_hash: "sha256:observation".to_string(),
+                observation,
+                evidence_ids: (41..=50).collect(),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn candidate_submit_rejects_real_ledger_evidence_outside_frozen_manifest() {
+        let operation_id = Uuid::new_v4();
+        let organization_id = Uuid::new_v4();
+        let stage_run_unit_id = Uuid::new_v4();
+        let work_item_key = "surface_analysis:sha256:b950";
+        let manifest = candidate_manifest_fixture(operation_id, organization_id, work_item_key);
+        let existing = (20..=50).collect::<HashSet<_>>();
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::AttackCandidate);
+        let tool = SubmitStageDeliverableTool::new(stage, sink)
+            .with_evidence_repo(Arc::new(CandidateManifestMock { manifest, existing }));
+        let context = golish_core::AgentToolContext {
+            request_id: "candidate-outside-manifest".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: Some(stage_run_unit_id),
+            organization_id: Some(organization_id),
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let output = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.execute(
+                json!({
+                    "stage_id": "attack_candidate",
+                    "claims": [{
+                        "kind": "candidate_selected",
+                        "subject": "https://youchuang7.com:443",
+                        "summary": "README.md information disclosure candidate"
+                    }],
+                    "candidate_decisions": [{
+                        "work_item_key": work_item_key,
+                        "decision": "candidate",
+                        "hypothesis": "README.md may disclose deployment information",
+                        "rationale": "Evidence 20 records the exposed README.md",
+                        "technique": "WSTG-INFO",
+                        "evidence_refs": [41,42,43,44,45,46,47,48,49,50,20]
+                    }]
+                }),
+                Path::new("."),
+            ),
+        )
+        .await
+        .expect("Candidate submission returns actionable feedback");
+
+        assert_eq!(output["status"], "needs_fix", "output={output}");
+        assert!(
+            output["reasons"]
+                .to_string()
+                .contains("ATTACK_DECISION_EVIDENCE_UNGROUNDED"),
+            "output={output}"
+        );
     }
 
     fn valid_reporting_truth(operation_id: Uuid) -> golish_agent_kit::harness::ReportingGateTruth {
@@ -3507,6 +4051,24 @@ mod tests {
             .expect_err("Enumeration preview must not run without a current session");
 
         assert!(error.contains("non-empty run/session id"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn vuln_submit_preview_requires_non_empty_evidence_session() {
+        let (stage, sink) = handles();
+        let tool = SubmitStageDeliverableTool::new(stage, sink);
+
+        let error = tool
+            .gate_context(StageKind::VulnTriage, true)
+            .await
+            .expect_err("Vuln preview must not run without the wrapper evidence session");
+
+        assert!(
+            error.contains(
+                "vuln_triage submit preview requires the active non-empty run/session id"
+            ),
+            "{error}"
+        );
     }
 
     struct StaleEnumerationOutcomeMock;
@@ -4513,9 +5075,8 @@ mod tests {
         );
     }
 
-    // 2026-06-15-recon-stage-findings-suppression: a vulnerability stage
-    // (vuln_triage, findings_allowed=true) RETAINS findings — drop only applies to
-    // recon stages. Asserted on the stashed deliverable regardless of gate outcome.
+    // VulnTriage is observation-only for every persisted attack contract. Only
+    // legacy Verification may retain model-authored findings.
     #[test]
     fn attack_stage_findings_policy_is_persisted_contract_aware() {
         use golish_core::AttackExecutionContract::{
@@ -4523,7 +5084,7 @@ mod tests {
         };
 
         for contract in [Legacy, DualWriteReadLegacy, DualWriteReadV2Fallback] {
-            assert!(findings_allowed_for_attack_contract(
+            assert!(!findings_allowed_for_attack_contract(
                 StageKind::VulnTriage,
                 true,
                 contract
@@ -4548,13 +5109,9 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn vuln_stage_keeps_findings() {
-        let (stage, sink) = handles();
-        *stage.write().await = Some(StageKind::VulnTriage);
-        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink));
-
-        let args = json!({
+    #[test]
+    fn vuln_stage_drops_findings() {
+        let mut deliverable: StageDeliverable = serde_json::from_value(json!({
             "stage_id": "vuln_triage",
             "stage_run_id": "3f8a1c2e-1d4b-4e6a-9b2c-7a1e5f0c9d33",
             "claims": [],
@@ -4566,11 +5123,14 @@ mod tests {
                 "severity": "high",
                 "evidence_refs": [1]
             }]
-        });
-        let _ = tool.execute(args, Path::new("/tmp")).await.unwrap();
-        let captured = sink.read().await.clone().expect("captured");
-        let parsed: StageDeliverable = serde_json::from_str(&captured).expect("parse stashed");
-        assert_eq!(parsed.findings.len(), 1, "vuln stage must keep findings");
+        }))
+        .expect("Vuln deliverable");
+
+        assert_eq!(drop_disallowed_findings(&mut deliverable, false), 1);
+        assert!(
+            deliverable.findings.is_empty(),
+            "vuln stage observations must not author findings"
+        );
     }
 
     // No active stage (e.g. flag on but stage not yet published): the tool still

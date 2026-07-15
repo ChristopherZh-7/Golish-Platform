@@ -86,6 +86,7 @@ export const handleSubAgentToolRequest: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
+  ctx.flushSessionDeltas(ctx.sessionId);
   ctx.getState().addSubAgentToolCall(ctx.sessionId, event.parent_request_id, {
     id: event.request_id,
     name: event.tool_name,
@@ -107,6 +108,7 @@ export const handleSubAgentToolResult: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
+  ctx.flushSessionDeltas(ctx.sessionId);
   const state = ctx.getState();
   // Soft-timeout → backgrounded: a sub-agent command exceeded its soft timeout
   // and was detached to a background job (still running). Register it into the
@@ -169,12 +171,11 @@ export const handleSubAgentCompleted: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
+  ctx.flushSessionDeltas(ctx.sessionId);
   const state = ctx.getState();
 
   // Handle coder results with special rendering
   if (event.agent_id === "coder") {
-    // Flush pending text deltas to ensure correct ordering
-    ctx.flushSessionDeltas(ctx.sessionId);
     state.addUdiffResultBlock(ctx.sessionId, event.response, Number(event.duration_ms));
   }
 
@@ -195,5 +196,6 @@ export const handleSubAgentError: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
+  ctx.flushSessionDeltas(ctx.sessionId);
   ctx.getState().failSubAgent(ctx.sessionId, event.parent_request_id, event.error);
 };

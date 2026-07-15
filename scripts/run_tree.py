@@ -7,9 +7,10 @@ the per-run `run.log`, and the DB. Reading the sub->sub call chain by hand means
 correlating `parent_request_id` across flat directories. This script stitches it
 into ONE indented tree so a human (or a later AI) can see, at a glance:
 
-  main agent -> tool calls -> stage_run fan-out -> sub-agent(recon) -> its
-  reasoning + tool calls (subfinder/dig/enrich/...) -> nested sub-agents ->
-  submit_stage_deliverable -> the gate verdict (PASS/BLOCK + blocking reason).
+  main agent -> stage_run -> one Company Controller per company -> Controller
+  plan / same-chain resumes -> dynamically dispatched SubAgents -> worker output
+  -> final preparation / submit -> Gate PASS/BLOCK. Older Producer/Aggregator
+  transcripts remain readable but are explicitly labeled legacy fixed teams.
 
 What it surfaces from `transcript.json` (all already on disk):
   - gate decisions      (`harness_trace` kind=gate_decision: gate + first_blocking_reason)
@@ -19,6 +20,8 @@ What it surfaces from `transcript.json` (all already on disk):
   - sub-agent prose      (`sub_agent_reasoning` / `sub_agent_text_delta` /
                           `sub_agent_completed` — the "why", persisted since
                           the 2026-06-16 sub-agent-prose change)
+  - model call signals  (`run.log`: completed main turns/tokens and sub-agent
+                          model starts; starts are not treated as completions)
 
 `--db` adds a deterministic self-diagnosis against the embedded Postgres for the
 root causes transcripts can't show (targets with organization_id=NULL, empty
@@ -130,19 +133,58 @@ def _short(value, n: int) -> str:
 def _tool_summary(tool: str, args, result, trunc: int) -> str:
     """One-line summary for a tool call, spotlighting recon + gate signals."""
     a = args or {}
+    r = result if isinstance(result, dict) else {}
     detail = ""
+    if tool == "update_plan":
+        summary = r.get("summary") if isinstance(r.get("summary"), dict) else {}
+        plan = r.get("plan") if isinstance(r.get("plan"), list) else a.get("plan", [])
+        total = summary.get("total", len(plan) if isinstance(plan, list) else "?")
+        completed = summary.get("completed", "?")
+        in_progress = summary.get("in_progress", "?")
+        pending = summary.get("pending", "?")
+        explanation = r.get("explanation", a.get("explanation"))
+        detail = (
+            f"completed={completed}/{total} in_progress={in_progress} pending={pending}"
+        )
+        if explanation:
+            explanation_trunc = trunc if trunc >= 10_000 else min(trunc, 72)
+            detail += f" explanation={_short(explanation, explanation_trunc)}"
+        return f"PLAN {detail}"
+    if tool == "stage_team_dispatch_workers":
+        workers = a.get("workers") if isinstance(a, dict) else []
+        requested = r.get(
+            "request_count", len(workers) if isinstance(workers, list) else "?"
+        )
+        accepted = r.get("accepted_count", "?")
+        rejected = r.get("rejected_count", "?")
+        status = r.get("status", "?")
+        detail = (
+            f"dynamic requested={requested} accepted={accepted} rejected={rejected} "
+            f"status={status}"
+        )
+        if r.get("partial_persist_error"):
+            detail += f" partial_error={_short(r['partial_persist_error'], trunc)}"
+        if r.get("error"):
+            detail += f" error={_short(r['error'], trunc)}"
+        return f"DISPATCH {detail}"
+    if tool == "stage_team_prepare_final_submission":
+        return (
+            "PREPARE FINAL "
+            f"closed={_yes_no(r.get('request_epoch_closed'))} status={r.get('status', '?')}"
+        )
     if tool == "pentest_run":
         cmd = (a.get("tool_name", "") + " " + a.get("args", "")).strip()
         detail = cmd or _short(a, trunc)
     elif tool in ("run_pty_cmd", "run_command"):
         detail = _short(a.get("command", a), trunc)
     elif tool == "submit_stage_deliverable":
-        st = (result or {}).get("status") if isinstance(result, dict) else None
-        reasons = (result or {}).get("reasons") if isinstance(result, dict) else None
+        st = r.get("status")
+        reasons = r.get("reasons")
         if isinstance(reasons, list) and reasons:
             detail = f"{st}: {_short(reasons[0], trunc)}"
         else:
             detail = st or _short(a, trunc)
+        return f"FINAL SUBMIT {detail}".rstrip()
     else:
         detail = _short(a, trunc)
     # outcome marker
@@ -155,6 +197,73 @@ def _tool_summary(tool: str, args, result, trunc: int) -> str:
         elif result.get("status") in ("accepted", "received"):
             mark = " \u2713"
     return f"{tool} {detail}{mark}".rstrip()
+
+
+def _plan_step_summaries(args: object, result: object, trunc: int) -> list[str]:
+    """Render up to twelve user-visible plan steps without implying ownership."""
+    request = args if isinstance(args, dict) else {}
+    response = result if isinstance(result, dict) else {}
+    plan = response.get("plan")
+    if not isinstance(plan, list):
+        plan = request.get("plan")
+    if not isinstance(plan, list):
+        return []
+    lines: list[str] = []
+    for index, raw_step in enumerate(plan[:12], start=1):
+        if isinstance(raw_step, dict):
+            status = str(raw_step.get("status") or "unknown")
+            text = raw_step.get("step")
+        else:
+            status = "unknown"
+            text = raw_step
+        lines.append(f"PLAN STEP {index} [{status}] {_short(text, trunc)}".rstrip())
+    if len(plan) > 12:
+        lines.append(f"PLAN STEP … omitted={len(plan) - 12} (limit=12)")
+    return lines
+
+
+def _chain_id_from_response(response: object) -> str | None:
+    if not isinstance(response, str):
+        return None
+    marker = "[sub_agent_session_id:"
+    if marker not in response:
+        return None
+    value = response.rsplit(marker, 1)[1].split("]", 1)[0].strip()
+    try:
+        return str(UUID(value))
+    except ValueError:
+        return value or None
+
+
+def _response_without_chain_marker(response: object) -> str:
+    if not isinstance(response, str):
+        return ""
+    marker = "\n\n[sub_agent_session_id:"
+    return response.rsplit(marker, 1)[0].strip() if marker in response else response.strip()
+
+
+def _worker_output_summary(response: object, trunc: int) -> str | None:
+    body = _response_without_chain_marker(response)
+    try:
+        output = json.loads(body)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(output, dict) or "business_disposition" not in output:
+        return None
+    fact_refs = output.get("fact_refs")
+    evidence_ids = output.get("evidence_ids")
+    checked_empty = output.get("checked_empty_units")
+    summary = (
+        f"WORKER OUTPUT disposition={output.get('business_disposition')} "
+        f"facts={len(fact_refs) if isinstance(fact_refs, list) else '?'} "
+        f"evidence={evidence_ids if isinstance(evidence_ids, list) else '?'} "
+        f"checked_empty={len(checked_empty) if isinstance(checked_empty, list) else '?'}"
+    )
+    if output.get("blocker_code"):
+        summary += f" blocker={output['blocker_code']}"
+    if output.get("summary"):
+        summary += f" summary={_short(output['summary'], trunc)}"
+    return summary
 
 
 def _harness_summary(e: dict, trunc: int) -> str | None:
@@ -248,6 +357,14 @@ def parse_subagent_dirname(name: str) -> tuple[str, str, str | None]:
     else:
         agent_id, parent_req = left, ""
     return agent_id, parent_req, org_id
+
+
+def _stage_team_parent_prefix(parent_request_id: str) -> str | None:
+    """Return the shared team identity for current lead/worker transcript paths."""
+    for marker in ("::lead:", "::worker:"):
+        if marker in parent_request_id:
+            return parent_request_id.split(marker, 1)[0]
+    return None
 
 
 def session_org_ids(session_dir: Path) -> list[str]:
@@ -357,28 +474,452 @@ def runlog_anomalies(session_dir: Path, trunc: int) -> list[str]:
 
     repair_blocks: collections.Counter[tuple[str, str]] = collections.Counter()
     cancelled_tools: collections.Counter[tuple[str, str]] = collections.Counter()
+    controller_failures: collections.Counter[str] = collections.Counter()
+    controller_failure_signatures = (
+        "Company Controller child drain exhausted its frozen lifetime budget",
+        "Company Controller is waiting but no runnable child WorkItem remains",
+        "Company Controller dispatched no accepted runnable child",
+        "Company Controller prepared final submission before its child barrier was ready",
+        "Company Controller Gate repair fuel was exhausted",
+        "Company Controller exhausted its frozen coordination turn budget",
+        "STAGE_TEAM_DISPATCH_NONE_ACCEPTED",
+        "STAGE_TEAM_DISPATCH_PERSIST_FAILED",
+        "STAGE_TEAM_WORKER_EXECUTION_FAILED",
+        "STAGE_TEAM_WORKER_OUTPUT_INVALID",
+        "STAGE_TEAM_ACTIVE_TOOL_RECOVERY_BLOCKED",
+        "STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED",
+    )
     try:
-        for line in rl.open():
-            if "sub-agent tool call BLOCKED by submit repair mode" in line:
-                repair_blocks[(_logfield(line, "agent_id="), _logfield(line, "tool="))] += 1
-            elif "cancelled while waiting for tool" in line:
-                agent = "?"
-                if "[sub-agent:" in line:
-                    agent = line.split("[sub-agent:", 1)[1].split("]", 1)[0]
-                tool = "?"
-                if "tool '" in line:
-                    tool = line.split("tool '", 1)[1].split("'", 1)[0]
-                cancelled_tools[(agent, tool)] += 1
+        with rl.open() as fh:
+            for line in fh:
+                if "sub-agent tool call BLOCKED by submit repair mode" in line:
+                    repair_blocks[
+                        (_logfield(line, "agent_id="), _logfield(line, "tool="))
+                    ] += 1
+                elif "cancelled while waiting for tool" in line:
+                    agent = "?"
+                    if "[sub-agent:" in line:
+                        agent = line.split("[sub-agent:", 1)[1].split("]", 1)[0]
+                    tool = "?"
+                    if "tool '" in line:
+                        tool = line.split("tool '", 1)[1].split("'", 1)[0]
+                    cancelled_tools[(agent, tool)] += 1
+                for signature in controller_failure_signatures:
+                    if signature in line:
+                        controller_failures[signature] += 1
     except OSError:
         return []
-    if not repair_blocks and not cancelled_tools:
+    if not repair_blocks and not cancelled_tools and not controller_failures:
         return []
     out = ["", "== runtime anomalies (from run.log) =="]
+    for failure, cnt in controller_failures.most_common():
+        out.append(f"  controller {failure}: x{cnt}")
     for (agent, tool), cnt in repair_blocks.most_common():
         out.append(f"  submit_repair blocked {agent}.{tool}: x{cnt}")
     for (agent, tool), cnt in cancelled_tools.most_common():
         out.append(f"  cancelled while waiting for {agent}.{tool}: x{cnt}")
     return out
+
+
+def runlog_ai_calls(session_dir: Path) -> list[str]:
+    """Summarize only the stable model-call signals recorded in run.log."""
+    rl = session_dir / "run.log"
+    if not rl.exists():
+        return []
+    import collections
+    import re
+
+    main_pattern = re.compile(
+        r"\[main-agent\] Turn complete: provider=([^,\s]+), model=([^,\s]+), "
+        r"tokens=\{input=(\d+), output=(\d+), total=(\d+)\}"
+    )
+    subagent_pattern = re.compile(
+        r"\[sub-agent:([^\]]+)\] Executing with .*?"
+        r"provider=([^,\s]+), model=([^,\s]+)"
+    )
+    main_turns: collections.Counter[tuple[str, str]] = collections.Counter()
+    main_tokens: dict[tuple[str, str], list[int]] = collections.defaultdict(
+        lambda: [0, 0, 0]
+    )
+    subagent_starts: collections.Counter[tuple[str, str, str]] = collections.Counter()
+    try:
+        with rl.open() as fh:
+            for line in fh:
+                main_match = main_pattern.search(line)
+                if main_match:
+                    provider, model = main_match.group(1), main_match.group(2)
+                    key = (provider, model)
+                    main_turns[key] += 1
+                    for index, value in enumerate(main_match.groups()[2:]):
+                        main_tokens[key][index] += int(value)
+                subagent_match = subagent_pattern.search(line)
+                if subagent_match:
+                    subagent_starts[subagent_match.groups()] += 1
+    except OSError:
+        return []
+    if not main_turns and not subagent_starts:
+        return []
+
+    out = ["", "== AI calls (from run.log) =="]
+    if main_turns:
+        total_tokens = [
+            sum(values[index] for values in main_tokens.values()) for index in range(3)
+        ]
+        out.append(
+            f"  main completed turns={sum(main_turns.values())} "
+            f"tokens input={total_tokens[0]} output={total_tokens[1]} total={total_tokens[2]}"
+        )
+        for (provider, model), turns in sorted(main_turns.items()):
+            tokens = main_tokens[(provider, model)]
+            out.append(
+                f"    provider={provider} model={model} turns={turns} "
+                f"tokens input={tokens[0]} output={tokens[1]} total={tokens[2]}"
+            )
+    if subagent_starts:
+        out.append(
+            f"  sub-agent model starts={sum(subagent_starts.values())} "
+            "(starts only; not tool calls or completed turns; child tokens unavailable)"
+        )
+        for (agent, provider, model), starts in sorted(subagent_starts.items()):
+            out.append(
+                f"    agent={agent} provider={provider} model={model} starts={starts}"
+            )
+    return out
+
+
+def render_session_tree(session_dir: Path, trunc: int = TRUNC) -> list[str]:
+    """Render the transcript-owned Controller -> children -> Gate timeline.
+
+    This intentionally classifies a Company Controller only from current
+    runtime identity signals (`::lead:` parent or Controller coordination
+    tools). A generic update_plan call is never enough, and an older fixed
+    Stage Team worker is labeled legacy rather than presented as a Controller.
+    """
+    main_events = _load_jsonl(session_dir / "transcript.json")
+    subs_root = session_dir / "subagents"
+    sub_dirs = (
+        sorted((d for d in subs_root.iterdir() if d.is_dir()), key=lambda d: d.name)
+        if subs_root.is_dir()
+        else []
+    )
+    parsed_dirs = [(d, *parse_subagent_dirname(d.name)) for d in sub_dirs]
+    subs_by_parent: dict[str, list[Path]] = {}
+    for d, _agent, parent_req, _org in parsed_dirs:
+        subs_by_parent.setdefault(parent_req, []).append(d)
+    controller_team_prefixes = {
+        prefix
+        for _d, _agent, parent_req, _org in parsed_dirs
+        if "::lead:" in parent_req
+        for prefix in [_stage_team_parent_prefix(parent_req)]
+        if prefix is not None
+    }
+    worker_dirs_by_team: dict[str, list[Path]] = {}
+    for d, _agent, parent_req, _org in parsed_dirs:
+        prefix = _stage_team_parent_prefix(parent_req)
+        if prefix in controller_team_prefixes and "::worker:" in parent_req:
+            worker_dirs_by_team.setdefault(prefix, []).append(d)
+
+    def subdirs_for_request(request_id: object, include_team_children: bool = False) -> list[Path]:
+        if not isinstance(request_id, str):
+            return []
+        matches = list(subs_by_parent.get(request_id, []))
+        if include_team_children:
+            team_matches = [
+                d
+                for d, _agent, parent_req, _org in parsed_dirs
+                if parent_req.startswith(f"{request_id}::team::") and d not in matches
+            ]
+            current_controller_leads = [
+                d
+                for d, _agent, parent_req, _org in parsed_dirs
+                if d in team_matches and "::lead:" in parent_req
+            ]
+            # Current runtime workers are siblings of the lead on disk. Render
+            # only the lead here; workers belong under its dispatch timeline.
+            matches.extend(current_controller_leads or team_matches)
+        return sorted(matches, key=lambda d: d.name)
+
+    stages: list[str] = []
+    for event in main_events:
+        stage = event.get("stage") if event.get("type") == "harness_trace" else None
+        if isinstance(stage, str) and stage and stage not in stages:
+            stages.append(stage)
+    active_stage = stages[-1] if stages else "?"
+    stage_detail = f"stage={active_stage}"
+    if len(stages) > 1:
+        stage_detail += f" (latest; seen={','.join(stages)})"
+
+    lines = [
+        f"RUN {session_dir.name}",
+        f"{stage_detail}  events(main)={len(main_events)}  sub-agents={len(sub_dirs)}",
+        "main agent",
+    ]
+    rendered_subs: set[str] = set()
+    stats = {
+        "controllers": 0,
+        "resumes": 0,
+        "dynamic_dispatches": 0,
+        "worker_outputs": 0,
+        "submits": 0,
+        "needs_fix": 0,
+        "gate_pass": 0,
+        "gate_block": 0,
+        "anomalies": 0,
+    }
+
+    def add_anomaly(indent: str, message: str) -> None:
+        stats["anomalies"] += 1
+        lines.append(f"{indent}⚠ anomaly: {message}")
+
+    def render_sub(d: Path, indent: str, relation: str = "sub-agent") -> None:
+        rendered_subs.add(d.name)
+        agent_id, parent_req, org_id = parse_subagent_dirname(d.name)
+        events = _load_jsonl(d / "transcript.json")
+        events.sort(key=lambda event: event.get("_timestamp", ""))
+        results = {
+            event.get("request_id"): event
+            for event in events
+            if event.get("type") == "sub_agent_tool_result"
+        }
+        calls = [event for event in events if event.get("type") == "sub_agent_tool_request"]
+        completed = [event for event in events if event.get("type") == "sub_agent_completed"]
+        controller_tool_names = {
+            event.get("tool_name")
+            for event in calls
+            if event.get("tool_name")
+            in {
+                "stage_team_dispatch_workers",
+                "stage_team_prepare_final_submission",
+            }
+        }
+        is_controller = bool(
+            "::lead:" in parent_req
+            or "::company-controller" in parent_req
+            or controller_tool_names
+        )
+        team_prefix = _stage_team_parent_prefix(parent_req)
+        is_current_dynamic_worker = bool(
+            "::worker:" in parent_req and team_prefix in controller_team_prefixes
+        )
+        is_legacy_team = bool(
+            not is_controller
+            and not is_current_dynamic_worker
+            and (
+                "::team::" in parent_req
+                or "::worker:" in parent_req
+                or "::aggregator" in parent_req
+            )
+        )
+        chain_sequence = [
+            chain
+            for chain in (
+                _chain_id_from_response(event.get("response")) for event in completed
+            )
+            if chain
+        ]
+        unique_chains = list(dict.fromkeys(chain_sequence))
+        org_label = org_id or "?"
+        if is_controller:
+            stats["controllers"] += 1
+            turns = len(completed) or 1
+            resume_count = max(0, turns - 1) if len(unique_chains) <= 1 else 0
+            stats["resumes"] += resume_count
+            chain = unique_chains[0] if unique_chains else "?"
+            resume = (
+                f" resume=same-chain x{resume_count}" if resume_count else " resume=no"
+            )
+            label = "Company Controller"
+            header_tail = f"chain={chain} turns={turns}{resume}"
+        elif is_legacy_team:
+            label = "legacy Stage Team worker"
+            header_tail = "runtime=legacy-fixed (not Company Controller)"
+        else:
+            label = (
+                "dynamic SubAgent"
+                if relation == "dynamic child" or is_current_dynamic_worker
+                else "sub-agent"
+            )
+            chain = unique_chains[0] if unique_chains else "?"
+            header_tail = f"chain={chain}"
+        lines.append(
+            f"{indent}└─ {label}: {agent_id}  [org {org_label}]  "
+            f"({len(calls)} calls) {header_tail}"
+        )
+        child_indent = indent + "   "
+        if is_controller and len(unique_chains) > 1:
+            add_anomaly(
+                child_indent,
+                f"Controller resumed with divergent chains {unique_chains}",
+            )
+
+        completed_index = 0
+        for event in events:
+            event_type = event.get("type")
+            if event_type == "sub_agent_tool_request":
+                request_id = event.get("request_id")
+                result_event = results.get(request_id, {})
+                result = result_event.get("result")
+                tool_name = event.get("tool_name", "?")
+                lines.append(
+                    f"{child_indent}├─ "
+                    f"{_tool_summary(tool_name, event.get('args'), result, trunc)}"
+                )
+                if tool_name == "update_plan":
+                    lines.extend(
+                        f"{child_indent}│  {step}"
+                        for step in _plan_step_summaries(
+                            event.get("args"), result, trunc
+                        )
+                    )
+                nested = subdirs_for_request(request_id)
+                if is_controller and tool_name == "stage_team_dispatch_workers":
+                    if team_prefix is not None:
+                        nested.extend(
+                            child_dir
+                            for child_dir in worker_dirs_by_team.get(team_prefix, [])
+                            if child_dir not in nested
+                        )
+                        nested.sort(key=lambda child_dir: child_dir.name)
+                    status = result.get("status") if isinstance(result, dict) else None
+                    accepted = (
+                        result.get("accepted_count") if isinstance(result, dict) else None
+                    )
+                    if status == "dispatch_accepted":
+                        stats["dynamic_dispatches"] += 1
+                        lines.append(
+                            f"{child_indent}│  ↳ WAIT Lead parked; scheduler draining accepted children"
+                        )
+                        if isinstance(accepted, int) and accepted <= 0:
+                            add_anomaly(
+                                child_indent + "│  ",
+                                "dispatch_accepted reported no accepted child",
+                            )
+                        if isinstance(accepted, int) and accepted > 0 and not nested:
+                            add_anomaly(
+                                child_indent + "│  ",
+                                f"accepted {accepted} child request(s) but no child transcript exists",
+                            )
+                    elif result_event and not result_event.get("success", False):
+                        add_anomaly(
+                            child_indent + "│  ",
+                            f"dynamic dispatch failed: {_short(result, trunc)}",
+                        )
+                if tool_name == "submit_stage_deliverable":
+                    stats["submits"] += 1
+                    if isinstance(result, dict) and result.get("status") == "needs_fix":
+                        stats["needs_fix"] += 1
+                if result_event and (
+                    result_event.get("success") is False
+                    or (isinstance(result, dict) and result.get("error"))
+                ):
+                    add_anomaly(
+                        child_indent + "│  ",
+                        f"{tool_name} failed: {_short(result, trunc)}",
+                    )
+                for nested_dir in nested:
+                    if nested_dir.name not in rendered_subs:
+                        nested_relation = (
+                            "dynamic child"
+                            if is_controller
+                            and tool_name == "stage_team_dispatch_workers"
+                            else "sub-agent"
+                        )
+                        render_sub(nested_dir, child_indent + "   ", nested_relation)
+            elif event_type == "sub_agent_completed":
+                completed_index += 1
+                chain = _chain_id_from_response(event.get("response")) or "?"
+                if is_controller:
+                    lines.append(
+                        f"{child_indent}· TURN {completed_index} complete chain={chain}"
+                    )
+                    if completed_index < len(completed):
+                        lines.append(
+                            f"{child_indent}↻ RESUME same Company Controller chain={chain}"
+                        )
+                else:
+                    worker_output = _worker_output_summary(event.get("response"), trunc)
+                    if worker_output:
+                        stats["worker_outputs"] += 1
+                        lines.append(f"{child_indent}· {worker_output}")
+                    response = _short(_response_without_chain_marker(event.get("response")), trunc)
+                    if response:
+                        lines.append(f"{child_indent}· ✓ done: {response}")
+            elif event_type == "sub_agent_error":
+                add_anomaly(
+                    child_indent,
+                    f"{agent_id} error: {_short(event.get('error'), trunc)}",
+                )
+            elif event_type in _SUB_PROSE and event_type != "sub_agent_completed":
+                text = (
+                    event.get("accumulated")
+                    or event.get("response")
+                    or event.get("delta")
+                    or ""
+                )
+                text = _short(text, trunc)
+                if text:
+                    lines.append(f"{child_indent}· {_SUB_PROSE[event_type]}: {text}")
+
+    results_by_request = {
+        event.get("request_id"): event
+        for event in main_events
+        if event.get("type") == "tool_result"
+    }
+    seen_tool_requests: set[str] = set()
+    for event in main_events:
+        event_type = event.get("type")
+        if event_type in ("tool_auto_approved", "tool_request"):
+            request_id = event.get("request_id")
+            if request_id in seen_tool_requests:
+                continue
+            seen_tool_requests.add(request_id)
+            tool = event.get("tool_name", "?")
+            result = (results_by_request.get(request_id) or {}).get("result")
+            lines.append(
+                f"   ├─ {_tool_summary(tool, event.get('args'), result, trunc)}"
+            )
+            if tool == "update_plan":
+                lines.extend(
+                    f"   │  {step}"
+                    for step in _plan_step_summaries(event.get("args"), result, trunc)
+                )
+            for sub_dir in subdirs_for_request(request_id, include_team_children=True):
+                if sub_dir.name not in rendered_subs:
+                    render_sub(sub_dir, "   ")
+        elif event_type == "harness_trace":
+            summary = _harness_summary(event, trunc)
+            if summary:
+                lines.append(f"   • {summary}")
+            if event.get("kind") == "gate_decision":
+                gate = str(event.get("gate", "")).upper()
+                if gate == "PASS":
+                    stats["gate_pass"] += 1
+                elif gate == "BLOCK":
+                    stats["gate_block"] += 1
+        elif event_type == "completed":
+            response = _short(event.get("response"), trunc)
+            if response:
+                lines.append(f"   ⤴ FINAL: {response}")
+            reasoning = _short(event.get("reasoning"), trunc)
+            if reasoning:
+                lines.append(f"      reasoning: {reasoning}")
+
+    for sub_dir in sub_dirs:
+        if sub_dir.name not in rendered_subs:
+            render_sub(sub_dir, "   ")
+
+    lines.append("")
+    lines.append(
+        "summary: "
+        f"controllers={stats['controllers']} resumes={stats['resumes']} "
+        f"dynamic_dispatches={stats['dynamic_dispatches']} "
+        f"worker_outputs={stats['worker_outputs']} submits={stats['submits']} "
+        f"needs_fix={stats['needs_fix']} gate_pass={stats['gate_pass']} "
+        f"gate_block={stats['gate_block']} anomalies={stats['anomalies']}"
+    )
+    if stats["needs_fix"] >= 3:
+        lines.append("  ⚠ repeated identical needs_fix likely — check the Gate reason above")
+    return lines
 
 
 def main() -> int:
@@ -406,112 +947,11 @@ def main() -> int:
         i += 1
 
     session_dir = resolve_session_dir(positional, workspace)
-    main_events = _load_jsonl(session_dir / "transcript.json")
+    print("\n".join(render_session_tree(session_dir, trunc)))
 
-    # Index sub-agent dirs by their parent_request_id (for nesting).
-    sub_dirs = []
-    subs_root = session_dir / "subagents"
-    if subs_root.is_dir():
-        sub_dirs = [d for d in subs_root.iterdir() if d.is_dir()]
-    subs_by_parent: dict[str, list[Path]] = {}
-    for d in sub_dirs:
-        _agent, parent_req, _org = parse_subagent_dirname(d.name)
-        subs_by_parent.setdefault(parent_req, []).append(d)
-
-    lines: list[str] = []
-    # session header
-    stage = next(
-        (e.get("stage") for e in main_events if e.get("type") == "harness_trace" and e.get("stage")),
-        "?",
-    )
-    lines.append(f"RUN {session_dir.name}")
-    lines.append(f"stage={stage}  events(main)={len(main_events)}  sub-agents={len(sub_dirs)}")
-    lines.append("main agent")
-
-    rendered_subs: set[str] = set()
-
-    def render_sub(d: Path, indent: str) -> None:
-        rendered_subs.add(d.name)
-        agent_id, parent_req, org_id = parse_subagent_dirname(d.name)
-        ev = _load_jsonl(d / "transcript.json")
-        # Stable order: by timestamp when present (prose appends are spawned, so
-        # file order can race the tool appends; timestamps are authoritative).
-        ev.sort(key=lambda e: e.get("_timestamp", ""))
-        results = {
-            e.get("request_id"): e for e in ev if e.get("type") == "sub_agent_tool_result"
-        }
-        ncalls = sum(1 for e in ev if e.get("type") == "sub_agent_tool_request")
-        org8 = (org_id or "")[:8]
-        lines.append(f"{indent}\u2514\u2500 sub-agent: {agent_id}  [org {org8}]  ({ncalls} calls)")
-        child = indent + "   "
-        for e in ev:
-            t = e.get("type")
-            if t == "sub_agent_tool_request":
-                rid = e.get("request_id")
-                res = results.get(rid, {})
-                summary = _tool_summary(
-                    e.get("tool_name", "?"), e.get("args"), res.get("result"), trunc
-                )
-                lines.append(f"{child}\u251c\u2500 {summary}")
-                for nd in subs_by_parent.get(rid, []):
-                    if nd.name not in rendered_subs:
-                        render_sub(nd, child + "   ")
-            elif t in _SUB_PROSE:
-                text = e.get("accumulated") or e.get("response") or e.get("delta") or ""
-                text = _short(text, trunc)
-                if text:
-                    lines.append(f"{child}\u00b7 {_SUB_PROSE[t]}: {text}")
-
-    # main agent tool calls + harness decisions + final response, in file order.
-    results_by_rid = {
-        e.get("request_id"): e for e in main_events if e.get("type") == "tool_result"
-    }
-    seen_tool_rids: set[str] = set()
-    for e in main_events:
-        t = e.get("type")
-        if t in ("tool_auto_approved", "tool_request"):
-            rid = e.get("request_id")
-            if rid in seen_tool_rids:
-                continue
-            seen_tool_rids.add(rid)
-            tool = e.get("tool_name", "?")
-            result = (results_by_rid.get(rid) or {}).get("result")
-            lines.append(f"   \u251c\u2500 {_tool_summary(tool, e.get('args'), result, trunc)}")
-            for nd in subs_by_parent.get(rid, []):
-                if nd.name not in rendered_subs:
-                    render_sub(nd, "   ")
-        elif t == "harness_trace":
-            summary = _harness_summary(e, trunc)
-            if summary:
-                lines.append(f"   \u2022 {summary}")
-        elif t == "completed":
-            resp = _short(e.get("response"), trunc)
-            if resp:
-                lines.append(f"   \u2934 FINAL: {resp}")
-            reasoning = _short(e.get("reasoning"), trunc)
-            if reasoning:
-                lines.append(f"      reasoning: {reasoning}")
-
-    # Orphan sub-agents (parent_request_id not matched to any rendered call).
-    for d in sub_dirs:
-        if d.name not in rendered_subs:
-            render_sub(d, "   ")
-
-    # footer summary (quick problem-finding)
-    submits = 0
-    needs_fix = 0
-    for d in sub_dirs:
-        for c in collect_subagent_calls(_load_jsonl(d / "transcript.json"), trunc):
-            if c["tool"] == "submit_stage_deliverable":
-                submits += 1
-                if isinstance(c["result"], dict) and c["result"].get("status") == "needs_fix":
-                    needs_fix += 1
-    lines.append("")
-    lines.append(f"summary: submits={submits} needs_fix={needs_fix}")
-    if needs_fix >= 3:
-        lines.append("  \u26a0 repeated identical needs_fix likely \u2014 check the gate reason above")
-
-    print("\n".join(lines))
+    ai_call_lines = runlog_ai_calls(session_dir)
+    if ai_call_lines:
+        print("\n".join(ai_call_lines))
 
     gap_lines = coverage_gaps_from_runlog(session_dir, trunc)
     if gap_lines:
@@ -873,6 +1313,198 @@ def _yes_no(value: object) -> str:
     return "yes" if bool(value) else "no"
 
 
+def _stage_team_tree_lines(
+    plans: list[dict],
+    items: list[dict],
+    dependencies: list[dict],
+    workers: list[dict],
+    outputs: list[dict],
+    requests: list[dict],
+    trunc: int,
+) -> list[str]:
+    """Render the durable Unit -> TeamPlan -> WorkItem ownership tree.
+
+    Inputs are already exact-operation DB projections. Raw checkpoint bodies,
+    lease tokens and arbitrary canonical output JSON never enter this helper.
+    """
+    if not plans:
+        return ["      stage_teams: (none; legacy/team-disabled execution)"]
+    out = ["      stage_teams:"]
+    dependencies_by_item: dict[str, list[str]] = {}
+    for dependency in dependencies:
+        item_id = str(dependency.get("work_item_id"))
+        dependencies_by_item.setdefault(item_id, []).append(
+            str(dependency.get("depends_on_work_item_id"))
+        )
+    workers_by_item: dict[str, list[dict]] = {}
+    for worker in workers:
+        work_item_id = worker.get("work_item_id")
+        if work_item_id is not None:
+            workers_by_item.setdefault(str(work_item_id), []).append(worker)
+    outputs_by_item = {
+        str(output.get("work_item_id")): output for output in outputs
+    }
+
+    for plan in plans:
+        plan_id = str(plan.get("id"))
+        plan_items = [item for item in items if str(item.get("team_plan_id")) == plan_id]
+        plan_requests = [
+            request for request in requests if str(request.get("team_plan_id")) == plan_id
+        ]
+        aggregator_role = plan.get("aggregator_role")
+        controller_item = next(
+            (
+                item
+                for item in plan_items
+                if item.get("stable_key") == "leader:primary"
+                and item.get("role") == plan.get("leader_role")
+                and not item.get("required_for_barrier")
+            ),
+            None,
+        )
+        is_company_controller = controller_item is not None
+
+        def is_legacy_aggregator(item: dict) -> bool:
+            return bool(
+                not is_company_controller
+                and plan.get("aggregator_kind") == "worker"
+                and aggregator_role == item.get("role")
+                and not item.get("required_for_barrier")
+            )
+
+        def is_coordinator(item: dict) -> bool:
+            return item is controller_item or is_legacy_aggregator(item)
+
+        child_items = [item for item in plan_items if not is_coordinator(item)]
+        child_ids = {str(item.get("id")) for item in child_items}
+        child_workers = [
+            worker
+            for worker in workers
+            if str(worker.get("work_item_id")) in child_ids
+        ]
+        terminal_count = sum(item.get("status") == "completed" for item in child_items)
+        live_count = sum(
+            worker.get("status") in {"queued", "running", "waiting_background"}
+            for worker in child_workers
+        )
+        retry_count = sum(item.get("status") == "retry_pending" for item in child_items)
+        recovery_count = sum(
+            worker.get("status") == "recovery_required" for worker in child_workers
+        )
+        missing_outputs = sum(
+            item.get("status") == "completed"
+            and str(item.get("id")) not in outputs_by_item
+            for item in child_items
+        )
+        requests_closed = plan.get("requests_closed_at") is not None
+        barrier_ready = bool(
+            requests_closed
+            and terminal_count == len(child_items)
+            and live_count == 0
+            and retry_count == 0
+            and recovery_count == 0
+            and missing_outputs == 0
+        )
+        out.append(
+            f"        unit={plan.get('stage_run_unit_id')} org={plan.get('organization_id')} "
+            f"plan={plan_id} stage={plan.get('stage_kind')} v={plan.get('plan_version')} "
+            f"hash={plan.get('plan_hash')}"
+        )
+        if is_company_controller:
+            out.append(
+                "          mode=company_controller "
+                f"controller_item={controller_item.get('id')} "
+                f"controller_role={plan.get('leader_role')}"
+            )
+        else:
+            out.append("          mode=legacy_fixed_team (not Company Controller)")
+        out.append(
+            f"          roles leader={plan.get('leader_role')} "
+            f"aggregator={aggregator_role or plan.get('aggregator_kind')} "
+            f"allowed={_compact_json(plan.get('allowed_worker_roles'), trunc)}"
+        )
+        out.append(
+            f"          concurrency active={plan.get('max_workers_active')} "
+            f"total={plan.get('max_workers_total')} dynamic={_yes_no(plan.get('dynamic_requests_allowed'))} "
+            f"epoch={plan.get('dispatch_epoch')} closed_at={plan.get('requests_closed_at')}"
+        )
+        barrier_subject = "children " if is_company_controller else ""
+        out.append(
+            f"          barrier ready={_yes_no(barrier_ready)} "
+            f"{barrier_subject}terminal={terminal_count}/{len(child_items)} live={live_count} "
+            f"retry={retry_count} recovery={recovery_count} missing_outputs={missing_outputs}"
+        )
+        if plan.get("final_submitter_worker_run_id") is not None:
+            out.append(
+                "          final_submitter="
+                f"{plan.get('final_submitter_kind')}:{plan.get('final_submitter_worker_run_id')}"
+            )
+        for request in plan_requests:
+            out.append(
+                f"          request id={request.get('id')} "
+                f"parent={request.get('parent_work_item_id')}/{request.get('parent_worker_run_id')} "
+                f"role={request.get('requested_role')} kind={request.get('request_kind')} "
+                f"subjects={request.get('subject_ref_count')} status={request.get('status')}"
+            )
+            out.append(
+                f"            reason={request.get('reason_code')} "
+                f"decision={request.get('decision_reason_code')} "
+                f"accepted_item={request.get('accepted_work_item_id')} "
+                f"hash={request.get('request_payload_hash')}"
+            )
+        for item in plan_items:
+            item_id = str(item.get("id"))
+            out.append(
+                f"          work_item id={item_id} "
+                f"kind={item.get('kind')} key={item.get('stable_key')} "
+                f"role={item.get('role')} status={item.get('status')} "
+                f"barrier={_yes_no(item.get('required_for_barrier'))} "
+                f"controller={_yes_no(item is controller_item)} "
+                f"legacy_aggregator={_yes_no(is_legacy_aggregator(item))}"
+            )
+            out.append(
+                f"            priority={item.get('priority')} created_by={item.get('created_by')} "
+                f"subjects={item.get('subject_ref_count')} schema={item.get('output_schema')} "
+                f"input_hash={item.get('input_manifest_hash')} "
+                f"dependencies={dependencies_by_item.get(item_id, [])}"
+            )
+            for worker in workers_by_item.get(item_id, []):
+                out.append(
+                    f"            worker id={worker.get('id')} generation={worker.get('worker_generation')} "
+                    f"status={worker.get('status')} chain={worker.get('message_chain_id')} "
+                    f"epoch={worker.get('attempt_epoch')} lease={_yes_no(worker.get('lease_present'))} "
+                    f"expired={_yes_no(worker.get('lease_expired'))}"
+                )
+                if worker.get("status") == "recovery_required" or (
+                    worker.get("lease_expired") and worker.get("active_tool_call_id") is not None
+                ):
+                    recovery = "manual_required"
+                elif worker.get("lease_expired"):
+                    recovery = "requeue_eligible"
+                elif worker.get("lease_present"):
+                    recovery = "wait_for_live_lease"
+                elif worker.get("status") in {"passed", "failed", "exhausted", "superseded"}:
+                    recovery = "terminal"
+                else:
+                    recovery = "unleased"
+                out.append(
+                    f"              specialist={worker.get('specialist')} "
+                    f"active_tool={_yes_no(worker.get('active_tool_call_id'))} "
+                    f"evidence_watermark={worker.get('evidence_watermark')} recovery={recovery}"
+                )
+            output = outputs_by_item.get(item_id)
+            if output is not None:
+                out.append(
+                    f"            output id={output.get('id')} worker={output.get('worker_run_id')} "
+                    f"disposition={output.get('business_disposition')} "
+                    f"facts={output.get('canonical_fact_ref_count')} "
+                    f"evidence={output.get('evidence_ids')} "
+                    f"checked_empty={output.get('checked_empty_cell_count')} "
+                    f"blockers={output.get('blocker_codes')} hash={output.get('output_hash')}"
+                )
+    return out
+
+
 def _has_legacy_checkpoint(state_blob: object) -> bool:
     if not isinstance(state_blob, dict):
         return False
@@ -977,6 +1609,11 @@ def _runtime_memory_lines(
             'operation_id', os.operation_id,
             'runtime_memory_contract', os.runtime_memory_contract,
             'attack_execution_contract', os.attack_execution_contract,
+            'task_status', (
+                SELECT task.status::text
+                FROM tasks AS task
+                WHERE task.id = os.operation_id
+            ),
             'profile', os.profile,
             'current_stage', os.current_stage,
             'project_scope_id', os.project_scope_id,
@@ -992,8 +1629,11 @@ def _runtime_memory_lines(
                 WHERE audit.session_id = %s AND audit.run_id = os.operation_id
            )
            OR EXISTS (
-                SELECT 1 FROM tasks AS task
-                WHERE task.id = os.operation_id AND task.session_id::text = %s
+                SELECT 1
+                FROM tasks AS task
+                JOIN sessions AS session ON session.id = task.session_id
+                WHERE task.id = os.operation_id
+                  AND session.chat_session_key = %s
            )
         ORDER BY os.stage_started_at DESC, os.operation_id""",
         (candidate_operation_ids, session_id, session_id),
@@ -1374,26 +2014,54 @@ def _runtime_memory_lines(
         active_executions = [
             record for record in stage_executions if record.get("status") == "started"
         ]
-        out.append(f"      stage_executions: exact_active={len(active_executions)}")
+        terminal_execution = None
+        if not active_executions and operation.get("task_status") == "finished":
+            terminal_candidates = [
+                record
+                for record in stage_executions
+                if record.get("status") == "completed"
+                and record.get("completed_at") is not None
+                and record.get("stage_kind") == current_stage
+            ]
+            if terminal_candidates:
+                terminal_execution = max(
+                    terminal_candidates,
+                    key=lambda record: (
+                        str(record.get("completed_at")),
+                        str(record.get("id")),
+                    ),
+                )
+        execution_summary = f"      stage_executions: exact_active={len(active_executions)}"
+        if terminal_execution is not None:
+            execution_summary += f" terminal_selected={terminal_execution.get('id')}"
+        out.append(execution_summary)
         for execution in stage_executions:
             out.append(
                 f"        id={execution.get('id')} stage={execution.get('stage_kind')} "
                 f"status={execution.get('status')} started_at={execution.get('started_at')} "
                 f"completed_at={execution.get('completed_at')}"
             )
-        if not active_executions:
+        if not active_executions and terminal_execution is None:
             out.append("      ⚠ anomaly: missing active stage execution")
         elif len(active_executions) > 1:
             out.append(
                 "      ⚠ anomaly: multiple active stage executions "
                 + ", ".join(str(row.get("id")) for row in active_executions)
             )
-        elif active_executions[0].get("stage_kind") != current_stage:
+        elif (
+            len(active_executions) == 1
+            and active_executions[0].get("stage_kind") != current_stage
+        ):
             out.append(
                 "      ⚠ anomaly: operation cursor does not match exact active stage execution"
             )
-        active_execution_id = (
-            str(active_executions[0].get("id")) if len(active_executions) == 1 else None
+        selected_execution = (
+            active_executions[0]
+            if len(active_executions) == 1
+            else terminal_execution
+        )
+        selected_execution_id = (
+            str(selected_execution.get("id")) if selected_execution is not None else None
         )
 
         decisions = fetch_records(
@@ -1542,14 +2210,127 @@ def _runtime_memory_lines(
                     f"org={unit.get('organization_id')} is not in snapshot={unit.get('scope_snapshot_id')}"
                 )
             if (
-                active_execution_id
+                selected_execution_id
                 and unit.get("status") in {"queued", "running", "gate_blocked"}
-                and str(unit.get("stage_execution_id")) != active_execution_id
+                and str(unit.get("stage_execution_id")) != selected_execution_id
             ):
                 out.append(
                     f"      ⚠ anomaly: nonterminal stage unit {unit.get('id')} "
                     "does not belong to the exact active execution"
                 )
+
+        team_plans = fetch_records(
+            "stage_team_plans",
+            """/* run_tree:stage_team_plans */
+            SELECT jsonb_build_object(
+                'id', plan.id,
+                'stage_execution_id', plan.stage_execution_id,
+                'stage_run_unit_id', plan.stage_run_unit_id,
+                'organization_id', plan.organization_id,
+                'stage_kind', plan.stage_kind,
+                'schema_version', plan.schema_version,
+                'plan_version', plan.plan_version,
+                'plan_hash', plan.plan_hash,
+                'leader_role', plan.leader_role,
+                'aggregator_kind', plan.aggregator_kind,
+                'aggregator_role', plan.aggregator_role,
+                'allowed_worker_roles', plan.allowed_worker_roles,
+                'max_workers_total', plan.max_workers_total,
+                'max_workers_active', plan.max_workers_active,
+                'dynamic_requests_allowed', plan.dynamic_requests_allowed,
+                'dispatch_epoch', plan.dispatch_epoch,
+                'requests_closed_at', plan.requests_closed_at,
+                'final_submitter_kind', plan.final_submitter_kind,
+                'final_submitter_worker_run_id', plan.final_submitter_worker_run_id
+            )
+            FROM stage_team_plans AS plan
+            WHERE plan.operation_id = %s
+            ORDER BY plan.stage_execution_id,plan.organization_id,plan.id""",
+        )
+        team_items: list[dict] = []
+        team_dependencies: list[dict] = []
+        team_outputs: list[dict] = []
+        team_requests: list[dict] = []
+        if team_plans:
+            team_items = fetch_records(
+                "stage_team_work_items",
+                """/* run_tree:stage_team_work_items */
+                SELECT jsonb_build_object(
+                    'id', item.id,
+                    'team_plan_id', item.team_plan_id,
+                    'kind', item.kind,
+                    'stable_key', item.stable_key,
+                    'role', item.role,
+                    'input_manifest_hash', item.input_manifest_hash,
+                    'subject_ref_count', jsonb_array_length(item.input_refs),
+                    'required_for_barrier', item.required_for_barrier,
+                    'conflict_key', item.conflict_key,
+                    'priority', item.priority,
+                    'status', item.status,
+                    'output_schema', item.output_schema,
+                    'created_by', item.created_by,
+                    'started_at', item.started_at,
+                    'terminal_at', item.terminal_at
+                )
+                FROM stage_work_items AS item
+                WHERE item.operation_id = %s
+                ORDER BY item.team_plan_id,item.priority,item.id""",
+            )
+            team_dependencies = fetch_records(
+                "stage_team_dependencies",
+                """/* run_tree:stage_team_dependencies */
+                SELECT jsonb_build_object(
+                    'team_plan_id', dependency.team_plan_id,
+                    'work_item_id', dependency.work_item_id,
+                    'depends_on_work_item_id', dependency.depends_on_work_item_id
+                )
+                FROM stage_work_item_dependencies AS dependency
+                WHERE dependency.operation_id = %s
+                ORDER BY dependency.work_item_id,dependency.depends_on_work_item_id""",
+            )
+            team_outputs = fetch_records(
+                "stage_team_outputs",
+                """/* run_tree:stage_team_outputs */
+                SELECT jsonb_build_object(
+                    'id', output.id,
+                    'team_plan_id', output.team_plan_id,
+                    'work_item_id', output.work_item_id,
+                    'worker_run_id', output.worker_run_id,
+                    'business_disposition', output.business_disposition,
+                    'canonical_fact_ref_count', jsonb_array_length(output.canonical_fact_refs),
+                    'evidence_ids', output.evidence_ids,
+                    'checked_empty_cell_count', jsonb_array_length(output.checked_empty_cells),
+                    'blocker_codes', output.blocker_codes,
+                    'output_hash', output.output_hash,
+                    'created_at', output.created_at
+                )
+                FROM stage_worker_outputs AS output
+                WHERE output.operation_id = %s
+                ORDER BY output.team_plan_id,output.created_at,output.id""",
+            )
+            team_requests = fetch_records(
+                "stage_team_requests",
+                """/* run_tree:stage_team_requests */
+                SELECT jsonb_build_object(
+                    'id', request.id,
+                    'team_plan_id', request.team_plan_id,
+                    'parent_work_item_id', request.parent_work_item_id,
+                    'parent_worker_run_id', request.parent_worker_run_id,
+                    'dispatch_epoch', request.dispatch_epoch,
+                    'requested_role', request.requested_role,
+                    'request_kind', request.request_kind,
+                    'subject_ref_count', jsonb_array_length(request.bounded_subject_refs),
+                    'reason_code', request.reason_code,
+                    'request_payload_hash', request.request_payload_hash,
+                    'status', request.status,
+                    'decision_reason_code', request.decision_reason_code,
+                    'accepted_work_item_id', request.accepted_work_item_id,
+                    'created_at', request.created_at
+                )
+                FROM stage_worker_requests AS request
+                WHERE request.operation_id = %s
+                ORDER BY request.team_plan_id,request.created_at,request.id""",
+            )
 
         workers = fetch_records(
             "stage_workers",
@@ -1558,6 +2339,7 @@ def _runtime_memory_lines(
                 'id', worker.id,
                 'stage_execution_id', worker.stage_execution_id,
                 'stage_run_unit_id', worker.stage_run_unit_id,
+                'work_item_id', worker.work_item_id,
                 'organization_id', worker.organization_id,
                 'worker_generation', worker.worker_generation,
                 'specialist', worker.specialist,
@@ -1679,6 +2461,18 @@ def _runtime_memory_lines(
                     "      ⚠ anomaly: expired lease with active tool is not recovery_required"
                 )
 
+        out.extend(
+            _stage_team_tree_lines(
+                team_plans,
+                team_items,
+                team_dependencies,
+                workers,
+                team_outputs,
+                team_requests,
+                trunc,
+            )
+        )
+
         submissions = fetch_records(
             "stage_submissions",
             """/* run_tree:stage_submissions */
@@ -1789,11 +2583,11 @@ def _runtime_memory_lines(
         current_units = [
             unit
             for unit in stage_units
-            if active_execution_id
-            and str(unit.get("stage_execution_id")) == active_execution_id
+            if selected_execution_id
+            and str(unit.get("stage_execution_id")) == selected_execution_id
             and bool(unit.get("scope_member"))
         ]
-        v2_complete = len(active_executions) == 1 and (
+        v2_complete = selected_execution is not None and (
             current_stage == "scoping" or (snapshot_sealed and bool(current_units))
         )
         if contract == "legacy_v1":

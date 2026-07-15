@@ -134,10 +134,25 @@ struct ChecksumRepairAllowance {
 /// recovery strategy. Every entry must name the exact old and new SHA-384
 /// values after the corresponding schema postcondition has been audited.
 ///
-/// The list is intentionally empty: the current persistent database has no
-/// checksum drift. In particular, runtime-memory migrations are immutable once
-/// successfully applied and must never be added here to hide a partial schema.
-const CHECKSUM_REPAIR_ALLOWLIST: &[ChecksumRepairAllowance] = &[];
+/// These entries repair only the audited local drift chain. Higher forward
+/// migrations install every differing postcondition; the last pair changes
+/// only new-install idempotence after its schema was already proven identical.
+const CHECKSUM_REPAIR_ALLOWLIST: &[ChecksumRepairAllowance] = &[ChecksumRepairAllowance {
+    version: 20260714000002,
+    description: "candidate verification recovery",
+    old_checksum: b"\x52\x28\xca\xa9\xaf\x2e\xef\xb2\x0f\x86\x04\x07\xa7\xc3\x9a\x97\xd3\x8c\x71\xe8\x38\x76\xec\xf2\x8d\xa5\xe0\x89\xa6\xc1\x5a\x0f\x71\xdc\xf1\x7f\x09\x78\x07\x01\xbe\x12\x49\x29\x6b\x80\xb8\x55",
+    new_checksum: b"\xbe\xdb\xa0\x79\x91\xef\x57\x0f\x99\xbc\x6a\x16\x02\x33\xe5\x0d\x61\xdb\xfb\x56\xc3\x6e\xdf\xdc\xbb\xfd\x58\xe6\xab\xcd\xd2\x15\x86\x8f\x96\xd3\xa2\x3e\x48\xbb\x10\x10\x5b\x2a\x79\xab\x95\x5b",
+}, ChecksumRepairAllowance {
+    version: 20260714000003,
+    description: "stage team scheduler",
+    old_checksum: b"\x43\xaf\x87\xb8\x88\x66\x9d\xdb\xd5\x6d\x74\x4a\xcf\x11\x86\xbb\x97\xbc\x7c\xf7\x47\x3f\xc9\x40\xba\x8e\xbe\x58\x4a\xbb\x78\x33\xa8\x84\x89\xd6\x25\xc3\x63\xcd\x51\xef\xb3\x07\x9e\x6f\x8e\x60",
+    new_checksum: b"\xcc\x61\x50\x57\x73\x70\x0d\xde\x3a\xef\x75\x88\x25\x78\x16\xc9\xa3\x43\x7a\xab\x74\x82\x84\xc3\xc2\xb8\xbd\x8c\x06\x72\x70\x37\x17\xdd\xfd\xf4\xac\x22\x7c\x8f\x0c\x41\x53\x36\x88\x7f\x4b\x58",
+}, ChecksumRepairAllowance {
+    version: 20260715000002,
+    description: "stage team scheduler forward fix",
+    old_checksum: b"\x3b\xb2\x27\x41\xf6\x85\xba\x68\xde\xe9\x9e\xe9\xd7\x0f\x3a\xe7\x46\x7a\x83\x0b\xdb\xba\x49\x46\xcc\xf6\xc3\x92\x8e\x56\x9a\xa1\xce\xfa\xa1\x6f\xf1\x2c\x59\x6a\xf1\x0d\xce\x25\x0d\x95\x02\x2e",
+    new_checksum: b"\x80\x3c\xa6\x24\x66\xb5\x7c\xf8\x6d\x29\x15\x61\x76\xa2\x85\x3a\x36\xe9\xf0\x23\x9c\x3f\xc7\xeb\x47\xa2\xfa\x41\x92\xe0\x0d\x15\xa6\xc2\xc3\xe2\x55\x7e\x5f\xd5\x04\x77\x4b\xbb\xf7\xa3\x6c\x3d",
+}];
 
 /// Plan only migration-specific checksum repairs whose exact old/new SHA-384
 /// pair is explicitly allowlisted after schema postconditions were audited.
@@ -416,6 +431,115 @@ mod tests {
         let error = plan_checksum_repairs(&records, &migrator)
             .expect_err("a changed successful foundation migration must fail closed");
         assert!(error.to_string().contains("20260712000001"));
+    }
+
+    #[test]
+    fn candidate_verification_recovery_known_checksum_drift_is_exactly_repairable() {
+        let migrator = sqlx::migrate!("./migrations");
+        let applied = migrator
+            .iter()
+            .find(|migration| migration.version == 20260714000002)
+            .expect("candidate verification recovery migration must exist");
+        let old_checksum = b"\x52\x28\xca\xa9\xaf\x2e\xef\xb2\x0f\x86\x04\x07\xa7\xc3\x9a\x97\xd3\x8c\x71\xe8\x38\x76\xec\xf2\x8d\xa5\xe0\x89\xa6\xc1\x5a\x0f\x71\xdc\xf1\x7f\x09\x78\x07\x01\xbe\x12\x49\x29\x6b\x80\xb8\x55";
+        let records = vec![metadata(applied, true, old_checksum)];
+
+        let repairs = plan_checksum_repairs(&records, &migrator)
+            .expect("the audited migration drift must be exactly repairable");
+
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].version, applied.version);
+        assert_eq!(repairs[0].description, applied.description);
+        assert_eq!(repairs[0].old_checksum, old_checksum);
+        assert_eq!(repairs[0].new_checksum, applied.checksum.as_ref());
+    }
+
+    #[test]
+    fn candidate_verification_recovery_forward_fix_is_function_only() {
+        let migration_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("migrations/20260715000001_candidate_verification_recovery_forward_fix.sql");
+        let sql = std::fs::read_to_string(&migration_path)
+            .expect("candidate verification recovery forward migration must exist");
+
+        assert!(
+            sql.contains("CREATE OR REPLACE FUNCTION enforce_candidate_attempt_audit_transition()")
+        );
+        assert!(sql.contains("CREATE OR REPLACE FUNCTION enforce_candidate_attempt_authority()"));
+        assert!(!sql.contains("ALTER TABLE"));
+        assert!(!sql.contains("CREATE TABLE"));
+        assert!(!sql.contains("UPDATE _sqlx_migrations"));
+    }
+
+    #[test]
+    fn stage_team_scheduler_known_checksum_drift_is_exactly_repairable() {
+        let migrator = sqlx::migrate!("./migrations");
+        let applied = migrator
+            .iter()
+            .find(|migration| migration.version == 20260714000003)
+            .expect("stage team scheduler migration must exist");
+        let old_checksum = b"\x43\xaf\x87\xb8\x88\x66\x9d\xdb\xd5\x6d\x74\x4a\xcf\x11\x86\xbb\x97\xbc\x7c\xf7\x47\x3f\xc9\x40\xba\x8e\xbe\x58\x4a\xbb\x78\x33\xa8\x84\x89\xd6\x25\xc3\x63\xcd\x51\xef\xb3\x07\x9e\x6f\x8e\x60";
+        let records = vec![metadata(applied, true, old_checksum)];
+
+        let repairs = plan_checksum_repairs(&records, &migrator)
+            .expect("the audited stage team scheduler drift must be exactly repairable");
+
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].version, applied.version);
+        assert_eq!(repairs[0].description, applied.description);
+        assert_eq!(repairs[0].old_checksum, old_checksum);
+        assert_eq!(repairs[0].new_checksum, applied.checksum.as_ref());
+    }
+
+    #[test]
+    fn stage_team_scheduler_forward_fix_restores_audited_objects() {
+        let migration_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("migrations/20260715000002_stage_team_scheduler_forward_fix.sql");
+        let sql = std::fs::read_to_string(&migration_path)
+            .expect("stage team scheduler forward migration must exist");
+
+        for table in [
+            "stage_team_recovery_decisions",
+            "stage_team_unit_gaps",
+            "stage_team_repair_generations",
+        ] {
+            assert!(sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")));
+        }
+        for function in [
+            "enforce_stage_team_plan_contract",
+            "enforce_stage_work_item_contract",
+            "enforce_terminal_stage_worker_output",
+            "enforce_stage_team_deliverable_submitter",
+        ] {
+            assert!(sql.contains(&format!("FUNCTION {function}()")));
+        }
+        for trigger in [
+            "stage_team_recovery_decisions_immutable",
+            "stage_team_unit_gaps_immutable",
+            "stage_team_repair_generations_contract",
+            "stage_deliverable_submissions_team_submitter",
+        ] {
+            assert!(sql.contains(&format!("DROP TRIGGER IF EXISTS {trigger}")));
+        }
+        assert!(!sql.contains("UPDATE _sqlx_migrations"));
+    }
+
+    #[test]
+    fn stage_team_forward_idempotence_known_checksum_drift_is_exactly_repairable() {
+        let migrator = sqlx::migrate!("./migrations");
+        let applied = migrator
+            .iter()
+            .find(|migration| migration.version == 20260715000002)
+            .expect("stage team scheduler forward migration must exist");
+        let old_checksum = b"\x3b\xb2\x27\x41\xf6\x85\xba\x68\xde\xe9\x9e\xe9\xd7\x0f\x3a\xe7\x46\x7a\x83\x0b\xdb\xba\x49\x46\xcc\xf6\xc3\x92\x8e\x56\x9a\xa1\xce\xfa\xa1\x6f\xf1\x2c\x59\x6a\xf1\x0d\xce\x25\x0d\x95\x02\x2e";
+        let records = vec![metadata(applied, true, old_checksum)];
+
+        let repairs = plan_checksum_repairs(&records, &migrator)
+            .expect("the audited idempotence-only drift must be exactly repairable");
+
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].version, applied.version);
+        assert_eq!(repairs[0].description, applied.description);
+        assert_eq!(repairs[0].old_checksum, old_checksum);
+        assert_eq!(repairs[0].new_checksum, applied.checksum.as_ref());
     }
 
     #[test]

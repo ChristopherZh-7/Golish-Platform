@@ -29,6 +29,8 @@ pub enum CandidateToolBoundaryError {
     IdentityOverride(String),
     #[error("verify_execute_candidate_action accepts only one integer action_ordinal")]
     ActionOrdinalOnly,
+    #[error("Candidate Attempt is submit-only; external action execution is no longer permitted")]
+    SubmitOnly,
 }
 
 impl CandidateToolBoundaryError {
@@ -38,6 +40,7 @@ impl CandidateToolBoundaryError {
             Self::ForegroundRequired => "ATTACK_VERIFIER_FOREGROUND_REQUIRED",
             Self::IdentityOverride(_) => "ATTACK_VERIFIER_IDENTITY_OVERRIDE",
             Self::ActionOrdinalOnly => "ATTACK_VERIFIER_ACTION_ORDINAL_ONLY",
+            Self::SubmitOnly => "ATTACK_VERIFIER_SUBMIT_ONLY",
         }
     }
 }
@@ -47,6 +50,15 @@ impl CandidateToolBoundaryError {
 /// intent/profile checks and DB action authorization.
 pub fn check_candidate_tool_boundary(
     candidate: Option<&CandidateAttemptContextRef>,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Result<(), CandidateToolBoundaryError> {
+    check_candidate_tool_boundary_mode(candidate, false, tool_name, args)
+}
+
+pub fn check_candidate_tool_boundary_mode(
+    candidate: Option<&CandidateAttemptContextRef>,
+    submit_only: bool,
     tool_name: &str,
     args: &serde_json::Value,
 ) -> Result<(), CandidateToolBoundaryError> {
@@ -60,6 +72,9 @@ pub fn check_candidate_tool_boundary(
         return Err(CandidateToolBoundaryError::ToolNotAllowed(
             tool_name.to_string(),
         ));
+    }
+    if submit_only && tool_name == "verify_execute_candidate_action" {
+        return Err(CandidateToolBoundaryError::SubmitOnly);
     }
     if let Some(field) = find_forbidden_candidate_arg(args) {
         return if field == "background" {
@@ -145,7 +160,9 @@ impl AttackExecutionContract {
 
 #[cfg(test)]
 mod tests {
-    use super::{AttackExecutionContract, CandidateAttemptContextRef};
+    use super::{
+        check_candidate_tool_boundary_mode, AttackExecutionContract, CandidateAttemptContextRef,
+    };
 
     #[test]
     fn core_attempt_context_contains_only_opaque_identity() {
@@ -163,6 +180,38 @@ mod tests {
         assert_eq!(ctx.approval_id, approval_id);
         assert_eq!(ctx.attempt_id, attempt_id);
         assert_eq!(ctx.candidate_plan_hash, "sha256:abc");
+    }
+
+    #[test]
+    fn submit_only_candidate_boundary_forbids_external_action_execution() {
+        let candidate = CandidateAttemptContextRef {
+            candidate_id: uuid::Uuid::new_v4(),
+            approval_id: uuid::Uuid::new_v4(),
+            attempt_id: uuid::Uuid::new_v4(),
+            candidate_plan_hash: "sha256:plan".into(),
+        };
+        let denied = check_candidate_tool_boundary_mode(
+            Some(&candidate),
+            true,
+            "verify_execute_candidate_action",
+            &serde_json::json!({"action_ordinal": 0}),
+        )
+        .expect_err("submit-only continuation must not execute another action");
+        assert_eq!(denied.code(), "ATTACK_VERIFIER_SUBMIT_ONLY");
+        assert!(check_candidate_tool_boundary_mode(
+            Some(&candidate),
+            true,
+            "list_recent_evidence",
+            &serde_json::json!({}),
+        )
+        .is_ok());
+        assert!(check_candidate_tool_boundary_mode(
+            Some(&candidate),
+            true,
+            "submit_candidate_attempt",
+            &serde_json::json!({"disposition": "blocked"}),
+        )
+        .is_ok());
     }
 
     #[test]

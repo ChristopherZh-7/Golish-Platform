@@ -339,15 +339,23 @@ impl AgentBridge {
         // a client for the fallback model and retry the turn once. Default OFF
         // (GOLISH_LLM_FALLBACK_MODEL unset → this is a no-op, primary `result`
         // passes through unchanged).
-        let result = self
-            .maybe_failover_to_fallback_model(
-                result,
-                prompt,
-                start_time,
-                failover_context,
-                turn_instructions,
-            )
-            .await;
+        // Do not poll the provider-dispatch-heavy failover future after a
+        // successful primary turn. In debug builds that future has a large
+        // generated poll frame; nesting it under the equally large primary
+        // dispatch frame exhausted even the GUI runtime's 32 MiB worker stack.
+        let result = match result {
+            Ok(response) => Ok(response),
+            Err(primary_error) => {
+                self.maybe_failover_to_fallback_model(
+                    primary_error,
+                    prompt,
+                    start_time,
+                    failover_context,
+                    turn_instructions,
+                )
+                .await
+            }
+        };
 
         // Emit error event on failure so every Started has a matching terminal
         // event (Completed or Error), unless the loop already emitted a
@@ -437,16 +445,13 @@ impl AgentBridge {
     /// caller and are not re-emitted here.
     async fn maybe_failover_to_fallback_model(
         &self,
-        result: Result<String>,
+        primary_error: anyhow::Error,
         prompt: &str,
         start_time: std::time::Instant,
         context: SubAgentContext,
         turn_instructions: Option<&str>,
     ) -> Result<String> {
-        let e = match result {
-            Ok(v) => return Ok(v),
-            Err(e) => e,
-        };
+        let e = primary_error;
 
         let Some(fallback) = failover_decision(
             &e.to_string(),

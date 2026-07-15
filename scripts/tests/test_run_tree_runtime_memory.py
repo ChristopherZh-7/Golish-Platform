@@ -102,6 +102,18 @@ class RuntimeMemoryDiagnosisTests(unittest.TestCase):
             )
         )
 
+    def test_runtime_operation_fallback_resolves_the_transcript_chat_key(self) -> None:
+        _rendered, query = self.render_with_query({})
+
+        sql = query.sql_by_id["runtime_operations"]
+        self.assertIn("JOIN sessions AS session ON session.id = task.session_id", sql)
+        self.assertIn("session.chat_session_key = %s", sql)
+        self.assertNotIn("task.session_id::text = %s", sql)
+        self.assertEqual(
+            next(params for query_id, params in query.calls if query_id == "runtime_operations"),
+            (["00000000-0000-0000-0000-000000000001"], "session-fixture", "session-fixture"),
+        )
+
     def test_v2_runtime_memory_fixture_renders_every_exact_identity_and_recovery_field(self) -> None:
         rendered = self.render(
             {
@@ -311,6 +323,247 @@ class RuntimeMemoryDiagnosisTests(unittest.TestCase):
                 self.assertIn(fragment, rendered)
         self.assertNotIn("lease-1", rendered)
         self.assertNotIn('"pending": ["PORT"]', rendered)
+
+    def test_finished_v2_operation_selects_completed_current_stage_without_false_anomaly(
+        self,
+    ) -> None:
+        rendered = self.render(
+            {
+                "runtime_rollout": [
+                    row(
+                        contract="v2_only",
+                        contract_rank=3,
+                        row_version=8,
+                        updated_at="2026-07-15T01:00:00Z",
+                    )
+                ],
+                "runtime_operations": [
+                    row(
+                        operation_id="op-finished",
+                        runtime_memory_contract="v2_only",
+                        task_status="finished",
+                        profile="pentest",
+                        current_stage="target_intel",
+                        project_scope_id="project-finished",
+                        engagement_org_id="org-root",
+                        superseded_by=None,
+                        stage_started_at="2026-07-15T01:01:00Z",
+                        state_blob={},
+                    )
+                ],
+                "stage_executions": [
+                    row(
+                        id="stage-terminal",
+                        stage_kind="target_intel",
+                        status="completed",
+                        started_at="2026-07-15T01:01:00Z",
+                        completed_at="2026-07-15T01:02:00Z",
+                    )
+                ],
+                "scope_snapshots": [
+                    row(
+                        id="snapshot-terminal",
+                        scope_decision_id="decision-terminal",
+                        project_scope_id="project-finished",
+                        project_path_at_freeze="/fixture/finished",
+                        root_organization_id="org-root",
+                        mode="root_only",
+                        scope_hash="scope-terminal",
+                        schema_version=1,
+                        frozen_at="2026-07-15T01:00:00Z",
+                        sealed_at="2026-07-15T01:00:01Z",
+                    )
+                ],
+                "stage_units": [
+                    row(
+                        id="unit-terminal",
+                        stage_execution_id="stage-terminal",
+                        scope_snapshot_id="snapshot-terminal",
+                        organization_id="org-root",
+                        stage_kind="target_intel",
+                        generation=1,
+                        specialist="recon",
+                        status="passed",
+                        gate_attempt=0,
+                        row_version=2,
+                        started_at="2026-07-15T01:01:01Z",
+                        terminal_at="2026-07-15T01:01:59Z",
+                        scope_member=True,
+                    )
+                ],
+            }
+        )
+
+        self.assertIn(
+            "stage_executions: exact_active=0 terminal_selected=stage-terminal",
+            rendered,
+        )
+        self.assertNotIn("anomaly: missing active stage execution", rendered)
+        self.assertIn("selected_read_source=v2 legacy_fallback=forbidden", rendered)
+        self.assertNotIn("v2_only operation has incomplete runtime state", rendered)
+
+    def test_stage_team_tree_renders_plan_items_workers_outputs_requests_and_barrier(self) -> None:
+        rendered, query = self.render_with_query(
+            {
+                "runtime_operations": [
+                    row(
+                        operation_id="op-team",
+                        runtime_memory_contract="v2_only",
+                        attack_execution_contract="v2_only",
+                        profile="assessment",
+                        current_stage="target_intel",
+                        project_scope_id="project-1",
+                        engagement_org_id="org-root",
+                        superseded_by=None,
+                        stage_started_at="2026-07-14T00:00:00Z",
+                        state_blob={},
+                    )
+                ],
+                "stage_team_plans": [
+                    row(
+                        id="plan-1",
+                        stage_execution_id="execution-1",
+                        stage_run_unit_id="unit-1",
+                        organization_id="org-root",
+                        stage_kind="target_intel",
+                        schema_version=1,
+                        plan_version=1,
+                        plan_hash="sha256:plan",
+                        leader_role="intel_provider",
+                        aggregator_kind="worker",
+                        aggregator_role="intel_aggregator",
+                        allowed_worker_roles=["intel_provider", "intel_aggregator"],
+                        max_workers_total=4,
+                        max_workers_active=2,
+                        dynamic_requests_allowed=True,
+                        dispatch_epoch=0,
+                        requests_closed_at="2026-07-14T00:00:05Z",
+                        final_submitter_kind="worker",
+                        final_submitter_worker_run_id=None,
+                    )
+                ],
+                "stage_team_work_items": [
+                    row(
+                        id="item-1",
+                        team_plan_id="plan-1",
+                        kind="provider",
+                        stable_key="provider:fofa",
+                        role="intel_provider",
+                        input_manifest_hash="sha256:input",
+                        subject_ref_count=1,
+                        required_for_barrier=True,
+                        conflict_key=None,
+                        priority=0,
+                        status="completed",
+                        output_schema="stage_worker_output.v1",
+                        created_by="server_seed",
+                    ),
+                    row(
+                        id="item-aggregate",
+                        team_plan_id="plan-1",
+                        kind="aggregate",
+                        stable_key="aggregate:unit",
+                        role="intel_aggregator",
+                        input_manifest_hash="sha256:aggregate",
+                        subject_ref_count=1,
+                        required_for_barrier=False,
+                        conflict_key=None,
+                        priority=100,
+                        status="queued",
+                        output_schema="stage_deliverable.v1",
+                        created_by="server_seed",
+                    ),
+                ],
+                "stage_team_dependencies": [
+                    row(
+                        team_plan_id="plan-1",
+                        work_item_id="item-aggregate",
+                        depends_on_work_item_id="item-1",
+                    )
+                ],
+                "stage_team_outputs": [
+                    row(
+                        id="output-1",
+                        team_plan_id="plan-1",
+                        work_item_id="item-1",
+                        worker_run_id="worker-1",
+                        business_disposition="found",
+                        canonical_fact_ref_count=2,
+                        evidence_ids=[31, 32],
+                        checked_empty_cell_count=0,
+                        blocker_codes=[],
+                        output_hash="sha256:output",
+                    )
+                ],
+                "stage_team_requests": [
+                    row(
+                        id="request-1",
+                        team_plan_id="plan-1",
+                        parent_work_item_id="item-1",
+                        parent_worker_run_id="worker-1",
+                        requested_role="intel_provider",
+                        request_kind="provider_followup",
+                        subject_ref_count=1,
+                        reason_code="coverage_gap",
+                        request_payload_hash="sha256:request",
+                        status="accepted",
+                        decision_reason_code=None,
+                        accepted_work_item_id="item-2",
+                    )
+                ],
+                "stage_workers": [
+                    row(
+                        id="worker-1",
+                        work_item_id="item-1",
+                        stage_execution_id="execution-1",
+                        stage_run_unit_id="unit-1",
+                        organization_id="org-root",
+                        worker_generation=1,
+                        specialist="intel_provider",
+                        work_item_kind="provider",
+                        work_item_key="provider:fofa",
+                        agent_path="main>stage_run:target_intel>intel_provider",
+                        parent_request_id="parent-1",
+                        message_chain_id="chain-1",
+                        status="passed",
+                        gate_attempt=0,
+                        checkpoint_version=1,
+                        checkpoint_present=True,
+                        checkpoint_bytes=100,
+                        lease_present=False,
+                        lease_owner=None,
+                        lease_acquired_at=None,
+                        lease_expires_at=None,
+                        heartbeat_at=None,
+                        attempt_epoch=1,
+                        active_tool_call_id=None,
+                        active_tool_started_at=None,
+                        active_tool_name=None,
+                        active_tool_status=None,
+                        active_tool_request_id=None,
+                        lease_expired=False,
+                        evidence_watermark=32,
+                        unit_identity_matches=True,
+                        scope_member=True,
+                    )
+                ],
+            }
+        )
+
+        for fragment in [
+            "stage_teams:",
+            "unit=unit-1 org=org-root plan=plan-1 stage=target_intel v=1",
+            "barrier ready=yes terminal=1/1 live=0 retry=0 recovery=0 missing_outputs=0",
+            "request id=request-1 parent=item-1/worker-1 role=intel_provider kind=provider_followup",
+            "work_item id=item-1 kind=provider key=provider:fofa role=intel_provider status=completed",
+            "worker id=worker-1 generation=1 status=passed chain=chain-1 epoch=1",
+            "output id=output-1 worker=worker-1 disposition=found facts=2 evidence=[31, 32]",
+            "dependencies=['item-1']",
+        ]:
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, rendered)
+        self.assertNotIn("canonical_output", query.sql_by_id["stage_team_outputs"])
+        self.assertNotIn("budget_hint", query.sql_by_id["stage_team_requests"])
 
     def test_attack_pipeline_diagnostics_are_aggregate_safe_and_redacted(self) -> None:
         rendered, query = self.render_with_query(

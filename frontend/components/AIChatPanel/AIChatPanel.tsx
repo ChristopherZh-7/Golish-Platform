@@ -10,6 +10,7 @@ import { formatModelName } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { type ChatMessage, useStore } from "@/store";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
+import { resolveAskHumanInputType } from "./AskHumanInline";
 import { clearMatchingPendingAskHuman } from "./askHumanStore";
 import { ChatModelSelector } from "./ChatModelSelector";
 import {
@@ -218,7 +219,11 @@ export const AIChatPanel = memo(function AIChatPanel() {
           requestId: storeAskHumanRequest.requestId,
           sessionId: askHumanSessionId,
           question: storeAskHumanRequest.question,
-          inputType: storeAskHumanRequest.inputType,
+          rawInputType: storeAskHumanRequest.rawInputType ?? storeAskHumanRequest.inputType,
+          inputType: resolveAskHumanInputType(
+            storeAskHumanRequest.rawInputType ?? storeAskHumanRequest.inputType,
+            storeAskHumanRequest.options
+          ),
           options: storeAskHumanRequest.options,
           context: storeAskHumanRequest.context,
         }
@@ -387,8 +392,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
         });
         if (resolveEngine(modes.chatExecutionMode) !== "task") {
           const taskMode = normalizeExecutionModeId("task");
-          modes.chatExecutionModeRef.current = taskMode;
-          modes.handleExecutionModeChange(taskMode);
+          const changed = await modes.handleExecutionModeChange(taskMode);
+          if (!changed) throw new Error("后端未接受 Task execution profile");
         }
         await handleSend(TASK_RESUME_PROMPT);
       } catch (cause) {
@@ -583,6 +588,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
                     request={visibleAskHumanRequest}
                     onSubmit={handleVisibleAskHumanSubmit}
                     onSkip={handleVisibleAskHumanSkip}
+                    autoResolve={modes.approvalMode === "run-all"}
                     fallbackOrgId={lastDiscoverOrgId}
                     minOwnershipPercent={lastDiscoverThreshold}
                   />

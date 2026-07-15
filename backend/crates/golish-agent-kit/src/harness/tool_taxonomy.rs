@@ -91,7 +91,12 @@ pub fn tool_category(name: &str) -> Option<(&'static str, &'static str)> {
         "ffuf" | "gobuster" | "dirb" | "dirsearch" | "feroxbuster" => ("web", "dir-fuzzer"),
         "route_probe_paths" => ("web", "route-probe"),
         "paramspider" | "x8" => ("web", "param"),
-        "nikto" | "nuclei" | "dalfox" | "vuln_run_formulaic_sweep" => ("web", "scanner"),
+        "nikto"
+        | "nuclei"
+        | "dalfox"
+        | "vuln_nuclei_general"
+        | "vuln_nuclei_fingerprint_targeted" => ("web", "scanner"),
+        "vuln_probe_anonymous_access" => ("web", "anonymous-access"),
         "wpscan" => ("web", "cms"),
         "sqlmap" => ("web", "injection"),
         // ── network ──────────────────────────────────────────────────────────
@@ -160,7 +165,9 @@ const CANONICAL_TOOLS: &[&str] = &[
     "ffuf",
     "route_probe_paths",
     "nuclei",
-    "vuln_run_formulaic_sweep",
+    "vuln_nuclei_general",
+    "vuln_nuclei_fingerprint_targeted",
+    "vuln_probe_anonymous_access",
     "wpscan",
     "sqlmap",
     // network
@@ -370,7 +377,11 @@ mod tests {
         assert_eq!(tool_category("sqlmap"), Some(("web", "injection")));
         assert_eq!(tool_category("nuclei"), Some(("web", "scanner")));
         assert_eq!(
-            tool_category("vuln_run_formulaic_sweep"),
+            tool_category("vuln_nuclei_general"),
+            Some(("web", "scanner"))
+        );
+        assert_eq!(
+            tool_category("vuln_nuclei_fingerprint_targeted"),
             Some(("web", "scanner"))
         );
         assert_eq!(tool_category("arjun"), None);
@@ -616,7 +627,9 @@ mod tests {
             "run_command",
             "nmap",
             "nuclei",
-            "vuln_run_formulaic_sweep",
+            "vuln_nuclei_general",
+            "vuln_nuclei_fingerprint_targeted",
+            "vuln_probe_anonymous_access",
             "sqlmap",
             "subfinder",
             "enum_preflight_web_origins",
@@ -779,6 +792,40 @@ mod tests {
     #[test]
     fn allowed_tool_names_empty_allows_nothing() {
         assert!(allowed_tool_names(&[]).is_empty());
+    }
+
+    #[test]
+    fn vuln_exact_wrappers_do_not_allow_raw_nuclei_or_pentest_run() {
+        let allowed = allow(&[
+            "vuln_nuclei_general",
+            "vuln_nuclei_fingerprint_targeted",
+            "vuln_probe_anonymous_access",
+        ]);
+        assert_eq!(
+            allowed_tool_names(&allowed),
+            vec![
+                "vuln_nuclei_general",
+                "vuln_nuclei_fingerprint_targeted",
+                "vuln_probe_anonymous_access",
+            ]
+        );
+        assert!(stage_allows("vuln_nuclei_general", &json!({}), &allowed));
+        assert!(stage_allows(
+            "vuln_nuclei_fingerprint_targeted",
+            &json!({}),
+            &allowed
+        ));
+        assert!(stage_allows(
+            "vuln_probe_anonymous_access",
+            &json!({}),
+            &allowed
+        ));
+        assert!(!stage_allows("nuclei", &json!({}), &allowed));
+        assert!(!stage_allows(
+            "pentest_run",
+            &json!({"tool_name": "nuclei"}),
+            &allowed
+        ));
     }
 
     #[test]

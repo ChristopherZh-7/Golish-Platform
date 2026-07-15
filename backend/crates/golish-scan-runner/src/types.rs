@@ -1,4 +1,4 @@
-//! Shared scan-runner DTOs: progress, result, and PoC match.
+//! Shared scan-runner DTOs.
 
 use serde::{Deserialize, Serialize};
 
@@ -21,15 +21,19 @@ pub struct ScanResult {
     pub duration_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PocMatch {
-    pub poc_id: String,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NucleiTemplateSelection {
+    pub template_id: String,
+    pub rationales: Vec<NucleiTemplateRationale>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NucleiTemplateRationale {
+    pub fingerprint_id: uuid::Uuid,
+    pub fingerprint_name: String,
+    pub fingerprint_version: Option<String>,
+    pub poc_id: uuid::Uuid,
     pub cve_id: String,
     pub poc_name: String,
-    pub poc_type: String,
     pub severity: String,
-    pub source: String,
-    pub matched_fingerprint: String,
-    pub matched_version: String,
-    pub template_id: Option<String>,
 }

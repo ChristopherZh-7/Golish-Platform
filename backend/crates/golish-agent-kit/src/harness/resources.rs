@@ -265,15 +265,24 @@ mod tests {
         assert!(reporting.contains("final publication"));
     }
 
-    // Attack-stage split (design 2026-07-02, P3 Task3.3): the two new attack-stage
-    // playbooks ship and carry their defining keywords. vuln_triage is the
-    // formulaic sweep (nuclei/dictionary batchable); attack_candidate is the
-    // reasoning stage that produces grounded hypotheses.
+    // Attack-stage split (design 2026-07-02, P3 Task3.3): vuln_triage exposes
+    // two guarded foreground Nuclei wrappers plus the server-owned anonymous
+    // access wrapper; attack_candidate is the reasoning stage that produces
+    // grounded hypotheses.
     #[test]
     fn attack_stage_playbooks_present_with_keywords() {
         let vt = stage_methodology_md(StageKind::VulnTriage).expect("vuln_triage playbook");
-        assert!(vt.to_lowercase().contains("formulaic"));
-        assert!(vt.to_lowercase().contains("nuclei"));
+        assert!(vt.contains("vuln_nuclei_general"));
+        assert!(vt.contains("vuln_nuclei_fingerprint_targeted"));
+        assert!(vt.contains("vuln_probe_anonymous_access"));
+        assert!(vt.contains("reviewed_endpoint_ids"));
+        assert!(vt.contains("selected_probes"));
+        assert!(vt.contains("query_values"));
+        assert!(vt.contains("Do not pass per-endpoint URLs"));
+        assert!(
+            vt.contains("headers, cookies, tokens, bodies, redirect controls, or CLI arguments")
+        );
+        assert!(vt.to_lowercase().contains("foreground"));
 
         let ac =
             stage_methodology_md(StageKind::AttackCandidate).expect("attack_candidate playbook");

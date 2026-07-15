@@ -31,6 +31,7 @@
 
 pub mod prompts;
 
+mod active_recon_scope;
 pub mod agent_run_checkpoint;
 pub mod continuity;
 pub mod harness_backfill;

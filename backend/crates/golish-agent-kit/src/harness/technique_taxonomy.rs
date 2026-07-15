@@ -145,7 +145,7 @@ mod tests {
             "WSTG-INPV-18", // SSTI
             "WSTG-INPV-19", // SSRF
             "WSTG-ATHZ-01", // path traversal / LFI
-            "WSTG-ATHN-04", // auth-bypass logic
+            "WSTG-ATHZ-04", // true IDOR/BOLA needs role/object comparison later
             "WSTG-BUSL",    // business logic
         ] {
             assert!(

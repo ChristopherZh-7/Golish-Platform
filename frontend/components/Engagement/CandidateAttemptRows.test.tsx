@@ -1,16 +1,37 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  type AttackVerificationQueueState,
   type CandidateAttemptRow,
   listCandidateAttempts,
+  listVerificationQueue,
 } from "@/lib/api/attack";
 import { CandidateAttemptRows } from "./CandidateAttemptRows";
 
 vi.mock("@/lib/api/attack", () => ({
   listCandidateAttempts: vi.fn(),
+  listVerificationQueue: vi.fn(),
+  resolveCandidateRecovery: vi.fn(),
 }));
 
 const listAttempts = vi.mocked(listCandidateAttempts);
+const listQueue = vi.mocked(listVerificationQueue);
+
+function emptyQueue(): AttackVerificationQueueState {
+  return {
+    operationId: "operation-1",
+    scopeSnapshotId: "snapshot-1",
+    waveRunId: "wave-1",
+    generation: 0,
+    waveStatus: "verification",
+    waveRowVersion: 1,
+    waveUnits: [],
+    consolidation: null,
+    pendingEnrichmentCount: 0,
+    pendingEnrichments: [],
+    items: [],
+  };
+}
 
 function attempt(overrides: Partial<CandidateAttemptRow> = {}): CandidateAttemptRow {
   return {
@@ -49,6 +70,7 @@ function renderAttempts(refreshVersion = 0) {
 describe("CandidateAttemptRows", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    listQueue.mockResolvedValue(emptyQueue());
   });
 
   it("renders the exact ordinal, terminal status, evidence roles, and Finding lineage", async () => {

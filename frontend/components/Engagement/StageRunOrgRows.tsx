@@ -25,6 +25,8 @@ import {
   Loader2,
   Workflow,
 } from "lucide-react";
+import { type StageTeamReadApi, StageTeamRunView } from "@/components/Engagement/StageTeamRunView";
+import { getStageRunAgentLabel } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
 export type StageRunStatus = "passed" | "running" | "queued" | "blocked" | "pending" | "stopped";
@@ -36,6 +38,10 @@ export interface StageRunRow {
   id: string;
   /** Trusted operation identity from the harness trace; IPC reauthorizes it. */
   operationId?: string;
+  /** Refresh-only pointer to the exact durable Stage execution. */
+  stageExecutionId?: string | null;
+  /** Refresh-only pointer to this organization's StageRunUnit. */
+  stageRunUnitId?: string | null;
   name: string;
   ownershipPercent: number | null;
   status: StageRunStatus;
@@ -85,9 +91,7 @@ const TECH_META: Record<TechniqueState, { className: string; mark: string }> = {
 };
 
 function roleAgentLabel(roleLabel: string) {
-  const label = roleLabel.trim();
-  if (!label) return "Specialist Agent";
-  return /agent$/i.test(label) ? label : `${label} Agent`;
+  return getStageRunAgentLabel(roleLabel) ?? "Specialist Agent";
 }
 
 function CollectorGlyph({ status }: { status: StageRunStatus }) {
@@ -251,6 +255,10 @@ export interface StageRunOrgRowsProps {
    * by {@link ToolCallDetailView} to open the sub-agent detail pane.
    */
   onDrillIn?: (agentRequestId: string) => void;
+  /** Exact Stage Team WorkerRun -> SubAgent parent request identities. */
+  agentRequestIdsByWorker?: Readonly<Record<string, string>>;
+  /** Test seam / alternate transport for the exact durable Team read model. */
+  teamApi?: StageTeamReadApi;
 }
 
 /**
@@ -265,6 +273,8 @@ export function StageRunOrgRows({
   coverageAxis,
   isActive = true,
   onDrillIn,
+  agentRequestIdsByWorker,
+  teamApi,
 }: StageRunOrgRowsProps) {
   const inactiveStoppedCount = isActive
     ? 0
@@ -288,6 +298,39 @@ export function StageRunOrgRows({
   const workerCount = Math.max(displaySummary.total, displayRows.length);
   const workerText = `${workerCount} ${workerCount === 1 ? "worker" : "workers"}`;
   const workerLabel = roleAgentLabel(roleLabel);
+  const teamPointers = rows.filter(
+    (row) => Boolean(row.operationId?.trim()) && Boolean(row.stageExecutionId?.trim())
+  );
+  const firstTeamPointer = teamPointers[0];
+  const exactTeamPointer =
+    teamPointers.length === rows.length &&
+    firstTeamPointer &&
+    teamPointers.every(
+      (row) =>
+        row.operationId === firstTeamPointer.operationId &&
+        row.stageExecutionId === firstTeamPointer.stageExecutionId
+    )
+      ? firstTeamPointer
+      : null;
+  const teamRefreshVersion = rows
+    .map(
+      (row) =>
+        `${row.stageRunUnitId ?? "legacy"}:${row.status}:${row.activity ?? ""}:${row.evidenceCount}`
+    )
+    .join("|");
+
+  if (exactTeamPointer?.operationId && exactTeamPointer.stageExecutionId) {
+    return (
+      <StageTeamRunView
+        operationId={exactTeamPointer.operationId}
+        stageExecutionId={exactTeamPointer.stageExecutionId}
+        refreshVersion={teamRefreshVersion}
+        api={teamApi}
+        agentRequestIdsByWorker={agentRequestIdsByWorker}
+        onOpenAgent={onDrillIn}
+      />
+    );
+  }
 
   return (
     <div className="space-y-1.5">

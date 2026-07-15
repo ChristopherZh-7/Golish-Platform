@@ -258,11 +258,8 @@ pub async fn invalidate_projection_chain_with_event_with_connection(
         return Err(AssertionRepoError::EventMismatch);
     }
     let stored_source_id = StoredCanonicalRowId::from_domain(&source.row_id)?;
-    let updated = sqlx::query(
-        r#"UPDATE knowledge_assertions
-           SET status = CASE WHEN status = 'active' THEN 'expired' ELSE status END,
-               valid_to = LEAST(COALESCE(valid_to, $9), $9),
-               updated_at = NOW()
+    let rows = sqlx::query_as::<_, StoredAssertionRow>(&format!(
+        r#"{}
            WHERE project_scope_id IS NOT DISTINCT FROM $1
              AND organization_id_at_time IS NOT DISTINCT FROM $2
              AND source_operation_id = $3
@@ -270,8 +267,11 @@ pub async fn invalidate_projection_chain_with_event_with_connection(
              AND source_id_kind = $5
              AND source_id_value = $6
              AND source_stream_key = $7
-             AND source_version = $8"#,
-    )
+             AND source_version = $8
+           ORDER BY assertion_id
+           FOR UPDATE"#,
+        assertion_select_sql()
+    ))
     .bind(event.project_scope_id.map(|id| id.0))
     .bind(event.organization_id_at_time)
     .bind(event.source_operation_id)
@@ -280,11 +280,62 @@ pub async fn invalidate_projection_chain_with_event_with_connection(
     .bind(&stored_source_id.value)
     .bind(&source.source_stream_key)
     .bind(source.version)
-    .bind(invalidated_at)
-    .execute(&mut *connection)
+    .fetch_all(&mut *connection)
     .await?;
-    if updated.rows_affected() == 0 {
+    if rows.is_empty() {
         return Err(AssertionRepoError::InvalidationSourceMissing);
+    }
+    for row in rows {
+        let current = row.into_domain()?;
+        let next_valid_to = Some(
+            current
+                .valid_to
+                .map_or(invalidated_at, |valid_to| valid_to.min(invalidated_at)),
+        );
+        let next_status = if current.status == AssertionStatus::Active {
+            AssertionStatus::Expired
+        } else {
+            current.status
+        };
+        let next = KnowledgeAssertionDraft {
+            assertion_id: current.assertion_id,
+            visibility: current.visibility.clone(),
+            source_operation_id: current.source_operation_id,
+            source_scope_snapshot_hash: current.source_scope_snapshot_hash.clone(),
+            source: current.source.clone(),
+            identity: current.identity.clone(),
+            kind: current.kind,
+            status: next_status,
+            object: current.object.clone(),
+            classification: current.classification,
+            evidence_ids: current.evidence_ids.clone(),
+            valid_from: current.valid_from,
+            valid_to: next_valid_to,
+            fresh_until: current.fresh_until,
+        }
+        .validate()
+        .map_err(|error| AssertionRepoError::Invalid(error.code()))?;
+        if current.status == next.status
+            && current.valid_to == next.valid_to
+            && current.content_hash == next.content_hash
+        {
+            continue;
+        }
+        let updated = sqlx::query(
+            r#"UPDATE knowledge_assertions
+                  SET status=$2,valid_to=$3,content_hash=$4,updated_at=NOW()
+                WHERE assertion_id=$1 AND content_hash=$5"#,
+        )
+        .bind(current.assertion_id)
+        .bind(next.status.as_str())
+        .bind(next.valid_to)
+        .bind(&next.content_hash)
+        .bind(&current.content_hash)
+        .execute(&mut *connection)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(AssertionRepoError::ReplayConflict);
+        }
     }
     knowledge_documents::invalidate_source_with_connection(
         connection,

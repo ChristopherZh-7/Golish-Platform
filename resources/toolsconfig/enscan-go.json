@@ -203,6 +203,9 @@
           "artifact_globs": [
             "**/*.json"
           ],
+          "empty_result_failure_patterns": [
+            "安全验证仍未通过"
+          ],
           "kind": "cli_json",
           "skill_id": "company-default-json",
           "timeout_secs": 180
@@ -428,6 +431,9 @@
         "runtime": {
           "artifact_globs": [
             "**/*.json"
+          ],
+          "empty_result_failure_patterns": [
+            "安全验证仍未通过"
           ],
           "kind": "cli_json",
           "skill_id": "company-enrichment-json",
@@ -893,8 +899,8 @@
         ]
       },
       {
-        "args": "-n \"{{org}}\" -type aqc -field icp,app,wx_app,wechat,weibo -delay 3 -json -out-dir \"{{out_dir}}\"",
-        "description": "Collect profile enrichment fields for one approved organization: ICP domains, apps, mini programs, and social accounts.",
+        "args": "-n \"{{org}}\" -type all -field icp,app,wx_app,wechat,weibo -delay 3 -json -out-dir \"{{out_dir}}\"",
+        "description": "Collect profile enrichment fields for one approved organization across every configured ENScan source: ICP domains, apps, mini programs, and social accounts.",
         "id": "company-enrichment-json",
         "name": "Company enrichment JSON",
         "tags": [

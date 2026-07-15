@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Circle,
   Clock,
   Copy,
   Loader2,
@@ -99,6 +100,48 @@ function normalizeSubAgentShellFieldText(raw: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export type SubAgentPlanStepStatus = "pending" | "in_progress" | "completed";
+
+export interface SubAgentPlanSnapshot {
+  explanation: string | null;
+  steps: Array<{ step: string; status: SubAgentPlanStepStatus }>;
+  completedCount: number;
+  inProgressCount: number;
+  totalCount: number;
+}
+
+export function parseSubAgentUpdatePlanArgs(args: unknown): SubAgentPlanSnapshot | null {
+  if (!isRecord(args) || !Array.isArray(args.plan)) return null;
+  if (args.plan.length < 1 || args.plan.length > 12) return null;
+
+  const steps: SubAgentPlanSnapshot["steps"] = [];
+  for (const value of args.plan) {
+    if (!isRecord(value)) return null;
+    const step = typeof value.step === "string" ? value.step.trim() : "";
+    const status = value.status;
+    if (!step || (status !== "pending" && status !== "in_progress" && status !== "completed")) {
+      return null;
+    }
+    steps.push({ status, step });
+  }
+
+  const inProgressCount = steps.filter((step) => step.status === "in_progress").length;
+  if (inProgressCount > 1) return null;
+
+  const explanation =
+    typeof args.explanation === "string" && args.explanation.trim()
+      ? args.explanation.trim()
+      : null;
+
+  return {
+    completedCount: steps.filter((step) => step.status === "completed").length,
+    explanation,
+    inProgressCount,
+    steps,
+    totalCount: steps.length,
+  };
 }
 
 function isLiveToolStatus(status: string | undefined): boolean {
@@ -333,6 +376,27 @@ export function getSubAgentToolDisplayStatus(
 
   if (options.parentStageStopped && status === "running") return "interrupted";
   return status === "completed" && toolResultIndicatesFailure(tool.result) ? "error" : status;
+}
+
+/**
+ * Controller plans behave like Codex's current plan, not like ordinary tool
+ * history. Keep the newest valid live/completed snapshot visible while failed,
+ * invalid, and superseded update_plan calls remain available only in the
+ * transcript/debug views.
+ */
+export function resolveLatestVisibleSubAgentUpdatePlanTool(
+  tools: readonly SubAgentToolCall[],
+  options: DisplayStatusOptions = {}
+): SubAgentToolCall | null {
+  let latest: SubAgentToolCall | null = null;
+  for (const tool of tools) {
+    if (tool.name !== "update_plan" || !parseSubAgentUpdatePlanArgs(tool.args)) continue;
+    const status = getSubAgentToolDisplayStatus(tool, options);
+    if (status === "completed" || status === "running" || status === "backgrounded") {
+      latest = tool;
+    }
+  }
+  return latest;
 }
 
 export function getSubAgentHeaderDisplayStatus(
@@ -817,7 +881,99 @@ const ToolResultDisplay = memo(function ToolResultDisplay({ result }: { result: 
 
 /* ─── Sub-agent tool call block ─── */
 
-const AgentToolCallBlock = memo(function AgentToolCallBlock({
+export function SubAgentUpdatePlanCard({
+  tool,
+  parentStageStopped = false,
+  visualRelation = "standalone",
+}: {
+  tool: SubAgentToolCall;
+  parentStageStopped?: boolean;
+  visualRelation?: SubAgentToolCallVisualRelation;
+}) {
+  const plan = parseSubAgentUpdatePlanArgs(tool.args);
+  if (!plan) return null;
+
+  const status = getSubAgentToolDisplayStatus(tool, { parentStageStopped });
+  const isLive = isLiveToolStatus(status);
+  const isAttachedToNarrative = visualRelation === "after_narrative";
+  const isStackedTool = visualRelation === "stacked";
+  const statusLabel = isLive ? "正在规划" : "当前计划";
+
+  return (
+    <div
+      className={cn(
+        "relative mx-4 my-1.5",
+        isAttachedToNarrative && "mt-0 pl-5",
+        isStackedTool && "-mt-0.5 pl-5"
+      )}
+    >
+      {(isAttachedToNarrative || isStackedTool) && (
+        <div
+          aria-hidden="true"
+          className={cn(
+            "absolute left-2 top-0 w-px bg-[var(--ansi-blue)]/25",
+            isAttachedToNarrative ? "-translate-y-3 h-3" : "-translate-y-2 h-2"
+          )}
+        />
+      )}
+      <section
+        aria-label="Controller plan"
+        className="overflow-hidden rounded-md border border-border/20 border-l-2 border-l-[var(--ansi-blue)]/55 bg-background/45"
+      >
+        <div className="flex min-w-0 items-center gap-2 border-b border-border/10 px-3 py-2">
+          <StatusIcon status={status} size="sm" />
+          <span className="text-[12px] font-semibold text-foreground/85">{statusLabel}</span>
+          <span className="min-w-0 flex-1" />
+          <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/75">
+            {plan.completedCount}/{plan.totalCount} 已完成
+          </span>
+        </div>
+        <div className="space-y-2 px-3 py-2.5">
+          {plan.explanation && (
+            <p className="text-[11px] leading-relaxed text-muted-foreground/80">
+              {plan.explanation}
+            </p>
+          )}
+          <div className="space-y-1.5" role="list">
+            {plan.steps.map((planStep, index) => (
+              <div
+                className="flex min-w-0 items-start gap-2 text-[11px] leading-4"
+                key={`${index}-${planStep.step}`}
+                role="listitem"
+              >
+                <span
+                  aria-label={`步骤状态：${planStep.status}`}
+                  className="mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center"
+                  role="img"
+                >
+                  {planStep.status === "completed" ? (
+                    <CheckCircle2 className="h-3.5 w-3.5 text-[var(--ansi-green)]/80" />
+                  ) : planStep.status === "in_progress" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--ansi-blue)]/85" />
+                  ) : (
+                    <Circle className="h-3 w-3 text-muted-foreground/45" />
+                  )}
+                </span>
+                <span
+                  className={cn(
+                    "min-w-0 flex-1 text-foreground/75",
+                    planStep.status === "completed" &&
+                      "text-muted-foreground/60 line-through decoration-muted-foreground/30",
+                    planStep.status === "in_progress" && "font-medium text-foreground/90"
+                  )}
+                >
+                  {planStep.step}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+const DefaultAgentToolCallBlock = memo(function DefaultAgentToolCallBlock({
   tool,
   parentStageStopped = false,
   visualRelation = "standalone",
@@ -1031,6 +1187,35 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({
   );
 });
 
+const AgentToolCallBlock = memo(function AgentToolCallBlock({
+  tool,
+  parentStageStopped = false,
+  visualRelation = "standalone",
+}: {
+  tool: SubAgentToolCall;
+  parentStageStopped?: boolean;
+  visualRelation?: SubAgentToolCallVisualRelation;
+}) {
+  if (tool.name === "update_plan") {
+    if (!parseSubAgentUpdatePlanArgs(tool.args)) return null;
+    return (
+      <SubAgentUpdatePlanCard
+        parentStageStopped={parentStageStopped}
+        tool={tool}
+        visualRelation={visualRelation}
+      />
+    );
+  }
+
+  return (
+    <DefaultAgentToolCallBlock
+      parentStageStopped={parentStageStopped}
+      tool={tool}
+      visualRelation={visualRelation}
+    />
+  );
+});
+
 const NestedSubAgentCard = memo(function NestedSubAgentCard({
   agent,
   sessionId,
@@ -1149,6 +1334,12 @@ export function parseStageRunOrgRequestId(
 
 function stageKeyFromLabel(stageLabel: string, coverageAxis: string[]): string | null {
   const label = stageLabel.toLowerCase();
+  // VulnTriage also carries a DIR-labelled technique in its compatibility axis,
+  // but this UI has no trusted operationId chain for the operation-scoped Vuln
+  // read model. Never infer it as Enumeration from that shared label.
+  if (label.includes("vuln") || label.includes("vulnerability")) {
+    return null;
+  }
   if (
     label.includes("target") ||
     label.includes("intel") ||
@@ -1272,6 +1463,14 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
     : t("ai.toolDetail.backToTerminal");
 
   const detailEntries = subAgent ? normalizeSubAgentEntriesForDetail(subAgent.entries) : [];
+  const currentPlanTool = useMemo(
+    () =>
+      resolveLatestVisibleSubAgentUpdatePlanTool(subAgent?.toolCalls ?? [], {
+        parentStageStopped,
+      }),
+    [parentStageStopped, subAgent?.toolCalls]
+  );
+  const currentPlanToolId = currentPlanTool?.id ?? null;
   const latestEntry = detailEntries.length > 0 ? detailEntries[detailEntries.length - 1] : null;
   const latestRunningTool = subAgent?.toolCalls.find(
     (tool) => getSubAgentToolDisplayStatus(tool, { parentStageStopped }) === "running"
@@ -1631,6 +1830,9 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                     }
                     if (entry.kind === "tool_call" && entry.toolCallId) {
                       const tool = toolMap.get(entry.toolCallId);
+                      if (tool?.name === "update_plan" && tool.id !== currentPlanToolId) {
+                        return null;
+                      }
                       if (tool?.name.startsWith("sub_agent_")) {
                         const nestedAgent = subAgentMap.get(tool.id);
                         if (nestedAgent) {
@@ -1663,13 +1865,15 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                   );
                 })
               : subAgent.toolCalls.length > 0
-                ? subAgent.toolCalls.map((tool) => (
-                    <AgentToolCallBlock
-                      key={tool.id}
-                      tool={tool}
-                      parentStageStopped={parentStageStopped}
-                    />
-                  ))
+                ? subAgent.toolCalls.map((tool) =>
+                    tool.name === "update_plan" && tool.id !== currentPlanToolId ? null : (
+                      <AgentToolCallBlock
+                        key={tool.id}
+                        tool={tool}
+                        parentStageStopped={parentStageStopped}
+                      />
+                    )
+                  )
                 : null}
           </div>
 

@@ -223,10 +223,6 @@ const BRIDGE_ROWS: &[ToolRow] = &[
         name: "js_extract_apis",
         purpose: "Static-analyse JS captured by `browser_collect_js_api` to enumerate REST/GraphQL endpoints + secrets.",
     },
-    ToolRow {
-        name: "auth_probe",
-        purpose: "Active probe against a login form / OAuth flow to record success/failure traces.",
-    },
 ];
 
 const RUNTIME_PENTEST: &[ToolRow] = &[

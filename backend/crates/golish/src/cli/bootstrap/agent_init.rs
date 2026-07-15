@@ -9,7 +9,8 @@ use crate::ai::agent_bridge::AgentBridge;
 use crate::indexer::IndexerState;
 use crate::settings::{get_with_env_fallback, GolishSettings};
 use crate::sidecar::SidecarState;
-use golish_agent_kit::llm_client::SharedComponentsConfig;
+use golish_agent_app::ai::provider_bootstrap::{normalize_agent_bootstrap, AgentBootstrapConfig};
+use golish_agent_kit::llm_client::ProviderConfig;
 use golish_core::runtime::GolishRuntime;
 
 use super::super::args::Args;
@@ -35,207 +36,27 @@ pub(crate) async fn initialize_agent(
     event_session_id: &str,
     knowledge_memory: Option<Arc<dyn golish_memory_app::KnowledgeUnitOfWork>>,
 ) -> Result<(AgentBridge, Option<Arc<golish_mcp::McpManager>>)> {
-    // Resolve provider: CLI arg > settings > default
-    let provider = args
-        .provider
-        .clone()
-        .unwrap_or_else(|| settings.ai.default_provider.to_string());
-
-    // Resolve model: CLI arg > settings > provider-specific default
-    let model = args
-        .model
-        .clone()
-        .unwrap_or_else(|| settings.ai.default_model.clone());
+    // Resolve and validate the same typed provider configuration consumed by
+    // the GUI. Unknown provider names fail here instead of silently becoming
+    // an OpenRouter client with the wrong endpoint.
+    let bootstrap = resolve_cli_agent_bootstrap(workspace, settings, args)?;
+    let provider_config = bootstrap.provider_config;
+    let shared_config = bootstrap.shared_components_config;
+    let provider = provider_config.provider_name().to_string();
+    let model = provider_config.model().to_string();
 
     if args.verbose {
         eprintln!("[cli] Provider: {}", provider);
         eprintln!("[cli] Model: {}", model);
     }
 
-    // Create shared config with settings
-    let shared_config = SharedComponentsConfig {
-        settings: settings.clone(),
-        context_config: None,
-    };
-
-    // Create the agent bridge based on provider
-    let mut bridge = match provider.as_str() {
-        "vertex_ai" | "vertex" => {
-            let creds_path = settings.ai.vertex_ai.credentials_path.clone();
-
-            let project_id = settings.ai.vertex_ai.project_id.clone().ok_or_else(|| {
-                anyhow::anyhow!("Vertex AI requires 'ai.vertex_ai.project_id' in settings.toml")
-            })?;
-
-            let location = settings
-                .ai
-                .vertex_ai
-                .location
-                .clone()
-                .unwrap_or_else(|| "us-east5".to_string());
-
-            if args.verbose {
-                match &creds_path {
-                    Some(p) => eprintln!("[cli] Vertex AI credentials: {}", p),
-                    None => eprintln!("[cli] Vertex AI credentials: application default"),
-                }
-                eprintln!("[cli] Vertex AI project: {}", project_id);
-                eprintln!("[cli] Vertex AI location: {}", location);
-            }
-
-            AgentBridge::new_vertex_anthropic_with_shared_config(
-                workspace.to_path_buf(),
-                creds_path.as_deref(),
-                &project_id,
-                &location,
-                &model,
-                shared_config,
-                runtime,
-                event_session_id,
-            )
-            .await?
-        }
-        "zai_sdk" => {
-            let api_key = resolve_api_key(settings, &provider, args)?;
-            let base_url = settings.ai.zai_sdk.base_url.clone();
-
-            if args.verbose {
-                if let Some(ref url) = base_url {
-                    eprintln!("[cli] Z.AI SDK base URL: {}", url);
-                } else {
-                    eprintln!("[cli] Z.AI SDK base URL: default");
-                }
-            }
-
-            AgentBridge::new_zai_sdk_with_shared_config(
-                workspace.to_path_buf(),
-                &model,
-                &api_key,
-                base_url.as_deref(),
-                None, // source_channel
-                shared_config,
-                runtime,
-                event_session_id,
-            )
-            .await?
-        }
-        "nvidia" | "nvidia_nim" | "nim" => {
-            let api_key = resolve_api_key(settings, "nvidia", args)?;
-            let base_url = settings.ai.nvidia.base_url.clone();
-
-            if args.verbose {
-                if let Some(ref url) = base_url {
-                    eprintln!("[cli] NVIDIA NIM base URL: {}", url);
-                } else {
-                    eprintln!("[cli] NVIDIA NIM base URL: default");
-                }
-            }
-
-            AgentBridge::new_nvidia_with_shared_config(
-                workspace.to_path_buf(),
-                &model,
-                &api_key,
-                base_url.as_deref(),
-                shared_config,
-                runtime,
-                event_session_id,
-            )
-            .await?
-        }
-        "openrouter" => {
-            let api_key = resolve_api_key(settings, &provider, args)?;
-
-            // Build provider preferences JSON from settings (if configured)
-            let provider_preferences = settings
-                .ai
-                .openrouter
-                .provider_preferences
-                .as_ref()
-                .filter(|p| !p.is_empty())
-                .map(golish_llm_providers::openrouter_preferences_to_json);
-
-            if args.verbose && provider_preferences.is_some() {
-                eprintln!("[cli] OpenRouter provider preferences configured");
-            }
-
-            AgentBridge::new_openrouter_with_shared_config(
-                workspace.to_path_buf(),
-                &model,
-                &api_key,
-                provider_preferences,
-                shared_config,
-                runtime,
-                event_session_id,
-            )
-            .await?
-        }
-        "deepseek" | "deepseek_api" => {
-            let api_key = resolve_api_key(settings, "deepseek", args)?;
-            let base_url = settings.ai.deepseek.base_url.clone();
-
-            if args.verbose {
-                match base_url.as_deref() {
-                    Some(url) => eprintln!("[cli] DeepSeek base URL: {}", url),
-                    None => eprintln!("[cli] DeepSeek base URL: default (api.deepseek.com)"),
-                }
-            }
-
-            AgentBridge::new_deepseek_with_shared_config(
-                workspace.to_path_buf(),
-                &model,
-                &api_key,
-                base_url.as_deref(),
-                shared_config,
-                runtime,
-                event_session_id,
-            )
-            .await?
-        }
-        "xiaomi" => {
-            let api_key = resolve_api_key(settings, "xiaomi", args)?;
-
-            if args.verbose {
-                match settings.ai.xiaomi.openai_base_url.as_deref() {
-                    Some(url) => eprintln!("[cli] Xiaomi base URL: {}", url),
-                    None => eprintln!("[cli] Xiaomi base URL: region-derived"),
-                }
-            }
-
-            AgentBridge::new_xiaomi_with_shared_config(
-                workspace.to_path_buf(),
-                &model,
-                &api_key,
-                settings.ai.xiaomi.region.as_deref(),
-                settings.ai.xiaomi.default_protocol.as_deref(),
-                settings.ai.xiaomi.openai_base_url.as_deref(),
-                settings.ai.xiaomi.anthropic_base_url.as_deref(),
-                shared_config,
-                runtime,
-                event_session_id,
-            )
-            .await?
-        }
-        _ => {
-            // API key-based providers (anthropic, openai, etc.)
-            //
-            // NOTE: this fallback always builds an OpenRouter client regardless
-            // of `provider`. Providers that need their own endpoint (xiaomi,
-            // nvidia, zai_sdk, vertex...) must have an explicit arm above, or
-            // they will be silently misrouted to OpenRouter (→ 401/wrong host).
-            let api_key = resolve_api_key(settings, &provider, args)?;
-
-            AgentBridge::new_openrouter_with_shared_config(
-                workspace.to_path_buf(),
-                &model,
-                &api_key,
-                None,
-                shared_config,
-                runtime,
-                event_session_id,
-            )
-            .await?
-        }
-    };
+    let mut bridge = AgentBridge::from_provider_config(
+        provider_config,
+        shared_config,
+        runtime,
+        event_session_id,
+    )
+    .await?;
 
     // Inject dependencies (same as init_ai_agent command in Tauri)
     if let Some(knowledge_memory) = knowledge_memory {
@@ -265,6 +86,154 @@ pub(crate) async fn initialize_agent(
     };
 
     Ok((bridge, mcp_manager))
+}
+
+/// Convert CLI/settings input into the exact typed provider configuration used
+/// by the GUI session initializer. This is intentionally pure apart from API-key
+/// environment lookup so provider routing can be covered without constructing a
+/// bridge or starting a runtime operation.
+fn resolve_cli_provider_config(
+    workspace: &Path,
+    settings: &GolishSettings,
+    args: &Args,
+) -> Result<ProviderConfig> {
+    use crate::settings::schema::AiProvider;
+
+    let requested = args
+        .provider
+        .clone()
+        .unwrap_or_else(|| settings.ai.default_provider.to_string());
+    let provider = requested
+        .parse::<AiProvider>()
+        .map_err(|_| anyhow::anyhow!("Unsupported CLI AI provider '{requested}'"))?;
+    let provider_name = provider.to_string();
+    let model = args
+        .model
+        .clone()
+        .unwrap_or_else(|| settings.ai.default_model.clone());
+    let workspace = workspace.to_string_lossy().into_owned();
+    let config = match provider {
+        AiProvider::VertexAi => ProviderConfig::VertexAi {
+            workspace,
+            model,
+            credentials_path: settings.ai.vertex_ai.credentials_path.clone(),
+            project_id: settings.ai.vertex_ai.project_id.clone().ok_or_else(|| {
+                anyhow::anyhow!("Vertex AI requires 'ai.vertex_ai.project_id' in settings.toml")
+            })?,
+            location: String::new(),
+            model_override: None,
+        },
+        AiProvider::VertexGemini => ProviderConfig::VertexGemini {
+            workspace,
+            model,
+            credentials_path: settings.ai.vertex_gemini.credentials_path.clone(),
+            project_id: settings
+                .ai
+                .vertex_gemini
+                .project_id
+                .clone()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Vertex Gemini requires 'ai.vertex_gemini.project_id' in settings.toml"
+                    )
+                })?,
+            location: String::new(),
+            include_thoughts: false,
+            model_override: None,
+        },
+        AiProvider::Openrouter => ProviderConfig::Openrouter {
+            workspace,
+            model,
+            api_key: resolve_api_key(settings, &provider_name, args)?,
+            provider_preferences: None,
+            model_override: None,
+        },
+        AiProvider::Openai => ProviderConfig::Openai {
+            workspace,
+            model,
+            api_key: resolve_api_key(settings, &provider_name, args)?,
+            base_url: None,
+            reasoning_effort: None,
+            enable_web_search: false,
+            web_search_context_size: String::new(),
+            model_override: None,
+        },
+        AiProvider::Anthropic => ProviderConfig::Anthropic {
+            workspace,
+            model,
+            api_key: resolve_api_key(settings, &provider_name, args)?,
+            model_override: None,
+        },
+        AiProvider::Ollama => ProviderConfig::Ollama {
+            workspace,
+            model,
+            base_url: None,
+            model_override: None,
+        },
+        AiProvider::Gemini => ProviderConfig::Gemini {
+            workspace,
+            model,
+            api_key: resolve_api_key(settings, &provider_name, args)?,
+            include_thoughts: false,
+            model_override: None,
+        },
+        AiProvider::Groq => ProviderConfig::Groq {
+            workspace,
+            model,
+            api_key: resolve_api_key(settings, &provider_name, args)?,
+            model_override: None,
+        },
+        AiProvider::Xai => ProviderConfig::Xai {
+            workspace,
+            model,
+            api_key: resolve_api_key(settings, &provider_name, args)?,
+            model_override: None,
+        },
+        AiProvider::ZaiSdk => ProviderConfig::ZaiSdk {
+            workspace,
+            model,
+            api_key: resolve_api_key(settings, &provider_name, args)?,
+            base_url: None,
+            source_channel: None,
+            model_override: None,
+        },
+        AiProvider::Nvidia => ProviderConfig::Nvidia {
+            workspace,
+            model,
+            api_key: resolve_api_key(settings, &provider_name, args)?,
+            base_url: None,
+            model_override: None,
+        },
+        AiProvider::Deepseek => ProviderConfig::Deepseek {
+            workspace,
+            model,
+            api_key: resolve_api_key(settings, &provider_name, args)?,
+            base_url: None,
+            model_override: None,
+        },
+        AiProvider::Xiaomi => ProviderConfig::Xiaomi {
+            workspace,
+            model,
+            api_key: resolve_api_key(settings, &provider_name, args)?,
+            region: None,
+            default_protocol: None,
+            base_url: None,
+            anthropic_base_url: None,
+            model_override: None,
+        },
+    };
+    Ok(config)
+}
+
+fn resolve_cli_agent_bootstrap(
+    workspace: &Path,
+    settings: &GolishSettings,
+    args: &Args,
+) -> Result<AgentBootstrapConfig> {
+    Ok(normalize_agent_bootstrap(
+        resolve_cli_provider_config(workspace, settings, args)?,
+        settings,
+    ))
 }
 
 /// Initialize MCP integration for the agent bridge.
@@ -349,6 +318,9 @@ pub(super) fn resolve_api_key(
             get_with_env_fallback(&settings.ai.anthropic.api_key, &["ANTHROPIC_API_KEY"], None)
         }
         "openai" => get_with_env_fallback(&settings.ai.openai.api_key, &["OPENAI_API_KEY"], None),
+        "gemini" => get_with_env_fallback(&settings.ai.gemini.api_key, &["GEMINI_API_KEY"], None),
+        "groq" => get_with_env_fallback(&settings.ai.groq.api_key, &["GROQ_API_KEY"], None),
+        "xai" => get_with_env_fallback(&settings.ai.xai.api_key, &["XAI_API_KEY"], None),
         "zai_sdk" => get_with_env_fallback(&settings.ai.zai_sdk.api_key, &["ZAI_API_KEY"], None),
         "nvidia" | "nvidia_nim" | "nim" => {
             get_with_env_fallback(&settings.ai.nvidia.api_key, &["NVIDIA_API_KEY"], None)
@@ -372,6 +344,7 @@ pub(super) fn resolve_api_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use golish_agent_kit::llm_client::ProviderConfig;
 
     #[test]
     fn test_resolve_api_key_from_args() {
@@ -381,6 +354,113 @@ mod tests {
 
         let key = resolve_api_key(&settings, "openrouter", &args).unwrap();
         assert_eq!(key, "test-key");
+    }
+
+    #[test]
+    fn cli_provider_config_rejects_unknown_provider_instead_of_openrouter_fallback() {
+        let settings = GolishSettings::default();
+        let args = Args::parse_from([
+            "golish-cli",
+            "--provider",
+            "typo-provider",
+            "--api-key",
+            "unused",
+        ]);
+
+        let error = match resolve_cli_agent_bootstrap(Path::new("/tmp/workspace"), &settings, &args)
+        {
+            Ok(_) => panic!("unknown provider must fail before bridge construction"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("Unsupported CLI AI provider"));
+    }
+
+    #[test]
+    fn cli_provider_config_routes_openai_through_the_gui_typed_factory() {
+        let settings = GolishSettings::default();
+        let args = Args::parse_from([
+            "golish-cli",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-test",
+            "--api-key",
+            "test-key",
+        ]);
+
+        let config = resolve_cli_agent_bootstrap(Path::new("/tmp/workspace"), &settings, &args)
+            .expect("OpenAI CLI config")
+            .provider_config;
+
+        assert!(matches!(
+            config,
+            ProviderConfig::Openai { model, api_key, .. }
+                if model == "gpt-test" && api_key == "test-key"
+        ));
+    }
+
+    #[test]
+    fn cli_provider_config_routes_anthropic_through_the_gui_typed_factory() {
+        let settings = GolishSettings::default();
+        let args = Args::parse_from([
+            "golish-cli",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-test",
+            "--api-key",
+            "test-key",
+        ]);
+
+        let config = resolve_cli_agent_bootstrap(Path::new("/tmp/workspace"), &settings, &args)
+            .expect("Anthropic CLI config")
+            .provider_config;
+
+        assert!(matches!(
+            config,
+            ProviderConfig::Anthropic { model, api_key, .. }
+                if model == "claude-test" && api_key == "test-key"
+        ));
+    }
+
+    #[test]
+    fn cli_bootstrap_keeps_flag_overrides_and_adds_shared_settings() {
+        let mut settings = GolishSettings::default();
+        settings.ai.openai.base_url = Some("https://settings.openai.test/v1".to_string());
+        settings.ai.openai.enable_web_search = true;
+        settings.context.enabled = true;
+        settings.context.compaction_threshold = 0.81;
+        let args = Args::parse_from([
+            "golish-cli",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-cli-override",
+            "--api-key",
+            "cli-key-override",
+        ]);
+
+        let bootstrap = resolve_cli_agent_bootstrap(Path::new("/tmp/workspace"), &settings, &args)
+            .expect("normalized CLI bootstrap");
+
+        assert!(matches!(
+            bootstrap.provider_config,
+            ProviderConfig::Openai {
+                model,
+                api_key,
+                base_url: Some(base_url),
+                enable_web_search: true,
+                ..
+            } if model == "gpt-cli-override"
+                && api_key == "cli-key-override"
+                && base_url == "https://settings.openai.test/v1"
+        ));
+        let context = bootstrap
+            .shared_components_config
+            .context_config
+            .expect("CLI must share GUI context settings");
+        assert_eq!(context.compaction_threshold, 0.81);
     }
 
     // Helper to create Args for testing

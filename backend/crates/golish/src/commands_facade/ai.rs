@@ -29,6 +29,8 @@
 //! - **Loop protection**: `*_loop_protection_config`, `*_loop_detect*`
 //! - **Authoritative temporal graph**: `knowledge_graph_query_scoped`,
 //!   `knowledge_graph_rebuild_scope` (server-derived operator + DB scope binding)
+//! - **Candidate Verification**: `attack_list_verification_queue`,
+//!   `attack_resolve_candidate_recovery` (exact operation/Wave + server-owned operator)
 //! - **Misc**: `finalize_ai_session`,
 //!   `search_memories`, `list_recent_memories`, `get_memory_count`
 

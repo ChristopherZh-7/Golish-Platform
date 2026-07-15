@@ -5,9 +5,11 @@ use chrono::{TimeZone, Utc};
 use golish_agent_app::ai::db_bridge::knowledge_memory::{
     KnowledgeMemoryRuntime, PgKnowledgeMemory,
 };
-use golish_db::repo::{knowledge_outbox, project_scopes};
+use golish_db::repo::{knowledge_assertions, knowledge_outbox, project_scopes};
 use golish_db::{DbConfig, GolishDb};
-use golish_memory_app::ports::{CloseEpisodeAndEmit, PromoteAssertionAndEmit};
+use golish_memory_app::ports::{
+    CloseEpisodeAndEmit, InvalidateProjectionChainAndEmit, PromoteAssertionAndEmit,
+};
 use golish_memory_app::{KnowledgeUnitOfWork, SupervisorStartOutcome};
 use golish_memory_domain::assertion::{
     AssertionIdentity, AssertionKind, AssertionObject, AssertionStatus, KnowledgeAssertionDraft,
@@ -305,6 +307,123 @@ async fn canonical_episode_rolls_back_when_outbox_route_fails() {
             .await
             .expect("count deliveries");
     assert_eq!((episodes, events, deliveries), (0, 0, 0));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn source_invalidation_preserves_assertion_hash_integrity_for_the_projector() {
+    let (mut db, _data_dir) = fixture("memory_invalidation_hash_integrity").await;
+    let project = project_scopes::register_first_open(
+        db.pool(),
+        "/fixture/invalidation-hash-integrity",
+        "invalidation-hash-integrity-sha",
+    )
+    .await
+    .expect("register stable project scope");
+    let operation_id = Uuid::from_u128(0x1101);
+    let organization_id = Uuid::from_u128(0x1102);
+    let assertion_id = Uuid::from_u128(0x1103);
+    let source = SourceRef {
+        source_kind: CanonicalSourceKind::FactDelta,
+        row_id: CanonicalRowId::Text("fact-delta:invalidation-hash".to_string()),
+        source_stream_key: "fact-delta:invalidation-hash".to_string(),
+        version: 1,
+    };
+    let object = AssertionObject::Json(serde_json::json!({
+        "canonical_ref": "host:invalidation.example",
+        "display_name": "invalidation.example",
+        "properties": {"hostname": "invalidation.example"}
+    }));
+    let assertion = KnowledgeAssertionDraft {
+        assertion_id,
+        visibility: AssertionVisibility::OrganizationLongTerm {
+            project_scope_id: ProjectScopeId(project.project_scope_id),
+            organization_id_at_time: organization_id,
+        },
+        source_operation_id: operation_id,
+        source_scope_snapshot_hash: "fixture-invalidation-scope".to_string(),
+        source: source.clone(),
+        identity: AssertionIdentity::derive(
+            "host:invalidation.example",
+            "graph.entity.host",
+            &object,
+        )
+        .expect("derive invalidation assertion identity"),
+        kind: AssertionKind::Observation,
+        status: AssertionStatus::Active,
+        object,
+        classification: KnowledgeClassification::CustomerConfidential,
+        evidence_ids: vec![211],
+        valid_from: at(10),
+        valid_to: None,
+        fresh_until: Some(at(23)),
+    }
+    .validate()
+    .expect("valid active assertion");
+    let adapter = PgKnowledgeMemory::new(Arc::new(db.pool().clone()), None);
+    adapter
+        .promote_assertion_and_emit(PromoteAssertionAndEmit {
+            assertion,
+            event: event(
+                Uuid::from_u128(0x1104),
+                project.project_scope_id,
+                organization_id,
+                operation_id,
+                KnowledgeEventNameV1::FactDeltaAccepted,
+                source.clone(),
+            ),
+        })
+        .await
+        .expect("store active assertion and producer event");
+
+    let mut invalidation_event = event(
+        Uuid::from_u128(0x1105),
+        project.project_scope_id,
+        organization_id,
+        operation_id,
+        KnowledgeEventNameV1::SourceScopeInvalidated,
+        source,
+    );
+    invalidation_event.occurred_at = at(13);
+    adapter
+        .invalidate_projection_chain_and_emit(InvalidateProjectionChainAndEmit {
+            source: invalidation_event.payload.source.clone(),
+            invalidated_at: invalidation_event.occurred_at,
+            reason_code: "organization_deleted".to_string(),
+            event: invalidation_event.clone(),
+        })
+        .await
+        .expect("atomically invalidate assertion and append event");
+
+    let stored = knowledge_assertions::get(db.pool(), assertion_id)
+        .await
+        .expect("invalidated assertion must remain hash-valid and readable");
+    assert_eq!(stored.status, AssertionStatus::Expired);
+    assert_eq!(stored.valid_to, Some(at(13)));
+
+    let event_assertions =
+        knowledge_assertions::list_for_event_source(db.pool(), &invalidation_event)
+            .await
+            .expect("assertion projector must be able to read the invalidated source");
+    assert_eq!(event_assertions, vec![stored.clone()]);
+
+    adapter
+        .invalidate_projection_chain_and_emit(InvalidateProjectionChainAndEmit {
+            source: invalidation_event.payload.source.clone(),
+            invalidated_at: invalidation_event.occurred_at,
+            reason_code: "organization_deleted".to_string(),
+            event: invalidation_event,
+        })
+        .await
+        .expect("exact invalidation replay must remain idempotent");
+    assert_eq!(
+        knowledge_assertions::get(db.pool(), assertion_id)
+            .await
+            .expect("replayed invalidation must keep the row hash-valid"),
+        stored
+    );
+
     db.stop().await;
 }
 

@@ -1,5 +1,7 @@
 //! Bounded, final-PASS StageHandoff schema contract.
 
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -466,6 +468,72 @@ pub async fn list_latest_final_sealed_for_sources(
         .await?)
 }
 
+/// Canonical exact-origin surface inherited from the immutable, final-sealed
+/// Enumeration handoff for one operation/org. Downstream active scanners and
+/// their coverage denominator must both use this helper; a raw URL-shaped
+/// target row is not proof that Enumeration authorized that origin.
+pub async fn list_final_sealed_enumeration_origins(
+    pool: &PgPool,
+    operation_id: Uuid,
+    organization_id: Uuid,
+) -> anyhow::Result<BTreeSet<String>> {
+    let handoffs = list_latest_final_sealed_for_sources(
+        pool,
+        operation_id,
+        organization_id,
+        &["enumeration".to_string()],
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    enumeration_origins_from_optional_final_sealed_watermark(
+        handoffs.first().map(|handoff| &handoff.coverage_watermark),
+        organization_id,
+    )
+}
+
+fn enumeration_origins_from_optional_final_sealed_watermark(
+    watermark: Option<&Value>,
+    organization_id: Uuid,
+) -> anyhow::Result<BTreeSet<String>> {
+    let watermark = watermark.ok_or_else(|| {
+        anyhow::anyhow!(
+            "missing final-sealed Enumeration handoff for operation organization {organization_id}"
+        )
+    })?;
+    enumeration_origins_from_final_sealed_watermark(watermark, organization_id)
+}
+
+fn enumeration_origins_from_final_sealed_watermark(
+    watermark: &Value,
+    organization_id: Uuid,
+) -> anyhow::Result<BTreeSet<String>> {
+    anyhow::ensure!(
+        watermark.get("kind").and_then(Value::as_str) == Some("information_coverage_v1")
+            && watermark.get("stage").and_then(Value::as_str) == Some("enumeration")
+            && watermark
+                .get("organization_id")
+                .and_then(Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                == Some(organization_id),
+        "final-sealed Enumeration handoff has an invalid coverage watermark"
+    );
+    watermark
+        .get("assets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("final-sealed Enumeration handoff has no asset axis"))?
+        .iter()
+        .map(|asset| {
+            asset
+                .as_str()
+                .and_then(golish_pentest_domain::canonical_web_origin)
+                .map(|origin| origin.key)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("final-sealed Enumeration handoff contains a non-origin asset")
+                })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageHandoffStatus {
     Published,
@@ -496,5 +564,80 @@ mod tests {
             "source_stage_run_unit_id, operation_id, stage_execution_id, organization_id"
         ));
         assert!(DELIVERABLE_OWNER_FK_SQL.contains("stage_deliverable_submissions"));
+    }
+
+    #[test]
+    fn final_sealed_enumeration_watermark_yields_only_canonical_origins() {
+        let organization_id = Uuid::new_v4();
+        let watermark = serde_json::json!({
+            "kind": "information_coverage_v1",
+            "stage": "enumeration",
+            "organization_id": organization_id,
+            "assets": [
+                "HTTPS://App.Example.com/login",
+                "https://app.example.com:443/other",
+                "http://app.example.com"
+            ]
+        });
+
+        assert_eq!(
+            enumeration_origins_from_final_sealed_watermark(&watermark, organization_id).unwrap(),
+            BTreeSet::from([
+                "http://app.example.com:80".to_string(),
+                "https://app.example.com:443".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn missing_final_sealed_enumeration_handoff_is_not_an_empty_surface() {
+        let error = enumeration_origins_from_optional_final_sealed_watermark(None, Uuid::new_v4())
+            .expect_err("a missing handoff must fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("missing final-sealed Enumeration handoff"));
+    }
+
+    #[test]
+    fn final_sealed_enumeration_handoff_may_authorize_an_explicit_empty_surface() {
+        let organization_id = Uuid::new_v4();
+        let watermark = serde_json::json!({
+            "kind": "information_coverage_v1",
+            "stage": "enumeration",
+            "organization_id": organization_id,
+            "assets": []
+        });
+
+        assert!(enumeration_origins_from_optional_final_sealed_watermark(
+            Some(&watermark),
+            organization_id,
+        )
+        .expect("an explicit sealed empty axis is valid")
+        .is_empty());
+    }
+
+    #[test]
+    fn final_sealed_enumeration_watermark_rejects_foreign_or_non_origin_assets() {
+        let organization_id = Uuid::new_v4();
+        let foreign = serde_json::json!({
+            "kind": "information_coverage_v1",
+            "stage": "enumeration",
+            "organization_id": Uuid::new_v4(),
+            "assets": ["https://app.example.com:443"]
+        });
+        assert!(
+            enumeration_origins_from_final_sealed_watermark(&foreign, organization_id).is_err()
+        );
+
+        let malformed = serde_json::json!({
+            "kind": "information_coverage_v1",
+            "stage": "enumeration",
+            "organization_id": organization_id,
+            "assets": ["app.example.com"]
+        });
+        assert!(
+            enumeration_origins_from_final_sealed_watermark(&malformed, organization_id).is_err()
+        );
     }
 }

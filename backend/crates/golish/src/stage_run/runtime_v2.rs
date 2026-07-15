@@ -286,6 +286,48 @@ pub(crate) fn build_cli_runtime_scope(
 /// Aggregate a completed V2-writing CLI run from relational truth. Exactly one
 /// task/operation is allowed for the session; each report row is joined to the
 /// immutable scope snapshot and the selected stage execution.
+fn select_cli_report_execution(
+    executions: &[golish_db::repo::stage_runs::StageRunRow],
+    stage: StageKind,
+) -> Result<&golish_db::repo::stage_runs::StageRunRow> {
+    let active = executions
+        .iter()
+        .filter(|execution| execution.status == "started")
+        .collect::<Vec<_>>();
+    match active.as_slice() {
+        [execution] if execution.stage_kind == stage.as_str() => return Ok(*execution),
+        [execution] => {
+            return Err(anyhow!(
+                "V2 CLI active execution is {}, expected {}",
+                execution.stage_kind,
+                stage.as_str()
+            ));
+        }
+        [] => {}
+        _ => {
+            return Err(anyhow!(
+                "V2 CLI requires at most one active stage execution, found {}",
+                active.len()
+            ));
+        }
+    }
+
+    executions
+        .iter()
+        .filter(|execution| {
+            execution.stage_kind == stage.as_str()
+                && execution.status == "completed"
+                && execution.completed_at.is_some()
+        })
+        .max_by_key(|execution| (execution.started_at, execution.id))
+        .ok_or_else(|| {
+            anyhow!(
+                "V2 CLI completed flow has no successful {} stage execution",
+                stage.as_str()
+            )
+        })
+}
+
 pub(crate) async fn load_cli_report(
     pool: &sqlx::PgPool,
     session_id: Uuid,
@@ -318,23 +360,7 @@ pub(crate) async fn load_cli_report(
     let executions = golish_db::repo::stage_runs::list_for_operation(pool, task.id)
         .await
         .context("load V2 CLI stage executions")?;
-    let active_executions = executions
-        .iter()
-        .filter(|execution| execution.status == "started")
-        .collect::<Vec<_>>();
-    let [execution] = active_executions.as_slice() else {
-        return Err(anyhow!(
-            "V2 CLI requires one exact active stage execution, found {}",
-            active_executions.len()
-        ));
-    };
-    if execution.stage_kind != stage.as_str() {
-        return Err(anyhow!(
-            "V2 CLI active execution is {}, expected {}",
-            execution.stage_kind,
-            stage.as_str()
-        ));
-    }
+    let execution = select_cli_report_execution(&executions, stage)?;
     let stage_units =
         golish_db::repo::stage_run_units::list_for_execution(pool, task.id, execution.id)
             .await
@@ -398,7 +424,12 @@ pub(crate) async fn load_cli_report(
                         Some(status) => classify_runtime_v2_resume(&RuntimeV2ResumeSnapshot {
                             operation_id: task.id,
                             active_stage_execution_id: execution.id,
-                            active_stage_execution_count: active_executions.len(),
+                            // Report selection has already proven exactly one
+                            // target execution. A successful completed CLI flow
+                            // correctly has zero *active* executions, but the
+                            // Unit/Worker terminal classifier still needs the
+                            // selected execution cardinality.
+                            active_stage_execution_count: 1,
                             operation_superseded: operation.superseded_by.is_some(),
                             current_stage_is_scoping: stage == StageKind::Scoping,
                             scope_sealed: scope.snapshot.sealed_at.is_some(),
@@ -959,6 +990,51 @@ mod tests {
     use chrono::Duration;
 
     use super::*;
+
+    fn stage_execution(
+        id: Uuid,
+        operation_id: Uuid,
+        stage: StageKind,
+        status: &str,
+        started_at: DateTime<Utc>,
+    ) -> golish_db::repo::stage_runs::StageRunRow {
+        golish_db::repo::stage_runs::StageRunRow {
+            id,
+            operation_id,
+            stage_kind: stage.as_str().to_string(),
+            started_at,
+            completed_at: (status == "completed").then_some(started_at + Duration::seconds(1)),
+            status: status.to_string(),
+            active_sprint_contract_id: None,
+        }
+    }
+
+    #[test]
+    fn cli_report_selects_completed_terminal_execution_after_success() {
+        let operation_id = Uuid::new_v4();
+        let now = Utc::now();
+        let scoping = stage_execution(
+            Uuid::new_v4(),
+            operation_id,
+            StageKind::Scoping,
+            "completed",
+            now - Duration::minutes(2),
+        );
+        let target_intel = stage_execution(
+            Uuid::new_v4(),
+            operation_id,
+            StageKind::TargetIntel,
+            "completed",
+            now - Duration::minutes(1),
+        );
+
+        let executions = [scoping, target_intel.clone()];
+        let selected = select_cli_report_execution(&executions, StageKind::TargetIntel)
+            .expect("successful terminal CLI report selection");
+
+        assert_eq!(selected.id, target_intel.id);
+        assert_eq!(selected.status, "completed");
+    }
 
     #[test]
     fn preferred_legacy_fallback_requires_a_typed_structural_gap() {

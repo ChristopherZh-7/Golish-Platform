@@ -128,6 +128,14 @@ pub enum HarnessTraceKind {
     /// an org, and `agent_request_id` ties the row to that org's specialist
     /// sub-agent so the UI can drill into the org's own conversation + tool calls.
     StageRunOrgProgress {
+        /// Refresh-only pointer to the immutable Stage execution. New durable
+        /// Team runs populate this together with `stage_run_unit_id`; legacy
+        /// fan-out events omit both. The event remains non-authoritative.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stage_execution_id: Option<String>,
+        /// Refresh-only pointer to this organization's exact StageRunUnit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stage_run_unit_id: Option<String>,
         /// The organization this progress row is for.
         org_id: String,
         org_name: String,
@@ -208,8 +216,9 @@ pub enum HarnessTraceKind {
 
     /// Refresh/progress hint emitted after the operation-level Wave
     /// consolidation transaction commits. It contains only immutable ids,
-    /// the deterministic decision (`opened_next_wave`, `closed_no_delta`, or
-    /// `exhausted`), aggregate counts, and replay state.
+    /// the deterministic decision (`opened_next_wave`, `closed_no_delta`,
+    /// `pending_enrichment`, or `exhausted`), aggregate counts, and replay
+    /// state.
     AttackWaveConsolidated {
         scope_snapshot_id: String,
         consolidation_id: String,
@@ -223,6 +232,9 @@ pub enum HarnessTraceKind {
         rejected_fact_delta_count: u32,
         #[ts(type = "number")]
         residual_risk_count: u32,
+        #[serde(default)]
+        #[ts(type = "number")]
+        pending_enrichment_count: u32,
         replayed: bool,
     },
 }
@@ -370,6 +382,7 @@ mod tests {
             accepted_fact_delta_count: 1,
             rejected_fact_delta_count: 2,
             residual_risk_count: 0,
+            pending_enrichment_count: 0,
             replayed: true,
         };
 
@@ -409,6 +422,7 @@ mod tests {
                 "consolidation_id",
                 "decision_kind",
                 "kind",
+                "pending_enrichment_count",
                 "rejected_fact_delta_count",
                 "replayed",
                 "residual_risk_count",
@@ -515,6 +529,8 @@ mod tests {
     #[test]
     fn stage_run_org_progress_serializes_with_kind_and_coverage() {
         let k = HarnessTraceKind::StageRunOrgProgress {
+            stage_execution_id: Some("stage-execution-1".into()),
+            stage_run_unit_id: Some("stage-unit-1".into()),
             org_id: "org-1".into(),
             org_name: "平安科技".into(),
             agent_request_id: Some("req-1::org::org-1".into()),
@@ -534,6 +550,8 @@ mod tests {
         assert_eq!(v["kind"], "stage_run_org_progress");
         assert_eq!(v["org_id"], "org-1");
         assert_eq!(v["status"], "running");
+        assert_eq!(v["stage_execution_id"], "stage-execution-1");
+        assert_eq!(v["stage_run_unit_id"], "stage-unit-1");
         assert_eq!(v["evidence_count"], 3);
         assert_eq!(
             v["coverage"],
@@ -555,6 +573,8 @@ mod tests {
     #[test]
     fn stage_run_org_progress_omits_empty_optionals() {
         let k = HarnessTraceKind::StageRunOrgProgress {
+            stage_execution_id: None,
+            stage_run_unit_id: None,
             org_id: "org-2".into(),
             org_name: "root".into(),
             agent_request_id: None,
@@ -571,6 +591,8 @@ mod tests {
         assert!(v.get("ownership_percent").is_none());
         assert!(v.get("activity").is_none());
         assert!(v.get("agent_request_id").is_none());
+        assert!(v.get("stage_execution_id").is_none());
+        assert!(v.get("stage_run_unit_id").is_none());
     }
 
     #[test]

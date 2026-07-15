@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { toolResultIsBackgrounded, toolResultIsFailure } from "./ToolCallSummary";
+import {
+  stageRunResultPassed,
+  toolResultIsBackgrounded,
+  toolResultIsFailure,
+} from "./ToolCallSummary";
 
 describe("toolResultIsFailure", () => {
   it("flags a rejected status body as a failure (shows ❌ not ✅)", () => {
@@ -69,5 +73,15 @@ describe("toolResultIsFailure", () => {
     const result = '{"status":"backgrounded","job_id":"job_42","partial_stdout":"scanning"}';
     expect(toolResultIsBackgrounded(result)).toBe(true);
     expect(toolResultIsFailure(result)).toBe(false);
+  });
+});
+
+describe("stageRunResultPassed", () => {
+  it("recognizes only an explicit terminal aggregate pass", () => {
+    expect(stageRunResultPassed('{"passed":true,"team_units_passed":1}')).toBe(true);
+    expect(stageRunResultPassed('{"passed":false,"team_units_passed":0}')).toBe(false);
+    expect(stageRunResultPassed('{"status":"accepted"}')).toBe(false);
+    expect(stageRunResultPassed("not json")).toBe(false);
+    expect(stageRunResultPassed(undefined)).toBe(false);
   });
 });

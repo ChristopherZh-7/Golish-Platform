@@ -6,6 +6,7 @@ import {
   handleToolAutoApproved,
   handleToolOutputChunk,
   handleToolRequest,
+  handleToolResult,
 } from "./tool-handlers";
 import type { EventHandlerContext } from "./types";
 
@@ -22,7 +23,18 @@ function mockCtx() {
     setPendingToolApproval: vi.fn(),
     setPendingAskHuman: vi.fn(),
     clearPendingAskHuman: vi.fn(),
-    sessions: { "sess-1": { id: "sess-1", agentMode: "manual" } },
+    completeActiveToolCall: vi.fn(),
+    updateStreamingToolBlock: vi.fn(),
+    completeToolExecutionBlock: vi.fn(),
+    upsertStageRunRow: vi.fn(),
+    sessions: {
+      "sess-1": {
+        id: "sess-1",
+        agentMode: "manual",
+        stageRun: null,
+        stageRuns: {},
+      },
+    },
   };
   const ctx: EventHandlerContext = {
     sessionId: "sess-1",
@@ -156,6 +168,58 @@ describe("tool event detail pane behavior", () => {
       "sub_agent"
     );
   });
+
+  it("reconciles stale stage_run progress when the terminal result says every unit passed", () => {
+    const { state, ctx } = mockCtx();
+    Object.assign(state.sessions["sess-1"].stageRuns, {
+      T6: {
+        rows: [
+          {
+            id: "org-1",
+            name: "Acme",
+            ownershipPercent: null,
+            status: "running",
+            activity: "Company Controller is planning this company",
+            evidenceCount: 0,
+            coverage: {},
+          },
+        ],
+        summary: { total: 1, covered: 0, active: 1, queued: 0, blocked: 0 },
+        stageLabel: "Target Intel",
+        roleLabel: "Company_stage_controller",
+        coverageAxis: ["DNS"],
+        requestId: "T6",
+      },
+    });
+
+    handleToolResult(
+      {
+        type: "tool_result",
+        tool_name: "stage_run",
+        result: { passed: true, team_units_passed: 1 },
+        success: true,
+        request_id: "T6",
+        source: { type: "main" },
+        session_id: "sess-1",
+      },
+      ctx
+    );
+
+    expect(state.upsertStageRunRow).toHaveBeenCalledWith(
+      "sess-1",
+      expect.objectContaining({
+        id: "org-1",
+        status: "passed",
+        activity: undefined,
+      }),
+      {
+        stageLabel: "Target Intel",
+        roleLabel: "Company_stage_controller",
+        coverageAxis: ["DNS"],
+        requestId: "T6",
+      }
+    );
+  });
 });
 
 describe("ask_human event handling", () => {
@@ -182,6 +246,7 @@ describe("ask_human event handling", () => {
       expect.objectContaining({
         requestId: "A1",
         sessionId: "ai-session-1",
+        rawInputType: "unit_review",
         inputType: "unit_review",
       })
     );

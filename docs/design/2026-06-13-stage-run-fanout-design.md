@@ -1,5 +1,9 @@
 # Stage Run — 通用「按 org 并行执行一个阶段」的 chat 形态
 
+> Execution ownership 与多 Agent 调度部分由
+> `docs/design/2026-07-14-stage-run-multi-agent-team-scheduler.md` 取代；本文件保留为早期
+> chat/UI/fan-out 决策历史，不能再据此实现共享 lease 的嵌套 sub-agent。
+
 > 状态：草案（brainstorming 产出，待用户审查）
 > 关联：`docs/design/2026-06-13-engagement-scoping-fanout-redesign.md`（engagement / fan-out 上层设计）、
 > `docs/superpowers/plans/2026-06-13-engagement-phase-bc-worker-pool.md`（Phase B/C 工人池）。

@@ -76,9 +76,12 @@ pub use executor::{
 pub use executor_types::{
     BoundWorkerChainContext, BoundWorkerRuntimeMemorySource, BoundWorkerToolLifecycle,
     CoverageGapAction, EasWebRepairTarget, PostShellHook, StageCapabilitySuggestion,
-    StageToolGuard, StageToolHider, SubAgentChainError, SubAgentChainPersistence,
-    SubAgentToolObservation, SubAgentToolObserver, SubAgentToolResultHook, SubAgentToolRouter,
-    SubmitRepairKind, SubmitRepairMode,
+    StageTeamLeaderBinding, StageToolGuard, StageToolHider, SubAgentChainError,
+    SubAgentChainPersistence, SubAgentToolObservation, SubAgentToolObserver,
+    SubAgentToolResultHook, SubAgentToolRouter, SubmitRepairKind, SubmitRepairMode,
+    STAGE_TEAM_DISPATCH_ACCEPTED_STATUS, STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME,
+    STAGE_TEAM_PREPARE_FINAL_STATUS, STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME,
+    STAGE_TEAM_UPDATE_PLAN_TOOL_NAME,
 };
 
 // Re-export prompt registry

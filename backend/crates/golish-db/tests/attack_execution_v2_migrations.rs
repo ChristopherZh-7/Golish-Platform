@@ -9,9 +9,19 @@ use golish_db::repo::attack_candidates::{
     AcceptedCandidateDraft, NoCandidateDecision,
 };
 use golish_db::repo::candidate_attempts::{
-    claim_next_candidate_attempt, heartbeat_candidate_execution, record_attempt_submission,
-    release_candidate_execution, AttemptEvidenceLink, CandidateClaimQuery,
-    CandidateExecutionHeartbeat, CandidateExecutionRelease, RecordAttemptSubmission,
+    begin_candidate_action, candidate_execution_continuation, claim_next_candidate_attempt,
+    finish_candidate_action, heartbeat_candidate_execution, record_attempt_submission,
+    release_candidate_execution, AttemptEvidenceLink, BeginCandidateAction, CandidateActionStart,
+    CandidateClaimQuery, CandidateExecutionContinuation, CandidateExecutionHeartbeat,
+    CandidateExecutionRelease, FinishCandidateAction, RecordAttemptSubmission,
+};
+use golish_db::repo::candidate_recovery::{
+    checkpoint_candidate_terminal_barrier, converge_candidate_recovery,
+    expire_candidate_starts_before_claim, next_candidate_terminal_intent,
+    record_candidate_terminal_intent, recover_candidate_terminal_intent_barrier,
+    resolve_candidate_recovery, terminalize_candidate_terminal_intent, CandidateRecoveryResolution,
+    CheckpointCandidateTerminalBarrier, RecordCandidateTerminalIntent,
+    RecoverCandidateTerminalIntent, ResolveCandidateRecovery, TerminalizeCandidateTerminalIntent,
 };
 use golish_db::repo::finding_lineage::{
     terminalize_candidate_attempt, terminalize_verified_finding, TerminalizeCandidateAttempt,
@@ -984,6 +994,74 @@ async fn seed_attack_fixture(pool: &PgPool) -> AttackFixture {
     seed_attack_fixture_with_candidate_pass(pool, true).await
 }
 
+async fn insert_exact_enumeration_predecessor(pool: &PgPool, fixture: &AttackFixture) {
+    let enumeration_stage_execution_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO stage_runs (
+               id,operation_id,stage_kind,status,started_at,completed_at
+           )
+           SELECT $1,$2,'enumeration','completed',
+                  started_at-INTERVAL '1 minute',started_at
+             FROM stage_runs
+            WHERE id=$3 AND operation_id=$2 AND stage_kind='vuln_triage'"#,
+    )
+    .bind(enumeration_stage_execution_id)
+    .bind(fixture.operation_id)
+    .bind(fixture.entry_stage_execution_id)
+    .execute(pool)
+    .await
+    .expect("insert exact Enumeration predecessor stage");
+    let organizations: Vec<Uuid> = sqlx::query_scalar(
+        r#"SELECT organization_id
+              FROM stage_run_units
+             WHERE operation_id=$1 AND stage_execution_id=$2
+               AND stage_kind='vuln_triage' AND status='passed'
+             ORDER BY organization_id"#,
+    )
+    .bind(fixture.operation_id)
+    .bind(fixture.entry_stage_execution_id)
+    .fetch_all(pool)
+    .await
+    .expect("load exact Vuln predecessor organizations");
+    for (index, organization_id) in organizations.into_iter().enumerate() {
+        insert_final_passed_unit(
+            pool,
+            fixture,
+            organization_id,
+            enumeration_stage_execution_id,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "enumeration",
+            "enumerator",
+            2,
+            i32::try_from(index + 1).expect("Enumeration fixture ordinal fits i32"),
+            true,
+        )
+        .await;
+    }
+    sqlx::query(
+        r#"UPDATE stage_runs AS candidate
+              SET started_at=vuln.completed_at
+             FROM stage_runs AS vuln
+            WHERE candidate.id=$1
+              AND candidate.operation_id=$2
+              AND candidate.stage_kind='attack_candidate'
+              AND vuln.id=$3
+              AND vuln.operation_id=candidate.operation_id
+              AND vuln.stage_kind='vuln_triage'
+              AND vuln.status='completed'
+              AND vuln.completed_at IS NOT NULL"#,
+    )
+    .bind(fixture.stage_execution_id)
+    .bind(fixture.operation_id)
+    .bind(fixture.entry_stage_execution_id)
+    .execute(pool)
+    .await
+    .expect("align Candidate start with exact Vuln predecessor completion");
+}
+
 #[tokio::test]
 #[serial]
 async fn current_wave_authority_separates_wave_zero_from_predecessor_generation() {
@@ -1221,6 +1299,23 @@ async fn partial_initial_wave_with_frozen_manifest_recovers_and_replay_completes
         true,
     )
     .await;
+    insert_final_passed_unit(
+        db.pool(),
+        &fixture,
+        root_organization_id,
+        fixture.stage_execution_id,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        "attack_candidate",
+        "attack_analyst",
+        0,
+        0,
+        false,
+    )
+    .await;
+    insert_exact_enumeration_predecessor(db.pool(), &fixture).await;
 
     let initial = match attack_waves::load_current_authority(db.pool(), fixture.operation_id)
         .await
@@ -1312,6 +1407,11 @@ async fn partial_initial_wave_with_frozen_manifest_recovers_and_replay_completes
                         "sha256:recovery-observation-{}",
                         unit.organization_id.simple()
                     ),
+                    source_fact_delta_id: None,
+                    delta_kind: None,
+                    observation_kind: "legacy_observation".to_string(),
+                    allowed_techniques: vec!["WSTG-INPV-05".to_string()],
+                    enrichment_required: false,
                     evidence_ids: vec![unit.evidence_ids[0]],
                 }],
             },
@@ -1418,6 +1518,7 @@ async fn frozen_entry_evidence_requires_exact_live_handoff_membership() {
 
     let (mut db, _data_dir) = migrated_db("frozen_entry_evidence").await;
     let fixture = seed_attack_fixture(db.pool()).await;
+    insert_exact_enumeration_predecessor(db.pool(), &fixture).await;
     let linked_evidence_id: i64 = sqlx::query_scalar(
         r#"SELECT evidence_ids[1] FROM stage_handoffs
             WHERE source_stage_run_unit_id=$1 AND invalidated_at IS NULL"#,
@@ -1450,6 +1551,11 @@ async fn frozen_entry_evidence_requires_exact_live_handoff_membership() {
                 technique: "WSTG-INPV-05".to_string(),
                 observation: serde_json::json!({"outcome": "found"}),
                 observation_hash: "sha256:linked-observation".to_string(),
+                source_fact_delta_id: None,
+                delta_kind: None,
+                observation_kind: "legacy_observation".to_string(),
+                allowed_techniques: vec!["WSTG-INPV-05".to_string()],
+                enrichment_required: false,
                 evidence_ids: vec![linked_evidence_id],
             }],
         },
@@ -1505,6 +1611,11 @@ async fn frozen_entry_evidence_requires_exact_live_handoff_membership() {
                 technique: "WSTG-INPV-05".to_string(),
                 observation: serde_json::json!({"outcome": "found"}),
                 observation_hash: "sha256:unlinked-observation".to_string(),
+                source_fact_delta_id: None,
+                delta_kind: None,
+                observation_kind: "legacy_observation".to_string(),
+                allowed_techniques: vec!["WSTG-INPV-05".to_string()],
+                enrichment_required: false,
                 evidence_ids: vec![unlinked_evidence_id],
             }],
         },
@@ -1720,6 +1831,7 @@ async fn candidate_final_seal_is_atomic_uses_exact_predecessor_evidence_and_keep
         "dual_write_read_legacy",
     )
     .await;
+    insert_exact_enumeration_predecessor(db.pool(), &fixture).await;
     sqlx::query("UPDATE stage_run_units SET started_at=NOW(),updated_at=NOW() WHERE id=$1")
         .bind(fixture.org_a.stage_run_unit_id)
         .execute(db.pool())
@@ -1766,6 +1878,11 @@ async fn candidate_final_seal_is_atomic_uses_exact_predecessor_evidence_and_keep
                 technique: "WSTG-INPV-05".to_string(),
                 observation: serde_json::json!({"outcome": "found"}),
                 observation_hash: "sha256:atomic-observation".to_string(),
+                source_fact_delta_id: None,
+                delta_kind: None,
+                observation_kind: "legacy_observation".to_string(),
+                allowed_techniques: vec!["WSTG-INPV-05".to_string()],
+                enrichment_required: false,
                 evidence_ids: vec![linked_evidence_id],
             }],
         },
@@ -2235,6 +2352,11 @@ async fn frozen_manifest_blocks_raw_drift_and_replay_requires_exact_evidence_set
             technique: "WSTG-INPV-05".to_string(),
             observation: serde_json::json!({"outcome": "found"}),
             observation_hash: "sha256:freeze-observation".to_string(),
+            source_fact_delta_id: None,
+            delta_kind: None,
+            observation_kind: "legacy_observation".to_string(),
+            allowed_techniques: vec!["WSTG-INPV-05".to_string()],
+            enrichment_required: false,
             evidence_ids: vec![linked_evidence_id, second_evidence_id],
         }],
     };
@@ -2479,6 +2601,8 @@ async fn freeze_shadow_fixture_manifest(pool: &PgPool, fixture: &AttackFixture, 
         r#"SELECT COALESCE(jsonb_agg(
                    jsonb_build_object(
                        'evidence_ids',item_source.evidence_ids,
+                       'observation',item_source.observation,
+                       'observation_hash',item_source.observation_hash,
                        'target_identity_hash',item_source.target_identity_hash,
                        'technique',item_source.technique,
                        'work_item_id',item_source.work_item_id,
@@ -2488,6 +2612,7 @@ async fn freeze_shadow_fixture_manifest(pool: &PgPool, fixture: &AttackFixture, 
              FROM (
                  SELECT item.id AS work_item_id,item.work_item_key,
                         item.target_identity_hash,seed.technique,
+                        seed.observation,seed.observation_hash,
                         COALESCE((
                             SELECT jsonb_agg(source.evidence_id ORDER BY source.evidence_id)
                               FROM (
@@ -2530,13 +2655,7 @@ async fn legacy_record_for_seeded_candidate(
     pool: &PgPool,
     candidate: CandidateFixture,
 ) -> serde_json::Value {
-    let work_item_key: String =
-        sqlx::query_scalar("SELECT work_item_key FROM attack_candidate_work_items WHERE id=$1")
-            .bind(candidate.work_item_id)
-            .fetch_one(pool)
-            .await
-            .expect("load shadow work-item key");
-    let persisted: (
+    type PersistedCandidateProjection = (
         String,
         Option<String>,
         String,
@@ -2547,7 +2666,15 @@ async fn legacy_record_for_seeded_candidate(
         String,
         String,
         Vec<i64>,
-    ) = sqlx::query_as(
+    );
+
+    let work_item_key: String =
+        sqlx::query_scalar("SELECT work_item_key FROM attack_candidate_work_items WHERE id=$1")
+            .bind(candidate.work_item_id)
+            .fetch_one(pool)
+            .await
+            .expect("load shadow work-item key");
+    let persisted: PersistedCandidateProjection = sqlx::query_as(
         r#"SELECT hypothesis,technique,rationale,prior_refs,suggested_approach,
                   priority,execution_plan,candidate_plan_hash,risk_class,
                   COALESCE((
@@ -4431,6 +4558,127 @@ async fn v2_same_candidate_hash_is_isolated_by_frozen_org() {
 
 #[tokio::test]
 #[serial]
+async fn fact_delta_seed_rejects_cross_owner_binding() {
+    let (mut db, _data_dir) = migrated_db("fact_delta_seed_exact_owner").await;
+    let fixture = seed_attack_fixture(db.pool()).await;
+    let candidate = seed_candidate(db.pool(), &fixture, fixture.org_a).await;
+    let approval_id = insert_approval(db.pool(), &fixture, candidate, fixture.org_a)
+        .await
+        .expect("insert exact Candidate approval");
+    let attempt_id = insert_attempt(
+        db.pool(),
+        &fixture,
+        candidate,
+        approval_id,
+        fixture.org_a,
+        "blocked",
+    )
+    .await
+    .expect("insert terminal Candidate Attempt");
+    sqlx::query("UPDATE attack_wave_runs SET status='verification',updated_at=NOW() WHERE id=$1")
+        .bind(fixture.wave_run_id)
+        .execute(db.pool())
+        .await
+        .expect("advance exact source Wave to verification");
+    let fact_delta_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO attack_fact_deltas (
+               id,source_attempt_id,candidate_id,operation_id,scope_snapshot_id,
+               wave_run_id,wave_unit_id,organization_id,target_live_id,
+               target_type_at_time,target_value_at_time,target_identity_hash,
+               candidate_plan_hash,canonical_ref_kind,canonical_ref_id,
+               canonical_ref_version,canonical_ref_hash,delta_kind,dedupe_hash
+           ) VALUES (
+               $1,$2,$3,$4,$5,$6,$7,$8,$9,'url',
+               'https://shared.example.test/login',
+               'sha256:370c645a4c6a0bef678de24216f63890e7e8324ee2ce8bae74a41c78f9d88963',
+               'sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5',
+               'attack_candidate_work_item',$10,1,'sha256:canonical-owner-fixture',
+               'new_surface','sha256:fact-delta-owner-fixture'
+           )"#,
+    )
+    .bind(fact_delta_id)
+    .bind(attempt_id)
+    .bind(candidate.candidate_id)
+    .bind(fixture.operation_id)
+    .bind(fixture.scope_snapshot_id)
+    .bind(fixture.wave_run_id)
+    .bind(fixture.org_a.wave_unit_id)
+    .bind(fixture.org_a.organization_id)
+    .bind(fixture.org_a.target_id)
+    .bind(candidate.work_item_id)
+    .execute(db.pool())
+    .await
+    .expect("insert source FactDelta");
+    let observation = serde_json::json!({
+        "schema": "nuclei_match_v1",
+        "fact_delta_id": fact_delta_id,
+        "delta_kind": "new_surface",
+        "observation_kind": "nuclei_match_v1",
+        "allowed_techniques": ["GOLISH-NDAY"],
+        "enrichment_required": false,
+    });
+    let cross_owner = sqlx::query(
+        r#"INSERT INTO attack_candidate_seeds (
+               id,wave_unit_id,operation_id,scope_snapshot_id,organization_id,
+               target_live_id,target_type_at_time,target_value_at_time,
+               target_identity_hash,technique,observation,observation_hash,
+               source_fact_delta_id,delta_kind,observation_kind,
+               allowed_techniques,enrichment_required
+           ) VALUES (
+               $1,$2,$3,$4,$5,$6,'url','https://shared.example.test/login',
+               'sha256:370c645a4c6a0bef678de24216f63890e7e8324ee2ce8bae74a41c78f9d88963',
+               'GOLISH-NDAY',$7,'sha256:cross-owner-observation',$8,
+               'new_surface','nuclei_match_v1',ARRAY['GOLISH-NDAY'],FALSE
+           )"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(fixture.org_b.wave_unit_id)
+    .bind(fixture.operation_id)
+    .bind(fixture.scope_snapshot_id)
+    .bind(fixture.org_b.organization_id)
+    .bind(fixture.org_b.target_id)
+    .bind(&observation)
+    .bind(fact_delta_id)
+    .execute(db.pool())
+    .await;
+    assert_sqlstate(
+        cross_owner.map(|_| ()),
+        "23503",
+        "cross-owner FactDelta-backed Candidate seed",
+    );
+
+    sqlx::query(
+        r#"INSERT INTO attack_candidate_seeds (
+               id,wave_unit_id,operation_id,scope_snapshot_id,organization_id,
+               target_live_id,target_type_at_time,target_value_at_time,
+               target_identity_hash,technique,observation,observation_hash,
+               source_fact_delta_id,delta_kind,observation_kind,
+               allowed_techniques,enrichment_required
+           ) VALUES (
+               $1,$2,$3,$4,$5,$6,'url','https://shared.example.test/login',
+               'sha256:370c645a4c6a0bef678de24216f63890e7e8324ee2ce8bae74a41c78f9d88963',
+               'GOLISH-NDAY',$7,'sha256:exact-owner-observation',$8,
+               'new_surface','nuclei_match_v1',ARRAY['GOLISH-NDAY'],FALSE
+           )"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(fixture.org_a.wave_unit_id)
+    .bind(fixture.operation_id)
+    .bind(fixture.scope_snapshot_id)
+    .bind(fixture.org_a.organization_id)
+    .bind(fixture.org_a.target_id)
+    .bind(observation)
+    .bind(fact_delta_id)
+    .execute(db.pool())
+    .await
+    .expect("exact-owner FactDelta-backed Candidate seed must be accepted");
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn deleting_live_org_and_target_retains_attack_audit_rows_and_nulls_live_target_ref() {
     let (mut db, _data_dir) = migrated_db("retention").await;
     let fixture = seed_attack_fixture(db.pool()).await;
@@ -5294,6 +5542,11 @@ async fn accept_candidate_batch_requires_final_pass_and_complete_manifest() {
                     technique: "WSTG-INPV-05".to_string(),
                     observation: serde_json::json!({"outcome": "found"}),
                     observation_hash: "sha256:candidate-observation".to_string(),
+                    source_fact_delta_id: None,
+                    delta_kind: None,
+                    observation_kind: "legacy_observation".to_string(),
+                    allowed_techniques: vec!["WSTG-INPV-05".to_string()],
+                    enrichment_required: false,
                     evidence_ids: vec![evidence_id],
                 },
                 golish_db::repo::attack_candidate_work_items::SeedAttackObservation {
@@ -5307,6 +5560,11 @@ async fn accept_candidate_batch_requires_final_pass_and_complete_manifest() {
                     technique: "WSTG-INPV-01".to_string(),
                     observation: serde_json::json!({"outcome": "empty"}),
                     observation_hash: "sha256:checked-empty-observation".to_string(),
+                    source_fact_delta_id: None,
+                    delta_kind: None,
+                    observation_kind: "legacy_observation".to_string(),
+                    allowed_techniques: vec!["WSTG-INPV-01".to_string()],
+                    enrichment_required: false,
                     evidence_ids: vec![evidence_id],
                 },
             ],
@@ -5850,6 +6108,7 @@ async fn review_batch_is_plan_bound_org_scoped_and_reopens_after_expiry() {
             "sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5".to_string(),
         expected_candidate_row_version: 0,
         approve: true,
+        start_before: Some(chrono::Utc::now() + chrono::Duration::milliseconds(300)),
         expires_at: Some(chrono::Utc::now() + chrono::Duration::milliseconds(300)),
     };
 
@@ -5933,6 +6192,7 @@ async fn review_response_loss_replays_the_exact_durable_decision() {
                     .to_string(),
             expected_candidate_row_version: 0,
             approve: true,
+            start_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
             expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
         }],
     };
@@ -6044,6 +6304,7 @@ async fn review_barrier_waits_for_the_exact_complete_wave_snapshot() {
                         .to_string(),
                 expected_candidate_row_version: 0,
                 approve: false,
+                start_before: None,
                 expires_at: None,
             }],
         },
@@ -6076,6 +6337,7 @@ async fn review_rejects_sibling_candidate_stale_plan_row_and_expired_budget() {
             "sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5".to_string(),
         expected_candidate_row_version: 0,
         approve: true,
+        start_before: Some(chrono::Utc::now() + chrono::Duration::minutes(30)),
         expires_at: Some(chrono::Utc::now() + chrono::Duration::minutes(30)),
     };
     for (label, decision, expected_code) in [
@@ -6149,6 +6411,7 @@ async fn review_close_sets_durable_resume_pending_and_survives_process_restart()
                         .to_string(),
                 expected_candidate_row_version: 0,
                 approve: false,
+                start_before: None,
                 expires_at: None,
             }],
         },
@@ -6185,6 +6448,7 @@ async fn stale_dispatching_wakeup_reopens_without_reopening_review_decisions() {
                         .to_string(),
                 expected_candidate_row_version: 0,
                 approve: false,
+                start_before: None,
                 expires_at: None,
             }],
         },
@@ -6446,26 +6710,30 @@ async fn heartbeat_and_retry_release_terminalizes_old_attempt_and_claims_new_ord
     assert_eq!(expiries.0, expiries.1);
     assert_eq!(heartbeated.lease_expires_at, expiries.0);
 
-    let released = release_candidate_execution(
-        db.pool(),
-        CandidateExecutionRelease {
-            operation_id: heartbeat.operation_id,
-            scope_snapshot_id: heartbeat.scope_snapshot_id,
-            wave_run_id: heartbeat.wave_run_id,
-            wave_unit_id: heartbeat.wave_unit_id,
-            organization_id: heartbeat.organization_id,
-            attempt_id: heartbeat.attempt_id,
-            worker_run_id: heartbeat.worker_run_id,
-            stage_execution_id: heartbeat.stage_execution_id,
-            stage_run_unit_id: heartbeat.stage_run_unit_id,
-            lease_token: heartbeat.lease_token,
-            lease_owner: heartbeat.lease_owner,
-            attempt_epoch: heartbeat.attempt_epoch,
-            expected_checkpoint_version: heartbeat.expected_checkpoint_version,
-        },
-    )
-    .await
-    .expect("release worker and lane");
+    let release = CandidateExecutionRelease {
+        operation_id: heartbeat.operation_id,
+        scope_snapshot_id: heartbeat.scope_snapshot_id,
+        wave_run_id: heartbeat.wave_run_id,
+        wave_unit_id: heartbeat.wave_unit_id,
+        organization_id: heartbeat.organization_id,
+        attempt_id: heartbeat.attempt_id,
+        worker_run_id: heartbeat.worker_run_id,
+        stage_execution_id: heartbeat.stage_execution_id,
+        stage_run_unit_id: heartbeat.stage_run_unit_id,
+        lease_token: heartbeat.lease_token,
+        lease_owner: heartbeat.lease_owner,
+        attempt_epoch: heartbeat.attempt_epoch,
+        expected_checkpoint_version: heartbeat.expected_checkpoint_version,
+    };
+    assert_eq!(
+        candidate_execution_continuation(db.pool(), &release)
+            .await
+            .expect("classify pristine Candidate release"),
+        CandidateExecutionContinuation::SafeRelease
+    );
+    let released = release_candidate_execution(db.pool(), release)
+        .await
+        .expect("release worker and lane");
     assert!(!released.requeued);
     type ReleasedOwnership = (
         Option<Uuid>,
@@ -7645,7 +7913,7 @@ async fn terminalizer_replay_returns_same_finding_and_lineage() {
         .await
         .expect("drift linked Attempt evidence to a foreign target before the seal");
     let foreign_target_evidence = try_raw_verification_handoff_insert_on_connection(
-        &mut *foreign_target_evidence_tx,
+        &mut foreign_target_evidence_tx,
         &template,
         &exact_payload,
         &template.payload_sha256,
@@ -7682,7 +7950,7 @@ async fn terminalizer_replay_returns_same_finding_and_lineage() {
     .await
     .expect("drift linked FactDelta evidence outside its source Attempt interval");
     let evidence_time_drift = try_raw_verification_handoff_insert_on_connection(
-        &mut *evidence_time_drift_tx,
+        &mut evidence_time_drift_tx,
         &template,
         &exact_payload,
         &template.payload_sha256,
@@ -9312,6 +9580,48 @@ async fn insert_old_api_endpoint_ref(
     resolved
 }
 
+async fn insert_current_api_endpoint_ref(
+    pool: &PgPool,
+    fixture: &AttackFixture,
+    org: OrgFixture,
+) -> canonical_fact_refs::CanonicalFactRef {
+    let api_endpoint_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO api_endpoints (
+               id,target_id,project_path,url,method,path,source,discovered_at,updated_at
+           ) VALUES (
+               $1,$2,'/tmp/attack-v2','https://shared.example.test/api/current',
+               'GET','/api/current','candidate_verifier',NOW(),NOW()
+           )"#,
+    )
+    .bind(api_endpoint_id)
+    .bind(org.target_id)
+    .execute(pool)
+    .await
+    .expect("insert canonical API endpoint observed during the Attempt");
+
+    let mut tx = pool
+        .begin()
+        .await
+        .expect("begin current canonical ref resolution");
+    let resolved = canonical_fact_refs::resolve_for_handoff(
+        &mut tx,
+        fixture.operation_id,
+        org.organization_id,
+        "/tmp/attack-v2",
+        chrono::Utc::now() - chrono::Duration::hours(1),
+        &[canonical_fact_refs::CanonicalFactKey::ApiEndpoint { api_endpoint_id }],
+    )
+    .await
+    .expect("resolve current canonical API endpoint")
+    .pop()
+    .expect("one current canonical API endpoint ref");
+    tx.rollback()
+        .await
+        .expect("finish current canonical ref resolution");
+    resolved
+}
+
 async fn propose_test_delta(
     pool: &PgPool,
     fixture: &AttackFixture,
@@ -9357,6 +9667,417 @@ async fn propose_test_delta(
     .expect("propose terminal Attempt FactDelta");
     tx.commit().await.expect("commit FactDelta proposal");
     row
+}
+
+#[derive(Clone, Copy)]
+enum FollowOnEvidenceFixture {
+    Generic,
+    RecognizedUnsupported,
+}
+
+struct PreparedFollowOnFixture {
+    delta: golish_db::repo::attack_fact_deltas::AttackFactDeltaRow,
+    attempt_id: Uuid,
+    evidence_id: i64,
+    canonical_ref_id: Uuid,
+}
+
+async fn prepare_follow_on_route_fixture(
+    pool: &PgPool,
+    fixture: &AttackFixture,
+    evidence_fixture: FollowOnEvidenceFixture,
+) -> PreparedFollowOnFixture {
+    let candidate = seed_candidate(pool, fixture, fixture.org_a).await;
+    sqlx::query(
+        "UPDATE attack_wave_units
+            SET manifest_hash='sha256:follow-on-route-manifest',manifest_count=1,
+                manifest_frozen_at=NOW(),updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(fixture.org_a.wave_unit_id)
+    .execute(pool)
+    .await
+    .expect("freeze follow-on route Candidate manifest");
+    let approval_id = insert_approval(pool, fixture, candidate, fixture.org_a)
+        .await
+        .expect("insert follow-on route Candidate approval");
+    sqlx::query("UPDATE attack_candidates SET disposition='approved' WHERE candidate_id=$1")
+        .bind(candidate.candidate_id)
+        .execute(pool)
+        .await
+        .expect("mark follow-on route Candidate approved");
+    sqlx::query(
+        "UPDATE attack_wave_units SET review_closed=TRUE,status='verification' WHERE id=$1",
+    )
+    .bind(fixture.org_a.wave_unit_id)
+    .execute(pool)
+    .await
+    .expect("make follow-on route Candidate claimable");
+    let (stage_execution_id, stage_run_unit_id) =
+        seed_verification_unit(pool, fixture, fixture.org_a).await;
+    let claimed = claim_next_candidate_attempt(
+        pool,
+        CandidateClaimQuery {
+            operation_id: fixture.operation_id,
+            scope_snapshot_id: fixture.scope_snapshot_id,
+            wave_run_id: fixture.wave_run_id,
+            wave_unit_id: fixture.org_a.wave_unit_id,
+            organization_id: fixture.org_a.organization_id,
+            verification_stage_execution_id: stage_execution_id,
+            verification_stage_run_unit_id: stage_run_unit_id,
+            lease_owner: "follow-on-route-test".to_string(),
+            lease_seconds: 120,
+        },
+    )
+    .await
+    .expect("claim follow-on route Candidate")
+    .expect("follow-on route Candidate is available");
+    let attempt_id = claimed.attempt.id;
+    let canonical = insert_current_api_endpoint_ref(pool, fixture, fixture.org_a).await;
+    let canonical_ref_id = match canonical.key {
+        canonical_fact_refs::CanonicalFactKey::ApiEndpoint { api_endpoint_id } => api_endpoint_id,
+        _ => panic!("expected current API endpoint canonical key"),
+    };
+    let evidence_id = insert_audit(
+        pool,
+        fixture.operation_id,
+        fixture.org_a.organization_id,
+        fixture.org_a.target_id,
+        "evidence",
+    )
+    .await;
+    match evidence_fixture {
+        FollowOnEvidenceFixture::Generic => {
+            sqlx::query(
+                r#"UPDATE audit_log
+                      SET tool_name='query_target_data',evidence_outcome='found',detail=$2
+                    WHERE id=$1"#,
+            )
+            .bind(evidence_id)
+            .bind(serde_json::json!({
+                "organization_id": fixture.org_a.organization_id,
+                "kind": "target.snapshot_v1",
+            }))
+            .execute(pool)
+            .await
+            .expect("mark generic follow-on evidence");
+        }
+        FollowOnEvidenceFixture::RecognizedUnsupported => {
+            let raw_output = serde_json::json!({
+                "schema": "verification.future_adapter_v1",
+                "evidence_role": "proof",
+                "result": {},
+            })
+            .to_string();
+            sqlx::query(
+                r#"UPDATE audit_log
+                      SET tool_name='verify_execute_candidate_action',
+                          evidence_technique='WSTG-INFO',evidence_outcome='found',detail=$2
+                    WHERE id=$1"#,
+            )
+            .bind(evidence_id)
+            .bind(serde_json::json!({
+                "organization_id": fixture.org_a.organization_id,
+                "kind": "verification.future_adapter_v1",
+                "raw_output": raw_output,
+            }))
+            .execute(pool)
+            .await
+            .expect("mark recognized unsupported follow-on evidence");
+        }
+    }
+    sqlx::query(
+        "INSERT INTO candidate_attempt_actions(
+             attempt_id,action_ordinal,capability_id,action_kind,canonical_args,status,
+             outcome,outcome_hash,started_at,completed_at)
+         VALUES($1,0,'verify.sql_injection','bounded_sql_injection_probe',
+                '{\"target\":\"https://shared.example.test/login\"}'::jsonb,
+                'completed','{}'::jsonb,'sha256:follow-on-route-action',NOW(),NOW())",
+    )
+    .bind(attempt_id)
+    .execute(pool)
+    .await
+    .expect("finish follow-on route Candidate action");
+    let result_json = serde_json::json!({
+        "disposition": "blocked",
+        "blocker_reason_code": "follow_on_only",
+        "fact_deltas": [{
+            "fact_kind": "new_surface",
+            "canonical_ref_kind": "api_endpoint",
+            "canonical_ref_id": canonical_ref_id,
+            "canonical_ref_version": 1,
+            "canonical_ref_hash": canonical.content_sha256.clone(),
+            "summary": "Verification observed a follow-on API surface.",
+            "evidence_ids": [evidence_id]
+        }]
+    });
+    let lease_token = claimed
+        .worker
+        .lease_token
+        .expect("claimed route lease token");
+    let mut submission_tx = pool
+        .begin()
+        .await
+        .expect("begin follow-on route submission");
+    let submitted = record_attempt_submission(
+        &mut submission_tx,
+        RecordAttemptSubmission {
+            operation_id: fixture.operation_id,
+            scope_snapshot_id: fixture.scope_snapshot_id,
+            wave_run_id: fixture.wave_run_id,
+            wave_unit_id: fixture.org_a.wave_unit_id,
+            organization_id: fixture.org_a.organization_id,
+            candidate_id: candidate.candidate_id,
+            approval_id,
+            attempt_id,
+            candidate_plan_hash:
+                "sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5"
+                    .to_string(),
+            worker_run_id: claimed.worker.id,
+            stage_execution_id,
+            stage_run_unit_id,
+            lease_token,
+            lease_owner: "follow-on-route-test".to_string(),
+            attempt_epoch: claimed.worker.attempt_epoch,
+            expected_checkpoint_version: claimed.worker.checkpoint_version,
+            result_json,
+            evidence: vec![AttemptEvidenceLink {
+                evidence_id,
+                role: "fact_delta".to_string(),
+            }],
+        },
+    )
+    .await
+    .expect("record follow-on route Attempt submission");
+    submission_tx
+        .commit()
+        .await
+        .expect("commit follow-on route Attempt submission");
+    let mut terminal_tx = pool
+        .begin()
+        .await
+        .expect("begin follow-on route Attempt terminalization");
+    terminalize_candidate_attempt(
+        &mut terminal_tx,
+        TerminalizeCandidateAttempt {
+            operation_id: fixture.operation_id,
+            scope_snapshot_id: fixture.scope_snapshot_id,
+            wave_run_id: fixture.wave_run_id,
+            wave_unit_id: fixture.org_a.wave_unit_id,
+            organization_id: fixture.org_a.organization_id,
+            candidate_id: candidate.candidate_id,
+            approval_id,
+            attempt_id,
+            candidate_plan_hash:
+                "sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5"
+                    .to_string(),
+            expected_result_hash: submitted
+                .attempt
+                .result_hash
+                .expect("follow-on route result hash"),
+            worker_run_id: claimed.worker.id,
+            stage_execution_id,
+            stage_run_unit_id,
+            lease_token,
+            lease_owner: "follow-on-route-test".to_string(),
+            attempt_epoch: claimed.worker.attempt_epoch,
+            expected_checkpoint_version: claimed.worker.checkpoint_version,
+        },
+    )
+    .await
+    .expect("terminalize follow-on route Attempt");
+    terminal_tx
+        .commit()
+        .await
+        .expect("commit follow-on route Attempt terminalization");
+    let delta = propose_test_delta(
+        pool,
+        fixture,
+        candidate,
+        attempt_id,
+        evidence_id,
+        ("api_endpoint", canonical_ref_id, canonical.content_sha256),
+        "new_surface",
+    )
+    .await;
+    close_all_active_fixture_verification_units(pool, fixture, fixture.wave_run_id).await;
+    PreparedFollowOnFixture {
+        delta,
+        attempt_id,
+        evidence_id,
+        canonical_ref_id,
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn pending_fact_delta_enrichment_is_stable_and_does_not_advance_wave() {
+    let (mut db, _data_dir) = migrated_db("fact_delta_pending_enrichment").await;
+    let fixture = seed_attack_fixture(db.pool()).await;
+    add_root_source_wave_unit(db.pool(), &fixture).await;
+    let prepared =
+        prepare_follow_on_route_fixture(db.pool(), &fixture, FollowOnEvidenceFixture::Generic)
+            .await;
+    let source_before: (String, i64) =
+        sqlx::query_as("SELECT status,row_version FROM attack_wave_runs WHERE id=$1")
+            .bind(fixture.wave_run_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("load source Wave before pending enrichment");
+    let command = attack_wave_consolidations::ConsolidateAttackWave {
+        operation_id: fixture.operation_id,
+        scope_snapshot_id: fixture.scope_snapshot_id,
+        source_wave_run_id: fixture.wave_run_id,
+    };
+    let mut tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin pending enrichment route");
+    let first = attack_wave_consolidations::consolidate_attack_wave(&mut tx, command)
+        .await
+        .expect("generic FactDelta evidence must persist pending enrichment");
+    tx.commit().await.expect("commit pending enrichment route");
+    assert_eq!(first.decision_kind, "pending_enrichment");
+    assert_eq!(first.target_wave_run_id, None);
+    assert_eq!(first.accepted_fact_delta_ids, vec![prepared.delta.id]);
+    assert_eq!(first.pending_enrichment_count, 1);
+    assert!(!first.replayed);
+
+    let durable: (String, i64, String, Option<Uuid>, i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT wave.status,wave.row_version,delta.status,delta.consumed_by_wave_run_id,
+                  (SELECT COUNT(*) FROM attack_wave_runs WHERE operation_id=$2),
+                  (SELECT COUNT(*) FROM attack_wave_consolidations
+                    WHERE source_wave_run_id=$1),
+                  (SELECT COUNT(*) FROM attack_candidate_seeds
+                    WHERE source_fact_delta_id=$3),
+                  (SELECT COUNT(*) FROM attack_fact_delta_enrichment_items
+                    WHERE fact_delta_id=$3 AND status='pending')
+             FROM attack_wave_runs wave
+             JOIN attack_fact_deltas delta ON delta.id=$3
+            WHERE wave.id=$1"#,
+    )
+    .bind(fixture.wave_run_id)
+    .bind(fixture.operation_id)
+    .bind(prepared.delta.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load pending enrichment durable state");
+    assert_eq!((durable.0, durable.1), source_before);
+    assert_eq!(durable.2, "accepted");
+    assert_eq!(durable.3, None);
+    assert_eq!((durable.4, durable.5, durable.6, durable.7), (1, 0, 0, 1));
+
+    let queue = golish_db::repo::candidate_recovery::list_verification_queue(
+        db.pool(),
+        fixture.operation_id,
+        fixture.wave_run_id,
+    )
+    .await
+    .expect("load pending enrichment Verification queue");
+    assert_eq!(queue.pending_enrichment_count, 1);
+    assert_eq!(queue.pending_enrichments.len(), 1);
+    assert!(queue.consolidation.is_none());
+    let pending = &queue.pending_enrichments[0];
+    assert_eq!(pending.fact_delta_id, prepared.delta.id);
+    assert_eq!(pending.source_attempt_id, prepared.attempt_id);
+    assert_eq!(pending.subject_kind, "api_endpoint");
+    assert_eq!(pending.subject_id, prepared.canonical_ref_id);
+    assert_eq!(pending.delta_kind, "new_surface");
+    assert_eq!(pending.observation_kind, "surface_analysis_v2");
+    assert!(pending.enrichment_required);
+    assert_eq!(pending.reason_code, "typed_observation_required");
+    assert!(pending
+        .allowed_techniques
+        .contains(&"GOLISH-NDAY".to_string()));
+
+    let mut replay_tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin pending enrichment replay");
+    let replay = attack_wave_consolidations::consolidate_attack_wave(&mut replay_tx, command)
+        .await
+        .expect("pending enrichment response-loss replay must be stable");
+    replay_tx
+        .commit()
+        .await
+        .expect("commit pending enrichment replay");
+    assert!(replay.replayed);
+    assert_eq!(replay.consolidation_id, first.consolidation_id);
+    assert_eq!(
+        replay.accepted_fact_delta_ids,
+        first.accepted_fact_delta_ids
+    );
+    assert_eq!(replay.pending_enrichment_count, 1);
+    let row_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attack_fact_delta_enrichment_items WHERE fact_delta_id=$1",
+    )
+    .bind(prepared.delta.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count pending enrichment rows after replay");
+    assert_eq!(row_count, 1);
+    assert!(prepared.evidence_id > 0);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn recognized_unsupported_fact_delta_route_rolls_back_atomically() {
+    let (mut db, _data_dir) = migrated_db("fact_delta_unsupported_route").await;
+    let fixture = seed_attack_fixture(db.pool()).await;
+    add_root_source_wave_unit(db.pool(), &fixture).await;
+    let prepared = prepare_follow_on_route_fixture(
+        db.pool(),
+        &fixture,
+        FollowOnEvidenceFixture::RecognizedUnsupported,
+    )
+    .await;
+    let source_before: (String, i64) =
+        sqlx::query_as("SELECT status,row_version FROM attack_wave_runs WHERE id=$1")
+            .bind(fixture.wave_run_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("load source Wave before unsupported route");
+    let mut tx = db.pool().begin().await.expect("begin unsupported route");
+    let error = attack_wave_consolidations::consolidate_attack_wave(
+        &mut tx,
+        attack_wave_consolidations::ConsolidateAttackWave {
+            operation_id: fixture.operation_id,
+            scope_snapshot_id: fixture.scope_snapshot_id,
+            source_wave_run_id: fixture.wave_run_id,
+        },
+    )
+    .await
+    .expect_err("recognized unsupported FactDelta evidence must fail closed");
+    assert!(error
+        .to_string()
+        .contains("attack_fact_delta_route_unsupported"));
+    tx.rollback().await.expect("rollback unsupported route");
+    let durable: (String, i64, String, i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT wave.status,wave.row_version,delta.status,
+                  (SELECT COUNT(*) FROM attack_fact_delta_decisions
+                    WHERE fact_delta_id=$3),
+                  (SELECT COUNT(*) FROM attack_fact_delta_enrichment_items
+                    WHERE fact_delta_id=$3),
+                  (SELECT COUNT(*) FROM attack_wave_consolidations
+                    WHERE source_wave_run_id=$1),
+                  (SELECT COUNT(*) FROM attack_wave_runs WHERE operation_id=$2)
+             FROM attack_wave_runs wave
+             JOIN attack_fact_deltas delta ON delta.id=$3
+            WHERE wave.id=$1"#,
+    )
+    .bind(fixture.wave_run_id)
+    .bind(fixture.operation_id)
+    .bind(prepared.delta.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load unsupported route rollback state");
+    assert_eq!((durable.0, durable.1), source_before);
+    assert_eq!(durable.2, "proposed");
+    assert_eq!((durable.3, durable.4, durable.5, durable.6), (0, 0, 0, 1));
+    db.stop().await;
 }
 
 #[tokio::test]
@@ -9897,6 +10618,12 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
     .expect("claim canonical-ref Candidate")
     .expect("canonical-ref Candidate is available");
     let attempt_id = claimed.attempt.id;
+    let current_canonical_api =
+        insert_current_api_endpoint_ref(db.pool(), &fixture, fixture.org_a).await;
+    let current_api_endpoint_id = match &current_canonical_api.key {
+        canonical_fact_refs::CanonicalFactKey::ApiEndpoint { api_endpoint_id } => *api_endpoint_id,
+        _ => panic!("expected current API endpoint canonical key"),
+    };
     let evidence_id = insert_audit(
         db.pool(),
         fixture.operation_id,
@@ -9905,6 +10632,37 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
         "evidence",
     )
     .await;
+    let typed_route_output = serde_json::json!({
+        "schema": "verification.nuclei_template_replay_v1",
+        "evidence_role": "proof",
+        "result": {
+            "target_id": fixture.org_a.target_id,
+            "matched_url": "https://shared.example.test/login",
+            "template_id": "CVE-2099-0001",
+            "technique": "GOLISH-NDAY",
+            "completion": "complete",
+            "match_count": 1,
+            "matches": [{"template_id": "CVE-2099-0001"}],
+            "errors": []
+        }
+    })
+    .to_string();
+    sqlx::query(
+        r#"UPDATE audit_log
+              SET tool_name='verify_execute_candidate_action',
+                  evidence_technique='GOLISH-NDAY',evidence_outcome='found',
+                  detail=$2
+            WHERE id=$1"#,
+    )
+    .bind(evidence_id)
+    .bind(serde_json::json!({
+        "organization_id": fixture.org_a.organization_id,
+        "kind": "verification.nuclei_template_replay_v1",
+        "raw_output": typed_route_output,
+    }))
+    .execute(db.pool())
+    .await
+    .expect("upgrade FactDelta evidence to an exact typed replay proof");
     let unattached_evidence_id = insert_audit(
         db.pool(),
         fixture.operation_id,
@@ -9957,12 +10715,21 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
                 "evidence_ids": [evidence_id]
             },
             {
-                "fact_kind": "updated",
+                "fact_kind": "created",
                 "canonical_ref_kind": "attack_candidate_work_item",
                 "canonical_ref_id": candidate_a.work_item_id,
                 "canonical_ref_version": 1,
                 "canonical_ref_hash": canonical_a.content_sha256.clone(),
                 "summary": "A valid proposal whose stored dedupe hash will be forged.",
+                "evidence_ids": [evidence_id]
+            },
+            {
+                "fact_kind": "new_surface",
+                "canonical_ref_kind": "api_endpoint",
+                "canonical_ref_id": current_api_endpoint_id,
+                "canonical_ref_version": 1,
+                "canonical_ref_hash": current_canonical_api.content_sha256.clone(),
+                "summary": "An exact typed replay observation may open the next Candidate Wave.",
                 "evidence_ids": [evidence_id]
             }
         ]
@@ -10046,7 +10813,7 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
         .await
         .expect("commit canonical-ref terminalization");
 
-    let valid = propose_test_delta(
+    let refuted = propose_test_delta(
         db.pool(),
         &fixture,
         candidate_a,
@@ -10058,6 +10825,20 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
             old_canonical_api.content_sha256.clone(),
         ),
         "refuted",
+    )
+    .await;
+    let valid = propose_test_delta(
+        db.pool(),
+        &fixture,
+        candidate_a,
+        attempt_id,
+        evidence_id,
+        (
+            "api_endpoint",
+            current_api_endpoint_id,
+            current_canonical_api.content_sha256.clone(),
+        ),
+        "new_surface",
     )
     .await;
     let stale = propose_test_delta(
@@ -10099,7 +10880,7 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
             candidate_a.work_item_id,
             canonical_a.content_sha256.clone(),
         ),
-        "updated",
+        "created",
     )
     .await;
     sqlx::query(
@@ -10216,7 +10997,7 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
         candidate_a.work_item_id,
         1,
         &canonical_a.content_sha256,
-        "updated",
+        "new_surface",
     )
     .expect("hash raw unattached-evidence FactDelta fixture");
     sqlx::query(
@@ -10230,7 +11011,7 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
                $1,$2,$3,$4,$5,$6,$7,$8,$9,'url',
                'https://shared.example.test/login','sha256:370c645a4c6a0bef678de24216f63890e7e8324ee2ce8bae74a41c78f9d88963',
                'sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5','attack_candidate_work_item',$10,1,$11,
-               'updated',$12
+               'new_surface',$12
            )"#,
     )
     .bind(unattached_evidence_delta_id)
@@ -10517,8 +11298,38 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
     assert_eq!(left.target_wave_run_id, right.target_wave_run_id);
     let result = if left.replayed { right } else { left };
 
-    assert_eq!(result.decision_kind, "opened_next_wave");
-    assert_eq!(result.accepted_fact_delta_ids, vec![valid.id]);
+    assert_eq!(
+        result.decision_kind, "opened_next_wave",
+        "consolidation result: {result:?}"
+    );
+    assert_eq!(
+        result
+            .accepted_fact_delta_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [refuted.id, valid.id].into_iter().collect(),
+    );
+    let accepted_routes: std::collections::BTreeSet<(Uuid, String)> = sqlx::query_as(
+        "SELECT fact_delta_id,route_kind
+           FROM attack_wave_consolidation_members
+          WHERE consolidation_id=$1",
+    )
+    .bind(result.consolidation_id)
+    .fetch_all(db.pool())
+    .await
+    .expect("load exact direct and no-attack consolidation routes")
+    .into_iter()
+    .collect();
+    assert_eq!(
+        accepted_routes,
+        [
+            (refuted.id, "no_attack".to_string()),
+            (valid.id, "direct".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+    );
     assert_eq!(
         result
             .rejected_fact_delta_ids
@@ -10675,6 +11486,7 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
     let statuses: Vec<(Uuid, String)> =
         sqlx::query_as("SELECT id,status FROM attack_fact_deltas WHERE id=ANY($1) ORDER BY id")
             .bind(vec![
+                refuted.id,
                 valid.id,
                 stale.id,
                 sibling.id,
@@ -10684,6 +11496,7 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
             .fetch_all(db.pool())
             .await
             .expect("read terminal FactDelta decisions");
+    assert!(statuses.contains(&(refuted.id, "accepted".to_string())));
     assert!(statuses.contains(&(valid.id, "consumed".to_string())));
     assert!(statuses.contains(&(stale.id, "rejected".to_string())));
     assert!(statuses.contains(&(sibling.id, "rejected".to_string())));
@@ -10730,8 +11543,8 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
         "refuted",
     )
     .await;
-    assert_eq!(post_consolidation_replay.id, valid.id);
-    assert_eq!(post_consolidation_replay.status, "consumed");
+    assert_eq!(post_consolidation_replay.id, refuted.id);
+    assert_eq!(post_consolidation_replay.status, "accepted");
     assert_ne!(root.wave_unit_id, Uuid::nil());
     let promotion_counts: (i64, i64, i64) = sqlx::query_as(
         r#"SELECT
@@ -10796,7 +11609,7 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
     );
     assert_eq!(
         structured_payload["canonical_ref"]["id"],
-        old_api_endpoint_id.to_string()
+        current_api_endpoint_id.to_string()
     );
     assert_eq!(
         structured_payload["evidence_ids"],
@@ -11102,9 +11915,9 @@ async fn sibling_or_stale_canonical_ref_delta_is_rejected() {
                consolidation_id,ordinal,fact_delta_id,source_attempt_id,
                candidate_id,operation_id,scope_snapshot_id,source_wave_run_id,
                source_wave_unit_id,organization_id,target_wave_run_id,
-               target_wave_unit_id,target_work_item_id,member_hash
+               target_wave_unit_id,target_work_item_id,route_kind,member_hash
            ) VALUES (
-               $1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+               $1,2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'direct',
                'sha256:late-rejected-member'
            )"#,
     )
@@ -11486,13 +12299,6 @@ async fn fuel_cap_closes_wave_and_persists_reportable_residual_risk() {
     .execute(db.pool())
     .await
     .expect("freeze fuel fixture manifest");
-    let canonical = resolve_work_item_ref(
-        db.pool(),
-        &fixture,
-        fixture.org_a.organization_id,
-        candidate.work_item_id,
-    )
-    .await;
     let approval_id = insert_approval(db.pool(), &fixture, candidate, fixture.org_a)
         .await
         .expect("insert fuel fixture approval");
@@ -11554,6 +12360,12 @@ async fn fuel_cap_closes_wave_and_persists_reportable_residual_risk() {
     .expect("fuel fixture Candidate is available");
     assert_eq!(claimed.attempt.ordinal, 199);
     let attempt_id = claimed.attempt.id;
+    let current_canonical_api =
+        insert_current_api_endpoint_ref(db.pool(), &fixture, fixture.org_a).await;
+    let current_api_endpoint_id = match &current_canonical_api.key {
+        canonical_fact_refs::CanonicalFactKey::ApiEndpoint { api_endpoint_id } => *api_endpoint_id,
+        _ => panic!("expected API endpoint canonical key"),
+    };
     let evidence_id = insert_audit(
         db.pool(),
         fixture.operation_id,
@@ -11562,6 +12374,37 @@ async fn fuel_cap_closes_wave_and_persists_reportable_residual_risk() {
         "evidence",
     )
     .await;
+    let typed_route_output = serde_json::json!({
+        "schema": "verification.nuclei_template_replay_v1",
+        "evidence_role": "proof",
+        "result": {
+            "target_id": fixture.org_a.target_id,
+            "matched_url": "https://shared.example.test/api/current",
+            "template_id": "CVE-2099-0001",
+            "technique": "GOLISH-NDAY",
+            "completion": "complete",
+            "match_count": 1,
+            "matches": [{"template_id": "CVE-2099-0001"}],
+            "errors": []
+        }
+    })
+    .to_string();
+    sqlx::query(
+        r#"UPDATE audit_log
+              SET tool_name='verify_execute_candidate_action',
+                  evidence_technique='GOLISH-NDAY',evidence_outcome='found',
+                  detail=$2
+            WHERE id=$1"#,
+    )
+    .bind(evidence_id)
+    .bind(serde_json::json!({
+        "organization_id": fixture.org_a.organization_id,
+        "kind": "verification.nuclei_template_replay_v1",
+        "raw_output": typed_route_output,
+    }))
+    .execute(db.pool())
+    .await
+    .expect("upgrade fuel-cap evidence to an exact typed replay proof");
     sqlx::query(
         "INSERT INTO candidate_attempt_actions(
              attempt_id,action_ordinal,capability_id,action_kind,canonical_args,status,
@@ -11604,11 +12447,11 @@ async fn fuel_cap_closes_wave_and_persists_reportable_residual_risk() {
                 "disposition": "blocked",
                 "blocker_reason_code": "fuel",
                 "fact_deltas": [{
-                    "fact_kind": "refuted",
-                    "canonical_ref_kind": "attack_candidate_work_item",
-                    "canonical_ref_id": candidate.work_item_id,
+                    "fact_kind": "new_surface",
+                    "canonical_ref_kind": "api_endpoint",
+                    "canonical_ref_id": current_api_endpoint_id,
                     "canonical_ref_version": 1,
-                    "canonical_ref_hash": canonical.content_sha256.clone(),
+                    "canonical_ref_hash": current_canonical_api.content_sha256.clone(),
                     "summary": "The bounded verification result changes next-wave fuel.",
                     "evidence_ids": [evidence_id]
                 }]
@@ -11693,11 +12536,11 @@ async fn fuel_cap_closes_wave_and_persists_reportable_residual_risk() {
         attempt_id,
         evidence_id,
         (
-            "attack_candidate_work_item",
-            candidate.work_item_id,
-            canonical.content_sha256,
+            "api_endpoint",
+            current_api_endpoint_id,
+            current_canonical_api.content_sha256,
         ),
-        "refuted",
+        "new_surface",
     )
     .await;
     close_all_active_fixture_verification_units(db.pool(), &fixture, fixture.wave_run_id).await;
@@ -11786,5 +12629,2413 @@ async fn fuel_cap_closes_wave_and_persists_reportable_residual_risk() {
         wave_count, 1,
         "fuel exhaustion must not create a target Wave"
     );
+    db.stop().await;
+}
+
+struct CandidateRecoveryFixture {
+    attack: AttackFixture,
+    approval_id: Uuid,
+    stage_execution_id: Uuid,
+    stage_run_unit_id: Uuid,
+    claimed: golish_db::repo::candidate_attempts::ClaimedCandidateAttempt,
+}
+
+async fn seed_claimed_candidate_recovery_fixture(
+    pool: &PgPool,
+    lease_owner: &str,
+) -> CandidateRecoveryFixture {
+    let attack = seed_attack_fixture(pool).await;
+    let candidate = seed_candidate(pool, &attack, attack.org_a).await;
+    let approval_id = insert_approval(pool, &attack, candidate, attack.org_a)
+        .await
+        .expect("approve Candidate recovery fixture");
+    sqlx::query("UPDATE attack_candidates SET disposition='approved' WHERE candidate_id=$1")
+        .bind(candidate.candidate_id)
+        .execute(pool)
+        .await
+        .expect("mark Candidate recovery fixture approved");
+    sqlx::query(
+        "UPDATE attack_wave_units SET review_closed=TRUE,status='verification' WHERE id=$1",
+    )
+    .bind(attack.org_a.wave_unit_id)
+    .execute(pool)
+    .await
+    .expect("close Candidate recovery fixture review");
+    let (stage_execution_id, stage_run_unit_id) =
+        seed_verification_unit(pool, &attack, attack.org_a).await;
+    let claimed = claim_next_candidate_attempt(
+        pool,
+        CandidateClaimQuery {
+            operation_id: attack.operation_id,
+            scope_snapshot_id: attack.scope_snapshot_id,
+            wave_run_id: attack.wave_run_id,
+            wave_unit_id: attack.org_a.wave_unit_id,
+            organization_id: attack.org_a.organization_id,
+            verification_stage_execution_id: stage_execution_id,
+            verification_stage_run_unit_id: stage_run_unit_id,
+            lease_owner: lease_owner.to_string(),
+            lease_seconds: 120,
+        },
+    )
+    .await
+    .expect("claim Candidate recovery fixture")
+    .expect("Candidate recovery fixture must be claimable");
+    CandidateRecoveryFixture {
+        attack,
+        approval_id,
+        stage_execution_id,
+        stage_run_unit_id,
+        claimed,
+    }
+}
+
+async fn authorize_candidate_recovery_action(
+    pool: &PgPool,
+    fixture: &CandidateRecoveryFixture,
+    request_id: &str,
+) -> (Uuid, Uuid) {
+    let action_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO candidate_attempt_actions(
+               id,attempt_id,action_ordinal,capability_id,action_kind,canonical_args,status)
+           VALUES($1,$2,0,'verify.sql_injection','bounded_sql_injection_probe',
+                  '{"target":"https://shared.example.test/login"}'::jsonb,'planned')"#,
+    )
+    .bind(action_id)
+    .bind(fixture.claimed.attempt.id)
+    .execute(pool)
+    .await
+    .expect("insert planned Candidate recovery action");
+    let authorization_receipt_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO candidate_action_authorization_receipts(
+               id,request_id,attempt_id,action_id,lease_token,execution_deadline)
+           VALUES($1,$2,$3,$4,$5,NOW()+INTERVAL '5 minutes')"#,
+    )
+    .bind(authorization_receipt_id)
+    .bind(request_id)
+    .bind(fixture.claimed.attempt.id)
+    .bind(action_id)
+    .bind(fixture.claimed.worker.lease_token.expect("recovery lease"))
+    .execute(pool)
+    .await
+    .expect("persist DB-derived action authorization receipt");
+    sqlx::query(
+        "UPDATE candidate_attempt_actions
+            SET status='started',authorization_receipt_id=$2,started_at=NOW(),updated_at=NOW()
+          WHERE id=$1 AND status='planned'",
+    )
+    .bind(action_id)
+    .bind(authorization_receipt_id)
+    .execute(pool)
+    .await
+    .expect("start authorized Candidate recovery action");
+    (action_id, authorization_receipt_id)
+}
+
+async fn expire_candidate_recovery_fixture(pool: &PgPool, fixture: &CandidateRecoveryFixture) {
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET lease_acquired_at=NOW()-INTERVAL '2 minutes',
+                heartbeat_at=NOW()-INTERVAL '90 seconds',
+                lease_expires_at=NOW()-INTERVAL '1 minute',updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(fixture.claimed.worker.id)
+    .execute(pool)
+    .await
+    .expect("expire Candidate recovery Worker");
+    sqlx::query(
+        "UPDATE attack_execution_lanes
+            SET lease_expires_at=NOW()-INTERVAL '1 minute',updated_at=NOW()
+          WHERE lane_key='global:exploit' AND stage_worker_run_id=$1",
+    )
+    .bind(fixture.claimed.worker.id)
+    .execute(pool)
+    .await
+    .expect("expire Candidate recovery lane");
+}
+
+async fn trigger_candidate_lane_recovery(pool: &PgPool, fixture: &CandidateRecoveryFixture) {
+    let replacement = claim_next_candidate_attempt(
+        pool,
+        CandidateClaimQuery {
+            operation_id: fixture.attack.operation_id,
+            scope_snapshot_id: fixture.attack.scope_snapshot_id,
+            wave_run_id: fixture.attack.wave_run_id,
+            wave_unit_id: fixture.attack.org_a.wave_unit_id,
+            organization_id: fixture.attack.org_a.organization_id,
+            verification_stage_execution_id: fixture.stage_execution_id,
+            verification_stage_run_unit_id: fixture.stage_run_unit_id,
+            lease_owner: "candidate-recovery-reclaimer".to_string(),
+            lease_seconds: 120,
+        },
+    )
+    .await
+    .expect("recover expired Candidate lane");
+    assert!(
+        replacement.is_none(),
+        "an outcome-unknown Attempt must be parked, never replaced"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_recovery_opener_parks_crashed_started_action_with_durable_case() {
+    let (mut db, _data_dir) = migrated_db("candidate_recovery_opener_started").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "recovery-opener-started").await;
+    let (action_id, _authorization_receipt_id) =
+        authorize_candidate_recovery_action(db.pool(), &fixture, "recovery-opener-started-auth")
+            .await;
+    expire_candidate_recovery_fixture(db.pool(), &fixture).await;
+    trigger_candidate_lane_recovery(db.pool(), &fixture).await;
+
+    let expected_case_id = Uuid::new_v5(&action_id, b"candidate-recovery:outcome-unknown:v1");
+    let (
+        persisted_case_id,
+        request_id,
+        case_operation_id,
+        case_candidate_id,
+        case_worker_id,
+        case_status,
+        action_status,
+        worker_status,
+        case_count,
+    ): (Uuid, String, Uuid, Uuid, Uuid, String, String, String, i64) = sqlx::query_as(
+        r#"SELECT recovery.id,recovery.request_id,recovery.operation_id,
+                  recovery.candidate_id,recovery.worker_run_id,recovery.status,
+                  action.status,worker.status,
+                  (SELECT COUNT(*) FROM candidate_recovery_cases counted
+                    WHERE counted.attempt_id=attempt.id
+                      AND counted.action_id=action.id
+                      AND counted.case_kind='outcome_unknown')
+             FROM candidate_attempts attempt
+             JOIN candidate_attempt_actions action ON action.attempt_id=attempt.id
+             JOIN candidate_recovery_cases recovery
+               ON recovery.attempt_id=attempt.id AND recovery.action_id=action.id
+              AND recovery.case_kind='outcome_unknown'
+             JOIN stage_worker_runs worker ON worker.id=attempt.stage_worker_run_id
+            WHERE attempt.id=$1 AND action.id=$2"#,
+    )
+    .bind(fixture.claimed.attempt.id)
+    .bind(action_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load opened Candidate recovery case");
+    assert_eq!(persisted_case_id, expected_case_id);
+    assert_eq!(
+        request_id,
+        format!("candidate-recovery:outcome-unknown:{action_id}")
+    );
+    assert_eq!(case_operation_id, fixture.attack.operation_id);
+    assert_eq!(case_candidate_id, fixture.claimed.attempt.candidate_id);
+    assert_eq!(case_worker_id, fixture.claimed.worker.id);
+    assert_eq!(case_status, "open");
+    assert_eq!(action_status, "outcome_unknown");
+    assert_eq!(worker_status, "recovery_required");
+    assert_eq!(case_count, 1);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_recovery_opener_repairs_already_outcome_unknown_action() {
+    let (mut db, _data_dir) = migrated_db("candidate_recovery_opener_existing_unknown").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "recovery-opener-existing").await;
+    let (action_id, _authorization_receipt_id) =
+        authorize_candidate_recovery_action(db.pool(), &fixture, "recovery-opener-existing-auth")
+            .await;
+    sqlx::query(
+        "UPDATE candidate_attempt_actions
+            SET status='outcome_unknown',error_code='transport_response_lost',
+                completed_at=NOW(),updated_at=NOW()
+          WHERE id=$1 AND status='started'",
+    )
+    .bind(action_id)
+    .execute(db.pool())
+    .await
+    .expect("persist outcome-unknown action before recovery opener");
+    expire_candidate_recovery_fixture(db.pool(), &fixture).await;
+    trigger_candidate_lane_recovery(db.pool(), &fixture).await;
+
+    let (case_id, reason_code, action_status, worker_status, case_count): (
+        Uuid,
+        String,
+        String,
+        String,
+        i64,
+    ) = sqlx::query_as(
+        r#"SELECT recovery.id,recovery.reason_code,action.status,worker.status,
+                  (SELECT COUNT(*) FROM candidate_recovery_cases counted
+                    WHERE counted.attempt_id=attempt.id
+                      AND counted.action_id=action.id
+                      AND counted.case_kind='outcome_unknown')
+             FROM candidate_attempts attempt
+             JOIN candidate_attempt_actions action ON action.attempt_id=attempt.id
+             JOIN candidate_recovery_cases recovery
+               ON recovery.attempt_id=attempt.id AND recovery.action_id=action.id
+              AND recovery.case_kind='outcome_unknown'
+             JOIN stage_worker_runs worker ON worker.id=attempt.stage_worker_run_id
+            WHERE attempt.id=$1 AND action.id=$2"#,
+    )
+    .bind(fixture.claimed.attempt.id)
+    .bind(action_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load repaired Candidate recovery case");
+    assert_eq!(
+        case_id,
+        Uuid::new_v5(&action_id, b"candidate-recovery:outcome-unknown:v1")
+    );
+    assert_eq!(reason_code, "transport_response_lost");
+    assert_eq!(action_status, "outcome_unknown");
+    assert_eq!(worker_status, "recovery_required");
+    assert_eq!(case_count, 1);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_terminal_intent_schema_is_relational_and_immutable() {
+    let (mut db, _data_dir) = migrated_db("candidate_terminal_intent_schema").await;
+    for table in [
+        "candidate_action_authorization_receipts",
+        "candidate_attempt_terminal_intents",
+        "candidate_attempt_terminal_barriers",
+        "candidate_attempt_terminal_receipts",
+        "candidate_recovery_cases",
+        "candidate_recovery_evidence",
+    ] {
+        let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(format!("public.{table}"))
+            .fetch_one(db.pool())
+            .await
+            .expect("inspect Candidate recovery table");
+        assert!(exists, "missing Candidate recovery table {table}");
+    }
+
+    let approval_start_before: (String, String) = sqlx::query_as(
+        r#"SELECT is_nullable,data_type
+             FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='attack_candidate_approvals'
+              AND column_name='start_before'"#,
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("inspect approval start-before column");
+    assert_eq!(
+        approval_start_before,
+        ("NO".to_string(), "timestamp with time zone".to_string())
+    );
+
+    let attempt_status_constraint: String = sqlx::query_scalar(
+        r#"SELECT pg_get_constraintdef(oid)
+             FROM pg_constraint
+            WHERE conrelid='candidate_attempts'::regclass
+              AND conname='candidate_attempts_status_check'"#,
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("inspect CandidateAttempt status constraint");
+    assert!(
+        attempt_status_constraint.contains("terminalization_pending"),
+        "terminal intent must have an explicit durable Attempt state: {attempt_status_constraint}"
+    );
+
+    let immutable_triggers: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM pg_trigger
+            WHERE NOT tgisinternal AND tgname IN (
+                'candidate_action_authorization_receipts_immutable',
+                'candidate_attempt_terminal_intents_immutable',
+                'candidate_attempt_terminal_barriers_immutable',
+                'candidate_attempt_terminal_receipts_immutable',
+                'candidate_recovery_case_transition_guard',
+                'candidate_recovery_evidence_immutable'
+            )"#,
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("inspect Candidate recovery immutability triggers");
+    assert_eq!(immutable_triggers, 6);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_approval_start_before_authorizes_one_frozen_action_receipt() {
+    let (mut db, _data_dir) = migrated_db("candidate_approval_start_before").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "authorization-receipt-test").await;
+    let (expires_at, start_before): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as("SELECT expires_at,start_before FROM attack_candidate_approvals WHERE id=$1")
+            .bind(fixture.approval_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("load compatibility approval deadlines");
+    assert_eq!(
+        start_before, expires_at,
+        "legacy expires_at must backfill start_before"
+    );
+    let shifted_start_before = sqlx::query(
+        "UPDATE attack_candidate_approvals
+            SET start_before=start_before-INTERVAL '1 second' WHERE id=$1",
+    )
+    .bind(fixture.approval_id)
+    .execute(db.pool())
+    .await;
+    assert_sqlstate(
+        shifted_start_before.map(|_| ()),
+        "23514",
+        "mutated approval start-before",
+    );
+
+    let (action_id, receipt_id) =
+        authorize_candidate_recovery_action(db.pool(), &fixture, "authorization-receipt-request")
+            .await;
+    type AuthorizationProjection = (
+        Uuid,
+        i64,
+        String,
+        String,
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+        String,
+    );
+    let receipt: AuthorizationProjection = sqlx::query_as(
+        r#"SELECT approval_id,decision_version,candidate_plan_hash,scope_hash,
+                  authorized_at,start_before,receipt_hash
+             FROM candidate_action_authorization_receipts WHERE id=$1"#,
+    )
+    .bind(receipt_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load frozen action authorization receipt");
+    assert_eq!(receipt.0, fixture.approval_id);
+    assert_eq!(receipt.1, 1);
+    assert_eq!(
+        receipt.2,
+        "sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5"
+    );
+    assert_eq!(receipt.3, "sha256:scope");
+    assert!(receipt.4 <= receipt.5);
+    assert!(receipt.6.starts_with("sha256:"));
+
+    let changed = sqlx::query(
+        "UPDATE candidate_action_authorization_receipts
+            SET candidate_plan_hash='sha256:tampered' WHERE id=$1",
+    )
+    .bind(receipt_id)
+    .execute(db.pool())
+    .await;
+    assert_sqlstate(
+        changed.map(|_| ()),
+        "23514",
+        "mutated action authorization receipt",
+    );
+    let deleted = sqlx::query("DELETE FROM candidate_action_authorization_receipts WHERE id=$1")
+        .bind(receipt_id)
+        .execute(db.pool())
+        .await;
+    assert_sqlstate(
+        deleted.map(|_| ()),
+        "23514",
+        "deleted action authorization receipt",
+    );
+    let action_receipt: Option<Uuid> = sqlx::query_scalar(
+        "SELECT authorization_receipt_id FROM candidate_attempt_actions WHERE id=$1",
+    )
+    .bind(action_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load action authorization back-reference");
+    assert_eq!(action_receipt, Some(receipt_id));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_action_begin_commits_receipt_before_started_and_finish_requires_it() {
+    let (mut db, _data_dir) = migrated_db("candidate_action_begin_receipt").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "candidate-action-receipt-test").await;
+    let lease_token = fixture
+        .claimed
+        .worker
+        .lease_token
+        .expect("Candidate action receipt lease");
+    let started = begin_candidate_action(
+        db.pool(),
+        BeginCandidateAction {
+            operation_id: fixture.attack.operation_id,
+            stage_execution_id: fixture.stage_execution_id,
+            stage_run_unit_id: fixture.stage_run_unit_id,
+            organization_id: fixture.attack.org_a.organization_id,
+            worker_run_id: fixture.claimed.worker.id,
+            lease_token,
+            attempt_epoch: fixture.claimed.worker.attempt_epoch,
+            candidate_id: fixture.claimed.attempt.candidate_id,
+            approval_id: fixture.approval_id,
+            attempt_id: fixture.claimed.attempt.id,
+            candidate_plan_hash: fixture.claimed.attempt.candidate_plan_hash.clone(),
+            workspace_path_sha256: "sha256:attack-v2".to_string(),
+            action_ordinal: 0,
+        },
+    )
+    .await
+    .expect("begin Candidate action with durable authorization receipt");
+    let action_id = match started {
+        CandidateActionStart::Authorized(action) => action.action_id,
+        other => panic!("expected newly authorized Candidate action, got {other:?}"),
+    };
+    type ReceiptProjection = (
+        String,
+        Uuid,
+        Uuid,
+        Uuid,
+        i64,
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    );
+    let receipt: ReceiptProjection = sqlx::query_as(
+        r#"SELECT action.status,action.authorization_receipt_id,
+                  receipt.worker_run_id,receipt.lease_token,receipt.attempt_epoch,
+                  receipt.authorized_at,receipt.execution_deadline
+             FROM candidate_attempt_actions action
+             JOIN candidate_action_authorization_receipts receipt
+               ON receipt.id=action.authorization_receipt_id
+            WHERE action.id=$1"#,
+    )
+    .bind(action_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load begin-action authorization receipt");
+    assert_eq!(receipt.0, "started");
+    assert_eq!(receipt.2, fixture.claimed.worker.id);
+    assert_eq!(receipt.3, lease_token);
+    assert_eq!(receipt.4, fixture.claimed.worker.attempt_epoch);
+    assert!(receipt.6 > receipt.5);
+
+    finish_candidate_action(
+        db.pool(),
+        FinishCandidateAction {
+            operation_id: fixture.attack.operation_id,
+            stage_execution_id: fixture.stage_execution_id,
+            stage_run_unit_id: fixture.stage_run_unit_id,
+            organization_id: fixture.attack.org_a.organization_id,
+            worker_run_id: fixture.claimed.worker.id,
+            lease_token,
+            attempt_epoch: fixture.claimed.worker.attempt_epoch,
+            candidate_id: fixture.claimed.attempt.candidate_id,
+            approval_id: fixture.approval_id,
+            attempt_id: fixture.claimed.attempt.id,
+            candidate_plan_hash: fixture.claimed.attempt.candidate_plan_hash.clone(),
+            action_id,
+            success: true,
+            outcome: serde_json::json!({"bounded_probe": "completed"}),
+            error_code: None,
+        },
+    )
+    .await
+    .expect("finish receipt-backed Candidate action");
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM candidate_attempt_actions WHERE id=$1")
+            .bind(action_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("load receipt-backed action terminal state");
+    assert_eq!(status, "completed");
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_action_finish_rejects_started_row_without_authorization_receipt() {
+    let (mut db, _data_dir) = migrated_db("candidate_action_finish_requires_receipt").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "candidate-action-no-receipt-test")
+            .await;
+    let action_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO candidate_attempt_actions(
+               id,attempt_id,action_ordinal,capability_id,action_kind,canonical_args,status,
+               started_at)
+           VALUES($1,$2,0,'verify.sql_injection','bounded_sql_injection_probe',
+                  '{"target":"https://shared.example.test/login"}'::jsonb,'started',NOW())"#,
+    )
+    .bind(action_id)
+    .bind(fixture.claimed.attempt.id)
+    .execute(db.pool())
+    .await
+    .expect("seed legacy started action without receipt");
+    let result = finish_candidate_action(
+        db.pool(),
+        FinishCandidateAction {
+            operation_id: fixture.attack.operation_id,
+            stage_execution_id: fixture.stage_execution_id,
+            stage_run_unit_id: fixture.stage_run_unit_id,
+            organization_id: fixture.attack.org_a.organization_id,
+            worker_run_id: fixture.claimed.worker.id,
+            lease_token: fixture
+                .claimed
+                .worker
+                .lease_token
+                .expect("receiptless action lease"),
+            attempt_epoch: fixture.claimed.worker.attempt_epoch,
+            candidate_id: fixture.claimed.attempt.candidate_id,
+            approval_id: fixture.approval_id,
+            attempt_id: fixture.claimed.attempt.id,
+            candidate_plan_hash: fixture.claimed.attempt.candidate_plan_hash.clone(),
+            action_id,
+            success: true,
+            outcome: serde_json::json!({"bounded_probe": "completed"}),
+            error_code: None,
+        },
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "receiptless started action must not reach the finish path"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM candidate_attempt_actions WHERE id=$1")
+            .bind(action_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("load receiptless action state");
+    assert_eq!(status, "started");
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_terminal_intent_and_barrier_freeze_exact_worker_checkpoint() {
+    let (mut db, _data_dir) = migrated_db("candidate_terminal_intent_barrier").await;
+    let fixture = seed_claimed_candidate_recovery_fixture(db.pool(), "terminal-intent-test").await;
+    let (action_id, _authorization_receipt_id) =
+        authorize_candidate_recovery_action(db.pool(), &fixture, "terminal-action-auth").await;
+    sqlx::query(
+        "UPDATE candidate_attempt_actions
+            SET status='completed',outcome='{}'::jsonb,outcome_hash='sha256:action-result',
+                completed_at=NOW(),updated_at=NOW()
+          WHERE id=$1 AND status='started'",
+    )
+    .bind(action_id)
+    .execute(db.pool())
+    .await
+    .expect("complete authorized Candidate action");
+
+    let tool_call_record_id = Uuid::new_v4();
+    let lease_token = fixture
+        .claimed
+        .worker
+        .lease_token
+        .expect("terminal intent lease");
+    sqlx::query(
+        r#"INSERT INTO tool_calls(
+               id,call_id,session_id,task_id,agent,name,args,status,
+               operation_id,stage_execution_id,stage_run_unit_id,worker_run_id,
+               organization_id,attempt_epoch,lease_token)
+           VALUES($1,'terminal-intent-submit',$2,$3,'pentester','submit_candidate_attempt',
+                  '{}'::jsonb,'running',$3,$4,$5,$6,$7,$8,$9)"#,
+    )
+    .bind(tool_call_record_id)
+    .bind(fixture.attack.session_id)
+    .bind(fixture.attack.operation_id)
+    .bind(fixture.stage_execution_id)
+    .bind(fixture.stage_run_unit_id)
+    .bind(fixture.claimed.worker.id)
+    .bind(fixture.attack.org_a.organization_id)
+    .bind(fixture.claimed.worker.attempt_epoch)
+    .bind(lease_token)
+    .execute(db.pool())
+    .await
+    .expect("insert terminal-intent submit tool call");
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET active_tool_call_id=$2,active_tool_started_at=NOW(),updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(fixture.claimed.worker.id)
+    .bind(tool_call_record_id)
+    .execute(db.pool())
+    .await
+    .expect("mark terminal-intent tool active");
+
+    let intent_id = Uuid::new_v4();
+    let submitted_result = serde_json::json!({
+        "disposition": "blocked",
+        "blocker_reason_code": "bounded_probe_inconclusive",
+        "proof_evidence_ids": [],
+        "refutation_evidence_ids": [],
+        "blocker_evidence_ids": [],
+        "fact_deltas": []
+    });
+    let tool_result_text = serde_json::to_string(&serde_json::json!({
+        "ok": true,
+        "terminalization_pending": true,
+        "attempt_id": fixture.claimed.attempt.id,
+    }))
+    .expect("serialize deterministic Candidate tool result");
+    let mut intent_tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin terminal intent commit");
+    sqlx::query(
+        r#"INSERT INTO candidate_attempt_terminal_intents(
+               id,request_id,attempt_id,tool_call_record_id,lease_token,
+               disposition,submitted_result,tool_result_text)
+           VALUES($1,'terminal-intent-request',$2,$3,$4,'blocked',$5,$6)"#,
+    )
+    .bind(intent_id)
+    .bind(fixture.claimed.attempt.id)
+    .bind(tool_call_record_id)
+    .bind(lease_token)
+    .bind(&submitted_result)
+    .bind(&tool_result_text)
+    .execute(&mut *intent_tx)
+    .await
+    .expect("persist immutable Candidate terminal intent");
+    sqlx::query(
+        "UPDATE candidate_attempts
+            SET status='terminalization_pending',row_version=row_version+1,updated_at=NOW()
+          WHERE id=$1 AND status='running'",
+    )
+    .bind(fixture.claimed.attempt.id)
+    .execute(&mut *intent_tx)
+    .await
+    .expect("derive durable terminalization-pending Attempt state");
+    intent_tx
+        .commit()
+        .await
+        .expect("commit terminal intent and Attempt state");
+
+    let extra_action = sqlx::query(
+        r#"INSERT INTO candidate_attempt_actions(
+               attempt_id,action_ordinal,capability_id,action_kind,canonical_args,status)
+           VALUES($1,1,'verify.sql_injection','bounded_sql_injection_probe','{}','planned')"#,
+    )
+    .bind(fixture.claimed.attempt.id)
+    .execute(db.pool())
+    .await;
+    assert_sqlstate(
+        extra_action.map(|_| ()),
+        "23514",
+        "action after terminal intent",
+    );
+
+    sqlx::query("UPDATE tool_calls SET status='finished',result=$2,updated_at=NOW() WHERE id=$1")
+        .bind(tool_call_record_id)
+        .bind(&tool_result_text)
+        .execute(db.pool())
+        .await
+        .expect("finish terminal-intent tool call");
+    let checkpoint_version: i64 = sqlx::query_scalar(
+        r#"UPDATE stage_worker_runs
+              SET active_tool_call_id=NULL,active_tool_started_at=NULL,
+                  checkpoint=jsonb_build_object(
+                      'tool_call_id',$2::TEXT,'tool_result',$3::TEXT
+                  ),checkpoint_version=checkpoint_version+1,updated_at=NOW()
+            WHERE id=$1
+        RETURNING checkpoint_version"#,
+    )
+    .bind(fixture.claimed.worker.id)
+    .bind(tool_call_record_id)
+    .bind(&tool_result_text)
+    .fetch_one(db.pool())
+    .await
+    .expect("checkpoint exact terminal ToolCall/ToolResult");
+    let barrier_id = Uuid::new_v4();
+    let barrier_hash: String = sqlx::query_scalar(
+        r#"INSERT INTO candidate_attempt_terminal_barriers(
+               id,request_id,intent_id,checkpoint_version)
+           VALUES($1,'terminal-barrier-request',$2,$3)
+           RETURNING barrier_hash"#,
+    )
+    .bind(barrier_id)
+    .bind(intent_id)
+    .bind(checkpoint_version)
+    .fetch_one(db.pool())
+    .await
+    .expect("persist exact terminal barrier");
+    assert!(barrier_hash.starts_with("sha256:"));
+
+    let premature_receipt = sqlx::query(
+        r#"INSERT INTO candidate_attempt_terminal_receipts(
+               id,request_id,intent_id,barrier_id)
+           VALUES($1,'premature-terminal-receipt',$2,$3)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(intent_id)
+    .bind(barrier_id)
+    .execute(db.pool())
+    .await;
+    assert_sqlstate(
+        premature_receipt.map(|_| ()),
+        "23514",
+        "terminal receipt before canonical terminal state",
+    );
+
+    let intent_changed = sqlx::query(
+        "UPDATE candidate_attempt_terminal_intents
+            SET disposition='refuted' WHERE id=$1",
+    )
+    .bind(intent_id)
+    .execute(db.pool())
+    .await;
+    assert_sqlstate(
+        intent_changed.map(|_| ()),
+        "23514",
+        "mutated terminal intent",
+    );
+    let barrier_deleted =
+        sqlx::query("DELETE FROM candidate_attempt_terminal_barriers WHERE id=$1")
+            .bind(barrier_id)
+            .execute(db.pool())
+            .await;
+    assert_sqlstate(
+        barrier_deleted.map(|_| ()),
+        "23514",
+        "deleted terminal barrier",
+    );
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_recovery_case_rejects_cross_owner_evidence_and_unknown_decisions() {
+    let (mut db, _data_dir) = migrated_db("candidate_recovery_case_authority").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "candidate-recovery-case-test").await;
+    let (action_id, _authorization_receipt_id) =
+        authorize_candidate_recovery_action(db.pool(), &fixture, "recovery-action-auth").await;
+    sqlx::query(
+        "UPDATE candidate_attempt_actions
+            SET status='outcome_unknown',error_code='transport_response_lost',updated_at=NOW()
+          WHERE id=$1 AND status='started'",
+    )
+    .bind(action_id)
+    .execute(db.pool())
+    .await
+    .expect("mark action outcome unknown");
+    let recovery_case_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO candidate_recovery_cases(
+               id,request_id,attempt_id,action_id,case_kind,reason_code)
+           VALUES($1,'candidate-recovery-open',$2,$3,'outcome_unknown',
+                  'transport_response_lost')"#,
+    )
+    .bind(recovery_case_id)
+    .bind(fixture.claimed.attempt.id)
+    .bind(action_id)
+    .execute(db.pool())
+    .await
+    .expect("open exact Candidate recovery case");
+
+    let foreign_evidence_id = insert_audit(
+        db.pool(),
+        fixture.attack.operation_id,
+        fixture.attack.org_b.organization_id,
+        fixture.attack.org_b.target_id,
+        "evidence",
+    )
+    .await;
+    let foreign = sqlx::query(
+        "INSERT INTO candidate_recovery_evidence(recovery_case_id,evidence_id,role)
+         VALUES($1,$2,'external_result')",
+    )
+    .bind(recovery_case_id)
+    .bind(foreign_evidence_id)
+    .execute(db.pool())
+    .await;
+    assert_sqlstate(
+        foreign.map(|_| ()),
+        "P0001",
+        "cross-owner recovery evidence",
+    );
+
+    let unknown_decision = sqlx::query(
+        "UPDATE candidate_recovery_cases
+            SET status='decision_recorded',resolution_kind='rewrite_frozen_plan',
+                resolution_request_id='illegal-recovery-decision',row_version=row_version+1
+          WHERE id=$1 AND status='open'",
+    )
+    .bind(recovery_case_id)
+    .execute(db.pool())
+    .await;
+    assert_sqlstate(
+        unknown_decision.map(|_| ()),
+        "23514",
+        "unknown recovery decision",
+    );
+
+    let exact_evidence_id = insert_audit(
+        db.pool(),
+        fixture.attack.operation_id,
+        fixture.attack.org_a.organization_id,
+        fixture.attack.org_a.target_id,
+        "evidence",
+    )
+    .await;
+    let operator_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM operator_principals WHERE principal_kind='local_operator' AND active",
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("load trusted recovery operator");
+    let decision = ResolveCandidateRecovery {
+        request_id: "exact-recovery-decision".to_string(),
+        operation_id: fixture.attack.operation_id,
+        recovery_case_id,
+        expected_row_version: 0,
+        expected_attempt_row_version: fixture.claimed.attempt.row_version,
+        resolved_by: operator_id,
+        resolution: CandidateRecoveryResolution::AcceptExternalResultWithExactEvidence,
+        evidence_ids: vec![exact_evidence_id],
+    };
+    let resolved = resolve_candidate_recovery(db.pool(), decision.clone())
+        .await
+        .expect("record one legal recovery decision by CAS");
+    assert!(!resolved.replayed);
+    assert_eq!(resolved.recovery_case.status, "decision_recorded");
+    assert_eq!(resolved.recovery_case.row_version, 1);
+    let replay = resolve_candidate_recovery(db.pool(), decision)
+        .await
+        .expect("replay exact Candidate recovery decision");
+    assert!(replay.replayed);
+    assert_eq!(replay.recovery_case.id, resolved.recovery_case.id);
+    assert!(
+        resolve_candidate_recovery(
+            db.pool(),
+            ResolveCandidateRecovery {
+                request_id: "drifted-recovery-decision".to_string(),
+                operation_id: fixture.attack.operation_id,
+                recovery_case_id,
+                expected_row_version: 0,
+                expected_attempt_row_version: fixture.claimed.attempt.row_version,
+                resolved_by: operator_id,
+                resolution: CandidateRecoveryResolution::TerminalizeBlockedOutcomeUnknown,
+                evidence_ids: vec![],
+            },
+        )
+        .await
+        .is_err(),
+        "a recorded recovery decision must reject semantic replay drift"
+    );
+    let identity_change = sqlx::query(
+        "UPDATE candidate_recovery_cases
+            SET candidate_plan_hash='sha256:tampered' WHERE id=$1",
+    )
+    .bind(recovery_case_id)
+    .execute(db.pool())
+    .await;
+    assert_sqlstate(
+        identity_change.map(|_| ()),
+        "23514",
+        "mutated recovery identity",
+    );
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_recovery_repo_replays_intent_barrier_and_server_terminal_receipt() {
+    let (mut db, _data_dir) = migrated_db("candidate_recovery_repo_protocol").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "candidate-recovery-repo").await;
+    sqlx::query(
+        "UPDATE stage_runs
+            SET status='completed',completed_at=NOW()
+          WHERE operation_id=$1 AND id<>$2 AND status='started'",
+    )
+    .bind(fixture.attack.operation_id)
+    .bind(fixture.stage_execution_id)
+    .execute(db.pool())
+    .await
+    .expect("leave one active Verification StageExecution for runtime checkpointing");
+    sqlx::query("UPDATE operation_state SET current_stage='verification' WHERE operation_id=$1")
+        .bind(fixture.attack.operation_id)
+        .execute(db.pool())
+        .await
+        .expect("advance Candidate recovery fixture runtime cursor");
+    let (action_id, _authorization_receipt_id) =
+        authorize_candidate_recovery_action(db.pool(), &fixture, "candidate-recovery-repo-auth")
+            .await;
+    sqlx::query(
+        "UPDATE candidate_attempt_actions
+            SET status='completed',outcome='{}'::jsonb,outcome_hash='sha256:action-result',
+                completed_at=NOW(),updated_at=NOW()
+          WHERE id=$1 AND status='started'",
+    )
+    .bind(action_id)
+    .execute(db.pool())
+    .await
+    .expect("complete Candidate recovery action");
+
+    let tool_call_record_id = Uuid::new_v4();
+    let lease_token = fixture
+        .claimed
+        .worker
+        .lease_token
+        .expect("Candidate recovery repo lease");
+    sqlx::query(
+        r#"INSERT INTO tool_calls(
+               id,call_id,session_id,task_id,agent,name,args,status,
+               operation_id,stage_execution_id,stage_run_unit_id,worker_run_id,
+               organization_id,attempt_epoch,lease_token)
+           VALUES($1,'candidate-recovery-repo-submit',$2,$3,'pentester',
+                  'submit_candidate_attempt','{}'::jsonb,'running',$3,$4,$5,$6,$7,$8,$9)"#,
+    )
+    .bind(tool_call_record_id)
+    .bind(fixture.attack.session_id)
+    .bind(fixture.attack.operation_id)
+    .bind(fixture.stage_execution_id)
+    .bind(fixture.stage_run_unit_id)
+    .bind(fixture.claimed.worker.id)
+    .bind(fixture.attack.org_a.organization_id)
+    .bind(fixture.claimed.worker.attempt_epoch)
+    .bind(lease_token)
+    .execute(db.pool())
+    .await
+    .expect("insert Candidate recovery repo submit tool call");
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET active_tool_call_id=$2,active_tool_started_at=NOW(),updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(fixture.claimed.worker.id)
+    .bind(tool_call_record_id)
+    .execute(db.pool())
+    .await
+    .expect("mark Candidate recovery repo tool active");
+
+    let submitted_result = serde_json::json!({
+        "disposition": "blocked",
+        "blocker_reason_code": "bounded_probe_inconclusive",
+        "proof_evidence_ids": [],
+        "refutation_evidence_ids": [],
+        "blocker_evidence_ids": [],
+        "fact_deltas": []
+    });
+    let tool_result_text = serde_json::to_string(&serde_json::json!({
+        "ok": true,
+        "terminalization_pending": true,
+        "attempt_id": fixture.claimed.attempt.id,
+    }))
+    .expect("serialize Candidate recovery repo ToolResult");
+    let intent_command = RecordCandidateTerminalIntent {
+        request_id: "candidate-recovery-repo-intent".to_string(),
+        operation_id: fixture.attack.operation_id,
+        organization_id: fixture.attack.org_a.organization_id,
+        candidate_id: fixture.claimed.attempt.candidate_id,
+        approval_id: fixture.approval_id,
+        attempt_id: fixture.claimed.attempt.id,
+        candidate_plan_hash: fixture.claimed.attempt.candidate_plan_hash.clone(),
+        worker_run_id: fixture.claimed.worker.id,
+        lease_token,
+        attempt_epoch: fixture.claimed.worker.attempt_epoch,
+        tool_call_record_id,
+        disposition: "blocked".to_string(),
+        submitted_result: submitted_result.clone(),
+        evidence: vec![],
+        tool_result_text: tool_result_text.clone(),
+    };
+    let mut intent_tx = db.pool().begin().await.expect("begin repo terminal intent");
+    let intent = record_candidate_terminal_intent(&mut intent_tx, intent_command.clone())
+        .await
+        .expect("record repo terminal intent");
+    intent_tx
+        .commit()
+        .await
+        .expect("commit repo terminal intent");
+    assert!(!intent.replayed);
+
+    let mut replay_tx = db.pool().begin().await.expect("begin intent replay");
+    let replay = record_candidate_terminal_intent(&mut replay_tx, intent_command)
+        .await
+        .expect("replay exact repo terminal intent");
+    replay_tx.commit().await.expect("commit intent replay");
+    assert!(replay.replayed);
+    assert_eq!(replay.intent.id, intent.intent.id);
+    let pending = next_candidate_terminal_intent(db.pool(), fixture.attack.operation_id)
+        .await
+        .expect("query pre-barrier terminal queue")
+        .expect("pending terminal intent must block the queue");
+    assert_eq!(pending.intent_id, intent.intent.id);
+    assert_eq!(pending.barrier_id, None);
+
+    sqlx::query("UPDATE tool_calls SET status='finished',result=$2,updated_at=NOW() WHERE id=$1")
+        .bind(tool_call_record_id)
+        .bind(&tool_result_text)
+        .execute(db.pool())
+        .await
+        .expect("finish Candidate recovery repo tool call");
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET active_tool_call_id=NULL,active_tool_started_at=NULL,updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(fixture.claimed.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("finish Candidate recovery repo Worker tool fence");
+    let mut chain: serde_json::Value =
+        sqlx::query_scalar("SELECT chain FROM message_chains WHERE id=$1")
+            .bind(
+                fixture
+                    .claimed
+                    .worker
+                    .message_chain_id
+                    .expect("Candidate recovery repo chain"),
+            )
+            .fetch_one(db.pool())
+            .await
+            .expect("load Candidate recovery repo chain");
+    chain
+        .as_array_mut()
+        .expect("Candidate recovery repo chain must be an array")
+        .push(serde_json::json!({
+            "role": "tool",
+            "tool_call_id": tool_call_record_id,
+            "content": tool_result_text,
+        }));
+    let checkpoint = serde_json::json!({
+        "tool_call_id": tool_call_record_id,
+        "tool_result": tool_result_text,
+    });
+    let barrier_command = CheckpointCandidateTerminalBarrier {
+        request_id: "candidate-recovery-repo-barrier".to_string(),
+        intent_id: intent.intent.id,
+        expected_intent_hash: intent.intent.intent_hash.clone(),
+        checkpoint: runtime_memory_tx::CheckpointBoundWorkerChainRow {
+            fence: runtime_memory_tx::RuntimeMemoryTxFence {
+                operation_id: fixture.attack.operation_id,
+                stage_execution_id: fixture.stage_execution_id,
+                stage_run_unit_id: fixture.stage_run_unit_id,
+                worker_run_id: fixture.claimed.worker.id,
+                lease_token,
+                attempt_epoch: fixture.claimed.worker.attempt_epoch,
+                expected_checkpoint_version: fixture.claimed.worker.checkpoint_version,
+            },
+            message_chain_id: fixture
+                .claimed
+                .worker
+                .message_chain_id
+                .expect("Candidate recovery repo chain"),
+            chain: chain.clone(),
+            checkpoint: checkpoint.clone(),
+        },
+    };
+    let barrier = checkpoint_candidate_terminal_barrier(db.pool(), barrier_command.clone())
+        .await
+        .expect("atomically checkpoint Candidate ToolResult and terminal barrier");
+    assert!(!barrier.replayed);
+    assert_eq!(
+        barrier.barrier.checkpoint_version,
+        fixture.claimed.worker.checkpoint_version + 1
+    );
+    let barrier_replay = checkpoint_candidate_terminal_barrier(db.pool(), barrier_command)
+        .await
+        .expect("replay atomic Candidate terminal checkpoint barrier");
+    assert!(barrier_replay.replayed);
+    assert_eq!(barrier_replay.barrier.id, barrier.barrier.id);
+
+    let ready = next_candidate_terminal_intent(db.pool(), fixture.attack.operation_id)
+        .await
+        .expect("query barrier-ready terminal intent")
+        .expect("barrier-ready terminal intent");
+    assert_eq!(ready.intent_id, intent.intent.id);
+    assert_eq!(ready.barrier_id, Some(barrier.barrier.id));
+    let terminal_command = TerminalizeCandidateTerminalIntent {
+        request_id: "candidate-recovery-repo-terminal".to_string(),
+        operation_id: fixture.attack.operation_id,
+        intent_id: intent.intent.id,
+        barrier_id: barrier.barrier.id,
+    };
+    let terminal = terminalize_candidate_terminal_intent(db.pool(), terminal_command.clone())
+        .await
+        .expect("server-authority terminalize Candidate intent");
+    assert!(!terminal.replayed);
+    assert_eq!(terminal.receipt.disposition, "blocked");
+    let terminal_replay = terminalize_candidate_terminal_intent(db.pool(), terminal_command)
+        .await
+        .expect("replay server-authority terminal receipt");
+    assert!(terminal_replay.replayed);
+    assert_eq!(terminal_replay.receipt.id, terminal.receipt.id);
+
+    let (attempt_status, worker_status, lane_owner): (String, String, Option<Uuid>) =
+        sqlx::query_as(
+            r#"SELECT attempt.status,worker.status,lane.stage_worker_run_id
+                 FROM candidate_attempts attempt
+                 JOIN stage_worker_runs worker ON worker.id=attempt.stage_worker_run_id
+                 CROSS JOIN attack_execution_lanes lane
+                WHERE attempt.id=$1 AND lane.lane_key='global:exploit'"#,
+        )
+        .bind(fixture.claimed.attempt.id)
+        .fetch_one(db.pool())
+        .await
+        .expect("load terminal Candidate recovery repo state");
+    assert_eq!(attempt_status, "blocked");
+    assert_eq!(worker_status, "passed");
+    assert_eq!(lane_owner, None);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_recovery_decision_converges_outcome_unknown_to_blocked_terminal_truth() {
+    let (mut db, _data_dir) = migrated_db("candidate_recovery_converge_blocked").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "recovery-converge-blocked").await;
+    let (action_id, _authorization_receipt_id) =
+        authorize_candidate_recovery_action(db.pool(), &fixture, "recovery-converge-blocked-auth")
+            .await;
+    expire_candidate_recovery_fixture(db.pool(), &fixture).await;
+    trigger_candidate_lane_recovery(db.pool(), &fixture).await;
+
+    let recovery_case_id = Uuid::new_v5(&action_id, b"candidate-recovery:outcome-unknown:v1");
+    let (case_row_version, attempt_row_version, case_status): (i64, i64, String) = sqlx::query_as(
+        r#"SELECT recovery.row_version,recovery.attempt_row_version,recovery.status
+                 FROM candidate_recovery_cases recovery
+                WHERE recovery.id=$1 AND recovery.operation_id=$2"#,
+    )
+    .bind(recovery_case_id)
+    .bind(fixture.attack.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load open outcome-unknown recovery case");
+    assert_eq!(case_status, "open");
+    let operator_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM operator_principals WHERE principal_kind='local_operator' AND active",
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("load trusted recovery operator");
+    let recorded = resolve_candidate_recovery(
+        db.pool(),
+        ResolveCandidateRecovery {
+            request_id: "recovery-converge-blocked-decision".to_string(),
+            operation_id: fixture.attack.operation_id,
+            recovery_case_id,
+            expected_row_version: case_row_version,
+            expected_attempt_row_version: attempt_row_version,
+            resolved_by: operator_id,
+            resolution: CandidateRecoveryResolution::TerminalizeBlockedOutcomeUnknown,
+            evidence_ids: vec![],
+        },
+    )
+    .await
+    .expect("record blocked outcome-unknown recovery decision");
+    assert_eq!(recorded.recovery_case.status, "decision_recorded");
+
+    let converged =
+        converge_candidate_recovery(db.pool(), fixture.attack.operation_id, recovery_case_id)
+            .await
+            .expect("converge blocked outcome-unknown recovery decision");
+    assert!(!converged.replayed);
+    assert!(!converged.candidate_reopened);
+    assert_eq!(converged.recovery_case.status, "resolved");
+    assert_eq!(converged.recovery_case.row_version, case_row_version + 2);
+    let terminalized = converged
+        .terminalized
+        .expect("blocked recovery must return terminal truth");
+    assert_eq!(terminalized.attempt_id, fixture.claimed.attempt.id);
+    assert_eq!(terminalized.status, "blocked");
+
+    type RecoveryTerminalProjection = (
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<Uuid>,
+        String,
+        Option<String>,
+        Option<Uuid>,
+    );
+    let terminal: RecoveryTerminalProjection = sqlx::query_as(
+        r#"SELECT attempt.status,attempt.result_json->>'blocker_reason_code',
+                  candidate.disposition,worker.status,candidate.terminal_attempt_id,
+                  recovery.status,recovery.resolution_kind,lane.stage_worker_run_id
+             FROM candidate_attempts attempt
+             JOIN attack_candidates candidate ON candidate.candidate_id=attempt.candidate_id
+             JOIN stage_worker_runs worker ON worker.id=attempt.stage_worker_run_id
+             JOIN candidate_recovery_cases recovery
+               ON recovery.attempt_id=attempt.id AND recovery.id=$2
+             CROSS JOIN attack_execution_lanes lane
+            WHERE attempt.id=$1 AND lane.lane_key='global:exploit'"#,
+    )
+    .bind(fixture.claimed.attempt.id)
+    .bind(recovery_case_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load converged recovery terminal projection");
+    assert_eq!(terminal.0, "blocked");
+    assert_eq!(terminal.1.as_deref(), Some("operator_outcome_unknown"));
+    assert_eq!(terminal.2, "blocked");
+    assert_eq!(terminal.3, "exhausted");
+    assert_eq!(terminal.4, Some(fixture.claimed.attempt.id));
+    assert_eq!(terminal.5, "resolved");
+    assert_eq!(
+        terminal.6.as_deref(),
+        Some("terminalize_blocked_outcome_unknown")
+    );
+    assert_eq!(terminal.7, None);
+
+    let replay =
+        converge_candidate_recovery(db.pool(), fixture.attack.operation_id, recovery_case_id)
+            .await
+            .expect("replay converged Candidate recovery");
+    assert!(replay.replayed);
+    assert_eq!(replay.recovery_case.status, "resolved");
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn expired_candidate_start_abandons_attempt_and_reopens_review() {
+    let (mut db, _data_dir) = migrated_db("candidate_start_before_reaper").await;
+    let attack = seed_attack_fixture(db.pool()).await;
+    let candidate = seed_candidate(db.pool(), &attack, attack.org_a).await;
+    mark_candidate_wave_review_ready(db.pool(), &attack).await;
+    let start_before = chrono::Utc::now() + chrono::Duration::milliseconds(1_500);
+    let reviewed = review_wave_candidates(
+        db.pool(),
+        ReviewCandidateBatch {
+            operation_id: attack.operation_id,
+            wave_run_id: attack.wave_run_id,
+            decisions: vec![CandidateReviewDecision {
+                candidate_id: candidate.candidate_id,
+                expected_candidate_plan_hash:
+                    "sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5"
+                        .to_string(),
+                expected_candidate_row_version: 0,
+                approve: true,
+                start_before: Some(start_before),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            }],
+        },
+    )
+    .await
+    .expect("approve Candidate with a bounded start-before deadline");
+    assert!(reviewed.state.review_closed);
+    let approval_id = reviewed.approvals[0].id;
+    let (stage_execution_id, stage_run_unit_id) =
+        seed_verification_unit(db.pool(), &attack, attack.org_a).await;
+    let claimed = claim_next_candidate_attempt(
+        db.pool(),
+        CandidateClaimQuery {
+            operation_id: attack.operation_id,
+            scope_snapshot_id: attack.scope_snapshot_id,
+            wave_run_id: attack.wave_run_id,
+            wave_unit_id: attack.org_a.wave_unit_id,
+            organization_id: attack.org_a.organization_id,
+            verification_stage_execution_id: stage_execution_id,
+            verification_stage_run_unit_id: stage_run_unit_id,
+            lease_owner: "candidate-start-before-reaper".to_string(),
+            lease_seconds: 120,
+        },
+    )
+    .await
+    .expect("claim Candidate before start-before deadline")
+    .expect("approved Candidate must be claimable before start-before deadline");
+    let preconditions: (i64, i64) = sqlx::query_as(
+        r#"SELECT
+               (SELECT COUNT(*) FROM candidate_attempt_actions WHERE attempt_id=$1),
+               (SELECT COUNT(*) FROM candidate_attempt_terminal_intents WHERE attempt_id=$1)"#,
+    )
+    .bind(claimed.attempt.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("verify unstarted Candidate recovery preconditions");
+    assert_eq!(preconditions, (0, 0));
+
+    let remaining = start_before - chrono::Utc::now();
+    if let Ok(wait) = remaining.to_std() {
+        tokio::time::sleep(wait + std::time::Duration::from_millis(150)).await;
+    }
+    let expired = expire_candidate_starts_before_claim(db.pool(), attack.operation_id)
+        .await
+        .expect("reap Candidate whose start-before deadline elapsed");
+    assert_eq!(expired, 1);
+
+    type StartExpiryProjection = (
+        String,
+        bool,
+        String,
+        String,
+        String,
+        bool,
+        String,
+        String,
+        Option<Uuid>,
+    );
+    let state: StartExpiryProjection = sqlx::query_as(
+        r#"SELECT attempt.status,attempt.result_json IS NULL,worker.status,
+                  approval.status,candidate.disposition,unit.review_closed,
+                  wave.status,barrier.status,lane.stage_worker_run_id
+             FROM candidate_attempts attempt
+             JOIN stage_worker_runs worker ON worker.id=attempt.stage_worker_run_id
+             JOIN attack_candidate_approvals approval ON approval.id=attempt.approval_id
+             JOIN attack_candidates candidate ON candidate.candidate_id=attempt.candidate_id
+             JOIN attack_wave_units unit ON unit.id=attempt.wave_unit_id
+             JOIN attack_wave_runs wave ON wave.id=attempt.wave_run_id
+             JOIN candidate_review_barriers barrier ON barrier.wave_run_id=attempt.wave_run_id
+             CROSS JOIN attack_execution_lanes lane
+            WHERE attempt.id=$1 AND approval.id=$2
+              AND lane.lane_key='global:exploit'"#,
+    )
+    .bind(claimed.attempt.id)
+    .bind(approval_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load Candidate start-before expiry projection");
+    assert_eq!(state.0, "abandoned");
+    assert!(state.1, "abandoned Attempt must not fabricate a result");
+    assert_eq!(state.2, "superseded");
+    assert_eq!(state.3, "expired");
+    assert_eq!(state.4, "proposed");
+    assert!(
+        !state.5,
+        "expired Candidate must reopen its WaveUnit review"
+    );
+    assert_eq!(state.6, "review");
+    assert_eq!(state.7, "open");
+    assert_eq!(state.8, None);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn expired_unclaimed_candidate_start_reopens_review_without_creating_attempt() {
+    let (mut db, _data_dir) = migrated_db("candidate_unclaimed_start_before_reaper").await;
+    let attack = seed_attack_fixture(db.pool()).await;
+    let candidate = seed_candidate(db.pool(), &attack, attack.org_a).await;
+    mark_candidate_wave_review_ready(db.pool(), &attack).await;
+    let start_before = chrono::Utc::now() + chrono::Duration::milliseconds(1_500);
+    let reviewed = review_wave_candidates(
+        db.pool(),
+        ReviewCandidateBatch {
+            operation_id: attack.operation_id,
+            wave_run_id: attack.wave_run_id,
+            decisions: vec![CandidateReviewDecision {
+                candidate_id: candidate.candidate_id,
+                expected_candidate_plan_hash:
+                    "sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5"
+                        .to_string(),
+                expected_candidate_row_version: 0,
+                approve: true,
+                start_before: Some(start_before),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            }],
+        },
+    )
+    .await
+    .expect("approve unclaimed Candidate with a bounded start-before deadline");
+    assert!(reviewed.state.review_closed);
+    let approval_id = reviewed.approvals[0].id;
+    let attempt_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM candidate_attempts WHERE approval_id=$1")
+            .bind(approval_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("count Candidate Attempts before unclaimed expiry");
+    assert_eq!(attempt_count, 0, "expiry fixture must remain unclaimed");
+
+    let remaining = start_before - chrono::Utc::now();
+    if let Ok(wait) = remaining.to_std() {
+        tokio::time::sleep(wait + std::time::Duration::from_millis(150)).await;
+    }
+    let expired = expire_candidate_starts_before_claim(db.pool(), attack.operation_id)
+        .await
+        .expect("expire unclaimed Candidate start-before deadline");
+    assert_eq!(expired, 1);
+
+    type UnclaimedStartExpiryProjection = (String, String, bool, String, String, i64);
+    let state: UnclaimedStartExpiryProjection = sqlx::query_as(
+        r#"SELECT approval.status,candidate.disposition,unit.review_closed,
+                  wave.status,barrier.status,
+                  (SELECT COUNT(*) FROM candidate_attempts counted
+                    WHERE counted.approval_id=approval.id)
+             FROM attack_candidate_approvals approval
+             JOIN attack_candidates candidate ON candidate.candidate_id=approval.candidate_id
+             JOIN attack_wave_units unit ON unit.id=approval.wave_unit_id
+             JOIN attack_wave_runs wave ON wave.id=approval.wave_run_id
+             JOIN candidate_review_barriers barrier ON barrier.wave_run_id=approval.wave_run_id
+            WHERE approval.id=$1"#,
+    )
+    .bind(approval_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load unclaimed Candidate start-before expiry projection");
+    assert_eq!(state.0, "expired");
+    assert_eq!(state.1, "proposed");
+    assert!(
+        !state.2,
+        "expired unclaimed Candidate must reopen its WaveUnit review"
+    );
+    assert_eq!(state.3, "review");
+    assert_eq!(state.4, "open");
+    assert_eq!(state.5, 0, "expiry must not synthesize a CandidateAttempt");
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn pending_candidate_terminal_intent_recovers_all_post_submit_crash_windows() {
+    let (mut db, _data_dir) = migrated_db("candidate_pending_intent_crash_recovery").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "pending-intent-recovery").await;
+    sqlx::query(
+        "UPDATE stage_runs
+            SET status='completed',completed_at=NOW()
+          WHERE operation_id=$1 AND id<>$2 AND status='started'",
+    )
+    .bind(fixture.attack.operation_id)
+    .bind(fixture.stage_execution_id)
+    .execute(db.pool())
+    .await
+    .expect("leave one active Verification StageExecution for recovery");
+    sqlx::query("UPDATE operation_state SET current_stage='verification' WHERE operation_id=$1")
+        .bind(fixture.attack.operation_id)
+        .execute(db.pool())
+        .await
+        .expect("advance pending-intent fixture runtime cursor");
+
+    let (action_id, _authorization_receipt_id) = authorize_candidate_recovery_action(
+        db.pool(),
+        &fixture,
+        "pending-intent-recovery-action-auth",
+    )
+    .await;
+    sqlx::query(
+        "UPDATE candidate_attempt_actions
+            SET status='completed',outcome='{}'::jsonb,outcome_hash='sha256:action-result',
+                completed_at=NOW(),updated_at=NOW()
+          WHERE id=$1 AND status='started'",
+    )
+    .bind(action_id)
+    .execute(db.pool())
+    .await
+    .expect("complete the one authorized external action before submit");
+
+    let worker_id = fixture.claimed.worker.id;
+    let lease_token = fixture
+        .claimed
+        .worker
+        .lease_token
+        .expect("pending-intent Worker lease");
+    let tool_call_record_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO tool_calls(
+               id,call_id,session_id,task_id,agent,name,args,status,
+               operation_id,stage_execution_id,stage_run_unit_id,worker_run_id,
+               organization_id,attempt_epoch,lease_token)
+           VALUES($1,'pending-intent-submit-call',$2,$3,'pentester',
+                  'submit_candidate_attempt','{"disposition":"blocked"}'::jsonb,'running',
+                  $3,$4,$5,$6,$7,$8,$9)"#,
+    )
+    .bind(tool_call_record_id)
+    .bind(fixture.attack.session_id)
+    .bind(fixture.attack.operation_id)
+    .bind(fixture.stage_execution_id)
+    .bind(fixture.stage_run_unit_id)
+    .bind(worker_id)
+    .bind(fixture.attack.org_a.organization_id)
+    .bind(fixture.claimed.worker.attempt_epoch)
+    .bind(lease_token)
+    .execute(db.pool())
+    .await
+    .expect("insert unfinished submit tool call");
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET active_tool_call_id=$2,active_tool_started_at=NOW(),updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(worker_id)
+    .bind(tool_call_record_id)
+    .execute(db.pool())
+    .await
+    .expect("bind unfinished submit tool to Worker");
+
+    let submitted_result = serde_json::json!({
+        "disposition": "blocked",
+        "blocker_reason_code": "bounded_probe_inconclusive",
+        "proof_evidence_ids": [],
+        "refutation_evidence_ids": [],
+        "blocker_evidence_ids": [],
+        "fact_deltas": []
+    });
+    let tool_result_text = serde_json::to_string(&serde_json::json!({
+        "ok": true,
+        "terminalization_pending": true,
+        "attempt_id": fixture.claimed.attempt.id,
+    }))
+    .expect("serialize immutable submit ToolResult");
+    let mut intent_tx = db.pool().begin().await.expect("begin pending intent");
+    let intent = record_candidate_terminal_intent(
+        &mut intent_tx,
+        RecordCandidateTerminalIntent {
+            request_id: "pending-intent-recovery-intent".to_string(),
+            operation_id: fixture.attack.operation_id,
+            organization_id: fixture.attack.org_a.organization_id,
+            candidate_id: fixture.claimed.attempt.candidate_id,
+            approval_id: fixture.approval_id,
+            attempt_id: fixture.claimed.attempt.id,
+            candidate_plan_hash: fixture.claimed.attempt.candidate_plan_hash.clone(),
+            worker_run_id: worker_id,
+            lease_token,
+            attempt_epoch: fixture.claimed.worker.attempt_epoch,
+            tool_call_record_id,
+            disposition: "blocked".to_string(),
+            submitted_result,
+            evidence: vec![],
+            tool_result_text: tool_result_text.clone(),
+        },
+    )
+    .await
+    .expect("commit immutable pending TerminalIntent");
+    intent_tx.commit().await.expect("commit pending intent");
+
+    // Crash window A: the intent committed, but the generic tool lifecycle did
+    // not finish. The ordinary worker reaper may already have parked the exact
+    // Worker while preserving its original lease identity.
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET status='recovery_required',
+                lease_acquired_at=NOW()-INTERVAL '2 minutes',
+                heartbeat_at=NOW()-INTERVAL '90 seconds',
+                lease_expires_at=NOW()-INTERVAL '1 minute',updated_at=NOW()
+          WHERE id=$1 AND active_tool_call_id=$2",
+    )
+    .bind(worker_id)
+    .bind(tool_call_record_id)
+    .execute(db.pool())
+    .await
+    .expect("park expired Worker with unfinished exact submit tool");
+    sqlx::query(
+        "UPDATE attack_execution_lanes
+            SET lease_expires_at=NOW()-INTERVAL '1 minute',updated_at=NOW()
+          WHERE lane_key='global:exploit' AND stage_worker_run_id=$1",
+    )
+    .bind(worker_id)
+    .execute(db.pool())
+    .await
+    .expect("expire original Candidate lane");
+
+    let recovery = RecoverCandidateTerminalIntent {
+        operation_id: fixture.attack.operation_id,
+        intent_id: intent.intent.id,
+        expected_intent_hash: intent.intent.intent_hash.clone(),
+    };
+    let recovered = recover_candidate_terminal_intent_barrier(db.pool(), recovery.clone())
+        .await
+        .expect("server must recover exact ToolResult/checkpoint/barrier without an action replay");
+    assert!(!recovered.replayed);
+    assert!(recovered.tool_reconciled);
+    assert!(recovered.worker_reconciled);
+    assert_eq!(recovered.barrier.intent_id, intent.intent.id);
+    assert_eq!(
+        recovered.barrier.checkpoint_version,
+        fixture.claimed.worker.checkpoint_version + 1
+    );
+
+    type RecoveredProjection = (
+        String,
+        Option<String>,
+        String,
+        Option<Uuid>,
+        i64,
+        serde_json::Value,
+        serde_json::Value,
+        i64,
+        String,
+        Option<String>,
+    );
+    let recovered_state: RecoveredProjection = sqlx::query_as(
+        r#"SELECT tool.status::TEXT,tool.result,worker.status,
+                  worker.active_tool_call_id,worker.checkpoint_version,
+                  worker.checkpoint,chain.chain,
+                  (SELECT COUNT(*) FROM candidate_attempt_actions action
+                    WHERE action.attempt_id=intent.attempt_id),
+                  (SELECT status FROM candidate_attempt_actions action
+                    WHERE action.id=$3),
+                  (SELECT outcome_hash FROM candidate_attempt_actions action
+                    WHERE action.id=$3)
+             FROM candidate_attempt_terminal_intents intent
+             JOIN tool_calls tool ON tool.id=intent.tool_call_record_id
+             JOIN stage_worker_runs worker ON worker.id=intent.worker_run_id
+             JOIN message_chains chain ON chain.id=worker.message_chain_id
+            WHERE intent.id=$1 AND worker.id=$2"#,
+    )
+    .bind(intent.intent.id)
+    .bind(worker_id)
+    .bind(action_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load recovered terminal protocol projection");
+    assert_eq!(recovered_state.0, "finished");
+    assert_eq!(
+        recovered_state.1.as_deref(),
+        Some(tool_result_text.as_str())
+    );
+    assert_eq!(recovered_state.2, "recovery_required");
+    assert_eq!(recovered_state.3, None);
+    assert_eq!(
+        recovered_state.4,
+        fixture.claimed.worker.checkpoint_version + 1
+    );
+    assert_eq!(recovered_state.5, recovered_state.6);
+    assert_eq!(
+        recovered_state.7, 1,
+        "recovery must not create another Action"
+    );
+    assert_eq!(recovered_state.8, "completed");
+    assert_eq!(recovered_state.9.as_deref(), Some("sha256:action-result"));
+    let recovered_chain = recovered_state
+        .6
+        .as_array()
+        .expect("recovered chain must remain provider-shaped");
+    assert!(recovered_chain.len() >= 2);
+    assert_eq!(
+        recovered_chain[recovered_chain.len() - 2]["role"],
+        "assistant"
+    );
+    assert_eq!(recovered_chain[recovered_chain.len() - 1]["role"], "user");
+
+    let barrier_replay = recover_candidate_terminal_intent_barrier(db.pool(), recovery)
+        .await
+        .expect("recovery response loss must replay the exact barrier");
+    assert!(barrier_replay.replayed);
+    assert!(!barrier_replay.tool_reconciled);
+    assert!(!barrier_replay.worker_reconciled);
+    assert_eq!(barrier_replay.barrier.id, recovered.barrier.id);
+
+    // Crash window C: an ordinary reaper may have already removed the expired
+    // executor lease and lane after the barrier became durable. Terminalization
+    // authority must come from intent+barrier, not from resurrecting that lease.
+    sqlx::query(
+        "UPDATE attack_execution_lanes
+            SET stage_worker_run_id=NULL,lease_token=NULL,lease_owner=NULL,
+                lease_expires_at=NULL,updated_at=NOW()
+          WHERE lane_key='global:exploit' AND stage_worker_run_id=$1",
+    )
+    .bind(worker_id)
+    .execute(db.pool())
+    .await
+    .expect("clear expired original lane before server terminalization");
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET status='queued',lease_token=NULL,lease_owner=NULL,
+                lease_acquired_at=NULL,lease_expires_at=NULL,heartbeat_at=NULL,
+                updated_at=NOW()
+          WHERE id=$1 AND status='recovery_required' AND active_tool_call_id IS NULL",
+    )
+    .bind(worker_id)
+    .execute(db.pool())
+    .await
+    .expect("clear expired original Worker lease before server terminalization");
+
+    let terminal_command = TerminalizeCandidateTerminalIntent {
+        request_id: "pending-intent-recovery-terminal".to_string(),
+        operation_id: fixture.attack.operation_id,
+        intent_id: intent.intent.id,
+        barrier_id: recovered.barrier.id,
+    };
+    let terminal = terminalize_candidate_terminal_intent(db.pool(), terminal_command.clone())
+        .await
+        .expect("intent+barrier must terminalize without the expired executor lease");
+    assert!(!terminal.replayed);
+    assert_eq!(terminal.receipt.disposition, "blocked");
+    let terminal_replay = terminalize_candidate_terminal_intent(db.pool(), terminal_command)
+        .await
+        .expect("terminalizer response loss must replay the exact terminal receipt");
+    assert!(terminal_replay.replayed);
+    assert_eq!(terminal_replay.receipt.id, terminal.receipt.id);
+
+    let final_state: (String, String, Option<Uuid>, i64, String, Option<String>) = sqlx::query_as(
+        r#"SELECT attempt.status,worker.status,lane.stage_worker_run_id,
+                      (SELECT COUNT(*) FROM candidate_attempt_actions action
+                        WHERE action.attempt_id=attempt.id),
+                      (SELECT status FROM candidate_attempt_actions action WHERE action.id=$2),
+                      (SELECT outcome_hash FROM candidate_attempt_actions action WHERE action.id=$2)
+                 FROM candidate_attempts attempt
+                 JOIN stage_worker_runs worker ON worker.id=attempt.stage_worker_run_id
+                 CROSS JOIN attack_execution_lanes lane
+                WHERE attempt.id=$1 AND lane.lane_key='global:exploit'"#,
+    )
+    .bind(fixture.claimed.attempt.id)
+    .bind(action_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load final recovered Candidate state");
+    assert_eq!(final_state.0, "blocked");
+    assert_eq!(final_state.1, "passed");
+    assert_eq!(final_state.2, None);
+    assert_eq!(final_state.3, 1);
+    assert_eq!(final_state.4, "completed");
+    assert_eq!(final_state.5.as_deref(), Some("sha256:action-result"));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn pending_candidate_terminal_recovery_reuses_exact_checkpointed_pair_and_rejects_drift() {
+    let (mut db, _data_dir) = migrated_db("candidate_checkpointed_pair_recovery").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "checkpointed-pair-recovery").await;
+    sqlx::query(
+        "UPDATE stage_runs
+            SET status='completed',completed_at=NOW()
+          WHERE operation_id=$1 AND id<>$2 AND status='started'",
+    )
+    .bind(fixture.attack.operation_id)
+    .bind(fixture.stage_execution_id)
+    .execute(db.pool())
+    .await
+    .expect("leave one active Verification StageExecution");
+    sqlx::query("UPDATE operation_state SET current_stage='verification' WHERE operation_id=$1")
+        .bind(fixture.attack.operation_id)
+        .execute(db.pool())
+        .await
+        .expect("advance exact-pair fixture runtime cursor");
+    let (action_id, _authorization_receipt_id) =
+        authorize_candidate_recovery_action(db.pool(), &fixture, "checkpointed-pair-action-auth")
+            .await;
+    sqlx::query(
+        "UPDATE candidate_attempt_actions
+            SET status='completed',outcome='{}'::jsonb,outcome_hash='sha256:action-result',
+                completed_at=NOW(),updated_at=NOW()
+          WHERE id=$1 AND status='started'",
+    )
+    .bind(action_id)
+    .execute(db.pool())
+    .await
+    .expect("complete exact-pair action");
+
+    let worker_id = fixture.claimed.worker.id;
+    let lease_token = fixture
+        .claimed
+        .worker
+        .lease_token
+        .expect("exact-pair Worker lease");
+    let tool_call_record_id = Uuid::new_v4();
+    let tool_args = serde_json::json!({"disposition": "blocked"});
+    sqlx::query(
+        r#"INSERT INTO tool_calls(
+               id,call_id,session_id,task_id,agent,name,args,status,
+               operation_id,stage_execution_id,stage_run_unit_id,worker_run_id,
+               organization_id,attempt_epoch,lease_token)
+           VALUES($1,'checkpointed-pair-submit-call',$2,$3,'pentester',
+                  'submit_candidate_attempt',$10,'running',$3,$4,$5,$6,$7,$8,$9)"#,
+    )
+    .bind(tool_call_record_id)
+    .bind(fixture.attack.session_id)
+    .bind(fixture.attack.operation_id)
+    .bind(fixture.stage_execution_id)
+    .bind(fixture.stage_run_unit_id)
+    .bind(worker_id)
+    .bind(fixture.attack.org_a.organization_id)
+    .bind(fixture.claimed.worker.attempt_epoch)
+    .bind(lease_token)
+    .bind(&tool_args)
+    .execute(db.pool())
+    .await
+    .expect("insert exact-pair submit tool");
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET active_tool_call_id=$2,active_tool_started_at=NOW(),updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(worker_id)
+    .bind(tool_call_record_id)
+    .execute(db.pool())
+    .await
+    .expect("bind exact-pair submit tool");
+    let submitted_result = serde_json::json!({
+        "disposition": "blocked",
+        "blocker_reason_code": "bounded_probe_inconclusive",
+        "proof_evidence_ids": [],
+        "refutation_evidence_ids": [],
+        "blocker_evidence_ids": [],
+        "fact_deltas": []
+    });
+    let tool_result_text = serde_json::to_string(&serde_json::json!({
+        "ok": true,
+        "terminalization_pending": true,
+        "attempt_id": fixture.claimed.attempt.id,
+    }))
+    .expect("serialize exact-pair ToolResult");
+    let mut intent_tx = db.pool().begin().await.expect("begin exact-pair intent");
+    let intent = record_candidate_terminal_intent(
+        &mut intent_tx,
+        RecordCandidateTerminalIntent {
+            request_id: "checkpointed-pair-intent".to_string(),
+            operation_id: fixture.attack.operation_id,
+            organization_id: fixture.attack.org_a.organization_id,
+            candidate_id: fixture.claimed.attempt.candidate_id,
+            approval_id: fixture.approval_id,
+            attempt_id: fixture.claimed.attempt.id,
+            candidate_plan_hash: fixture.claimed.attempt.candidate_plan_hash.clone(),
+            worker_run_id: worker_id,
+            lease_token,
+            attempt_epoch: fixture.claimed.worker.attempt_epoch,
+            tool_call_record_id,
+            disposition: "blocked".to_string(),
+            submitted_result,
+            evidence: vec![],
+            tool_result_text: tool_result_text.clone(),
+        },
+    )
+    .await
+    .expect("record exact-pair intent");
+    intent_tx.commit().await.expect("commit exact-pair intent");
+
+    sqlx::query("UPDATE tool_calls SET status='finished',result=$2,updated_at=NOW() WHERE id=$1")
+        .bind(tool_call_record_id)
+        .bind(&tool_result_text)
+        .execute(db.pool())
+        .await
+        .expect("finish exact-pair tool ledger");
+    let mut chain: serde_json::Value =
+        sqlx::query_scalar("SELECT chain FROM message_chains WHERE id=$1")
+            .bind(
+                fixture
+                    .claimed
+                    .worker
+                    .message_chain_id
+                    .expect("exact-pair chain"),
+            )
+            .fetch_one(db.pool())
+            .await
+            .expect("load exact-pair chain");
+    let provider_call_id = "provider-exact-submit-call";
+    chain
+        .as_array_mut()
+        .expect("exact-pair chain array")
+        .extend([
+            serde_json::json!({
+                "role": "assistant",
+                "id": null,
+                "content": [{
+                    "id": "provider-internal-submit-call",
+                    "call_id": provider_call_id,
+                    "function": {
+                        "name": "submit_candidate_attempt",
+                        "arguments": tool_args,
+                    },
+                    "signature": null,
+                    "additional_params": null,
+                }],
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [{
+                    "type": "toolresult",
+                    "id": "provider-internal-submit-call",
+                    "call_id": provider_call_id,
+                    "content": [{"type": "text", "text": "drifted-result"}],
+                }],
+            }),
+        ]);
+    let checkpoint_version: i64 = sqlx::query_scalar(
+        "UPDATE stage_worker_runs
+            SET active_tool_call_id=NULL,active_tool_started_at=NULL,
+                checkpoint=$2,checkpoint_version=checkpoint_version+1,updated_at=NOW()
+          WHERE id=$1 RETURNING checkpoint_version",
+    )
+    .bind(worker_id)
+    .bind(&chain)
+    .fetch_one(db.pool())
+    .await
+    .expect("persist drifted checkpoint pair before barrier");
+    sqlx::query("UPDATE message_chains SET chain=$2,updated_at=NOW() WHERE id=$1")
+        .bind(fixture.claimed.worker.message_chain_id.expect("chain id"))
+        .bind(&chain)
+        .execute(db.pool())
+        .await
+        .expect("persist drifted chain pair before barrier");
+    let recovery = RecoverCandidateTerminalIntent {
+        operation_id: fixture.attack.operation_id,
+        intent_id: intent.intent.id,
+        expected_intent_hash: intent.intent.intent_hash.clone(),
+    };
+    assert!(
+        recover_candidate_terminal_intent_barrier(db.pool(), recovery.clone())
+            .await
+            .is_err(),
+        "a checkpointed submit pair with ToolResult drift must fail closed"
+    );
+    let barrier_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM candidate_attempt_terminal_barriers WHERE intent_id=$1",
+    )
+    .bind(intent.intent.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count barriers after rejected drift");
+    assert_eq!(barrier_count, 0);
+
+    let terminal_result_index = chain.as_array().expect("chain array").len() - 1;
+    chain[terminal_result_index]["content"][0]["content"][0]["text"] =
+        serde_json::json!(tool_result_text);
+    sqlx::query("UPDATE message_chains SET chain=$2,updated_at=NOW() WHERE id=$1")
+        .bind(fixture.claimed.worker.message_chain_id.expect("chain id"))
+        .bind(&chain)
+        .execute(db.pool())
+        .await
+        .expect("repair exact chain pair");
+    sqlx::query("UPDATE stage_worker_runs SET checkpoint=$2,updated_at=NOW() WHERE id=$1")
+        .bind(worker_id)
+        .bind(&chain)
+        .execute(db.pool())
+        .await
+        .expect("repair exact checkpoint pair");
+    let exact_chain_before = chain.clone();
+    let recovered = recover_candidate_terminal_intent_barrier(db.pool(), recovery)
+        .await
+        .expect("exact already-checkpointed pair must create only the missing barrier");
+    assert!(!recovered.replayed);
+    assert!(!recovered.tool_reconciled);
+    assert!(!recovered.worker_reconciled);
+    assert_eq!(recovered.barrier.checkpoint_version, checkpoint_version);
+    let after: (serde_json::Value, serde_json::Value, i64) = sqlx::query_as(
+        r#"SELECT chain.chain,worker.checkpoint,worker.checkpoint_version
+             FROM stage_worker_runs worker
+             JOIN message_chains chain ON chain.id=worker.message_chain_id
+            WHERE worker.id=$1"#,
+    )
+    .bind(worker_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load exact pair after missing-barrier recovery");
+    assert_eq!(after.0, exact_chain_before);
+    assert_eq!(after.1, exact_chain_before);
+    assert_eq!(after.2, checkpoint_version);
+    assert_eq!(
+        after
+            .0
+            .as_array()
+            .expect("exact chain array")
+            .iter()
+            .filter(|message| {
+                message
+                    .get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .any(|content| {
+                        content
+                            .get("function")
+                            .and_then(|function| function.get("name"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some("submit_candidate_attempt")
+                    })
+            })
+            .count(),
+        1,
+        "recovery must not append a duplicate submit pair"
+    );
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn retry_release_rejects_a_terminal_action_and_preserves_bound_authority() {
+    let (mut db, _data_dir) = migrated_db("candidate_release_terminal_action").await;
+    let fixture =
+        seed_claimed_candidate_recovery_fixture(db.pool(), "release-terminal-action").await;
+    let (action_id, _receipt_id) =
+        authorize_candidate_recovery_action(db.pool(), &fixture, "release-terminal-action-auth")
+            .await;
+    let lease_token = fixture
+        .claimed
+        .worker
+        .lease_token
+        .expect("release fixture lease");
+    let release = CandidateExecutionRelease {
+        operation_id: fixture.attack.operation_id,
+        scope_snapshot_id: fixture.attack.scope_snapshot_id,
+        wave_run_id: fixture.attack.wave_run_id,
+        wave_unit_id: fixture.attack.org_a.wave_unit_id,
+        organization_id: fixture.attack.org_a.organization_id,
+        attempt_id: fixture.claimed.attempt.id,
+        worker_run_id: fixture.claimed.worker.id,
+        stage_execution_id: fixture.stage_execution_id,
+        stage_run_unit_id: fixture.stage_run_unit_id,
+        lease_token,
+        lease_owner: "release-terminal-action".to_string(),
+        attempt_epoch: fixture.claimed.worker.attempt_epoch,
+        expected_checkpoint_version: fixture.claimed.worker.checkpoint_version,
+    };
+    assert_eq!(
+        candidate_execution_continuation(db.pool(), &release)
+            .await
+            .expect("classify started-action continuation"),
+        CandidateExecutionContinuation::RecoveryRequired
+    );
+    let started_release_error = release_candidate_execution(db.pool(), release.clone())
+        .await
+        .expect_err("a started action must never be released or replayed");
+    assert!(started_release_error
+        .to_string()
+        .contains("entirely unstarted planned action journal"));
+    sqlx::query(
+        "UPDATE candidate_attempt_actions
+            SET status='completed',outcome='{}'::jsonb,outcome_hash='sha256:completed-once',
+                completed_at=NOW(),updated_at=NOW()
+          WHERE id=$1 AND status='started'",
+    )
+    .bind(action_id)
+    .execute(db.pool())
+    .await
+    .expect("complete side-effect action before provider failure");
+
+    let continuation = candidate_execution_continuation(db.pool(), &release)
+        .await
+        .expect("classify completed-action continuation");
+    assert_eq!(continuation, CandidateExecutionContinuation::SubmitOnly);
+    let error = release_candidate_execution(db.pool(), release)
+        .await
+        .expect_err("a completed action must never be rewritten as retryable failure");
+    assert!(
+        error
+            .to_string()
+            .contains("entirely unstarted planned action journal"),
+        "unexpected unsafe-release error: {error}"
+    );
+
+    let preserved: (String, String, String, Option<Uuid>) = sqlx::query_as(
+        r#"SELECT attempt.status,worker.status,action.status,lane.stage_worker_run_id
+             FROM candidate_attempts attempt
+             JOIN stage_worker_runs worker ON worker.id=attempt.stage_worker_run_id
+             JOIN candidate_attempt_actions action ON action.attempt_id=attempt.id
+             CROSS JOIN attack_execution_lanes lane
+            WHERE attempt.id=$1 AND action.id=$2 AND lane.lane_key='global:exploit'"#,
+    )
+    .bind(fixture.claimed.attempt.id)
+    .bind(action_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load authority after rejected retry release");
+    assert_eq!(preserved.0, "running");
+    assert_eq!(preserved.1, "running");
+    assert_eq!(preserved.2, "completed");
+    assert_eq!(preserved.3, Some(fixture.claimed.worker.id));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn approval_expiry_after_action_allows_finish_submit_and_terminalize() {
+    let (mut db, _data_dir) = migrated_db("candidate_expiry_after_action").await;
+    let attack = seed_attack_fixture(db.pool()).await;
+    let candidate = seed_candidate(db.pool(), &attack, attack.org_a).await;
+    mark_candidate_wave_review_ready(db.pool(), &attack).await;
+    let deadline = chrono::Utc::now() + chrono::Duration::milliseconds(1_500);
+    let reviewed = review_wave_candidates(
+        db.pool(),
+        ReviewCandidateBatch {
+            operation_id: attack.operation_id,
+            wave_run_id: attack.wave_run_id,
+            decisions: vec![CandidateReviewDecision {
+                candidate_id: candidate.candidate_id,
+                expected_candidate_plan_hash:
+                    "sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5"
+                        .to_string(),
+                expected_candidate_row_version: 0,
+                approve: true,
+                start_before: Some(deadline),
+                expires_at: Some(deadline),
+            }],
+        },
+    )
+    .await
+    .expect("approve Candidate with one short action-start boundary");
+    let approval_id = reviewed.approvals[0].id;
+    let (stage_execution_id, stage_run_unit_id) =
+        seed_verification_unit(db.pool(), &attack, attack.org_a).await;
+    let claimed = claim_next_candidate_attempt(
+        db.pool(),
+        CandidateClaimQuery {
+            operation_id: attack.operation_id,
+            scope_snapshot_id: attack.scope_snapshot_id,
+            wave_run_id: attack.wave_run_id,
+            wave_unit_id: attack.org_a.wave_unit_id,
+            organization_id: attack.org_a.organization_id,
+            verification_stage_execution_id: stage_execution_id,
+            verification_stage_run_unit_id: stage_run_unit_id,
+            lease_owner: "expiry-after-action".to_string(),
+            lease_seconds: 120,
+        },
+    )
+    .await
+    .expect("claim before action-start deadline")
+    .expect("Candidate must be claimable before action-start deadline");
+    let lease_token = claimed.worker.lease_token.expect("expiry action lease");
+    let started = begin_candidate_action(
+        db.pool(),
+        BeginCandidateAction {
+            operation_id: attack.operation_id,
+            stage_execution_id,
+            stage_run_unit_id,
+            organization_id: attack.org_a.organization_id,
+            worker_run_id: claimed.worker.id,
+            lease_token,
+            attempt_epoch: claimed.worker.attempt_epoch,
+            candidate_id: candidate.candidate_id,
+            approval_id,
+            attempt_id: claimed.attempt.id,
+            candidate_plan_hash: claimed.attempt.candidate_plan_hash.clone(),
+            workspace_path_sha256: "sha256:attack-v2".to_string(),
+            action_ordinal: 0,
+        },
+    )
+    .await
+    .expect("start action before approval boundary");
+    let action_id = match started {
+        CandidateActionStart::Authorized(action) => action.action_id,
+        other => panic!("expected fresh action authorization, got {other:?}"),
+    };
+
+    let remaining = deadline - chrono::Utc::now();
+    if let Ok(wait) = remaining.to_std() {
+        tokio::time::sleep(wait + std::time::Duration::from_millis(150)).await;
+    }
+    let deadlines_elapsed: bool = sqlx::query_scalar(
+        "SELECT start_before<=NOW() AND expires_at<=NOW()
+           FROM attack_candidate_approvals WHERE id=$1",
+    )
+    .bind(approval_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("check elapsed Candidate approval deadlines");
+    assert!(deadlines_elapsed);
+
+    finish_candidate_action(
+        db.pool(),
+        FinishCandidateAction {
+            operation_id: attack.operation_id,
+            stage_execution_id,
+            stage_run_unit_id,
+            organization_id: attack.org_a.organization_id,
+            worker_run_id: claimed.worker.id,
+            lease_token,
+            attempt_epoch: claimed.worker.attempt_epoch,
+            candidate_id: candidate.candidate_id,
+            approval_id,
+            attempt_id: claimed.attempt.id,
+            candidate_plan_hash: claimed.attempt.candidate_plan_hash.clone(),
+            action_id,
+            success: true,
+            outcome: serde_json::json!({"bounded_probe": "completed"}),
+            error_code: None,
+        },
+    )
+    .await
+    .expect("finish an already-authorized action after start-before expiry");
+
+    // Simulate process loss after the external action was durably completed
+    // but before the model submitted. Expired-lane recovery must reclaim this
+    // exact Attempt/chain in submit-only mode even though start_before elapsed.
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET lease_acquired_at=NOW()-INTERVAL '2 minutes',
+                heartbeat_at=NOW()-INTERVAL '90 seconds',
+                lease_expires_at=NOW()-INTERVAL '1 minute',updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(claimed.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("expire completed-action Worker lease");
+    sqlx::query(
+        "UPDATE attack_execution_lanes
+            SET lease_expires_at=NOW()-INTERVAL '1 minute',updated_at=NOW()
+          WHERE lane_key='global:exploit' AND stage_worker_run_id=$1",
+    )
+    .bind(claimed.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("expire completed-action global lane");
+    let resumed = claim_next_candidate_attempt(
+        db.pool(),
+        CandidateClaimQuery {
+            operation_id: attack.operation_id,
+            scope_snapshot_id: attack.scope_snapshot_id,
+            wave_run_id: attack.wave_run_id,
+            wave_unit_id: attack.org_a.wave_unit_id,
+            organization_id: attack.org_a.organization_id,
+            verification_stage_execution_id: stage_execution_id,
+            verification_stage_run_unit_id: stage_run_unit_id,
+            lease_owner: "expiry-after-action-submit-only".to_string(),
+            lease_seconds: 120,
+        },
+    )
+    .await
+    .expect("reclaim completed action after start-before expiry")
+    .expect("completed action must remain submit-only claimable");
+    assert_eq!(resumed.attempt.id, claimed.attempt.id);
+    assert_eq!(resumed.worker.id, claimed.worker.id);
+    assert_eq!(
+        resumed.worker.message_chain_id, claimed.worker.message_chain_id,
+        "submit-only recovery must preserve the exact verifier chain"
+    );
+    assert!(resumed.submit_only);
+    let resumed_lease_token = resumed
+        .worker
+        .lease_token
+        .expect("resumed submit-only lease");
+
+    let mut submission_tx = db.pool().begin().await.expect("begin expired submission");
+    let submitted = record_attempt_submission(
+        &mut submission_tx,
+        RecordAttemptSubmission {
+            operation_id: attack.operation_id,
+            scope_snapshot_id: attack.scope_snapshot_id,
+            wave_run_id: attack.wave_run_id,
+            wave_unit_id: attack.org_a.wave_unit_id,
+            organization_id: attack.org_a.organization_id,
+            candidate_id: candidate.candidate_id,
+            approval_id,
+            attempt_id: claimed.attempt.id,
+            candidate_plan_hash: claimed.attempt.candidate_plan_hash.clone(),
+            worker_run_id: resumed.worker.id,
+            stage_execution_id,
+            stage_run_unit_id,
+            lease_token: resumed_lease_token,
+            lease_owner: "expiry-after-action-submit-only".to_string(),
+            attempt_epoch: resumed.worker.attempt_epoch,
+            expected_checkpoint_version: resumed.worker.checkpoint_version,
+            result_json: serde_json::json!({
+                "disposition": "blocked",
+                "blocker_reason_code": "bounded_probe_inconclusive"
+            }),
+            evidence: Vec::new(),
+        },
+    )
+    .await
+    .expect("submit the durable terminal action journal after approval expiry");
+    submission_tx
+        .commit()
+        .await
+        .expect("commit expired Candidate submission");
+
+    let mut terminal_tx = db.pool().begin().await.expect("begin expired terminalizer");
+    let terminal = terminalize_candidate_attempt(
+        &mut terminal_tx,
+        TerminalizeCandidateAttempt {
+            operation_id: attack.operation_id,
+            scope_snapshot_id: attack.scope_snapshot_id,
+            wave_run_id: attack.wave_run_id,
+            wave_unit_id: attack.org_a.wave_unit_id,
+            organization_id: attack.org_a.organization_id,
+            candidate_id: candidate.candidate_id,
+            approval_id,
+            attempt_id: claimed.attempt.id,
+            candidate_plan_hash: claimed.attempt.candidate_plan_hash.clone(),
+            expected_result_hash: submitted.attempt.result_hash.expect("expired result hash"),
+            worker_run_id: resumed.worker.id,
+            stage_execution_id,
+            stage_run_unit_id,
+            lease_token: resumed_lease_token,
+            lease_owner: "expiry-after-action-submit-only".to_string(),
+            attempt_epoch: resumed.worker.attempt_epoch,
+            expected_checkpoint_version: resumed.worker.checkpoint_version,
+        },
+    )
+    .await
+    .expect("terminalize an already-executed action after approval expiry");
+    terminal_tx
+        .commit()
+        .await
+        .expect("commit expired Candidate terminalizer");
+    assert_eq!(terminal.status, "blocked");
+    assert_eq!(terminal.attempt_id, claimed.attempt.id);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn approval_start_before_expiry_blocks_a_new_action_on_an_existing_attempt() {
+    let (mut db, _data_dir) = migrated_db("candidate_expiry_blocks_new_action").await;
+    let attack = seed_attack_fixture(db.pool()).await;
+    let candidate = seed_candidate(db.pool(), &attack, attack.org_a).await;
+    mark_candidate_wave_review_ready(db.pool(), &attack).await;
+    let start_before = chrono::Utc::now() + chrono::Duration::milliseconds(1_500);
+    let reviewed = review_wave_candidates(
+        db.pool(),
+        ReviewCandidateBatch {
+            operation_id: attack.operation_id,
+            wave_run_id: attack.wave_run_id,
+            decisions: vec![CandidateReviewDecision {
+                candidate_id: candidate.candidate_id,
+                expected_candidate_plan_hash:
+                    "sha256:16452624f0a24a8f73f27cfe10e03d0e1ad46e65d662778a50096137be39c8b5"
+                        .to_string(),
+                expected_candidate_row_version: 0,
+                approve: true,
+                start_before: Some(start_before),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            }],
+        },
+    )
+    .await
+    .expect("approve Candidate before action-start boundary test");
+    let approval_id = reviewed.approvals[0].id;
+    let (stage_execution_id, stage_run_unit_id) =
+        seed_verification_unit(db.pool(), &attack, attack.org_a).await;
+    let claimed = claim_next_candidate_attempt(
+        db.pool(),
+        CandidateClaimQuery {
+            operation_id: attack.operation_id,
+            scope_snapshot_id: attack.scope_snapshot_id,
+            wave_run_id: attack.wave_run_id,
+            wave_unit_id: attack.org_a.wave_unit_id,
+            organization_id: attack.org_a.organization_id,
+            verification_stage_execution_id: stage_execution_id,
+            verification_stage_run_unit_id: stage_run_unit_id,
+            lease_owner: "expiry-block-new-action".to_string(),
+            lease_seconds: 120,
+        },
+    )
+    .await
+    .expect("claim Candidate before action-start deadline")
+    .expect("Candidate must be claimable before deadline");
+    let remaining = start_before - chrono::Utc::now();
+    if let Ok(wait) = remaining.to_std() {
+        tokio::time::sleep(wait + std::time::Duration::from_millis(150)).await;
+    }
+    let rejected = begin_candidate_action(
+        db.pool(),
+        BeginCandidateAction {
+            operation_id: attack.operation_id,
+            stage_execution_id,
+            stage_run_unit_id,
+            organization_id: attack.org_a.organization_id,
+            worker_run_id: claimed.worker.id,
+            lease_token: claimed.worker.lease_token.expect("new-action test lease"),
+            attempt_epoch: claimed.worker.attempt_epoch,
+            candidate_id: candidate.candidate_id,
+            approval_id,
+            attempt_id: claimed.attempt.id,
+            candidate_plan_hash: claimed.attempt.candidate_plan_hash.clone(),
+            workspace_path_sha256: "sha256:attack-v2".to_string(),
+            action_ordinal: 0,
+        },
+    )
+    .await;
+    assert!(
+        rejected.is_err(),
+        "expired start-before must block a new action"
+    );
+    let action_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM candidate_attempt_actions WHERE attempt_id=$1")
+            .bind(claimed.attempt.id)
+            .fetch_one(db.pool())
+            .await
+            .expect("count actions after expired start rejection");
+    assert_eq!(action_count, 0);
     db.stop().await;
 }

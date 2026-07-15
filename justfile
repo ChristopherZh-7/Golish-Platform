@@ -86,6 +86,7 @@ test-rust:
         echo "$output"
         exit 1
     fi
+    just normalize-generated-types
 
 # Run all Rust tests including the Tauri app crate (for CI/quality gate)
 test-rust-all:
@@ -96,6 +97,7 @@ test-rust-all:
         echo "$output"
         exit 1
     fi
+    just normalize-generated-types
 
 # Run Rust tests with output
 test-rust-verbose:
@@ -188,6 +190,15 @@ check-rust:
 # running their auto-generated `export_bindings_*` tests. See docs/design/2026-05-29-architecture-optimization.md §4.2.
 gen-types:
     @cd backend && cargo test --workspace export_bindings -q
+    @just normalize-generated-types
+
+[private]
+normalize-generated-types:
+    # ts-rs emits trailing spaces before documentation blocks in these large
+    # aggregate unions. Keep generated output deterministic and diff-checkable.
+    @node frontend/scripts/normalize-ts-rs-bindings.mjs \
+        frontend/lib/generated/GeneratedAiEvent.ts \
+        frontend/lib/generated/GeneratedHarnessTraceKind.ts
 
 # Fail if the committed ts-rs bindings drift from the Rust source of truth (I5).
 check-types: gen-types

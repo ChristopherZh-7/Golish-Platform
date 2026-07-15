@@ -47,6 +47,7 @@ import * as securityAnalysis from "./security-analysis";
 import * as settings from "./settings";
 import * as shell from "./shell";
 import * as sidecar from "./sidecar";
+import * as stageTeam from "./stage-team";
 import * as targets from "./targets";
 import * as temporalGraph from "./temporal-graph";
 import * as vault from "./vault";
@@ -69,6 +70,7 @@ export {
   integrations,
   intel,
   sidecar,
+  stageTeam,
   security,
   securityAnalysis,
   vulnIntel,
@@ -108,6 +110,7 @@ export const api = {
   integrations,
   intel,
   sidecar,
+  stageTeam,
   security,
   securityAnalysis,
   vulnIntel,

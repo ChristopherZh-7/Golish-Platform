@@ -23,7 +23,7 @@
 |---|---|
 | `args`（clap 参数） | CLI 参数（含 fresh `--stage-run` 与 exact `--stage-run-resume`） |
 | `runner` / `repl` | headless 执行 / REPL |
-| `bootstrap::initialize_agent`（`pub(crate)`） | 用 CliRuntime 装配 agent；调用方显式传 `event_session_id`（evidence 账本/后台任务/事件 envelope 的会话身份）——REPL 传 `"cli"`，stage-run 传与 `set_chat_session_id` 一致的 `stage-run-{uuid}`（gate/refiner 按该 id 查账本，写读必须同 id） |
+| `bootstrap::initialize_agent`（`pub(crate)`） | 用 CliRuntime 装配 agent；CLI 只解析 provider/model/API-key override 与必需身份字段，再调用 `golish-agent-app::ai::provider_bootstrap` 生成 GUI 同款 typed provider/shared config；调用方显式传 `event_session_id` |
 
 ## 关键文件
 
@@ -40,6 +40,7 @@
 ## 注意事项 / 坑
 
 - **与 GUI 共享逻辑**：经 `GolishRuntime` 抽象，别为 CLI 复制一套 agent 逻辑。
+- Provider route 必须先解析为 `AiProvider`/`ProviderConfig`，再走 app shared normalizer；未知/拼错 provider fail closed，禁止 fallback 成 OpenRouter。CLI flag 的 provider/model/API key 优先级保留，但 endpoint/reasoning/web-search/preferences/location/thoughts/Ollama base/model override/context config 不得在 CLI 另写一份 settings 规则。
 - `--stage-run` 由 `stage_run` 模块承载；CLI 只 dispatch。
 - `--stage-run-resume <stage-run-key|session UUID|operation UUID>` 同样只 dispatch
   到 `stage_run`，不进入普通 headless chat。它与 fresh slice/seed/ephemeral 参数

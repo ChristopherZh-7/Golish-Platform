@@ -3,6 +3,10 @@
 // helper, by design. Rewriting them into bundled structs is its own
 // refactor.
 #![allow(clippy::too_many_arguments)]
+// The exact stage-team protocol tests instantiate deeply nested sqlx/serde
+// futures. Keep the crate-wide limit aligned with golish-agent-app so focused
+// test builds do not overflow rustc's default query depth.
+#![recursion_limit = "256"]
 
 //! High-level agent runtime (**Layer 4b**).
 //!

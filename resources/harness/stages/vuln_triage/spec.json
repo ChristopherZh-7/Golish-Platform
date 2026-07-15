@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: vuln_triage. L3 non-destructive vuln validation (nuclei / matching). Phase A.",
+  "$comment": "Stage spec: vuln_triage. Evidence-first, non-destructive formulaic observation over enumerated exact web origins and their server-owned endpoint inventory.",
 
   "id": "vuln_triage",
   "kind": "vuln_triage",
@@ -9,10 +9,28 @@
   "requires_stages": ["enumeration"],
   "allowed_next_stages": ["attack_candidate", "reporting"],
 
-  "allowed_tool_types": ["vuln_run_formulaic_sweep"],
+  "allowed_tool_types": ["vuln_nuclei_general", "vuln_nuclei_fingerprint_targeted", "vuln_probe_anonymous_access"],
 
   "$comment_formulaic": "Candidate V2 boundary: vuln_triage is the FORMULAIC OBSERVATION stage. It writes terminal technique_outcomes plus evidence only; it never writes Candidate or Finding rows. Its exact final-sealed handoff may enter the initial Wave only. A follow-on Wave entry must come from an immutable accepted FactDelta consolidation and must never reuse or fabricate a vuln_triage handoff.",
   "specialist": "vuln_scanner",
+  "$comment_team_scheduler": "2026-07-16 downstream convergence: every company uses one durable Company Controller while all execution stays inside the frozen Vuln Scanner formulaic wrappers. Controller planning/delegation cannot create Candidates/Findings or widen replay authority.",
+  "team_scheduler": {
+    "schema_version": 1,
+    "enabled_in_v2_only": true,
+    "allowed_roles": ["company_stage_controller", "vuln_scanner"],
+    "aggregator_kind": "aggregate_stage_unit",
+    "aggregator_role": "company_stage_controller",
+    "max_company_units_active": 2,
+    "global_provider_cap": 4,
+    "max_workers": 3,
+    "max_dynamic_requests": 8,
+    "allowed_dynamic_request_kinds": [
+      "formulaic_scan",
+      "coverage_recheck"
+    ],
+    "max_dynamic_subject_refs": 32,
+    "risk_lane": "formulaic_scan"
+  },
   "runtime_memory": {
     "schema_version": 2,
     "unit_identity": "stage_execution_organization",
@@ -20,7 +38,7 @@
     "requires_worker_lease": true,
     "publishes_handoff_after_final_seal": true
   },
-  "coverage_axis": ["UNAUTH", "IDOR", "NDAY", "DIR", "WEAKPW", "TLS", "INFO"],
+  "coverage_axis": ["UNAUTH", "NDAY", "DIR", "WEAKPW", "TLS", "INFO"],
   "facts_from_db_truth": true,
   "freshness_window": true,
 
@@ -30,8 +48,8 @@
   "deliverable_schema": "StageDeliverable",
   "gate_validator": "validate_stage_gate",
 
-  "$comment_findings_allowed": "Static true preserves the persisted legacy/dual deliverable contract. submit_stage_deliverable derives an effective false policy for V2Only operations; their formulaic stage remains observation-only and cannot author a Finding.",
-  "findings_allowed": true,
+  "$comment_findings_allowed": "Vuln Triage is observation-only for every runtime contract. Formulaic wrapper results become evidence-backed technique outcomes; only later Candidate verification may author a Finding.",
+  "findings_allowed": false,
 
   "gate_rules": [
     {
@@ -58,11 +76,17 @@
       "op": "coverage_complete",
       "derive_from_evidence": true,
       "authoritative_found": true,
-      "authoritative_techniques": ["GOLISH-NDAY", "WSTG-CONF-05", "WSTG-ATHN-02", "WSTG-CRYP-03"],
-      "$comment_authoritative": "Phase 4 (gate-capability-ledger, incremental per design 2026-07-02 §11 open-Q3 + attack-stage plan P3 Task3.2): scope authoritative_found to the 4 most objective formulaic classes — n-day PoC (GOLISH-NDAY), sensitive exposure/config (WSTG-CONF-05), default/weak creds (WSTG-ATHN-02), TLS (WSTG-CRYP-03). For these, a hand-written 'found' no longer counts without a technique_outcomes DB fact; the deterministic nuclei handler (bridge_config.rs maybe_store_background_vuln_outcomes) upserts found/empty per covered WSTG class from -tags + JSON hits, so real scans close these cells and self-report cannot inflate them. The other 6 classes (INPV-05/01/12, ATHZ-04, SESS-02, INFO) keep legacy self-report until their scan write-paths land, so the live gate never permanently blocks (escape hatch: blocked/not_applicable+note still terminal for any class). Widen authoritative_techniques as more scanners upsert (design guardrail 2).",
+      "require_note_for_other": true,
+      "error_is_terminal": false,
+      "authoritative_techniques": [
+        "WSTG-INPV-05", "WSTG-INPV-01", "WSTG-INPV-12",
+        "WSTG-ATHN-04", "WSTG-ATHN-02", "WSTG-SESS-02",
+        "WSTG-CONF-05", "WSTG-CRYP-03", "WSTG-INFO", "GOLISH-NDAY"
+      ],
+      "$comment_authoritative": "All ten formulaic cells are authoritative. Only fresh operation-scoped technique_outcomes from the two foreground Nuclei wrappers or the server-owned anonymous-access wrapper, bound to matching current-owner evidence, may close them; hand-written coverage, legacy manual-probe/shell evidence, and source_query rows never close a Vuln Triage cell.",
       "on_fail": {
         "reason": "coverage incomplete: some (asset \u00d7 expected technique) cells were never attempted",
-        "hints": ["for every in-scope asset, give each expected technique a terminal status: found / checked_empty / blocked|not_applicable+note"]
+        "hints": ["run only the worklist-suggested formulaic wrapper for each pending cell, then refresh DB-derived coverage; do not hand-write found, checked_empty, blocked, or not_applicable"]
       }
     },
     {
@@ -71,17 +95,17 @@
       "on_fail": {
         "reason": "coverage below denominator: a tested/total cell did not cover its enumeration surface and gave no sampling_rationale",
         "hints": [
-          "cover every enumerated unit (endpoint/param) for the technique on the asset, OR set sampling_rationale and raise tested_units to the required ratio",
-          "if the asset has no testable unit for this technique, use not_applicable + note instead of checked_empty"
+          "run the worklist-suggested wrapper over the inherited exact-origin surface and refresh DB-derived coverage",
+          "only the backend may publish blocked or not_applicable; deliverable coverage is not authority"
         ]
       }
     }
   ],
 
-  "$comment_expected_techniques": "公式化扫描技术类（设计 2026-07-02 §3.9：只留工具+字典/模板能机械批量跑、判定相对客观的类，10 类）。SQLi=INPV-05, XSS=INPV-01, 命令注入=INPV-12（工具扫低垂果实层），IDOR=ATHZ-04（浅层替换批量），弱口令/爆破=ATHN-02, 会话/CSRF=SESS-02, 敏感暴露/配置=CONF-05, 传输/TLS=CRYP-03, 信息泄露=INFO, n-day=GOLISH-NDAY。需推理构造的类（SSTI=INPV-18, SSRF=INPV-19, 路径穿越/LFI=ATHZ-01, 认证绕过逻辑=ATHN-04, 业务逻辑=BUSL）移交 attack_candidate 阶段。coverage_complete 据此核每个自报资产是否每类技术都有终态（derive_from_evidence 补格：technique_outcomes 落库的真值也可关闭缺口）；coverage_denominator 再核每格是否对着 enumeration 分母测全（D6 默认全覆盖，抽样需 sampling_rationale）。",
+  "$comment_expected_techniques": "The 10-cell formulaic denominator has three disjoint owners: eight WSTG cells route to vuln_nuclei_general with server-owned tag profiles; WSTG-ATHN-04 routes only to vuln_probe_anonymous_access after AI reviews the complete eligible server-owned endpoint-id set and selects a bounded subset; GOLISH-NDAY routes only to vuln_nuclei_fingerprint_targeted, whose template ids come from current-owner fingerprints and the local PoC KB. True IDOR/BOLA (WSTG-ATHZ-04) is deferred to later candidate verification. A wrapper may publish a terminal cell only from its real bounded execution/evidence; unsupported or inconclusive coverage must remain honest blocked/not_applicable/partial rather than fabricated found/empty.",
   "expected_techniques": [
     "WSTG-INPV-05", "WSTG-INPV-01", "WSTG-INPV-12",
-    "WSTG-ATHZ-04", "WSTG-ATHN-02", "WSTG-SESS-02",
+    "WSTG-ATHN-04", "WSTG-ATHN-02", "WSTG-SESS-02",
     "WSTG-CONF-05", "WSTG-CRYP-03", "WSTG-INFO", "GOLISH-NDAY"
   ],
 
@@ -89,7 +113,7 @@
 
   "max_other_skips": 2,
 
-  "$comment_human_approval": "These static approval classes remain for legacy operations. In the exact double-V2Only Candidate flow they are not Candidate or exploit authority: only an approval bound to the exact immutable Candidate plan authorizes Verification.",
+  "$comment_human_approval": "These risk classes authorize the bounded active observation stage only. They never authorize exploitation or create Candidate/Finding truth; later Verification requires its own exact immutable Candidate-plan approval.",
   "human_approval": {
     "required_before": ["active_scan", "exploit_validation"]
   },

@@ -65,7 +65,6 @@ golish-graphiti = { path = "../golish-graphiti" }
 golish-memory-app = { workspace = true }
 golish-reporting-app = { workspace = true }
 golish-js-analyzer = { workspace = true }
-golish-auth-probe = { workspace = true }
 golish-intel-providers = { workspace = true }
 golish-integrations = { workspace = true }
 vtcode-indexer = { workspace = true }

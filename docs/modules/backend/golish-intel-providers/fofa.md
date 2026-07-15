@@ -39,6 +39,8 @@
 ## 注意事项 / 坑
 
 - **凭据格式 `"<email>|<key>"`**：vault 单串存 email+key，靠 `|` 拆；Settings UI 文案必须指明这格式，否则认证失败。
+- JSON provider config 传入完整 FOFA DSL（如 `org="Acme"` / `cert="Acme"`）时必须原样发送；只有 raw domain/host 输入才由 provider 包成 `domain="..."` / `host="..."`，禁止双重包装成 `host="org=..."`。
+- FOFA row 的 `domain` 常是 registrable/apex，而 `host` 才是具体 vhost；mapper 同时保留二者，下游 Target identity 优先具体 host，不能用 apex 覆盖子域。
 - FOFA 无 per-second 限速但有每日 F 点配额；仍默认 pace 2 req/s 防批量过猛。
 
 ## 测试入口

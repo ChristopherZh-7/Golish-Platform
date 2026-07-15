@@ -70,7 +70,9 @@ pub enum GateRule {
         /// Phase 0（设计 2026-06-12-redteam-phase0）：true 时 `found` 终态只认
         /// `ctx.evidence_facts` 的 Found 事实——自报 found cell / technique 标注的
         /// claim/finding 不再单独构成 found；`checked_empty` 收紧为「自报 + 真 Empty
-        /// 事实」（I8）。`blocked`/`not_applicable` 仍自报。缺省 false = 逐字节不变。
+        /// 事实」（I8）。producer-owned 阶段（Enumeration / VulnTriage）的
+        /// `blocked`/`not_applicable` 仍只能由可信后端上下文关闭；其他阶段保留旧自报
+        /// 合同。缺省 false = 逐字节不变。
         #[serde(default)]
         authoritative_found: bool,
         /// 仅这些 technique 收紧（None = 全部期望技术）。灰度用：落点未到位的技术
@@ -85,8 +87,8 @@ pub enum GateRule {
         require_note_for_other: bool,
         /// Whether a projected [`EvidenceOutcome::Error`] closes the cell as a
         /// legacy non-found terminal state. Default true preserves existing
-        /// stages; Enumeration opts out because its worklist treats errors as
-        /// unfinished retry/repair work.
+        /// stages; Enumeration and VulnTriage opt out because their worklists
+        /// treat errors/partial results as unfinished retry/repair work.
         #[serde(default = "default_error_is_terminal")]
         error_is_terminal: bool,
         on_fail: OnFail,
@@ -649,7 +651,7 @@ fn canon_asset(s: &str) -> String {
 }
 
 fn coverage_join_asset_key(stage: StageKind, asset: &str) -> String {
-    if stage == StageKind::Enumeration {
+    if matches!(stage, StageKind::Enumeration | StageKind::VulnTriage) {
         return golish_pentest_domain::canonical_web_origin(asset)
             .map(|origin| origin.key)
             .unwrap_or_else(|| asset.trim().to_ascii_lowercase());
@@ -885,15 +887,16 @@ fn coverage_complete(
                     cell_status(CoverageStatus::CheckedEmpty)
                         || (derive_from_evidence && has_fact(EvidenceOutcome::Empty))
                 };
-            // Enumeration and the exact EAS Web transport terminal are
-            // producer-owned blocked states. They close a cell only when the
-            // trusted upstream projector emitted a current-run evidence-backed
-            // Blocked fact; a model-authored coverage row cannot mint or mirror
-            // either state into truth. Other EAS techniques retain their
-            // previous noted-cell contract.
-            let producer_owned_blocked = spec.kind == StageKind::Enumeration
-                || (spec.kind == StageKind::ExternalAttackSurface
-                    && tech == "GOLISH-EAS-WEB-FINGERPRINT");
+            // Enumeration, VulnTriage, and the exact EAS Web transport terminal
+            // are producer-owned blocked states. They close a cell only when
+            // the trusted upstream projector emitted a current-run
+            // evidence-backed Blocked fact; a model-authored coverage row cannot
+            // mint or mirror any of these states into truth. Other EAS
+            // techniques retain their previous noted-cell contract.
+            let producer_owned_blocked =
+                matches!(spec.kind, StageKind::Enumeration | StageKind::VulnTriage)
+                    || (spec.kind == StageKind::ExternalAttackSurface
+                        && tech == "GOLISH-EAS-WEB-FINGERPRINT");
             let trusted_blocked_ok = producer_owned_blocked
                 && terminal.contains(&CoverageStatus::Blocked)
                 && derive_from_evidence
@@ -911,7 +914,13 @@ fn coverage_complete(
                             || c.note.as_deref().is_some_and(|n| !n.trim().is_empty()))
                 })
             };
-            let other_ok = spec.kind != StageKind::Enumeration
+            // Enumeration and VulnTriage own both negative terminal states:
+            // Blocked comes from a trusted evidence fact above, while
+            // NotApplicable comes from deterministic backend context below.
+            // Deliverable rows remain descriptive and cannot close either cell.
+            let producer_owned_other =
+                matches!(spec.kind, StageKind::Enumeration | StageKind::VulnTriage);
+            let other_ok = !producer_owned_other
                 && ((!producer_owned_blocked
                     && terminal.contains(&CoverageStatus::Blocked)
                     && cell_other_ok(CoverageStatus::Blocked))
@@ -928,8 +937,14 @@ fn coverage_complete(
             // EvidenceOutcome::Error below as a fail-closed veto.
             let source_nonterminal_marker = !context_not_applicable_ok
                 && ctx.source_queries.as_deref().is_some_and(|rows| {
-                    rows.iter().any(|row| {
-                        source_row_nonterminal_for_coverage(row, spec.kind, tech, &asset_key)
+                    rows.iter().any(|error_row| {
+                        source_row_nonterminal_for_coverage(error_row, spec.kind, tech, &asset_key)
+                            && !rows.iter().any(|found_row| {
+                                found_row.source != error_row.source
+                                    && source_row_found_for_coverage(
+                                        found_row, spec.kind, tech, &asset_key,
+                                    )
+                            })
                     })
                 });
             // Any stage with `error_is_terminal=false` uses Error as the
@@ -940,7 +955,7 @@ fn coverage_complete(
             // producer-owned, so its marker remains an unconditional veto.
             let current_nonterminal_marker = !error_is_terminal
                 && (has_fact(EvidenceOutcome::Error) || source_nonterminal_marker)
-                && (spec.kind == StageKind::Enumeration || !other_ok);
+                && (producer_owned_other || !other_ok);
 
             // T2（设计 2026-06-23-failure-outcome-not-checked-empty）：旧合同把
             // error 事实当作非 found 终态，避免无限重试。`error_is_terminal=false`
@@ -959,7 +974,8 @@ fn coverage_complete(
             // target_intel deliverable pass after `recon_lookup_whois` records
             // "RDAP ran and returned empty" once per org, without making the
             // model hand-write hundreds of WHOIS checked_empty cells.
-            let source_terminal_ok = !cell_status(CoverageStatus::Found)
+            let source_terminal_ok = spec.kind != StageKind::VulnTriage
+                && !cell_status(CoverageStatus::Found)
                 && derive_from_evidence
                 && ctx.source_queries.as_deref().is_some_and(|rows| {
                     rows.iter().any(|row| {
@@ -1366,6 +1382,18 @@ fn source_row_nonterminal_for_coverage(
     }
     row.target.trim().is_empty()
         || source_target_matches_coverage_asset(stage, tech, &row.target, asset_key)
+}
+
+fn source_row_found_for_coverage(
+    row: &SourceQueryFact,
+    stage: StageKind,
+    tech: &str,
+    asset_key: &str,
+) -> bool {
+    row.status == "found"
+        && row.technique.as_deref() == Some(tech)
+        && (row.target.trim().is_empty()
+            || source_target_matches_coverage_asset(stage, tech, &row.target, asset_key))
 }
 
 fn source_target_matches_coverage_asset(
@@ -3178,11 +3206,17 @@ mod tests {
         )
     }
 
+    fn self_reported_terminal_spec_with_expected(techs: &[&str]) -> StageSpec {
+        let mut spec = test_spec();
+        spec.expected_techniques = techs.iter().map(|tech| (*tech).to_string()).collect();
+        spec
+    }
+
     #[test]
     fn require_note_for_other_defaults_false_blocked_without_note_passes() {
         // 缺省（不写该字段）→ blocked 空 note 仍算终态 → Pass（逐字节不变）。
         let rule = coverage_complete_rule();
-        let spec = spec_with_expected(&["idor"]);
+        let spec = self_reported_terminal_spec_with_expected(&["idor"]);
         let d =
             deliverable_with_coverage(vec![cov_cell("a", "idor", CoverageStatus::Blocked, vec![])]);
         assert!(eval(&d, &spec, &[rule])[0].is_pass());
@@ -3191,7 +3225,7 @@ mod tests {
     #[test]
     fn require_note_for_other_blocks_blocked_cell_without_note() {
         // 开关开 + blocked 空 note → 不算终态 → a×idor 缺口 → Block。
-        let spec = spec_with_expected(&["idor"]);
+        let spec = self_reported_terminal_spec_with_expected(&["idor"]);
         let d =
             deliverable_with_coverage(vec![cov_cell("a", "idor", CoverageStatus::Blocked, vec![])]);
         match &eval(&d, &spec, &[note_required_rule()])[0] {
@@ -3207,7 +3241,7 @@ mod tests {
     #[test]
     fn require_note_for_other_passes_blocked_cell_with_note() {
         // 开关开 + blocked 带非空 note → 终态 → Pass。
-        let spec = spec_with_expected(&["idor"]);
+        let spec = self_reported_terminal_spec_with_expected(&["idor"]);
         let d = deliverable_with_coverage(vec![cov_cell_noted(
             "a",
             "idor",
@@ -3276,7 +3310,7 @@ mod tests {
     #[test]
     fn require_note_for_other_whitespace_note_does_not_count() {
         // 仅空白 note 视同空（trim 后为空）→ Block。
-        let spec = spec_with_expected(&["idor"]);
+        let spec = self_reported_terminal_spec_with_expected(&["idor"]);
         let d = deliverable_with_coverage(vec![cov_cell_noted(
             "a",
             "idor",
@@ -3291,7 +3325,7 @@ mod tests {
 
     #[test]
     fn require_note_for_other_applies_to_not_applicable_too() {
-        let spec = spec_with_expected(&["idor"]);
+        let spec = self_reported_terminal_spec_with_expected(&["idor"]);
         // not_applicable 空 note → Block。
         let d_empty = deliverable_with_coverage(vec![cov_cell(
             "a",
@@ -3490,6 +3524,144 @@ mod tests {
         assert!(
             outcomes.iter().all(GateCheckOutcome::is_pass),
             "trusted current-run Blocked fact must close the cell without deliverable coverage"
+        );
+    }
+
+    fn vuln_projection_ctx(facts: Option<Vec<EvidenceFact>>, not_applicable: bool) -> GateContext {
+        let asset = "https://a.example:443";
+        let technique = "WSTG-INPV-05";
+        GateContext {
+            in_scope_assets: Some(vec![asset.to_string()]),
+            expected_techniques: Some(vec![technique.to_string()]),
+            evidence_facts: facts,
+            not_applicable_coverage: not_applicable.then(|| {
+                std::collections::HashSet::from([(asset.to_string(), technique.to_string())])
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn vuln_triage_rejects_model_authored_blocked_and_not_applicable() {
+        let spec = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::StageKind::VulnTriage,
+        )
+        .expect("load vuln_triage spec");
+        for status in [CoverageStatus::Blocked, CoverageStatus::NotApplicable] {
+            let outcomes = eval_with_context(
+                &deliverable_with_coverage(vec![cov_cell_noted(
+                    "https://a.example:443",
+                    "WSTG-INPV-05",
+                    status,
+                    "model-authored terminal assertion",
+                )]),
+                &spec,
+                &spec.gate_rules,
+                &vuln_projection_ctx(None, false),
+            );
+            assert!(
+                outcomes.iter().any(|outcome| !outcome.is_pass()),
+                "VulnTriage must reject self-reported {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vuln_triage_accepts_only_backend_owned_negative_terminals() {
+        let spec = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::StageKind::VulnTriage,
+        )
+        .expect("load vuln_triage spec");
+        let asset = "https://a.example:443";
+        let technique = "WSTG-INPV-05";
+
+        let blocked = eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &spec,
+            &spec.gate_rules,
+            &vuln_projection_ctx(
+                Some(vec![fact(asset, technique, EvidenceOutcome::Blocked, 41)]),
+                false,
+            ),
+        );
+        assert!(
+            blocked.iter().all(GateCheckOutcome::is_pass),
+            "a trusted wrapper Blocked fact must close the VulnTriage cell"
+        );
+
+        let not_applicable = eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &spec,
+            &spec.gate_rules,
+            &vuln_projection_ctx(None, true),
+        );
+        assert!(
+            not_applicable.iter().all(GateCheckOutcome::is_pass),
+            "deterministic backend NotApplicable context must close the VulnTriage cell"
+        );
+    }
+
+    #[test]
+    fn vuln_triage_error_or_partial_marker_never_closes_a_cell() {
+        let spec = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::StageKind::VulnTriage,
+        )
+        .expect("load vuln_triage spec");
+        let asset = "https://a.example:443";
+        let technique = "WSTG-INPV-05";
+
+        for evidence_id in [9, 0] {
+            let outcomes = eval_with_context(
+                &deliverable_with_coverage(vec![cov_cell_noted(
+                    asset,
+                    technique,
+                    CoverageStatus::Blocked,
+                    "model tried to convert a nonterminal result",
+                )]),
+                &spec,
+                &spec.gate_rules,
+                &vuln_projection_ctx(
+                    Some(vec![fact(
+                        asset,
+                        technique,
+                        EvidenceOutcome::Error,
+                        evidence_id,
+                    )]),
+                    false,
+                ),
+            );
+            assert!(
+                outcomes.iter().any(|outcome| !outcome.is_pass()),
+                "Error/partial marker (evidence_id={evidence_id}) must remain incomplete"
+            );
+        }
+    }
+
+    #[test]
+    fn vuln_triage_coverage_join_preserves_exact_origin_scheme() {
+        let spec = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::StageKind::VulnTriage,
+        )
+        .expect("load vuln_triage spec");
+        let technique = "WSTG-INPV-05";
+        let outcomes = eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &spec,
+            &spec.gate_rules,
+            &vuln_projection_ctx(
+                Some(vec![fact(
+                    "http://a.example:443",
+                    technique,
+                    EvidenceOutcome::Found,
+                    41,
+                )]),
+                false,
+            ),
+        );
+
+        assert!(
+            outcomes.iter().any(|outcome| !outcome.is_pass()),
+            "HTTP evidence must not close the HTTPS exact-origin cell"
         );
     }
 
@@ -3966,6 +4138,44 @@ mod tests {
             )[0],
             GateCheckOutcome::Block { .. }
         ));
+    }
+
+    #[test]
+    fn sibling_provider_found_preserves_authoritative_business_found() {
+        let technique = "GOLISH-INTEL-OSINT";
+        let mut enscan = source_query(
+            "enscan-go-enrichment",
+            "map_assets:GOLISH-INTEL-OSINT",
+            Some(technique),
+            "found",
+        );
+        enscan.target = "a.com".to_string();
+        let mut quake = source_query(
+            "quake",
+            "map_assets:GOLISH-INTEL-OSINT",
+            Some(technique),
+            "error",
+        );
+        quake.target = "a.com".to_string();
+        let ctx = GateContext {
+            in_scope_assets: Some(vec!["a.com".to_string()]),
+            expected_techniques: Some(vec![technique.to_string()]),
+            evidence_facts: Some(vec![fact("a.com", technique, EvidenceOutcome::Found, 0)]),
+            source_queries: Some(vec![enscan, quake]),
+            ..Default::default()
+        };
+
+        assert!(eval_with_context(
+            &deliverable_with_coverage(vec![]),
+            &target_intel_spec(false),
+            &[parse(
+                r#"{ "op":"coverage_complete","authoritative_found":true,
+                     "derive_from_evidence":true,"error_is_terminal":false,
+                     "on_fail":{"reason":"coverage incomplete"} }"#,
+            )],
+            &ctx
+        )[0]
+        .is_pass());
     }
 
     #[test]

@@ -22,7 +22,7 @@ use crate::organizations::OrganizationCandidates;
 /// Host-side fields tried (in priority order) when a provider declares no
 /// `normalize.pairs` rule — covers the http_json record shapes (0.zone / quake)
 /// so landing still pairs a domain with its surveyed IP.
-const DEFAULT_HOST_FIELDS: &[&str] = &["domain", "service.http.host", "host", "hostname", "url"];
+const DEFAULT_HOST_FIELDS: &[&str] = &["service.http.host", "host", "domain", "hostname", "url"];
 /// IP-side fields tried (in priority order); mirrors the providers' IP keys.
 const DEFAULT_IP_FIELDS: &[&str] = &["ip", "msg.ip", "ip_addr"];
 
@@ -113,7 +113,7 @@ fn normalize_landing_identity(value: &str) -> Option<String> {
     normalized_host(trimmed)
 }
 
-fn normalize_concrete_landing_host(value: &str) -> Option<String> {
+pub(crate) fn normalize_concrete_landing_host(value: &str) -> Option<String> {
     let host = normalize_landing_identity(value)?;
     (!host.starts_with("*.") && host.parse::<IpAddr>().is_err()).then_some(host)
 }
@@ -177,19 +177,30 @@ pub(crate) struct CurrentRunTarget {
 /// deterministic domain/IP Target plan. No organization profile or historical
 /// candidate queue is accepted as input, so an old observation cannot become
 /// fresh merely because another survey ran.
+#[allow(dead_code)]
 pub(crate) fn plan_current_run_targets(
     candidates: &OrganizationCandidates,
     observed_domain_hosts: &[String],
     pairs: &[HostIpPair],
+) -> Vec<CurrentRunTarget> {
+    plan_current_run_targets_with_ip_policy(candidates, observed_domain_hosts, pairs, true)
+}
+
+pub(crate) fn plan_current_run_targets_with_ip_policy(
+    candidates: &OrganizationCandidates,
+    observed_domain_hosts: &[String],
+    pairs: &[HostIpPair],
+    promote_ip_targets: bool,
 ) -> Vec<CurrentRunTarget> {
     let mut domains: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut ips = BTreeSet::new();
 
     {
         let mut add_identity = |raw: &str| match normalize_landing_identity(raw) {
-            Some(identity) if identity.parse::<IpAddr>().is_ok() => {
+            Some(identity) if promote_ip_targets && identity.parse::<IpAddr>().is_ok() => {
                 ips.insert(identity);
             }
+            Some(identity) if identity.parse::<IpAddr>().is_ok() => {}
             Some(identity) if !identity.starts_with("*.") => {
                 domains.entry(identity).or_default();
             }
@@ -215,7 +226,9 @@ pub(crate) fn plan_current_run_targets(
         if !resolved.contains(&ip) {
             resolved.push(ip.clone());
         }
-        ips.insert(ip);
+        if promote_ip_targets {
+            ips.insert(ip);
+        }
     }
 
     let mut planned = domains
@@ -385,10 +398,34 @@ fn is_hostname_like(s: &str) -> bool {
     tld.len() >= 2 && tld.bytes().all(|b| b.is_ascii_alphabetic())
 }
 
-/// Upsert one target, idempotent on `value` + `project_path`, tagging the
-/// surveyed `real_ip` when known. Mirrors `persist_target_record` but adds the
-/// `real_ip` column and `source='asset_intel'`. Returns the target's id so the
-/// caller can directly land its provider-paired DNS record (design 2026-06-23).
+/// Serialize Intel writers for one exact stored Target identity. `targets` has
+/// no database uniqueness constraint beyond its UUID primary key, while Stage
+/// Team may run several provider producers concurrently. The transaction lock
+/// closes the SELECT-then-INSERT race without changing the schema. It is keyed
+/// by project + exact target type + exact canonical value (not apex or IP), so
+/// sibling vhosts remain independent assets. Organization is deliberately not
+/// part of the key: a legacy `organization_id=NULL` row can be claimed by only
+/// one org before another org decides whether it needs its own row.
+fn target_identity_lock_key(project_path: &str, target_type: &str, value: &str) -> String {
+    serde_json::json!(["asset_intel_target_v1", project_path, target_type, value]).to_string()
+}
+
+fn build_target_identity_lock_sql() -> &'static str {
+    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+}
+
+fn build_target_real_ip_update_sql() -> &'static str {
+    r#"UPDATE targets
+       SET real_ip = $1, updated_at = NOW()
+       WHERE id = $2
+         AND target_type::text NOT IN ('ip', 'ipv4', 'ip_address', 'cidr')"#
+}
+
+/// Upsert one target, idempotent on the storage identity
+/// `(project_path, organization, target_type, canonical value)`, tagging the
+/// surveyed `real_ip` when known. An unowned legacy row in the same project may
+/// first be claimed by the organization. Returns the target's id so the caller
+/// can directly land its provider-paired DNS record (design 2026-06-23).
 async fn upsert_target(
     pool: &sqlx::PgPool,
     org: &golish_db::models::Organization,
@@ -396,19 +433,29 @@ async fn upsert_target(
     target_type: &str,
     real_ip: Option<&str>,
 ) -> Result<Uuid, GolishError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(build_target_identity_lock_sql())
+        .bind(target_identity_lock_key(
+            &org.project_path,
+            target_type,
+            value,
+        ))
+        .execute(&mut *tx)
+        .await?;
+
     let existing: Option<(Uuid, String)> = sqlx::query_as(build_target_lookup_sql())
         .bind(value)
         .bind(target_type)
         .bind(&org.project_path)
         .bind(org.id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
     if let Some((id, existing_target_type)) = existing {
         let claimed = sqlx::query(build_target_claim_sql())
             .bind(id)
             .bind(org.id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
         if claimed.rows_affected() == 0 {
             return Err(GolishError::Validation(format!(
@@ -417,9 +464,14 @@ async fn upsert_target(
         }
         if target_accepts_real_ip(&existing_target_type, value) {
             if let Some(ip) = real_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
-                golish_db::repo::targets::set_real_ip_by_id(pool, id, ip).await?;
+                sqlx::query(build_target_real_ip_update_sql())
+                    .bind(ip)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
             }
         }
+        tx.commit().await?;
         return Ok(id);
     }
 
@@ -435,8 +487,9 @@ async fn upsert_target(
         .bind(org.id)
         .bind(&org.project_path)
         .bind(landed_real_ip)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(new_id)
 }
 
@@ -524,8 +577,14 @@ pub(crate) async fn land_current_run_targets(
     candidates: &OrganizationCandidates,
     pairs: &[HostIpPair],
     discovered_hosts: &[String],
+    promote_ip_targets: bool,
 ) -> Result<TargetLandingSummary, GolishError> {
-    let planned = plan_current_run_targets(candidates, discovered_hosts, pairs);
+    let planned = plan_current_run_targets_with_ip_policy(
+        candidates,
+        discovered_hosts,
+        pairs,
+        promote_ip_targets,
+    );
     let mut summary = TargetLandingSummary::default();
     let mut domain_target_ids = HashMap::new();
     for target in &planned {
@@ -561,7 +620,9 @@ pub(crate) async fn land_current_run_targets(
     }
     // Every provider-observed A/AAAA pair is relationship truth. Keep all of
     // them on the exact hostname target; `real_ip` above is only one stable
-    // cache. Each canonical pair IP is also an explicit Target in `planned`.
+    // cache. Whether a pair IP is also promoted to an explicit Target is the
+    // caller's policy (`promote_ip_targets`); domain-pivot passes keep it only
+    // as relationship evidence.
     for (record_type, name, value) in provider_dns_records_for_pairs(&current_run_org, pairs) {
         let Some(target_id) = domain_target_ids.get(&name).copied() else {
             continue;
@@ -598,13 +659,13 @@ pub(crate) struct HostServiceAsset {
 
 /// Host-owner fields tried (priority order) when lifting a service from a
 /// provider record — mirrors survey record shapes (quake/fofa/0.zone flat
-/// `domain`/`host`, quake nested `service.http.host`, shodan `ip_str`). Quake
-/// `hostname` can be PTR/rDNS noise, so prefer the HTTP host before falling
-/// back to it.
+/// `domain`/`host`, quake nested `service.http.host`, shodan `ip_str`). Prefer
+/// the most concrete HTTP/host identity over a registrable `domain`; Quake
+/// `hostname` can be PTR/rDNS noise and stays a late fallback.
 const SERVICE_HOST_FIELDS: &[&str] = &[
-    "domain",
     "service.http.host",
     "host",
+    "domain",
     "hostname",
     "ip",
     "ip_str",
@@ -874,6 +935,42 @@ mod tests {
     }
 
     #[test]
+    fn domain_pivot_keeps_distinct_vhosts_without_promoting_relation_ips() {
+        let pairs = vec![
+            HostIpPair {
+                host: "app.example.com".to_string(),
+                ip: "203.0.113.10".to_string(),
+            },
+            HostIpPair {
+                host: "admin.example.com".to_string(),
+                ip: "203.0.113.10".to_string(),
+            },
+        ];
+
+        let planned = plan_current_run_targets_with_ip_policy(
+            &OrganizationCandidates::default(),
+            &[],
+            &pairs,
+            false,
+        );
+
+        assert_eq!(
+            planned
+                .iter()
+                .map(|target| (target.target_type, target.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("domain", "admin.example.com"),
+                ("domain", "app.example.com"),
+            ],
+            "same-IP vhosts remain separate assets while the observed IP stays a DNS/service relation"
+        );
+        assert!(planned
+            .iter()
+            .all(|target| target.real_ip.as_deref() == Some("203.0.113.10")));
+    }
+
+    #[test]
     fn provider_dns_record_classifies_a_aaaa_and_rejects_garbage() {
         // Phase A (design 2026-06-23): provider host↔IP → direct DNS record.
         assert_eq!(
@@ -1116,6 +1213,32 @@ mod tests {
     }
 
     #[test]
+    fn pairs_from_candidates_prefer_concrete_host_over_apex_domain() {
+        let candidates = OrganizationCandidates {
+            targets: vec![target_candidate(
+                "fofa",
+                serde_json::json!({
+                    "host": "https://Api.Example.COM:8443/login",
+                    "domain": "example.com",
+                    "ip": "203.0.113.10"
+                }),
+            )],
+            ..Default::default()
+        };
+
+        let pairs = pairs_from_candidates(&candidates, &HashMap::new());
+
+        assert_eq!(
+            pairs,
+            vec![HostIpPair {
+                host: "api.example.com".to_string(),
+                ip: "203.0.113.10".to_string(),
+            }],
+            "the apex is provenance, not a replacement for the exact observed vhost"
+        );
+    }
+
+    #[test]
     fn pairs_from_candidates_normalizes_url_field_to_hostname() {
         let candidates = OrganizationCandidates {
             targets: vec![target_candidate(
@@ -1299,6 +1422,43 @@ mod tests {
     }
 
     #[test]
+    fn intel_target_lock_dedupes_only_the_exact_stored_identity() {
+        let project = "/tmp/project";
+        let api = target_identity_lock_key(project, "domain", "api.example.com");
+
+        assert_eq!(
+            api,
+            target_identity_lock_key(project, "domain", "api.example.com"),
+            "the same exact Target must share one Intel writer lock"
+        );
+        assert_ne!(
+            api,
+            target_identity_lock_key(project, "domain", "admin.example.com"),
+            "sibling vhosts are different Target assets even when they later resolve to one IP"
+        );
+        assert_ne!(
+            api,
+            target_identity_lock_key(project, "ip", "api.example.com"),
+            "Target type is part of stored identity"
+        );
+        assert_ne!(
+            api,
+            target_identity_lock_key("/tmp/other", "domain", "api.example.com"),
+            "project ownership is part of stored identity"
+        );
+
+        let sql = build_target_identity_lock_sql();
+        assert!(
+            sql.contains("pg_advisory_xact_lock"),
+            "lock must be transaction-scoped: {sql}"
+        );
+        assert!(
+            sql.contains("hashtextextended"),
+            "lock key must be stable inside Postgres: {sql}"
+        );
+    }
+
+    #[test]
     fn current_run_target_write_contract_is_org_bound_in_scope_and_preserves_scope_out() {
         let insert = build_target_insert_sql();
         assert!(
@@ -1375,6 +1535,7 @@ mod tests {
             targets: vec![target_candidate(
                 "quake",
                 serde_json::json!({
+                    "domain": "moresec.cn",
                     "hostname": "mail.bimlmvcg.cfd",
                     "ip": "1.2.3.4",
                     "port": 443,

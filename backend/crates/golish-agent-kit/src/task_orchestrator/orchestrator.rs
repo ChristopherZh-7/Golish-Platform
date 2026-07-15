@@ -65,7 +65,8 @@ pub struct TaskOrchestrator {
     /// design 2026-06-09). Passed to `in_scope_assets` lookups so the coverage
     /// gate's denominator (and the agent-facing in-scope asset prompt section)
     /// only contains THIS org's in-scope targets instead of the whole persistent
-    /// DB. `None` = legacy whole-DB axis (GUI/chat path until org wiring lands).
+    /// DB. `None` is legal only while Scoping has not bound an engagement org;
+    /// org-keyed reads and active-recon entry fail closed in that state.
     pub(super) harness_org_id: Option<Uuid>,
     /// Phase 2 (2026-06-12-redteam-phase2): subsidiary scope policy for this run.
     /// `Some` activates the scoping gate's `GOLISH-INTEL-SUBSIDIARY` coverage
@@ -126,6 +127,14 @@ pub struct TaskOrchestrator {
     /// GUI/model runs leave this unset and continue through Scoping lifecycle
     /// evidence. A CLI V2 operation sets it exactly once before `run_stage`.
     pub(super) cli_runtime_scope: Option<CliRuntimeScope>,
+    /// Adapter-neutral fresh-launch target authority. `Some(true)` means an
+    /// exact target came from this invocation and must still match DB truth;
+    /// `Some(false)` means the launch confirmed only an organization, so even
+    /// historical targets on that org cannot unlock active recon. `None` keeps
+    /// the interactive Scoping lifecycle. The headless exact-resume adapter
+    /// restores a valid marker when present and otherwise fails closed to
+    /// `Some(false)`; it never treats a missing hint as target authority.
+    pub(super) current_invocation_target_authority: Option<bool>,
 }
 
 impl TaskOrchestrator {
@@ -158,6 +167,7 @@ impl TaskOrchestrator {
             chain_wave: 0,
             chain_wave_seen: std::collections::HashSet::new(),
             cli_runtime_scope: None,
+            current_invocation_target_authority: None,
         }
     }
 
@@ -199,6 +209,14 @@ impl TaskOrchestrator {
     /// re-reads a mutable organization tree.
     pub fn set_cli_runtime_scope(&mut self, scope: Option<CliRuntimeScope>) {
         self.cli_runtime_scope = scope;
+    }
+
+    /// Freeze whether this fresh typed launch carried an exact target from the
+    /// current invocation. Organization-only launch adapters set `Some(false)`;
+    /// interactive paths leave it `None`; headless exact resume may restore a
+    /// validated marker but otherwise deliberately supplies `Some(false)`.
+    pub fn set_current_invocation_target_authority(&mut self, authority: Option<bool>) {
+        self.current_invocation_target_authority = authority;
     }
 
     /// Wire the HITL coordinator so the two-level phase-approval gate can request

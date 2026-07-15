@@ -151,7 +151,7 @@ the same layer are OK; cluster grouping does not add edges.
 > Note: `rig-anthropic-vertex` and `rig-gemini-vertex` are L1 (zero
 > internal `golish-*` deps) — they're listed in the L1 catalog above.
 
-##### L2.pentest (7) — penetration testing domain
+##### L2.pentest (6) — penetration testing domain
 
 | Crate | Depends on | Purpose |
 |---|---|---|
@@ -161,7 +161,6 @@ the same layer are OK; cluster grouping does not add edges.
 | `golish-pentest-mcp` | core | Pentest-specific MCP tools |
 | `golish-integrations` | core, db, settings | Schema-driven external-service credential storage (vault/file/settings) |
 | `golish-intel-providers` | integrations | ASM API providers (0.zone, FOFA, Quake, …) |
-| `golish-auth-probe` | js-analyzer | Authenticated/IDOR probing |
 
 ##### L2.assets (6) — skills / synthesis / output / tools
 
@@ -315,8 +314,8 @@ candidate (S1-2).
 > `Pg*Adapter` that is the only place allowed to reach the exposed service's
 > repos). Each migrated call-site drops an allow-list entry; the guard maps
 > `ports/<service>` to that service's domain so the adapter is legal. First port
-> shipped: read-only `VaultReadPort` (platform) — `auth_probe.rs` and
-> `vault_ops.rs` reads now route through it (allow-list 30 → 28). The vault
+> shipped: read-only `VaultReadPort` (platform). The remaining `vault_ops.rs`
+> reads route through it; the retired authorization-probe consumer was removed. The vault
 > `store` path keeps its raw `ON CONFLICT` INSERT for now (P0-3 scoped-SQL, not
 > S1-2). See `docs/design/2026-05-30-s1-2-port-horizontal-coupling.md`.
 

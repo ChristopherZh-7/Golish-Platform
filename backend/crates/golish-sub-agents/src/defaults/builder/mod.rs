@@ -247,21 +247,19 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         SubAgentDefinition::new(
             "vuln_scanner",
             "Vuln Scanner",
-            "Formulaic vulnerability-triage specialist for the vuln_triage stage. Closes WSTG/GOLISH scan cells through backend-owned wrappers rather than raw CLI commands. The stage_run tool fans one Vuln Scanner out per org.",
+            "Formulaic vulnerability-observation specialist for the vuln_triage stage. Closes WSTG/GOLISH cells through two guarded Nuclei wrappers plus one server-owned anonymous-access wrapper rather than raw CLI/request commands. The stage_run tool fans one Vuln Scanner out per org.",
             build_vuln_scanner_prompt(),
         )
         .with_tools(vec![
             "stage_worklist_status".to_string(),
             "stage_worklist_next".to_string(),
             "query_target_data".to_string(),
-            "vuln_run_formulaic_sweep".to_string(),
-            "wait_for_background_jobs".to_string(),
-            "check_job".to_string(),
-            "kill_job".to_string(),
+            "vuln_nuclei_general".to_string(),
+            "vuln_nuclei_fingerprint_targeted".to_string(),
+            "vuln_probe_anonymous_access".to_string(),
             "list_recent_evidence".to_string(),
             "check_stage_asset_coverage".to_string(),
             "submit_stage_deliverable".to_string(),
-            "record_finding".to_string(),
             "search_knowledge_base".to_string(),
             "read_knowledge".to_string(),
         ])

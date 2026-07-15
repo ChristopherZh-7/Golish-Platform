@@ -129,7 +129,7 @@ pub use stage_harness::StageHarness;
 pub use stage_runtime_contract::{RuntimeScopeSource, RuntimeUnitIdentity, StageRuntimeContract};
 pub use stage_spec::{
     load_stage_spec_from_json, HumanApprovalPolicy, InheritsEvidenceFrom, StageSpec,
-    StageSpecLoadError,
+    StageSpecLoadError, StageTeamSchedulerPolicy,
 };
 pub use stage_transition::{
     decide_from_gate, decide_transition, stage_entry_requires_approval, TransitionDecision,

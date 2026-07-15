@@ -127,6 +127,7 @@ fn projection(
 async fn resolve_one(
     connection: &mut PgConnection,
     operation_id: Uuid,
+    operation_chat_session_key: Option<&str>,
     expected_organization_id: Uuid,
     project_path_at_freeze: &str,
     key: &CanonicalFactKey,
@@ -289,7 +290,9 @@ async fn resolve_one(
                     code: "canonical_fact_foreign_organization",
                 });
             }
-            if run_id != &operation_id.to_string() {
+            if run_id != &operation_id.to_string()
+                && operation_chat_session_key != Some(run_id.as_str())
+            {
                 return Err(CanonicalFactRefError::Rejected {
                     code: "canonical_fact_foreign_operation",
                 });
@@ -385,6 +388,24 @@ async fn resolve_one(
     Ok(row)
 }
 
+async fn load_operation_chat_session_key(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+) -> Result<Option<String>, CanonicalFactRefError> {
+    Ok(sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT session.chat_session_key
+             FROM tasks AS task
+             JOIN sessions AS session ON session.id=task.session_id
+            WHERE task.id=$1
+            FOR SHARE OF task, session"#,
+    )
+    .bind(operation_id)
+    .fetch_optional(&mut *connection)
+    .await?
+    .flatten()
+    .filter(|key| !key.trim().is_empty()))
+}
+
 fn fact_delta_observation_is_valid(
     delta_kind: &str,
     observed_at: DateTime<Utc>,
@@ -429,9 +450,15 @@ pub async fn resolve_for_fact_delta(
             code: "fact_delta_kind_unsupported",
         });
     }
+    let operation_chat_session_key = if matches!(key, CanonicalFactKey::TechniqueOutcome { .. }) {
+        load_operation_chat_session_key(connection, operation_id).await?
+    } else {
+        None
+    };
     let row = resolve_one(
         connection,
         operation_id,
+        operation_chat_session_key.as_deref(),
         expected_organization_id,
         project_path_at_freeze,
         key,
@@ -479,6 +506,14 @@ pub async fn resolve_for_handoff(
             code: "canonical_fact_ref_limit_exceeded",
         });
     }
+    let operation_chat_session_key = if keys
+        .iter()
+        .any(|key| matches!(key, CanonicalFactKey::TechniqueOutcome { .. }))
+    {
+        load_operation_chat_session_key(connection, operation_id).await?
+    } else {
+        None
+    };
     let mut seen = std::collections::BTreeSet::new();
     let mut refs = Vec::with_capacity(keys.len());
     for key in keys {
@@ -493,6 +528,7 @@ pub async fn resolve_for_handoff(
         let row = resolve_one(
             connection,
             operation_id,
+            operation_chat_session_key.as_deref(),
             expected_organization_id,
             project_path_at_freeze,
             key,

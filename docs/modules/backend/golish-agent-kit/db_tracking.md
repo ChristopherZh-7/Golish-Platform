@@ -1,6 +1,6 @@
 # golish-agent-kit / db_tracking
 
-> **一句话职责**：agent 活动的 DB 跟踪——`DbTracker` 记工具生命周期/token/终端/web/审计；普通记录可后台写，但 tool-call start/finish 是可 await 的有序安全边界，防止 gate 先读到 finish 却没有 start。
+> **一句话职责**：agent 活动的 DB 跟踪——`DbTracker` 记工具生命周期/token/终端/web/审计；普通记录可后台写，但 tool-call start/finish 是可 await 的有序安全边界，并把 runtime-aware 调用固定到可信 operation task owner。
 
 - **类型**：目录模块（属于 crate [`golish-agent-kit`](../golish-agent-kit.md)）
 - **路径**：`backend/crates/golish-agent-kit/src/db_tracking/`
@@ -20,12 +20,14 @@ fire-and-forget；`start_tool_call` / `finish_tool_call` 返回 future，runtime
 await，保证 ask_human `scope_review` 等 gate-sensitive 调用在评分前完整可见。
 tracker clones 共享同一个可重绑定 session UUID，TaskMode 在 stage 执行前把它绑定到
 durable `sessions.id`。写入经 `DbReadinessGate` 门控；失败记 warn，不 panic。
+runtime-aware start 以 `RuntimeToolIdentity.operation_id` 作为 canonical `task_id`；tracker
+未绑定 task 时自动使用该 owner，已绑定但不一致时在 dispatch 前 fail closed。
 
 ## 公开接口
 
 | 符号 | 说明 |
 |---|---|
-| `DbTracker` | 记录句柄；clones 共享 session identity；tool-call start/finish 可 await，其它非 gate-sensitive 写可后台化 |
+| `DbTracker` | 记录句柄；clones 共享 session identity；runtime-aware start 固定 `task_id=operation_id` 并拒绝 owner mismatch；tool-call start/finish 可 await，其它非 gate-sensitive 写可后台化 |
 | `ToolCallGuard` | 工具调用生命周期 guard；固定保存 start 时的 session UUID，finish 不重新读取可变 identity |
 | `MemoryHit` / `ScoredMemoryHit` / `BriefingPlan` | 记忆命中 / 评分 / briefing |
 | `LegacyToolMemoryContext` / `should_store_legacy_tool_memory` | 自动 tool-result legacy memory 的硬边界；任何 trusted harness operation/stage 一律禁止写自由文本 memory |
@@ -45,6 +47,9 @@ durable `sessions.id`。写入经 `DbReadinessGate` 门控；失败记 warn，�
 
 - **工具生命周期不得乱序**：`start_tool_call` 完成后才 dispatch，`finish_tool_call`
   完成后 gate 才可消费该调用；不得恢复为两个互相竞态的 spawned write。
+- **runtime task owner 不得漂移**：有 trusted runtime identity 时，`tool_calls.task_id`
+  必须取 exact `operation_id`；已有非空 tracker task owner 若不同必须拒绝，不能覆盖、
+  降级为 legacy tracking 或放宽 DB constraint。
 - **session identity 必须共享且成对固定**：Task/stage 开始前 rebind durable UUID，所有
   已克隆 tracker 必须立即读到同一值；每次记录只短暂 snapshot UUID，不能持锁跨
   `await`。`ToolCallGuard` 必须让同一调用的 start/finish 永远使用 start UUID，即使

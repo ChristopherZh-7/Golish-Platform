@@ -59,6 +59,7 @@ export function AttackCandidateReview({
   const [busy, setBusy] = useState<"review" | "resume" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<Record<string, ReviewDecision>>({});
+  const [startBefores, setStartBefores] = useState<Record<string, string>>({});
   const [expiries, setExpiries] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
@@ -89,7 +90,11 @@ export function AttackCandidateReview({
       const decision = decisions[candidate.candidateId];
       return (
         decision === "reject" ||
-        (decision === "approve" && Boolean(expiries[candidate.candidateId]))
+        (decision === "approve" &&
+          Boolean(startBefores[candidate.candidateId]) &&
+          Boolean(expiries[candidate.candidateId]) &&
+          new Date(startBefores[candidate.candidateId]).getTime() <=
+            new Date(expiries[candidate.candidateId]).getTime())
       );
     });
 
@@ -108,6 +113,10 @@ export function AttackCandidateReview({
             candidatePlanHash: candidate.candidatePlanHash,
             expectedRowVersion: candidate.rowVersion,
             decision,
+            startBefore:
+              decision === "approve"
+                ? new Date(startBefores[candidate.candidateId]).toISOString()
+                : null,
             expiresAt:
               decision === "approve"
                 ? new Date(expiries[candidate.candidateId]).toISOString()
@@ -284,10 +293,18 @@ export function AttackCandidateReview({
                               ...current,
                               [candidate.candidateId]: decision,
                             }));
+                            if (decision === "approve" && !startBefores[candidate.candidateId]) {
+                              setStartBefores((current) => ({
+                                ...current,
+                                [candidate.candidateId]: new Date(Date.now() + 60 * 60 * 1000)
+                                  .toISOString()
+                                  .slice(0, 16),
+                              }));
+                            }
                             if (decision === "approve" && !expiries[candidate.candidateId]) {
                               setExpiries((current) => ({
                                 ...current,
-                                [candidate.candidateId]: new Date(Date.now() + 60 * 60 * 1000)
+                                [candidate.candidateId]: new Date(Date.now() + 2 * 60 * 60 * 1000)
                                   .toISOString()
                                   .slice(0, 16),
                               }));
@@ -300,23 +317,40 @@ export function AttackCandidateReview({
                   </fieldset>
                 )}
                 {!decided && decisions[candidate.candidateId] === "approve" && (
-                  <label className="mt-2 block text-[10px] text-muted-foreground">
-                    Approval expiry for {candidate.targetValueAtTime}
-                    <input
-                      type="datetime-local"
-                      value={expiries[candidate.candidateId] ?? ""}
-                      onChange={(event) =>
-                        setExpiries((current) => ({
-                          ...current,
-                          [candidate.candidateId]: event.target.value,
-                        }))
-                      }
-                      className="mt-1 block rounded border border-border/40 bg-background px-2 py-1 font-mono text-foreground"
-                    />
-                  </label>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <label className="block text-[10px] text-muted-foreground">
+                      Must start by for {candidate.targetValueAtTime}
+                      <input
+                        type="datetime-local"
+                        value={startBefores[candidate.candidateId] ?? ""}
+                        onChange={(event) =>
+                          setStartBefores((current) => ({
+                            ...current,
+                            [candidate.candidateId]: event.target.value,
+                          }))
+                        }
+                        className="mt-1 block rounded border border-border/40 bg-background px-2 py-1 font-mono text-foreground"
+                      />
+                    </label>
+                    <label className="block text-[10px] text-muted-foreground">
+                      Approval expires for {candidate.targetValueAtTime}
+                      <input
+                        type="datetime-local"
+                        value={expiries[candidate.candidateId] ?? ""}
+                        onChange={(event) =>
+                          setExpiries((current) => ({
+                            ...current,
+                            [candidate.candidateId]: event.target.value,
+                          }))
+                        }
+                        className="mt-1 block rounded border border-border/40 bg-background px-2 py-1 font-mono text-foreground"
+                      />
+                    </label>
+                  </div>
                 )}
                 {candidate.latestApproval && (
                   <div className="mt-2 text-[10px] text-muted-foreground">
+                    Start before {new Date(candidate.latestApproval.startBefore).toLocaleString()} ·
                     Approval expires {new Date(candidate.latestApproval.expiresAt).toLocaleString()}
                   </div>
                 )}

@@ -13,6 +13,7 @@ import { ApiError } from "@/lib/api";
 import { type CandidateAttemptRow, listCandidateAttempts } from "@/lib/api/attack";
 import { translateErrorCode } from "@/lib/api/error-codes";
 import { cn } from "@/lib/utils";
+import { CandidateVerificationProtocol } from "./CandidateVerificationProtocol";
 
 export interface CandidateAttemptRowsProps {
   operationId: string;
@@ -39,6 +40,7 @@ const STATUS_LABELS: Record<string, string> = {
   queued: "Queued",
   running: "Running",
   submitted: "Submitted",
+  terminalization_pending: "Terminalization pending",
   verified: "Verified",
   refuted: "Refuted",
   blocked: "Blocked",
@@ -120,7 +122,7 @@ function statusIcon(status: string) {
   if (status === "blocked" || status === "retryable_failed") {
     return <ShieldAlert className="h-3.5 w-3.5 text-amber-300" />;
   }
-  if (status === "running" || status === "submitted") {
+  if (["running", "submitted", "terminalization_pending"].includes(status)) {
     return <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />;
   }
   return <Clock3 className="h-3.5 w-3.5 text-muted-foreground" />;
@@ -132,7 +134,7 @@ function statusLabel(status: string): string {
 
 function AttemptRow({ attempt }: { attempt: CandidateAttemptRow }) {
   const result = resultSummary(attempt.result);
-  const isActive = attempt.status === "running" || attempt.status === "submitted";
+  const isActive = ["running", "submitted", "terminalization_pending"].includes(attempt.status);
 
   return (
     <article
@@ -268,67 +270,93 @@ export function CandidateAttemptRows({
   const counts = useMemo(() => {
     const rows = attempts ?? [];
     return {
-      active: rows.filter((attempt) => ["running", "submitted"].includes(attempt.status)).length,
+      active: rows.filter((attempt) =>
+        ["running", "submitted", "terminalization_pending"].includes(attempt.status)
+      ).length,
       queued: rows.filter((attempt) => attempt.status === "queued").length,
     };
   }, [attempts]);
 
   if (loading && attempts === null) {
     return (
-      <div className="flex items-center gap-2 rounded border border-border/30 p-3 text-xs text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading Candidate attempts…
+      <div className="space-y-2">
+        <CandidateVerificationProtocol
+          operationId={operationId}
+          waveRunId={waveRunId}
+          refreshVersion={refreshVersion}
+        />
+        <div className="flex items-center gap-2 rounded border border-border/30 p-3 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading Candidate attempts…
+        </div>
       </div>
     );
   }
 
   if (attempts === null) {
     return (
-      <div className="rounded border border-red-500/30 bg-red-500/5 p-3 text-xs">
-        <div role="alert" className="flex items-center gap-2 text-red-300">
-          <AlertTriangle className="h-3.5 w-3.5" />
-          {error ?? "Candidate attempts are unavailable."}
+      <div className="space-y-2">
+        <CandidateVerificationProtocol
+          operationId={operationId}
+          waveRunId={waveRunId}
+          refreshVersion={refreshVersion}
+        />
+        <div className="rounded border border-red-500/30 bg-red-500/5 p-3 text-xs">
+          <div role="alert" className="flex items-center gap-2 text-red-300">
+            <AlertTriangle className="h-3.5 w-3.5" />
+            {error ?? "Candidate attempts are unavailable."}
+          </div>
+          <button
+            type="button"
+            className="mt-2 text-accent hover:underline"
+            onClick={() => void load()}
+          >
+            Retry DB read
+          </button>
         </div>
-        <button
-          type="button"
-          className="mt-2 text-accent hover:underline"
-          onClick={() => void load()}
-        >
-          Retry DB read
-        </button>
       </div>
     );
   }
 
   return (
-    <section className="space-y-3 rounded border border-border/30 bg-muted/10 p-3">
-      <header className="flex flex-wrap items-center gap-2">
-        <CircleDot className="h-4 w-4 text-accent" />
-        <h3 className="text-xs font-semibold">Candidate verification attempts</h3>
-        <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-          {counts.active} active · {counts.queued} queued
-        </span>
-        <button type="button" aria-label="Refresh Candidate attempts" onClick={() => void load()}>
-          <RotateCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-        </button>
-      </header>
+    <div className="space-y-2">
+      <CandidateVerificationProtocol
+        operationId={operationId}
+        waveRunId={waveRunId}
+        refreshVersion={refreshVersion}
+      />
+      <section className="space-y-3 rounded border border-border/30 bg-muted/10 p-3">
+        <header className="flex flex-wrap items-center gap-2">
+          <CircleDot className="h-4 w-4 text-accent" />
+          <h3 className="text-xs font-semibold">Candidate verification attempts</h3>
+          <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+            {counts.active} active · {counts.queued} queued
+          </span>
+          <button type="button" aria-label="Refresh Candidate attempts" onClick={() => void load()}>
+            <RotateCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+          </button>
+        </header>
 
-      {error && (
-        <div role="alert" className="rounded border border-red-500/30 p-2 text-[11px] text-red-300">
-          {error}
-        </div>
-      )}
+        {error && (
+          <div
+            role="alert"
+            className="rounded border border-red-500/30 p-2 text-[11px] text-red-300"
+          >
+            {error}
+          </div>
+        )}
 
-      {attempts.length === 0 ? (
-        <div className="rounded border border-border/30 p-4 text-center text-xs text-muted-foreground">
-          No Candidate verification attempts were recorded for this wave.
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {attempts.map((attempt) => (
-            <AttemptRow key={attempt.attemptId} attempt={attempt} />
-          ))}
-        </div>
-      )}
-    </section>
+        {attempts.length === 0 ? (
+          <div className="rounded border border-border/30 p-4 text-center text-xs text-muted-foreground">
+            No Candidate verification attempts were recorded for this wave.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {attempts.map((attempt) => (
+              <AttemptRow key={attempt.attemptId} attempt={attempt} />
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
   );
 }

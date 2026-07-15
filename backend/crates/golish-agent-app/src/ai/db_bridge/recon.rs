@@ -455,12 +455,13 @@ impl GolishDbRepoProvider {
         &self,
         org_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<String>> {
-        // `None` project_path = legacy "all visible" set; the harness has no
-        // per-project key today (chat sessions carry project_path=None). `org_id`
-        // narrows the asset axis to the current operation's organization
-        // (coverage asset-axis isolation, design 2026-06-09); `None` keeps the
-        // legacy whole-DB axis.
-        self.recon_targets.in_scope_values(None, org_id).await
+        // Harness truth is engagement-owned. Binding NULL to the exact predicate
+        // deliberately returns no rows: an operation without a confirmed org may
+        // not inherit another engagement's targets from the shared database.
+        Ok(sqlx::query_scalar(in_scope_assets_sql())
+            .bind(org_id)
+            .fetch_all(self.pool.as_ref())
+            .await?)
     }
 
     pub(super) async fn in_scope_assets_created_before_impl(
@@ -468,9 +469,11 @@ impl GolishDbRepoProvider {
         org_id: Option<Uuid>,
         cutoff: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Vec<String>> {
-        self.recon_targets
-            .in_scope_values_created_before(None, org_id, cutoff)
-            .await
+        Ok(sqlx::query_scalar(in_scope_assets_created_before_sql())
+            .bind(org_id)
+            .bind(cutoff)
+            .fetch_all(self.pool.as_ref())
+            .await?)
     }
 
     /// 设计 2026-06-12 §5.3 · DB 业务表真值事实（转 String technique，与 golish-db
@@ -482,6 +485,9 @@ impl GolishDbRepoProvider {
         in_scope_assets: &[String],
         run_start: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<Vec<(String, String)>> {
+        let Some(org_id) = org_id else {
+            return Ok(Vec::new());
+        };
         // This is deliberately read-only. DNS/subdomain landing belongs to the
         // successful `recon_map_assets` write path; refreshing here made innocent
         // Scoping/coverage reads contact DNS and silently execute Target Intel work.
@@ -492,7 +498,7 @@ impl GolishDbRepoProvider {
         // IP assets. Missing type → "" (non-IP, keep all — fail-safe). Reuses the
         // 2c-1 typed in-scope read.
         let type_map: std::collections::HashMap<String, String> = self
-            .in_scope_typed_assets_impl(org_id)
+            .in_scope_typed_assets_impl(Some(org_id))
             .await?
             .into_iter()
             .collect();
@@ -502,7 +508,7 @@ impl GolishDbRepoProvider {
             .collect();
         let rows = golish_db::repo::coverage_truth::coverage_truth_facts(
             &self.pool,
-            org_id,
+            Some(org_id),
             in_scope_assets,
             &types,
             run_start,
@@ -515,15 +521,19 @@ impl GolishDbRepoProvider {
         &self,
         org_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let Some(org_id) = org_id else {
+            return Ok(Vec::new());
+        };
         let targets = self.recon_targets.in_scope_targets(None).await?;
         // Engagement-org isolation (设计 2026-06-15-engagement-org-isolation):
         // confine the listing to the scoping-confirmed engagement org subtree
-        // (root + subsidiaries). `None` org = legacy whole-visible set (chat /
-        // pre-scoping). Once an org is bound, targets with no org binding are
-        // excluded (fail-closed: an unowned row is not "this engagement's").
+        // (root + subsidiaries). A missing org returns no rows above. Once an
+        // org is bound, targets with no org binding are excluded (fail-closed:
+        // an unowned row is not "this engagement's").
         // Shares the db helper with the `manage_targets` list path so the two
         // org-confinement reads never drift.
-        let allowed = golish_db::repo::organizations::subtree_id_str_set(&self.pool, org_id).await;
+        let allowed =
+            golish_db::repo::organizations::subtree_id_str_set(&self.pool, Some(org_id)).await;
         Ok(targets
             .into_iter()
             .filter(|t| {
@@ -568,8 +578,12 @@ impl GolishDbRepoProvider {
         org_id: Option<Uuid>,
         cap: Option<usize>,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let Some(org_id) = org_id else {
+            return Ok(Vec::new());
+        };
         let targets = self.recon_targets.in_scope_targets(None).await?;
-        let allowed = golish_db::repo::organizations::subtree_id_str_set(&self.pool, org_id).await;
+        let allowed =
+            golish_db::repo::organizations::subtree_id_str_set(&self.pool, Some(org_id)).await;
         let owned: Vec<golish_app_core::domain::targets::Target> = targets
             .into_iter()
             .filter(|t| {
@@ -689,6 +703,210 @@ impl GolishDbRepoProvider {
             .collect())
     }
 
+    pub(super) async fn active_recon_scope_review_candidates_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<golish_agent_kit::db_traits::ScopingReviewedTarget>> {
+        let rows: Vec<(String, String, String)> =
+            sqlx::query_as(active_recon_scope_review_candidates_sql())
+                .bind(operation_id)
+                .bind(organization_id)
+                .fetch_all(self.pool.as_ref())
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(value, target_type, scope)| golish_agent_kit::db_traits::ScopingReviewedTarget {
+                    value,
+                    target_type,
+                    scope,
+                },
+            )
+            .collect())
+    }
+
+    pub(super) async fn active_recon_scope_review_apply_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        approval: golish_agent_kit::db_traits::ActiveReconScopeReviewApproval,
+    ) -> anyhow::Result<Vec<golish_agent_kit::db_traits::ScopingReviewedTarget>> {
+        use std::collections::BTreeSet;
+
+        let exact = |row: &golish_agent_kit::db_traits::ScopingReviewedTarget| {
+            (
+                row.value.trim().to_string(),
+                row.target_type.trim().to_ascii_lowercase(),
+                row.scope.trim().to_ascii_lowercase(),
+            )
+        };
+        let valid = |row: &golish_agent_kit::db_traits::ScopingReviewedTarget| {
+            !row.value.trim().is_empty()
+                && matches!(
+                    row.target_type.trim().to_ascii_lowercase().as_str(),
+                    "domain" | "ip" | "cidr" | "url" | "wildcard"
+                )
+                && row.scope.trim().eq_ignore_ascii_case("in")
+        };
+        if approval.presented.is_empty()
+            || approval.selected.is_empty()
+            || !approval.presented.iter().all(valid)
+            || !approval.selected.iter().all(valid)
+        {
+            anyhow::bail!("ACTIVE_RECON_SCOPE_INVALID_REVIEW_ROWS");
+        }
+        let presented_set = approval
+            .presented
+            .iter()
+            .map(exact)
+            .collect::<BTreeSet<_>>();
+        let selected_set = approval.selected.iter().map(exact).collect::<BTreeSet<_>>();
+        if presented_set.len() != approval.presented.len()
+            || selected_set.len() != approval.selected.len()
+            || !selected_set.is_subset(&presented_set)
+        {
+            anyhow::bail!("ACTIVE_RECON_SCOPE_REVIEW_NOT_UNCHANGED_SUBSET");
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let operation: Option<(String, Option<Uuid>)> =
+            sqlx::query_as(active_recon_scope_operation_lock_sql())
+                .bind(operation_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((current_stage, engagement_org_id)) = operation else {
+            anyhow::bail!("ACTIVE_RECON_SCOPE_OPERATION_NOT_FOUND");
+        };
+        if current_stage != "target_intel" || engagement_org_id != Some(organization_id) {
+            anyhow::bail!("ACTIVE_RECON_SCOPE_OPERATION_BINDING_MISMATCH");
+        }
+
+        let current_rows: Vec<(String, String, String)> =
+            sqlx::query_as(active_recon_scope_review_candidates_sql())
+                .bind(operation_id)
+                .bind(organization_id)
+                .fetch_all(&mut *tx)
+                .await?;
+        let current = current_rows
+            .into_iter()
+            .map(
+                |(value, target_type, scope)| golish_agent_kit::db_traits::ScopingReviewedTarget {
+                    value,
+                    target_type,
+                    scope,
+                },
+            )
+            .collect::<Vec<_>>();
+        let current_set = current.iter().map(exact).collect::<BTreeSet<_>>();
+        if current_set.len() != current.len() || current_set != presented_set {
+            anyhow::bail!("ACTIVE_RECON_SCOPE_CANDIDATE_SNAPSHOT_CHANGED");
+        }
+
+        for row in &approval.presented {
+            let selected = selected_set.contains(&exact(row));
+            let result = sqlx::query(active_recon_scope_target_update_sql())
+                .bind(organization_id)
+                .bind(row.target_type.trim().to_ascii_lowercase())
+                .bind(row.value.trim())
+                .bind(selected)
+                .execute(&mut *tx)
+                .await?;
+            if result.rows_affected() != 1 {
+                anyhow::bail!("ACTIVE_RECON_SCOPE_TARGET_IDENTITY_CHANGED");
+            }
+        }
+
+        let marker = serde_json::json!({
+            "schema_version": 1,
+            "operation_id": operation_id,
+            "organization_id": organization_id,
+            "request_id": approval.request_id,
+            "presented": approval.presented,
+            "selected": approval.selected,
+        });
+        let updated = sqlx::query(active_recon_scope_state_update_sql())
+            .bind(operation_id)
+            .bind(organization_id)
+            .bind(&marker)
+            .execute(&mut *tx)
+            .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("ACTIVE_RECON_SCOPE_OPERATION_STATE_CHANGED");
+        }
+        sqlx::query(active_recon_scope_audit_insert_sql())
+            .bind(operation_id)
+            .bind(organization_id.to_string())
+            .bind(&marker)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(approval.selected)
+    }
+
+    pub(super) async fn active_recon_scope_review_authorized_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let marker: Option<(serde_json::Value,)> =
+            sqlx::query_as(active_recon_scope_authorization_sql())
+                .bind(operation_id)
+                .bind(organization_id)
+                .fetch_optional(self.pool.as_ref())
+                .await?;
+        let Some((marker,)) = marker else {
+            return Ok(false);
+        };
+        let operation_id_text = operation_id.to_string();
+        let organization_id_text = organization_id.to_string();
+        if marker
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+            || marker
+                .get("operation_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(operation_id_text.as_str())
+            || marker
+                .get("organization_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(organization_id_text.as_str())
+        {
+            return Ok(false);
+        }
+        let selected: Vec<golish_agent_kit::db_traits::ScopingReviewedTarget> = marker
+            .get("selected")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
+        if selected.is_empty() {
+            return Ok(false);
+        }
+        let trusted = self
+            .scoping_target_snapshot_impl(organization_id)
+            .await?
+            .into_iter()
+            .filter(|row| row.scope.trim().eq_ignore_ascii_case("in"))
+            .collect::<Vec<_>>();
+        let exact = |row: &golish_agent_kit::db_traits::ScopingReviewedTarget| {
+            (
+                row.value.trim().to_string(),
+                row.target_type.trim().to_ascii_lowercase(),
+                row.scope.trim().to_ascii_lowercase(),
+            )
+        };
+        let selected = selected
+            .iter()
+            .map(exact)
+            .collect::<std::collections::BTreeSet<_>>();
+        let trusted = trusted
+            .iter()
+            .map(exact)
+            .collect::<std::collections::BTreeSet<_>>();
+        Ok(selected == trusted)
+    }
+
     /// EAS host-aware alias exclusion (设计 2026-06-30-eas-domain-port-
     /// delegation): in-scope asset values whose resolved IP is already an
     /// in-scope IP target. Reuses the recon targets port (mirrors
@@ -699,11 +917,25 @@ impl GolishDbRepoProvider {
     /// applies only to concrete IP/CIDR hosts.
     pub(super) async fn eas_port_delegated_assets_impl(
         &self,
-        _org_id: Option<Uuid>,
+        org_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<String>> {
+        let Some(org_id) = org_id else {
+            return Ok(Vec::new());
+        };
         let targets = self.recon_targets.in_scope_targets(None).await?;
+        let allowed =
+            golish_db::repo::organizations::subtree_id_str_set(&self.pool, Some(org_id)).await;
+        let owned: Vec<_> = targets
+            .into_iter()
+            .filter(|target| {
+                golish_db::repo::organizations::org_id_in_scope(
+                    target.organization_id.as_deref(),
+                    &allowed,
+                )
+            })
+            .collect();
         Ok(
-            golish_app_core::domain::targets::eas_port_delegated_domain_values(&targets)
+            golish_app_core::domain::targets::eas_port_delegated_domain_values(&owned)
                 .into_iter()
                 .collect(),
         )
@@ -715,8 +947,11 @@ impl GolishDbRepoProvider {
         &self,
         org_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<String>> {
+        let Some(org_id) = org_id else {
+            return Ok(Vec::new());
+        };
         Ok(
-            golish_db::repo::coverage_truth::web_capable_ip_assets(&self.pool, org_id)
+            golish_db::repo::coverage_truth::web_capable_ip_assets(&self.pool, Some(org_id))
                 .await?
                 .into_iter()
                 .collect(),
@@ -730,12 +965,17 @@ impl GolishDbRepoProvider {
         org_id: Option<Uuid>,
         run_start: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<Vec<String>> {
-        Ok(
-            golish_db::repo::coverage_truth::eas_web_capable_assets(&self.pool, org_id, run_start)
-                .await?
-                .into_iter()
-                .collect(),
+        let Some(org_id) = org_id else {
+            return Ok(Vec::new());
+        };
+        Ok(golish_db::repo::coverage_truth::eas_web_capable_assets(
+            &self.pool,
+            Some(org_id),
+            run_start,
         )
+        .await?
+        .into_iter()
+        .collect())
     }
 
     /// Dead-asset P3 (design 2026-07-02-dead-asset-liveness-state §5.1): in-scope
@@ -745,8 +985,11 @@ impl GolishDbRepoProvider {
         &self,
         org_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<String>> {
+        let Some(org_id) = org_id else {
+            return Ok(Vec::new());
+        };
         Ok(
-            golish_db::repo::coverage_truth::dead_asset_values(&self.pool, org_id)
+            golish_db::repo::coverage_truth::dead_asset_values(&self.pool, Some(org_id))
                 .await?
                 .into_iter()
                 .collect(),
@@ -758,9 +1001,14 @@ impl GolishDbRepoProvider {
         org_id: Option<Uuid>,
         run_start: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<Vec<String>> {
+        let Some(org_id) = org_id else {
+            return Ok(Vec::new());
+        };
         Ok(
             golish_db::repo::coverage_truth::eas_service_not_applicable_assets(
-                &self.pool, org_id, run_start,
+                &self.pool,
+                Some(org_id),
+                run_start,
             )
             .await?
             .into_iter()
@@ -835,11 +1083,28 @@ impl GolishDbRepoProvider {
     }
 }
 
+fn in_scope_assets_sql() -> &'static str {
+    r#"SELECT DISTINCT value
+       FROM targets
+       WHERE scope::text = 'in'
+         AND organization_id = $1
+       ORDER BY value"#
+}
+
+fn in_scope_assets_created_before_sql() -> &'static str {
+    r#"SELECT DISTINCT value
+       FROM targets
+       WHERE scope::text = 'in'
+         AND organization_id = $1
+         AND created_at <= $2
+       ORDER BY value"#
+}
+
 fn in_scope_target_types_sql() -> &'static str {
     r#"SELECT DISTINCT target_type::text
        FROM targets
        WHERE scope::text = 'in'
-         AND ($1 IS NULL OR organization_id = $1)
+         AND organization_id = $1
        ORDER BY target_type::text"#
 }
 
@@ -847,7 +1112,7 @@ fn in_scope_typed_assets_sql() -> &'static str {
     r#"SELECT value, target_type::text
        FROM targets
        WHERE scope::text = 'in'
-         AND ($1 IS NULL OR organization_id = $1)
+         AND organization_id = $1
        ORDER BY created_at ASC, id ASC"#
 }
 
@@ -859,6 +1124,86 @@ fn scoping_target_snapshot_sql() -> &'static str {
          AND lower(COALESCE(source, '')) IN
              ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli')
        ORDER BY created_at ASC, id ASC"#
+}
+
+fn active_recon_scope_review_candidates_sql() -> &'static str {
+    r#"SELECT target.value, target.target_type::text, target.scope::text
+       FROM operation_state operation
+       JOIN targets target
+         ON target.organization_id = operation.engagement_org_id
+       WHERE operation.operation_id = $1
+         AND operation.engagement_org_id = $2
+         AND operation.current_stage = 'target_intel'
+         AND target.organization_id = $2
+         AND target.scope::text = 'in'
+         AND target.target_type::text IN ('domain', 'ip', 'cidr', 'url', 'wildcard')
+         AND lower(COALESCE(target.source, '')) IN
+             ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli', 'asset_intel')
+         AND EXISTS (
+             SELECT 1
+             FROM targets refreshed
+             WHERE refreshed.organization_id = operation.engagement_org_id
+               AND refreshed.scope::text = 'in'
+               AND lower(COALESCE(refreshed.source, '')) = 'asset_intel'
+               AND refreshed.updated_at >= operation.stage_started_at
+         )
+       ORDER BY target.created_at ASC, target.id ASC"#
+}
+
+fn active_recon_scope_operation_lock_sql() -> &'static str {
+    r#"SELECT current_stage, engagement_org_id
+       FROM operation_state
+       WHERE operation_id = $1
+       FOR UPDATE"#
+}
+
+fn active_recon_scope_target_update_sql() -> &'static str {
+    r#"UPDATE targets
+       SET scope = CASE WHEN $4 THEN 'in'::scope_type ELSE 'out'::scope_type END,
+           source = CASE
+               WHEN $4 AND lower(COALESCE(source, '')) = 'asset_intel'
+                   THEN 'customer_provided'
+               ELSE source
+           END,
+           updated_at = NOW()
+       WHERE organization_id = $1
+         AND target_type::text = $2
+         AND value = $3
+         AND scope::text = 'in'
+         AND lower(COALESCE(source, '')) IN
+             ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli', 'asset_intel')"#
+}
+
+fn active_recon_scope_state_update_sql() -> &'static str {
+    r#"UPDATE operation_state
+       SET state_blob = jsonb_set(
+           COALESCE(state_blob, '{}'::jsonb),
+           '{active_recon_target_scope}',
+           $3::jsonb,
+           true
+       )
+       WHERE operation_id = $1
+         AND engagement_org_id = $2
+         AND current_stage = 'target_intel'"#
+}
+
+fn active_recon_scope_audit_insert_sql() -> &'static str {
+    r#"INSERT INTO audit_log
+          (action, category, details, entity_type, entity_id, source,
+           session_id, tool_name, status, detail, run_id, audit_role)
+       VALUES
+          ('active_recon_target_scope_approved', 'authorization',
+           'Human approved exact targets for active reconnaissance',
+           'organization', $2, 'active_recon_target_review',
+           $1::text, 'scope_review', 'completed', $3::jsonb, $1, 'action')"#
+}
+
+fn active_recon_scope_authorization_sql() -> &'static str {
+    r#"SELECT state_blob -> 'active_recon_target_scope'
+       FROM operation_state
+       WHERE operation_id = $1
+         AND engagement_org_id = $2
+         AND state_blob ? 'active_recon_target_scope'"#
 }
 
 #[cfg(test)]
@@ -899,10 +1244,16 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_type_queries_are_org_scoped() {
-        for sql in [in_scope_target_types_sql(), in_scope_typed_assets_sql()] {
+    fn authoritative_asset_queries_require_an_exact_org_scope() {
+        for sql in [
+            in_scope_assets_sql(),
+            in_scope_assets_created_before_sql(),
+            in_scope_target_types_sql(),
+            in_scope_typed_assets_sql(),
+        ] {
             assert!(sql.contains("scope::text = 'in'"));
-            assert!(sql.contains("($1 IS NULL OR organization_id = $1)"));
+            assert!(sql.contains("organization_id = $1"));
+            assert!(!sql.contains("$1 IS NULL"));
         }
     }
 
@@ -912,6 +1263,29 @@ mod tests {
         assert!(sql.contains("'customer_provided'"));
         assert!(!sql.contains("'active_discovered'"));
         assert!(!sql.contains("'asset_intel'"));
+    }
+
+    #[test]
+    fn active_recon_scope_candidates_are_operation_org_stage_and_window_bound() {
+        let sql = active_recon_scope_review_candidates_sql();
+        assert!(sql.contains("operation.operation_id = $1"));
+        assert!(sql.contains("operation.engagement_org_id = $2"));
+        assert!(sql.contains("operation.current_stage = 'target_intel'"));
+        assert!(sql.contains("refreshed.updated_at >= operation.stage_started_at"));
+        assert!(sql.contains("'asset_intel'"));
+        assert!(!sql.contains("active_discovered"));
+    }
+
+    #[test]
+    fn active_recon_scope_apply_is_exact_and_operation_bound() {
+        let update = active_recon_scope_target_update_sql();
+        assert!(update.contains("organization_id = $1"));
+        assert!(update.contains("target_type::text = $2"));
+        assert!(update.contains("value = $3"));
+        assert!(update.contains("customer_provided"));
+        let state = active_recon_scope_state_update_sql();
+        assert!(state.contains("active_recon_target_scope"));
+        assert!(state.contains("current_stage = 'target_intel'"));
     }
 
     #[test]

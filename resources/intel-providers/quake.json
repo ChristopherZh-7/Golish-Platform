@@ -65,6 +65,43 @@
             "timeout_secs": 45
           },
           {
+            "id": "domain",
+            "method": "POST",
+            "url": "https://quake.360.net/api/v3/search/quake_service",
+            "headers": {
+              "Content-Type": "application/json",
+              "User-Agent": "Golish Asset Intel",
+              "X-QuakeToken": "{{secret:api_key}}"
+            },
+            "json": {
+              "query": "domain: \"{{domain}}\"",
+              "start": 0,
+              "size": 100,
+              "ignore_cache": false,
+              "latest": true,
+              "include": [
+                "ip",
+                "port",
+                "transport",
+                "domain",
+                "hostname",
+                "asn",
+                "org",
+                "service.name",
+                "service.http.host",
+                "service.http.title",
+                "service.http.server",
+                "service.http.status_code",
+                "service.cert",
+                "location.country_cn",
+                "location.province_cn",
+                "location.city_cn",
+                "location.isp"
+              ]
+            },
+            "timeout_secs": 45
+          },
+          {
             "id": "icp_unit",
             "method": "POST",
             "url": "https://quake.360.net/api/v3/search/quake_service",
@@ -144,7 +181,7 @@
         "pairs": [
           {
             "path": "$..data[*]",
-            "host_field": ["domain", "service.http.host"],
+            "host_field": ["service.http.host", "domain"],
             "ip_field": ["ip"]
           }
         ],

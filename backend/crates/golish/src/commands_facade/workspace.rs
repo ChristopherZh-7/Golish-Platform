@@ -37,8 +37,7 @@
 //! - **Security analysis**: `oplog_*`, `target_assets_list`,
 //!   `api_endpoints_{list,untested}`, `fingerprints_list`,
 //!   `js_analysis_list`, `passive_scans_*`, `target_security_overview`
-//! - **Scan runner**: `scan_whatweb`, `match_pocs_for_target`,
-//!   `scan_nuclei_targeted`, `nuclei_cancel`, `scan_feroxbuster`
+//! - **Scan runner**: `scan_whatweb`, `scan_feroxbuster`
 //! - **Sensitive scan**: `sensitive_scan_*`
 
 pub use crate::commands::fs::*;

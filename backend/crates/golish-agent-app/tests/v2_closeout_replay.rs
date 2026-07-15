@@ -978,7 +978,8 @@ async fn install_first_assertion_ack_loss(pool: &PgPool, event_id: Uuid) {
     .await
     .expect("enable projector fixture");
     sqlx::raw_sql(&format!(
-        r#"CREATE FUNCTION reject_first_assertion_ack_after_write()
+        r#"CREATE SEQUENCE assertion_ack_loss_attempts START WITH 1;
+           CREATE FUNCTION reject_first_assertion_ack_after_write()
            RETURNS trigger AS $$
            BEGIN
                IF NEW.event_id='{event_id}'::uuid
@@ -987,6 +988,7 @@ async fn install_first_assertion_ack_loss(pool: &PgPool, event_id: Uuid) {
                   AND OLD.attempt_count=1
                   AND NEW.status='succeeded'
                THEN
+                   PERFORM nextval('assertion_ack_loss_attempts');
                    RAISE EXCEPTION 'fixture lost assertion ACK after projector write';
                END IF;
                RETURN NEW;
@@ -1004,8 +1006,9 @@ async fn install_first_assertion_ack_loss(pool: &PgPool, event_id: Uuid) {
 async fn wait_for_real_assertion_write_then_replay(pool: &PgPool, event_id: Uuid) {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            let (projection_count, status, attempt_count): (i64, String, i32) = sqlx::query_as(
-                r#"SELECT
+            let (projection_count, status, attempt_count, ack_rejected): (i64, String, i32, bool) =
+                sqlx::query_as(
+                    r#"SELECT
                            (SELECT COUNT(*)
                               FROM knowledge_assertions AS assertion
                               JOIN knowledge_outbox_events AS event
@@ -1013,17 +1016,18 @@ async fn wait_for_real_assertion_write_then_replay(pool: &PgPool, event_id: Uuid
                                AND event.source_version=assertion.source_version
                              WHERE event.event_id=$1),
                            status,
-                           attempt_count
+                           attempt_count,
+                           (SELECT is_called FROM assertion_ack_loss_attempts)
                       FROM knowledge_projection_deliveries
                      WHERE event_id=$1
                        AND projector_name='assertion-promoter'
                        AND projector_schema_version=1"#,
-            )
-            .bind(event_id)
-            .fetch_one(pool)
-            .await
-            .expect("observe write-before-ACK delivery state");
-            if projection_count == 1 && status == "leased" && attempt_count == 1 {
+                )
+                .bind(event_id)
+                .fetch_one(pool)
+                .await
+                .expect("observe write-before-ACK delivery state");
+            if projection_count == 1 && status == "leased" && attempt_count == 1 && ack_rejected {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -1035,7 +1039,8 @@ async fn wait_for_real_assertion_write_then_replay(pool: &PgPool, event_id: Uuid
     sqlx::raw_sql(
         r#"DROP TRIGGER reject_first_assertion_ack_after_write
              ON knowledge_projection_deliveries;
-           DROP FUNCTION reject_first_assertion_ack_after_write();"#,
+           DROP FUNCTION reject_first_assertion_ack_after_write();
+           DROP SEQUENCE assertion_ack_loss_attempts;"#,
     )
     .execute(pool)
     .await

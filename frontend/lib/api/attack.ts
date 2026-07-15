@@ -1,10 +1,14 @@
 /** Durable Candidate review and execution-attempt IPC. */
 
+import type { AttackCandidateRecoveryResolveRequest } from "@/lib/generated/AttackCandidateRecoveryResolveRequest";
+import type { AttackCandidateRecoveryResolveResponse } from "@/lib/generated/AttackCandidateRecoveryResolveResponse";
 import type { AttackCandidateResumeRequest } from "@/lib/generated/AttackCandidateResumeRequest";
 import type { AttackCandidateReviewRequest } from "@/lib/generated/AttackCandidateReviewRequest";
 import type { AttackCandidateReviewResponse } from "@/lib/generated/AttackCandidateReviewResponse";
 import type { AttackCandidateReviewScopeRequest } from "@/lib/generated/AttackCandidateReviewScopeRequest";
 import type { AttackCandidateReviewState } from "@/lib/generated/AttackCandidateReviewState";
+import type { AttackVerificationPendingEnrichmentView } from "@/lib/generated/AttackVerificationPendingEnrichmentView";
+import type { AttackVerificationQueueState } from "@/lib/generated/AttackVerificationQueueState";
 import type { CandidateAttemptRow } from "@/lib/generated/CandidateAttemptRow";
 import { invoke } from "./client";
 
@@ -14,6 +18,10 @@ export type {
   AttackCandidateReviewResponse,
   AttackCandidateReviewScopeRequest,
   AttackCandidateReviewState,
+  AttackCandidateRecoveryResolveRequest,
+  AttackCandidateRecoveryResolveResponse,
+  AttackVerificationPendingEnrichmentView,
+  AttackVerificationQueueState,
   CandidateAttemptRow,
 };
 
@@ -39,4 +47,16 @@ export function listCandidateAttempts(
   request: AttackCandidateReviewScopeRequest
 ): Promise<CandidateAttemptRow[]> {
   return invoke("attack_list_candidate_attempts", { request });
+}
+
+export function listVerificationQueue(
+  request: AttackCandidateReviewScopeRequest
+): Promise<AttackVerificationQueueState> {
+  return invoke("attack_list_verification_queue", { request });
+}
+
+export function resolveCandidateRecovery(
+  request: AttackCandidateRecoveryResolveRequest
+): Promise<AttackCandidateRecoveryResolveResponse> {
+  return invoke("attack_resolve_candidate_recovery", { request });
 }

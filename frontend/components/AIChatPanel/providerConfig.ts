@@ -131,7 +131,7 @@ export function buildProviderConfig(
         model,
         credentials_path: settings.ai.vertex_gemini?.credentials_path ?? "",
         project_id: settings.ai.vertex_gemini?.project_id ?? "",
-        location: settings.ai.vertex_gemini?.location ?? "us-east5",
+        location: settings.ai.vertex_gemini?.location ?? "us-central1",
         model_override,
       };
     case "ollama":

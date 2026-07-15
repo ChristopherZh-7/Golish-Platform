@@ -55,7 +55,8 @@
 
 ## 关键文件
 
-- `agentic_loop/tool_execution/direct/stage_run_call.rs`：Task harness `stage_run` per-org fan-out、gate retry、worker resume chain、stage-refiner repair checkpoint 传递。
+- `agentic_loop/tool_execution/direct/stage_run_call.rs`：Task harness `stage_run`；legacy/dual 保留 per-org fan-out，V2 Target Intel 走 durable sibling Team queue、每个 WorkerRun 独立 SubAgent UI parent identity、producer 有界 attempt retry、唯一 Aggregator、Gate BLOCK repair generation/fresh Aggregator；Candidate Verification 走 TerminalIntent recovery与同链 submit-only continuation。
+- `agentic_loop/tool_execution/direct/stage_team_scheduler.rs`：Stage Team plan/WorkItem/output/request 的确定性构造、唯一 fenced-object bounded parser、business output authority validator、lifetime/repair budget 与 stable hash。
 - `agentic_loop/tool_execution/direct/sub_agent_call.rs`：`sub_agent_*` 派发、sub-agent repair checkpoint 恢复、tool observer。
 - `test_utils.rs` / `test_utils_tests.rs`：feature gate 下的 mock 与自测。
 
@@ -70,8 +71,9 @@
 - `SubAgentExecutorContext.session_id` 只用于 Langfuse/transcript 事件路由，可能是 `stage-run-*` 等非 UUID 文本键；message-chain persistence 必须另传 `DbTracker::session_uuid()` 到 `persistence_session_id`。不得再解析或改写事件键来猜 DB session；否则 capacity continuation 会丢失精确 worker chain。
 - sub-agent chain 错误必须以稳定 typed kind 进入 `sub_agent_call` 结果：`restore_exact` 仅在已有同一 chain id 时允许有界同链 retry，`create_fresh` 可在工具尚未执行时重试，`restore_latest` / `finalize` 直接 fail closed。尤其 finalize 失败表示 worker 已可能产生外部副作用，不能落入普通 gate retry 再派 fresh worker。
 - sub-agent 返回 `success=false` 时，runtime 的 tool result 与 `sub_agent_dispatches` 生命周期都必须记失败；不能因 Rust 外层是 `Ok(SubAgentResult)` 就把 provider stream error、timeout 或显式失败标为 completed。
-- `stage_run` 和 `sub_agent_call` 共享同一个 per-org `agent_path` checkpoint；`submit_stage_deliverable needs_fix` 里的 `SubmitRepairMode.coverage_gap_actions` 必须被 `stage_run` 接住并继续持久化，否则取消/重跑后会退化成泛化的 “without StageDeliverable” BLOCK，repair mode 就丢失精确 target/technique 工具清单。
-- V2-writing operation 的 stage worker lifecycle 只调用 `RuntimeMemoryRepository` compound APIs；禁止把 generic message-chain update、worker checkpoint、Unit transition 拼成顺序写。GateBlocked/Exhausted 可由 worker+Unit compound finish 落地，Passed 必须等待 handoff/org-completion final seal 同事务完成。
+- legacy `stage_run` 和 `sub_agent_call` 共享同一个 per-org `agent_path` checkpoint；`submit_stage_deliverable needs_fix` 里的 `SubmitRepairMode.coverage_gap_actions` 必须被 `stage_run` 接住并继续持久化。V2 Stage Team 不能复用这条共享 checkpoint：每个 sibling WorkItem 必须绑定自己的 WorkerRun/message chain/lease，Gate BLOCK 用 immutable gap + 新 repair generation恢复。
+- V2-writing operation 的 stage worker lifecycle 只调用 `RuntimeMemoryRepository` compound APIs；禁止把 generic message-chain update、worker checkpoint、Unit transition 拼成顺序写。普通兼容 Worker 的 GateBlocked/Exhausted 可由 worker+Unit compound finish 落地；Team producer只结束自身 WorkItem/Output，不能关闭 Unit，只有 Aggregator final seal可 PASS Unit，Gate BLOCK必须终结当前 Aggregator并新开有界 repair generation。
+- Team producer 的 provider 执行失败、输出协议不合格、无 canonical fact/evidence authority 的 `found/checked_empty`，以及已登记的 dependency-not-ready blocker，不得第一次就固化成 business `blocked` output；它们必须走 `retry_stage_worker` compound API，在 frozen attempt budget 内重新排队，预算耗尽才由 repository 生成确定性 terminal blocker。合法未知 business blocker 仍是 immutable output，不能被自动重试规则吞掉。
 - 大型 Enumeration worklist 可能超过 Enumerator 单段 40 iterations；worker 无 deliverable 返回时，`stage_run` 会读取同源 DB coverage snapshot，只有 pending/error/partial 数量继续下降时才续同一精确 worker chain，最多两次。ready 但未 submit 只允许一次 submit-only continuation；停滞、取消或预算耗尽进入既有 request-scoped breaker，不能无限重开。
 - `stage_run_call::build_org_objective` 会把本次 Task 的 `SubAgentContext.original_request` 作为**有界、JSON 引用、低优先级**的 operator-constraint 摘录传给 specialist worker（最多 4096 Unicode 字符，超长保留首尾并显式标记截断）。该文本只可收紧现有执行方式（如 read-only、批次、已知不可达 exact origin、禁止某 producer），绝不能变成新的授权源：stage / authoritative org subtree / DB scope / exact-origin denominator / StageSpec tool boundary / evidence+gate contract 仍由 Rust 侧固定，冲突文字必须忽略。
 

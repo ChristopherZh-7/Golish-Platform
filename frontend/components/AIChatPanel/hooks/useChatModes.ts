@@ -68,28 +68,39 @@ export function useChatModes() {
   );
 
   const handleExecutionModeChange = useCallback(
-    (mode: string) => {
+    async (mode: string): Promise<boolean> => {
       const nextMode = normalizeExecutionModeId(mode);
-      if (nextMode === chatExecutionMode) return;
+      if (nextMode === chatExecutionMode) return true;
+      const storeState = useStore.getState();
+      const activeConvId = storeState.activeConversationId;
+      const conv = activeConvId ? storeState.conversations[activeConvId] : null;
+
+      // An initialized bridge already owns an execution profile. Treat its
+      // acknowledgement as the commit point: UI/store/localStorage must not
+      // move first and leave a stale backend profile behind on failure.
+      if (conv?.aiInitialized) {
+        try {
+          await setExecutionModeBackend(conv.aiSessionId, nextMode);
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause);
+          storeState.setMessageError(conv.id, `Failed to switch execution profile: ${message}`);
+          return false;
+        }
+      }
+
       chatExecutionModeRef.current = nextMode;
       setChatExecutionMode(nextMode);
       // Persist the explicit choice so new tabs / sessions reopen in it.
       writeLastExecutionMode(nextMode);
-      const storeState = useStore.getState();
-      const activeConvId = storeState.activeConversationId;
       if (activeConvId) {
         const termIds = storeState.conversationTerminals[activeConvId] ?? [];
         for (const tid of termIds) storeState.setExecutionMode(tid, nextMode);
       }
       flushDbSave().catch(console.warn);
-      const conv = activeConvId ? storeState.conversations[activeConvId] : null;
-      if (!conv) return;
-      if (conv.aiInitialized) {
-        setExecutionModeBackend(conv.aiSessionId, nextMode).catch(console.error);
-      }
       // Sub-agent dispatch is now unconditional across modes — see the
       // `SUB_AGENTS_ALWAYS_ON` note at the top of this hook. Switching
       // execution mode no longer needs to flip a per-conversation flag.
+      return true;
     },
     [chatExecutionMode]
   );

@@ -7,7 +7,8 @@ use golish_agent_kit::db_traits::{
     RuntimeMemoryRepository,
 };
 use golish_agent_kit::harness::attack_execution::{
-    CandidateManifestSnapshot, CandidateManifestWorkItem, SeedCandidateManifest,
+    supported_candidate_techniques, CandidateManifestSnapshot, CandidateManifestWorkItem,
+    CandidateTargetClass, SeedCandidateManifest, CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE,
 };
 use golish_db::repo::attack_candidate_work_items::{SeedAttackObservation, SeedAttackWorkItems};
 use golish_db::repo::attack_waves::OpenAttackWaveUnit;
@@ -16,10 +17,10 @@ use super::GolishDbRepoProvider;
 
 fn manifest_from_db(
     manifest: golish_db::repo::attack_candidate_work_items::CandidateManifestRow,
-) -> CandidateManifestSnapshot {
+) -> anyhow::Result<CandidateManifestSnapshot> {
     let manifest_hash =
         golish_db::repo::attack_candidate_work_items::canonical_manifest_hash(&manifest);
-    CandidateManifestSnapshot {
+    Ok(CandidateManifestSnapshot {
         operation_id: manifest.operation_id,
         scope_snapshot_id: manifest.scope_snapshot_id,
         wave_run_id: manifest.wave_run_id,
@@ -29,17 +30,69 @@ fn manifest_from_db(
         work_items: manifest
             .items
             .into_iter()
-            .map(|item| CandidateManifestWorkItem {
-                work_item_id: item.work_item.id,
-                work_item_key: item.work_item.work_item_key,
-                target_live_id: item.work_item.target_live_id,
-                target_type_at_time: item.work_item.target_type_at_time,
-                target_value_at_time: item.work_item.target_value_at_time,
-                target_identity_hash: item.work_item.target_identity_hash,
-                technique: item.technique,
-                evidence_ids: item.evidence_ids,
+            .map(|item| {
+                let is_surface = item
+                    .observation
+                    .get("schema")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|schema| {
+                        matches!(schema, "surface_analysis_v1" | "surface_analysis_v2")
+                    });
+                if is_surface != (item.technique == CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE) {
+                    anyhow::bail!(
+                        "surface-analysis schema and frozen surface technique do not match"
+                    );
+                }
+                let allowed_techniques = if !item.allowed_techniques.is_empty() {
+                    item.allowed_techniques.clone()
+                } else if is_surface {
+                    supported_candidate_techniques(candidate_target_class(
+                        &item.work_item.target_type_at_time,
+                    ))
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+                } else {
+                    vec![item.technique.clone()]
+                };
+                let observation_kind = if item.observation_kind == "legacy_observation" {
+                    item.observation
+                        .get("schema")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("legacy_observation")
+                        .to_string()
+                } else {
+                    item.observation_kind
+                };
+                Ok(CandidateManifestWorkItem {
+                    work_item_id: item.work_item.id,
+                    work_item_key: item.work_item.work_item_key,
+                    target_live_id: item.work_item.target_live_id,
+                    target_type_at_time: item.work_item.target_type_at_time,
+                    target_value_at_time: item.work_item.target_value_at_time,
+                    target_identity_hash: item.work_item.target_identity_hash,
+                    technique: item.technique,
+                    source_fact_delta_id: item.source_fact_delta_id,
+                    delta_kind: item.delta_kind,
+                    observation_kind,
+                    allowed_techniques,
+                    enrichment_required: item.enrichment_required,
+                    observation: item.observation,
+                    observation_hash: item.observation_hash,
+                    evidence_ids: item.evidence_ids,
+                })
             })
-            .collect(),
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    })
+}
+
+fn candidate_target_class(target_type: &str) -> CandidateTargetClass {
+    match target_type.trim().to_ascii_lowercase().as_str() {
+        "domain" | "wildcard" => CandidateTargetClass::Domain,
+        "ip" => CandidateTargetClass::Ip,
+        "url" => CandidateTargetClass::Url,
+        "cidr" => CandidateTargetClass::Cidr,
+        _ => CandidateTargetClass::Other,
     }
 }
 
@@ -69,6 +122,7 @@ impl GolishDbRepoProvider {
             accepted_fact_delta_count: result.accepted_fact_delta_ids.len(),
             rejected_fact_delta_count: result.rejected_fact_delta_ids.len(),
             residual_risk_count: result.residual_risk_ids.len(),
+            pending_enrichment_count: result.pending_enrichment_count,
             replayed: result.replayed,
         })
     }
@@ -198,7 +252,7 @@ impl GolishDbRepoProvider {
                 organization_id,
             )
             .await?;
-        Ok(manifest_from_db(manifest))
+        manifest_from_db(manifest)
     }
 
     pub(super) async fn attack_v2_seed_candidate_manifest_impl(
@@ -208,16 +262,39 @@ impl GolishDbRepoProvider {
         let observations = input
             .observations
             .iter()
-            .map(|observation| SeedAttackObservation {
-                work_item_key: observation.work_item_key.clone(),
-                target_live_id: observation.target_live_id,
-                target_type_at_time: observation.target_type_at_time.clone(),
-                target_value_at_time: observation.target_value_at_time.clone(),
-                target_identity_hash: observation.target_identity_hash.clone(),
-                technique: observation.technique.clone(),
-                observation: observation.observation.clone(),
-                observation_hash: observation.observation_hash.clone(),
-                evidence_ids: observation.evidence_ids.clone(),
+            .map(|observation| {
+                let observation_kind = observation
+                    .observation
+                    .get("schema")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("legacy_observation")
+                    .to_string();
+                let allowed_techniques = if observation_kind == "surface_analysis_v1" {
+                    supported_candidate_techniques(candidate_target_class(
+                        &observation.target_type_at_time,
+                    ))
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+                } else {
+                    vec![observation.technique.clone()]
+                };
+                SeedAttackObservation {
+                    work_item_key: observation.work_item_key.clone(),
+                    target_live_id: observation.target_live_id,
+                    target_type_at_time: observation.target_type_at_time.clone(),
+                    target_value_at_time: observation.target_value_at_time.clone(),
+                    target_identity_hash: observation.target_identity_hash.clone(),
+                    technique: observation.technique.clone(),
+                    observation: observation.observation.clone(),
+                    observation_hash: observation.observation_hash.clone(),
+                    source_fact_delta_id: None,
+                    delta_kind: None,
+                    observation_kind,
+                    allowed_techniques,
+                    enrichment_required: false,
+                    evidence_ids: observation.evidence_ids.clone(),
+                }
             })
             .collect();
         let mut tx = self.pool.begin().await?;
@@ -265,7 +342,7 @@ impl GolishDbRepoProvider {
             input.organization_id,
         )
         .await?;
-        Ok(manifest_from_db(manifest))
+        manifest_from_db(manifest)
     }
 
     pub(super) async fn attack_v2_candidate_manifest_for_unit_impl(
@@ -281,6 +358,120 @@ impl GolishDbRepoProvider {
             organization_id,
         )
         .await?;
-        Ok(manifest_from_db(manifest))
+        manifest_from_db(manifest)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use golish_db::repo::attack_candidate_work_items::{
+        AttackCandidateWorkItemRow, CandidateManifestItemRow, CandidateManifestRow,
+    };
+
+    fn db_manifest(observation: serde_json::Value, technique: &str) -> CandidateManifestRow {
+        let now = chrono::Utc::now();
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let wave_unit_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        CandidateManifestRow {
+            operation_id,
+            scope_snapshot_id,
+            wave_run_id: uuid::Uuid::new_v4(),
+            wave_unit_id,
+            organization_id,
+            items: vec![CandidateManifestItemRow {
+                work_item: AttackCandidateWorkItemRow {
+                    id: uuid::Uuid::new_v4(),
+                    seed_id: uuid::Uuid::new_v4(),
+                    wave_unit_id,
+                    operation_id,
+                    scope_snapshot_id,
+                    organization_id,
+                    target_live_id: Some(uuid::Uuid::new_v4()),
+                    target_type_at_time: "url".to_string(),
+                    target_value_at_time: "https://app.example.test:443".to_string(),
+                    target_identity_hash: "sha256:target".to_string(),
+                    work_item_key: "fixture".to_string(),
+                    decision_kind: None,
+                    candidate_id: None,
+                    no_candidate_reason_code: None,
+                    no_candidate_detail: None,
+                    decided_at: None,
+                    row_version: 0,
+                    created_at: now,
+                    updated_at: now,
+                },
+                technique: technique.to_string(),
+                observation_kind: observation
+                    .get("schema")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("legacy_observation")
+                    .to_string(),
+                observation,
+                observation_hash: "sha256:observation".to_string(),
+                source_fact_delta_id: None,
+                delta_kind: None,
+                allowed_techniques: Vec::new(),
+                enrichment_required: false,
+                evidence_ids: vec![41],
+            }],
+        }
+    }
+
+    #[test]
+    fn manifest_bridge_exposes_exact_typed_observation_and_hash() {
+        let manifest = manifest_from_db(db_manifest(
+            serde_json::json!({
+                "schema": "nuclei_match_v1",
+                "template_id": "CVE-2099-0001"
+            }),
+            "GOLISH-NDAY",
+        ))
+        .expect("typed manifest");
+        let item = &manifest.work_items[0];
+
+        assert_eq!(item.observation["template_id"], "CVE-2099-0001");
+        assert_eq!(item.observation_hash, "sha256:observation");
+        assert_eq!(item.allowed_techniques, vec!["GOLISH-NDAY"]);
+        assert!(manifest.manifest_hash.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn surface_manifest_bridge_derives_target_class_registry_allowlist() {
+        let manifest = manifest_from_db(db_manifest(
+            serde_json::json!({
+                "schema": "surface_analysis_v1",
+                "upstream_query_required": true
+            }),
+            CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE,
+        ))
+        .expect("surface manifest");
+        let item = &manifest.work_items[0];
+
+        assert!(item
+            .allowed_techniques
+            .contains(&"WSTG-INPV-05".to_string()));
+        assert!(item.allowed_techniques.contains(&"GOLISH-NDAY".to_string()));
+        assert!(!item
+            .allowed_techniques
+            .contains(&CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE.to_string()));
+    }
+
+    #[test]
+    fn surface_sentinel_cannot_masquerade_as_a_concrete_observation() {
+        let error = manifest_from_db(db_manifest(
+            serde_json::json!({
+                "schema": "nuclei_match_v1",
+                "template_id": "fixture"
+            }),
+            CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE,
+        ))
+        .expect_err("surface sentinel requires the surface schema");
+
+        assert!(error
+            .to_string()
+            .contains("surface-analysis schema and frozen surface technique do not match"));
     }
 }

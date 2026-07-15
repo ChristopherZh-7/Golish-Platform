@@ -5,8 +5,14 @@
 
 use anyhow::Result;
 use rig::completion::CompletionModel as RigCompletionModel;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
+use golish_agent_kit::db_traits::{
+    RequestStageWorker, RuntimeMemoryRepository, RuntimeWorkerFence, StageWorkerRequestDecision,
+};
+use golish_agent_kit::planner::{PlanManager, StepStatus, UpdatePlanArgs};
 use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
     agent_run_from_state_blob, state_blob_with_agent_run, state_blob_without_agent_run,
     AgentRunCheckpoint, AgentRunStatus, RuntimeCorrectionCheckpoint, ToolCheckpoint,
@@ -24,6 +30,9 @@ use golish_core::utils::truncate_str;
 use golish_sub_agents::{
     execute_sub_agent, BoundWorkerChainContext, SubAgentChainError, SubAgentContext,
     SubAgentDefinition, SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairMode,
+    STAGE_TEAM_DISPATCH_ACCEPTED_STATUS, STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME,
+    STAGE_TEAM_PREPARE_FINAL_STATUS, STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME,
+    STAGE_TEAM_UPDATE_PLAN_TOOL_NAME,
 };
 
 use super::super::super::context::retrieve_scoped_context_data;
@@ -32,83 +41,379 @@ use super::super::super::sub_agent_dispatch::{
     build_sub_agent_briefing, execute_sub_agent_with_client,
 };
 use super::super::super::{AgenticLoopContext, ToolExecutionResult};
+use super::stage_team_scheduler::sha256_json;
 use golish_agent_kit::tool_executors::extract_and_upsert_entities;
 use golish_agent_kit::tool_provider_impl::DefaultToolProvider;
+
+const MAX_STAGE_TEAM_CONTROLLER_DISPATCH_BATCH: usize = 32;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StageTeamDispatchWorkersArgs {
+    workers: Vec<StageTeamDispatchWorkerArgs>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StageTeamDispatchWorkerArgs {
+    dedupe_key: String,
+    role: String,
+    kind: String,
+    objective: String,
+    #[serde(default)]
+    subject_refs: Vec<Value>,
+}
+
+#[derive(Serialize)]
+struct StageTeamControllerRequestEnvelope<'a> {
+    schema: &'static str,
+    parent_tool_request_id: &'a str,
+    objective: &'a str,
+}
+
+fn stage_team_leader_router_error(code: &'static str, error: impl Into<String>) -> (Value, bool) {
+    (json!({"code": code, "error": error.into()}), false)
+}
+
+fn stage_team_leader_tool_context_matches(
+    tool_name: &str,
+    bound: &BoundWorkerChainContext,
+    context: &golish_core::AgentToolContext,
+) -> bool {
+    !context.request_id.trim().is_empty()
+        && context.tool_call_record_id.is_some()
+        && context.tool_name == tool_name
+        && context.operation_id == Some(bound.operation_id)
+        && context.stage_execution_id == Some(bound.stage_execution_id)
+        && context.stage_run_unit_id == Some(bound.worker_lease.stage_run_unit_id)
+        && context.organization_id == Some(bound.organization_id)
+        && context.worker_lease.as_ref() == Some(&bound.worker_lease)
+}
+
+/// Route Company Controller host tools before generic security/graph fallbacks.
+/// Exact reserved names on a bound stage worker are always consumed: an
+/// ordinary Worker can never turn a missing trusted binding into a registry or
+/// MCP fallback. Unbound orchestrators retain their existing update_plan route.
+async fn route_stage_team_leader_host_tool(
+    tool_name: &str,
+    args: &Value,
+    runtime_memory: Option<&std::sync::Arc<dyn RuntimeMemoryRepository>>,
+    bound: Option<&BoundWorkerChainContext>,
+    tool_context: Option<&golish_core::AgentToolContext>,
+) -> Option<(Value, bool)> {
+    if tool_name == STAGE_TEAM_UPDATE_PLAN_TOOL_NAME && bound.is_none() {
+        // Preserve the existing generic update_plan route for unbound
+        // orchestrator agents. Only bound stage workers enter this reserved
+        // Company Controller router.
+        return None;
+    }
+    if !matches!(
+        tool_name,
+        STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME
+            | STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME
+            | STAGE_TEAM_UPDATE_PLAN_TOOL_NAME
+    ) {
+        return None;
+    }
+
+    let Some(bound) = bound else {
+        return Some(stage_team_leader_router_error(
+            "STAGE_TEAM_LEADER_BINDING_REQUIRED",
+            "Stage Team controller tools require a trusted bound Worker",
+        ));
+    };
+    let Some(leader) = bound.stage_team_leader.as_ref() else {
+        return Some(stage_team_leader_router_error(
+            "STAGE_TEAM_LEADER_BINDING_REQUIRED",
+            "ordinary stage Workers cannot use Company Controller tools",
+        ));
+    };
+    let Some(tool_context) = tool_context else {
+        return Some(stage_team_leader_router_error(
+            "STAGE_TEAM_LEADER_TOOL_CONTEXT_MISSING",
+            "Company Controller tool request has no trusted host context",
+        ));
+    };
+    if !stage_team_leader_tool_context_matches(tool_name, bound, tool_context) {
+        return Some(stage_team_leader_router_error(
+            "STAGE_TEAM_LEADER_TOOL_CONTEXT_MISMATCH",
+            "Company Controller tool context does not match the bound Worker fence",
+        ));
+    }
+
+    let _mutation_guard = bound.mutation_lock.lock().await;
+    if bound.lease_is_lost() {
+        return Some(stage_team_leader_router_error(
+            "STAGE_TEAM_LEADER_LEASE_LOST",
+            "Company Controller lease was lost before host-tool routing",
+        ));
+    }
+
+    if tool_name == STAGE_TEAM_UPDATE_PLAN_TOOL_NAME {
+        let Some(plan_items) = args.get("plan").and_then(Value::as_array) else {
+            return Some(stage_team_leader_router_error(
+                "STAGE_TEAM_UPDATE_PLAN_ARGS_INVALID",
+                "Company Controller update_plan requires a plan array",
+            ));
+        };
+        if plan_items
+            .iter()
+            .any(|item| item.get("status").and_then(Value::as_str).is_none())
+        {
+            return Some(stage_team_leader_router_error(
+                "STAGE_TEAM_UPDATE_PLAN_STATUS_INVALID",
+                "every Company Controller plan item requires status pending, in_progress, or completed",
+            ));
+        }
+        let update_args = match serde_json::from_value::<UpdatePlanArgs>(args.clone()) {
+            Ok(update_args) => update_args,
+            Err(error) => {
+                return Some(stage_team_leader_router_error(
+                    "STAGE_TEAM_UPDATE_PLAN_ARGS_INVALID",
+                    format!("invalid Company Controller update_plan arguments: {error}"),
+                ));
+            }
+        };
+        if update_args.plan.iter().any(|item| {
+            !matches!(
+                item.status,
+                StepStatus::Pending | StepStatus::InProgress | StepStatus::Completed
+            )
+        }) {
+            return Some(stage_team_leader_router_error(
+                "STAGE_TEAM_UPDATE_PLAN_STATUS_INVALID",
+                "every Company Controller plan item requires status pending, in_progress, or completed",
+            ));
+        }
+        // This intentionally has no DB repository or event emitter. PlanManager
+        // supplies the canonical 1..12/description/in_progress validation and
+        // normalization only; the bound chain checkpoints this tool call/result.
+        let normalized = match PlanManager::new().update_plan(update_args, None).await {
+            Ok(plan) => plan,
+            Err(error) => {
+                return Some(stage_team_leader_router_error(
+                    "STAGE_TEAM_UPDATE_PLAN_INVALID",
+                    format!("Company Controller plan was rejected: {error}"),
+                ));
+            }
+        };
+        return Some((
+            json!({
+                "explanation": normalized.explanation,
+                "plan": normalized.steps,
+                "plan_version": bound.current_checkpoint_version().saturating_add(1),
+                "plan_version_scope": "bound_chain_checkpoint_hint",
+                "success": true,
+                "summary": {
+                    "completed": normalized.summary.completed,
+                    "in_progress": normalized.summary.in_progress,
+                    "pending": normalized.summary.pending,
+                    "total": normalized.summary.total,
+                },
+            }),
+            true,
+        ));
+    }
+
+    if tool_name == STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME {
+        if !args.as_object().is_some_and(serde_json::Map::is_empty) {
+            return Some(stage_team_leader_router_error(
+                "STAGE_TEAM_PREPARE_FINAL_ARGS_INVALID",
+                "prepare-final accepts an empty object only",
+            ));
+        }
+        return Some((
+            json!({
+                "request_epoch_closed": true,
+                "status": STAGE_TEAM_PREPARE_FINAL_STATUS,
+            }),
+            true,
+        ));
+    }
+
+    let parsed = match serde_json::from_value::<StageTeamDispatchWorkersArgs>(args.clone()) {
+        Ok(parsed)
+            if !parsed.workers.is_empty()
+                && parsed.workers.len() <= MAX_STAGE_TEAM_CONTROLLER_DISPATCH_BATCH =>
+        {
+            parsed
+        }
+        Ok(_) => {
+            return Some(stage_team_leader_router_error(
+                "STAGE_TEAM_DISPATCH_BATCH_INVALID",
+                "dispatch requires between 1 and 32 bounded worker requests",
+            ));
+        }
+        Err(error) => {
+            return Some(stage_team_leader_router_error(
+                "STAGE_TEAM_DISPATCH_ARGS_INVALID",
+                format!("invalid Stage Team dispatch arguments: {error}"),
+            ));
+        }
+    };
+    let Some(runtime_memory) = runtime_memory else {
+        return Some(stage_team_leader_router_error(
+            "STAGE_TEAM_RUNTIME_MEMORY_REQUIRED",
+            "Company Controller dispatch requires durable runtime memory",
+        ));
+    };
+
+    let mut dedupe_keys = HashSet::with_capacity(parsed.workers.len());
+    for worker in &parsed.workers {
+        if worker.dedupe_key.trim().is_empty()
+            || worker.role.trim().is_empty()
+            || worker.kind.trim().is_empty()
+            || worker.objective.trim().is_empty()
+            || worker.subject_refs.iter().any(|value| !value.is_object())
+            || !dedupe_keys.insert(worker.dedupe_key.trim())
+        {
+            return Some(stage_team_leader_router_error(
+                "STAGE_TEAM_DISPATCH_WORKER_INVALID",
+                "each worker needs unique non-empty identity fields, an objective, and object subject refs",
+            ));
+        }
+    }
+
+    let fence = RuntimeWorkerFence {
+        operation_id: bound.operation_id,
+        stage_execution_id: bound.stage_execution_id,
+        stage_run_unit_id: bound.worker_lease.stage_run_unit_id,
+        worker_run_id: bound.worker_lease.worker_run_id,
+        lease_token: bound.worker_lease.lease_token,
+        attempt_epoch: bound.worker_lease.attempt_epoch,
+        expected_checkpoint_version: bound.current_checkpoint_version(),
+    };
+    let mut decisions = Vec::with_capacity(parsed.workers.len());
+    let mut accepted_count = 0usize;
+    for worker in parsed.workers {
+        let dedupe_key = worker.dedupe_key.trim().to_string();
+        let requested_role = worker.role.trim().to_string();
+        let requested_kind = worker.kind.trim().to_string();
+        let objective = worker.objective.trim().to_string();
+        let reason = match serde_json::to_string(&StageTeamControllerRequestEnvelope {
+            schema: "stage_team_controller_request.v1",
+            parent_tool_request_id: tool_context.request_id.as_str(),
+            objective: objective.as_str(),
+        }) {
+            Ok(reason) => reason,
+            Err(error) => {
+                return Some(stage_team_leader_router_error(
+                    "STAGE_TEAM_CONTROLLER_REASON_INVALID",
+                    format!("controller request envelope was not serializable: {error}"),
+                ));
+            }
+        };
+        let output_schema = json!("stage_worker_output.v1");
+        let budget_hint = json!({});
+        let request_material = json!({
+            "budget_hint": &budget_hint,
+            "dedupe_key": &dedupe_key,
+            "dispatch_epoch": leader.expected_dispatch_epoch,
+            "operation_id": fence.operation_id,
+            "output_schema": &output_schema,
+            "parent_work_item_id": leader.leader_work_item_id,
+            "reason": &reason,
+            "requested_kind": &requested_kind,
+            "requested_role": &requested_role,
+            "stage_execution_id": fence.stage_execution_id,
+            "stage_run_unit_id": fence.stage_run_unit_id,
+            "stage_team_plan_id": leader.stage_team_plan_id,
+            "subject_refs": &worker.subject_refs,
+        });
+        let persisted = match runtime_memory
+            .request_stage_worker(RequestStageWorker {
+                fence: fence.clone(),
+                stage_team_plan_id: leader.stage_team_plan_id,
+                parent_work_item_id: leader.leader_work_item_id,
+                expected_dispatch_epoch: leader.expected_dispatch_epoch,
+                requested_role,
+                requested_kind,
+                subject_refs: worker.subject_refs,
+                reason,
+                output_schema,
+                budget_hint,
+                dedupe_key,
+                request_sha256: sha256_json(&request_material),
+            })
+            .await
+        {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                if accepted_count > 0 {
+                    return Some((
+                        json!({
+                            "accepted_count": accepted_count,
+                            "partial_persist_error": error.to_string(),
+                            "rejected_count": decisions.len() - accepted_count,
+                            "request_count": decisions.len(),
+                            "requests": decisions,
+                            "status": STAGE_TEAM_DISPATCH_ACCEPTED_STATUS,
+                            "tool_request_id": tool_context.request_id,
+                        }),
+                        true,
+                    ));
+                }
+                return Some(stage_team_leader_router_error(
+                    "STAGE_TEAM_DISPATCH_PERSIST_FAILED",
+                    format!("durable Stage Team worker request failed: {error}"),
+                ));
+            }
+        };
+        if persisted.request.decision == StageWorkerRequestDecision::Accepted {
+            accepted_count += 1;
+        }
+        decisions.push(json!({
+            "created_work_item_id": persisted.request.created_work_item_id,
+            "decision": persisted.request.decision.as_str(),
+            "decision_code": persisted.request.decision_code,
+            "dedupe_key": persisted.request.dedupe_key,
+            "replayed": persisted.replayed,
+            "request_id": persisted.request.id,
+        }));
+    }
+
+    if accepted_count == 0 {
+        return Some(stage_team_leader_router_error(
+            "STAGE_TEAM_DISPATCH_NONE_ACCEPTED",
+            "no requested Stage Team worker was accepted; revise the dispatch in this Controller turn",
+        ));
+    }
+
+    Some((
+        json!({
+            "accepted_count": accepted_count,
+            "rejected_count": decisions.len() - accepted_count,
+            "request_count": decisions.len(),
+            "requests": decisions,
+            "status": STAGE_TEAM_DISPATCH_ACCEPTED_STATUS,
+            "tool_request_id": tool_context.request_id,
+        }),
+        true,
+    ))
+}
 
 fn sub_agent_runtime_agent_path(agent_id: &str) -> String {
     format!("main>{agent_id}")
 }
 
-fn v2_vuln_triage_hides_record_finding(
+fn vuln_triage_hides_record_finding(
     stage: Option<golish_agent_kit::harness::StageKind>,
-    runtime_contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract,
-    attack_contract: golish_core::AttackExecutionContract,
     tool_name: &str,
 ) -> bool {
-    stage == Some(golish_agent_kit::harness::StageKind::VulnTriage)
-        && runtime_contract == golish_agent_kit::runtime_memory::RuntimeMemoryContract::V2Only
-        && attack_contract == golish_core::AttackExecutionContract::V2Only
-        && tool_name == "record_finding"
+    stage == Some(golish_agent_kit::harness::StageKind::VulnTriage) && tool_name == "record_finding"
 }
 
 fn sub_agent_stage_tool_hidden(
     tool_name: &str,
     hide_scan_tools: bool,
-    deny_v2_vuln_finding: bool,
+    deny_vuln_finding: bool,
 ) -> bool {
     (hide_scan_tools && golish_agent_kit::harness::is_scan_tool_name(tool_name))
-        || (deny_v2_vuln_finding && tool_name == "record_finding")
+        || (deny_vuln_finding && tool_name == "record_finding")
 }
 
-async fn deny_v2_vuln_finding_writes(ctx: &AgenticLoopContext<'_>) -> bool {
-    if ctx.harness_stage != Some(golish_agent_kit::harness::StageKind::VulnTriage) {
-        return false;
-    }
-    let (Some(operation_id), Some(runtime_memory)) =
-        (ctx.harness_operation_id, ctx.runtime_memory.as_ref())
-    else {
-        tracing::warn!(
-            target: "harness::stage_tool_boundary",
-            "vuln_triage has no trusted contract authority; hiding record_finding fail-closed"
-        );
-        return true;
-    };
-    let runtime_contract = match runtime_memory
-        .runtime_memory_contract_for_operation(operation_id)
-        .await
-    {
-        Ok(contract) => contract,
-        Err(error) => {
-            tracing::warn!(
-                target: "harness::stage_tool_boundary",
-                operation_id = %operation_id,
-                %error,
-                "vuln_triage runtime contract lookup failed; hiding record_finding fail-closed"
-            );
-            return true;
-        }
-    };
-    let attack_contract = match runtime_memory
-        .attack_execution_contract_for_operation(operation_id)
-        .await
-    {
-        Ok(contract) => contract,
-        Err(error) => {
-            tracing::warn!(
-                target: "harness::stage_tool_boundary",
-                operation_id = %operation_id,
-                %error,
-                "vuln_triage attack contract lookup failed; hiding record_finding fail-closed"
-            );
-            return true;
-        }
-    };
-    v2_vuln_triage_hides_record_finding(
-        ctx.harness_stage,
-        runtime_contract,
-        attack_contract,
-        "record_finding",
-    )
+fn deny_vuln_finding_writes(ctx: &AgenticLoopContext<'_>) -> bool {
+    vuln_triage_hides_record_finding(ctx.harness_stage, "record_finding")
 }
 
 fn sub_agent_execution_error_result(error: anyhow::Error) -> ToolExecutionResult {
@@ -852,6 +1157,8 @@ where
         let harness_org_id = effective_harness_org_id;
         let harness_stage = ctx.harness_stage;
         let harness_operation_id = ctx.harness_operation_id;
+        let runtime_memory = ctx.runtime_memory.clone();
+        let stage_team_bound = bound_worker_chain.clone();
         let router: golish_sub_agents::SubAgentToolRouter =
             std::sync::Arc::new(move |name: String, args: serde_json::Value| {
                 let graph = graph.clone();
@@ -860,7 +1167,22 @@ where
                 let session_id = session_id.clone();
                 let harness_stage = harness_stage;
                 let harness_operation_id = harness_operation_id;
+                let runtime_memory = runtime_memory.clone();
+                let stage_team_bound = stage_team_bound.clone();
                 Box::pin(async move {
+                    let tool_context = golish_core::current_agent_tool_context();
+                    if let Some(result) = route_stage_team_leader_host_tool(
+                        &name,
+                        &args,
+                        runtime_memory.as_ref(),
+                        stage_team_bound.as_ref(),
+                        tool_context.as_ref(),
+                    )
+                    .await
+                    {
+                        return Some(result);
+                    }
+
                     if let Some(result) =
                         golish_agent_kit::tool_executors::execute_security_analysis_tool(
                             &name,
@@ -928,7 +1250,7 @@ where
         )
         .await
     };
-    let deny_v2_vuln_finding = deny_v2_vuln_finding_writes(ctx).await;
+    let deny_vuln_finding = deny_vuln_finding_writes(ctx);
 
     // Per-stage tool boundary for the delegated sub-agent: inside a harness
     // stage, enforce the category whitelist (deny-by-default) — a scan invocation
@@ -944,9 +1266,9 @@ where
             let allowed = spec.allowed_tool_types.clone();
             let guard: golish_sub_agents::StageToolGuard =
                 std::sync::Arc::new(move |tn: &str, args: &serde_json::Value| {
-                    if deny_v2_vuln_finding && tn == "record_finding" {
+                    if deny_vuln_finding && tn == "record_finding" {
                         return Err(
-                            "record_finding is not permitted in Candidate V2 vuln_triage; the formulaic scanner records observations/evidence only"
+                            "record_finding is not permitted in vuln_triage; the Nuclei scanner records observations/evidence only"
                                 .to_string(),
                         );
                     }
@@ -985,10 +1307,10 @@ where
         .and_then(|kind| golish_agent_kit::harness::load_embedded_stage_spec(kind).ok())
         .is_some_and(|spec| spec.allowed_tool_types.is_empty());
     let hide_tool_in_stage: Option<golish_sub_agents::StageToolHider> =
-        (hide_scan_tools || deny_v2_vuln_finding).then(|| {
+        (hide_scan_tools || deny_vuln_finding).then(|| {
             let hider: golish_sub_agents::StageToolHider =
                 std::sync::Arc::new(move |name: &str| {
-                    sub_agent_stage_tool_hidden(name, hide_scan_tools, deny_v2_vuln_finding)
+                    sub_agent_stage_tool_hidden(name, hide_scan_tools, deny_vuln_finding)
                 });
             hider
         });
@@ -997,6 +1319,7 @@ where
         ctx.harness_stage.map(|stage| {
             let tracker = ctx.events.db_tracker.cloned();
             let session_id = ctx.events.session_id.map(str::to_string);
+            let harness_operation_id = ctx.harness_operation_id;
             let harness_org_id = effective_harness_org_id;
             let hook: golish_sub_agents::SubAgentToolResultHook = std::sync::Arc::new(
                 move |tool_name: String,
@@ -1011,6 +1334,7 @@ where
                             tracker.as_ref(),
                             session_id.as_deref(),
                             Some(stage),
+                            harness_operation_id,
                             harness_org_id,
                             &tool_name,
                             &tool_args,
@@ -1373,11 +1697,11 @@ fn stage_run_org_id_from_request_id(request_id: &str) -> Option<uuid::Uuid> {
 mod tests {
     use super::{
         agent_run_from_state_blob, dispatch_status_for_sub_agent_success,
-        stage_run_org_id_from_request_id, state_blob_with_refined_eas_web_repair_checkpoint,
-        sub_agent_checkpoint_agent_path, sub_agent_execution_error_result,
-        sub_agent_stage_tool_hidden, sub_agent_tool_execution_result,
-        sub_agent_tool_observer_needed, submit_repair_mode_from_agent_run,
-        v2_vuln_triage_hides_record_finding,
+        route_stage_team_leader_host_tool, stage_run_org_id_from_request_id,
+        state_blob_with_refined_eas_web_repair_checkpoint, sub_agent_checkpoint_agent_path,
+        sub_agent_execution_error_result, sub_agent_stage_tool_hidden,
+        sub_agent_tool_execution_result, sub_agent_tool_observer_needed,
+        submit_repair_mode_from_agent_run, vuln_triage_hides_record_finding,
     };
     use golish_agent_kit::harness::StageKind;
     use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
@@ -1386,46 +1710,531 @@ mod tests {
     };
     use golish_sub_agents::{SubAgentContext, SubAgentResult, SubmitRepairKind, SubmitRepairMode};
 
-    #[test]
-    fn v2_vuln_scanner_hides_finding_writer_but_legacy_and_dual_retain_it() {
-        use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
-        use golish_core::AttackExecutionContract;
+    use async_trait::async_trait;
+    use golish_agent_kit::db_traits::{
+        CreateRuntimeOperation, CreatedRuntimeOperation, ProjectScopeRegistration,
+        RequestStageWorker, RequestedStageWorkerView, RuntimeMemoryError, RuntimeMemoryRepository,
+        StageWorkerRequestDecision, StageWorkerRequestView,
+    };
+    use golish_sub_agents::{BoundWorkerChainContext, StageTeamLeaderBinding};
+    use std::sync::atomic::{AtomicBool, AtomicI64};
+    use std::sync::{Arc, Mutex};
 
-        assert!(v2_vuln_triage_hides_record_finding(
-            Some(StageKind::VulnTriage),
-            RuntimeMemoryContract::V2Only,
-            AttackExecutionContract::V2Only,
-            "record_finding",
-        ));
-        for runtime in RuntimeMemoryContract::ALL {
-            for attack in AttackExecutionContract::ALL {
-                if (runtime, attack)
-                    != (
-                        RuntimeMemoryContract::V2Only,
-                        AttackExecutionContract::V2Only,
-                    )
-                {
-                    assert!(!v2_vuln_triage_hides_record_finding(
-                        Some(StageKind::VulnTriage),
-                        runtime,
-                        attack,
-                        "record_finding",
-                    ));
-                }
-            }
+    #[derive(Default)]
+    struct RecordingStageTeamRuntime {
+        requests: Mutex<Vec<RequestStageWorker>>,
+        reject_all: bool,
+        fail_on_request_number: Option<usize>,
+    }
+
+    #[async_trait]
+    impl RuntimeMemoryRepository for RecordingStageTeamRuntime {
+        async fn project_scope_register_first_open(
+            &self,
+            _canonical_path: &str,
+            _path_sha256: &str,
+        ) -> Result<ProjectScopeRegistration, RuntimeMemoryError> {
+            Err(RuntimeMemoryError::Unavailable)
         }
-        assert!(!v2_vuln_triage_hides_record_finding(
-            Some(StageKind::Enumeration),
-            RuntimeMemoryContract::V2Only,
-            AttackExecutionContract::V2Only,
+
+        async fn project_scope_rename(
+            &self,
+            _project_scope_id: uuid::Uuid,
+            _expected_old_path: &str,
+            _expected_row_version: i64,
+            _new_path: &str,
+            _new_path_sha256: &str,
+        ) -> Result<ProjectScopeRegistration, RuntimeMemoryError> {
+            Err(RuntimeMemoryError::Unavailable)
+        }
+
+        async fn create_runtime_operation(
+            &self,
+            _input: CreateRuntimeOperation,
+        ) -> Result<CreatedRuntimeOperation, RuntimeMemoryError> {
+            Err(RuntimeMemoryError::Unavailable)
+        }
+
+        async fn request_stage_worker(
+            &self,
+            input: RequestStageWorker,
+        ) -> Result<RequestedStageWorkerView, RuntimeMemoryError> {
+            let request_number = {
+                let mut requests = self.requests.lock().unwrap();
+                requests.push(input.clone());
+                requests.len()
+            };
+            if self.fail_on_request_number == Some(request_number) {
+                return Err(RuntimeMemoryError::Unavailable);
+            }
+            let decision = if self.reject_all {
+                StageWorkerRequestDecision::Rejected
+            } else {
+                StageWorkerRequestDecision::Accepted
+            };
+            Ok(RequestedStageWorkerView {
+                request: StageWorkerRequestView {
+                    id: uuid::Uuid::new_v4(),
+                    stage_team_plan_id: input.stage_team_plan_id,
+                    parent_work_item_id: input.parent_work_item_id,
+                    requested_by_worker_run_id: input.fence.worker_run_id,
+                    dispatch_epoch: input.expected_dispatch_epoch,
+                    requested_role: input.requested_role,
+                    requested_kind: input.requested_kind,
+                    subject_refs: input.subject_refs,
+                    reason: input.reason,
+                    output_schema: input.output_schema,
+                    budget_hint: input.budget_hint,
+                    dedupe_key: input.dedupe_key,
+                    decision,
+                    decision_code: decision.as_str().to_string(),
+                    created_work_item_id: (decision == StageWorkerRequestDecision::Accepted)
+                        .then(uuid::Uuid::new_v4),
+                    request_sha256: input.request_sha256,
+                },
+                work_item: None,
+                replayed: false,
+            })
+        }
+    }
+
+    fn stage_team_leader_bound() -> BoundWorkerChainContext {
+        BoundWorkerChainContext {
+            operation_id: uuid::Uuid::new_v4(),
+            stage_execution_id: uuid::Uuid::new_v4(),
+            organization_id: uuid::Uuid::new_v4(),
+            worker_lease: golish_core::WorkerLeaseContext {
+                worker_run_id: uuid::Uuid::new_v4(),
+                stage_run_unit_id: uuid::Uuid::new_v4(),
+                lease_token: uuid::Uuid::new_v4(),
+                attempt_epoch: 3,
+            },
+            candidate_attempt: None,
+            candidate_submit_only: false,
+            return_on_first_durable_stage_submission: false,
+            stage_team_leader: Some(StageTeamLeaderBinding {
+                stage_team_plan_id: uuid::Uuid::new_v4(),
+                leader_work_item_id: uuid::Uuid::new_v4(),
+                expected_dispatch_epoch: 2,
+                expected_plan_row_version: 4,
+                expected_work_item_row_version: 5,
+            }),
+            chain_id: uuid::Uuid::new_v4(),
+            session_id: uuid::Uuid::new_v4(),
+            agent_type: "recon".to_string(),
+            runtime_memory_source: None,
+            initial_chain: serde_json::json!([]),
+            initial_prompt_already_checkpointed: false,
+            checkpoint_version: Arc::new(AtomicI64::new(7)),
+            checkpoint_body: Arc::new(std::sync::RwLock::new(serde_json::json!([]))),
+            lease_lost: Arc::new(AtomicBool::new(false)),
+            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            tool_lifecycle: None,
+        }
+    }
+
+    fn leader_tool_context(
+        bound: &BoundWorkerChainContext,
+        request_id: &str,
+        tool_name: &str,
+    ) -> golish_core::AgentToolContext {
+        golish_core::AgentToolContext {
+            request_id: request_id.to_string(),
+            tool_call_record_id: Some(uuid::Uuid::new_v4()),
+            tool_name: tool_name.to_string(),
+            source: golish_core::events::ToolSource::SubAgent {
+                agent_id: "recon".to_string(),
+                agent_name: "Recon".to_string(),
+            },
+            operation_id: Some(bound.operation_id),
+            stage_execution_id: Some(bound.stage_execution_id),
+            stage_run_unit_id: Some(bound.worker_lease.stage_run_unit_id),
+            organization_id: Some(bound.organization_id),
+            worker_lease: Some(bound.worker_lease.clone()),
+            candidate_attempt: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn stage_team_host_tools_fail_closed_without_exact_leader_binding() {
+        let bound = stage_team_leader_bound();
+        let mut ordinary = bound.clone();
+        ordinary.stage_team_leader = None;
+        let context = leader_tool_context(
+            &ordinary,
+            "call-ordinary",
+            "stage_team_prepare_final_submission",
+        );
+
+        let (value, success) = route_stage_team_leader_host_tool(
+            "stage_team_prepare_final_submission",
+            &serde_json::json!({}),
+            None,
+            Some(&ordinary),
+            Some(&context),
+        )
+        .await
+        .expect("reserved host tool must be recognized, not fall through");
+
+        assert!(!success);
+        assert_eq!(value["code"], "STAGE_TEAM_LEADER_BINDING_REQUIRED");
+    }
+
+    #[tokio::test]
+    async fn stage_team_update_plan_is_reserved_for_a_bound_non_leader() {
+        let mut ordinary = stage_team_leader_bound();
+        ordinary.stage_team_leader = None;
+        let context = leader_tool_context(&ordinary, "call-ordinary-plan", "update_plan");
+
+        let (value, success) = route_stage_team_leader_host_tool(
+            "update_plan",
+            &serde_json::json!({
+                "plan": [{"step":"Inspect current evidence","status":"in_progress"}]
+            }),
+            None,
+            Some(&ordinary),
+            Some(&context),
+        )
+        .await
+        .expect("update_plan must be reserved for bound Stage Team workers");
+
+        assert!(!success);
+        assert_eq!(value["code"], "STAGE_TEAM_LEADER_BINDING_REQUIRED");
+    }
+
+    #[tokio::test]
+    async fn unbound_update_plan_keeps_the_existing_generic_router() {
+        assert!(route_stage_team_leader_host_tool(
+            "update_plan",
+            &serde_json::json!({
+                "plan": [{"step":"Top-level work","status":"in_progress"}]
+            }),
+            None,
+            None,
+            None,
+        )
+        .await
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn stage_team_update_plan_returns_a_chain_local_normalized_plan() {
+        let bound = stage_team_leader_bound();
+        let context = leader_tool_context(&bound, "call-lead-plan", "update_plan");
+
+        let (value, success) = route_stage_team_leader_host_tool(
+            "update_plan",
+            &serde_json::json!({
+                "explanation": "  Cover the company scope  ",
+                "plan": [
+                    {"step":"  Inspect current evidence  ","status":"completed"},
+                    {"step":"Delegate missing coverage","status":"in_progress"},
+                    {"step":"Review and submit Gate","status":"pending"}
+                ]
+            }),
+            None,
+            Some(&bound),
+            Some(&context),
+        )
+        .await
+        .expect("bound Company Controller update_plan");
+
+        assert!(success);
+        assert_eq!(value["success"], true);
+        assert_eq!(value["explanation"], "Cover the company scope");
+        assert_eq!(value["plan_version"], 8);
+        assert_eq!(value["plan_version_scope"], "bound_chain_checkpoint_hint");
+        assert_eq!(value["summary"]["total"], 3);
+        assert_eq!(value["summary"]["completed"], 1);
+        assert_eq!(value["summary"]["in_progress"], 1);
+        assert_eq!(value["summary"]["pending"], 1);
+        let plan = value["plan"].as_array().expect("normalized plan steps");
+        assert_eq!(plan.len(), 3);
+        assert_eq!(plan[0]["step"], "Inspect current evidence");
+        assert_eq!(plan[1]["status"], "in_progress");
+        assert!(plan.iter().all(|step| step["id"].is_string()));
+    }
+
+    #[tokio::test]
+    async fn stage_team_update_plan_enforces_strict_status_and_plan_invariants() {
+        let bound = stage_team_leader_bound();
+        let context = leader_tool_context(&bound, "call-lead-plan-invalid", "update_plan");
+
+        for (args, expected_code) in [
+            (
+                serde_json::json!({"plan":[{"step":"Missing status"}]}),
+                "STAGE_TEAM_UPDATE_PLAN_STATUS_INVALID",
+            ),
+            (
+                serde_json::json!({"plan":[{"step":"Cancelled","status":"cancelled"}]}),
+                "STAGE_TEAM_UPDATE_PLAN_STATUS_INVALID",
+            ),
+            (
+                serde_json::json!({"plan":[]}),
+                "STAGE_TEAM_UPDATE_PLAN_INVALID",
+            ),
+            (
+                serde_json::json!({
+                    "plan":[
+                        {"step":"One","status":"in_progress"},
+                        {"step":"Two","status":"in_progress"}
+                    ]
+                }),
+                "STAGE_TEAM_UPDATE_PLAN_INVALID",
+            ),
+        ] {
+            let (value, success) = route_stage_team_leader_host_tool(
+                "update_plan",
+                &args,
+                None,
+                Some(&bound),
+                Some(&context),
+            )
+            .await
+            .expect("bound update_plan is reserved");
+            assert!(!success, "invalid plan unexpectedly succeeded: {args}");
+            assert_eq!(value["code"], expected_code, "invalid plan: {args}");
+        }
+
+        let too_many_steps = (0..13)
+            .map(|index| {
+                serde_json::json!({
+                    "step": format!("Step {index}"),
+                    "status": "pending"
+                })
+            })
+            .collect::<Vec<_>>();
+        let (value, success) = route_stage_team_leader_host_tool(
+            "update_plan",
+            &serde_json::json!({"plan": too_many_steps}),
+            None,
+            Some(&bound),
+            Some(&context),
+        )
+        .await
+        .expect("bound update_plan is reserved");
+        assert!(!success);
+        assert_eq!(value["code"], "STAGE_TEAM_UPDATE_PLAN_INVALID");
+    }
+
+    #[tokio::test]
+    async fn stage_team_dispatch_workers_persists_fenced_requests_with_tool_request_envelope() {
+        let repository = Arc::new(RecordingStageTeamRuntime::default());
+        let repository_port: Arc<dyn RuntimeMemoryRepository> = repository.clone();
+        let bound = stage_team_leader_bound();
+        let context = leader_tool_context(
+            &bound,
+            "call-lead-dispatch-17",
+            "stage_team_dispatch_workers",
+        );
+        let subject_id = uuid::Uuid::new_v4();
+
+        let (value, success) = route_stage_team_leader_host_tool(
+            "stage_team_dispatch_workers",
+            &serde_json::json!({
+                "workers": [{
+                    "dedupe_key": "dns-and-ct",
+                    "role": "intel_provider",
+                    "kind": "provider_followup",
+                    "objective": "Collect DNS and CT evidence for the canonical target",
+                    "subject_refs": [{"kind":"target","target_id":subject_id}]
+                }]
+            }),
+            Some(&repository_port),
+            Some(&bound),
+            Some(&context),
+        )
+        .await
+        .expect("reserved host tool");
+
+        assert!(success);
+        assert_eq!(value["status"], "dispatch_accepted");
+        assert_eq!(value["request_count"], 1);
+        let requests = repository.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        let leader = bound.stage_team_leader.as_ref().unwrap();
+        assert_eq!(request.stage_team_plan_id, leader.stage_team_plan_id);
+        assert_eq!(request.parent_work_item_id, leader.leader_work_item_id);
+        assert_eq!(
+            request.expected_dispatch_epoch,
+            leader.expected_dispatch_epoch
+        );
+        assert_eq!(request.fence.operation_id, bound.operation_id);
+        assert_eq!(request.fence.stage_execution_id, bound.stage_execution_id);
+        assert_eq!(
+            request.fence.worker_run_id,
+            bound.worker_lease.worker_run_id
+        );
+        assert_eq!(request.fence.expected_checkpoint_version, 7);
+        assert_eq!(
+            request.output_schema,
+            serde_json::json!("stage_worker_output.v1")
+        );
+        assert_eq!(request.budget_hint, serde_json::json!({}));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&request.reason).unwrap(),
+            serde_json::json!({
+                "schema": "stage_team_controller_request.v1",
+                "parent_tool_request_id": "call-lead-dispatch-17",
+                "objective": "Collect DNS and CT evidence for the canonical target"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_team_dispatch_all_rejected_does_not_enter_waiting_barrier() {
+        let repository = Arc::new(RecordingStageTeamRuntime {
+            requests: Mutex::new(Vec::new()),
+            reject_all: true,
+            fail_on_request_number: None,
+        });
+        let repository_port: Arc<dyn RuntimeMemoryRepository> = repository.clone();
+        let bound = stage_team_leader_bound();
+        let context = leader_tool_context(
+            &bound,
+            "call-lead-dispatch-rejected",
+            "stage_team_dispatch_workers",
+        );
+
+        let (value, success) = route_stage_team_leader_host_tool(
+            "stage_team_dispatch_workers",
+            &serde_json::json!({
+                "workers": [{
+                    "dedupe_key": "duplicate-work",
+                    "role": "intel_provider",
+                    "kind": "provider_followup",
+                    "objective": "Retry a duplicate request",
+                    "subject_refs": []
+                }]
+            }),
+            Some(&repository_port),
+            Some(&bound),
+            Some(&context),
+        )
+        .await
+        .expect("reserved host tool");
+
+        assert!(!success);
+        assert_eq!(value["code"], "STAGE_TEAM_DISPATCH_NONE_ACCEPTED");
+        assert_ne!(value["status"], "dispatch_accepted");
+        assert_eq!(repository.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stage_team_dispatch_partial_persist_enters_barrier_for_accepted_children() {
+        let repository = Arc::new(RecordingStageTeamRuntime {
+            requests: Mutex::new(Vec::new()),
+            reject_all: false,
+            fail_on_request_number: Some(2),
+        });
+        let repository_port: Arc<dyn RuntimeMemoryRepository> = repository.clone();
+        let bound = stage_team_leader_bound();
+        let context = leader_tool_context(
+            &bound,
+            "call-lead-dispatch-partial",
+            "stage_team_dispatch_workers",
+        );
+
+        let (value, success) = route_stage_team_leader_host_tool(
+            "stage_team_dispatch_workers",
+            &serde_json::json!({
+                "workers": [
+                    {
+                        "dedupe_key": "dns-first",
+                        "role": "intel_provider",
+                        "kind": "provider_followup",
+                        "objective": "Collect DNS evidence",
+                        "subject_refs": []
+                    },
+                    {
+                        "dedupe_key": "ct-second",
+                        "role": "intel_provider",
+                        "kind": "provider_followup",
+                        "objective": "Collect CT evidence",
+                        "subject_refs": []
+                    }
+                ]
+            }),
+            Some(&repository_port),
+            Some(&bound),
+            Some(&context),
+        )
+        .await
+        .expect("reserved host tool");
+
+        assert!(
+            success,
+            "one durable child already exists and must be drained"
+        );
+        assert_eq!(value["status"], "dispatch_accepted");
+        assert_eq!(value["accepted_count"], 1);
+        assert_eq!(value["request_count"], 1);
+        assert!(value["partial_persist_error"].is_string());
+        assert_eq!(value["requests"].as_array().unwrap().len(), 1);
+        assert_eq!(repository.requests.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stage_team_prepare_final_is_control_only_and_rejects_mismatched_tool_context() {
+        let repository = Arc::new(RecordingStageTeamRuntime::default());
+        let repository_port: Arc<dyn RuntimeMemoryRepository> = repository.clone();
+        let bound = stage_team_leader_bound();
+        let context = leader_tool_context(
+            &bound,
+            "call-lead-final",
+            "stage_team_prepare_final_submission",
+        );
+
+        let (value, success) = route_stage_team_leader_host_tool(
+            "stage_team_prepare_final_submission",
+            &serde_json::json!({}),
+            Some(&repository_port),
+            Some(&bound),
+            Some(&context),
+        )
+        .await
+        .expect("reserved host tool");
+        assert!(success);
+        assert_eq!(value["status"], "prepare_final");
+        assert_eq!(value["request_epoch_closed"], true);
+        assert!(repository.requests.lock().unwrap().is_empty());
+
+        let mut mismatched = context;
+        mismatched.worker_lease.as_mut().unwrap().lease_token = uuid::Uuid::new_v4();
+        let (value, success) = route_stage_team_leader_host_tool(
+            "stage_team_prepare_final_submission",
+            &serde_json::json!({}),
+            Some(&repository_port),
+            Some(&bound),
+            Some(&mismatched),
+        )
+        .await
+        .expect("reserved host tool");
+        assert!(!success);
+        assert_eq!(value["code"], "STAGE_TEAM_LEADER_TOOL_CONTEXT_MISMATCH");
+    }
+
+    #[test]
+    fn vuln_scanner_hides_finding_writer_for_every_runtime_contract() {
+        assert!(vuln_triage_hides_record_finding(
+            Some(StageKind::VulnTriage),
             "record_finding",
         ));
-        assert!(!v2_vuln_triage_hides_record_finding(
-            Some(StageKind::VulnTriage),
-            RuntimeMemoryContract::V2Only,
-            AttackExecutionContract::V2Only,
-            "vuln_run_formulaic_sweep",
+        assert!(!vuln_triage_hides_record_finding(
+            Some(StageKind::Enumeration),
+            "record_finding",
         ));
+        for tool in [
+            "vuln_nuclei_general",
+            "vuln_nuclei_fingerprint_targeted",
+            "vuln_probe_anonymous_access",
+        ] {
+            assert!(!vuln_triage_hides_record_finding(
+                Some(StageKind::VulnTriage),
+                tool,
+            ));
+        }
         assert!(sub_agent_stage_tool_hidden("record_finding", false, true));
         assert!(!sub_agent_stage_tool_hidden("record_finding", false, false,));
         assert!(sub_agent_stage_tool_hidden("pentest_run", true, false));

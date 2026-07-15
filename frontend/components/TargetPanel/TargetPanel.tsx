@@ -20,6 +20,7 @@ export function TargetPanel() {
   const {
     safeTargets,
     stats,
+    reloadTargets,
     handleAdd,
     handleBatchAdd,
     handleDelete,
@@ -70,6 +71,7 @@ export function TargetPanel() {
             onBatchAdd={handleBatchAdd}
             onDelete={handleDelete}
             onDeleteMany={handleDeleteMany}
+            onReloadTargets={reloadTargets}
             onToggleScope={handleToggleScope}
             onUpdateNotes={handleUpdateNotes}
           />

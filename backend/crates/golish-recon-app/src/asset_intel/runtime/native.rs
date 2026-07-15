@@ -81,10 +81,12 @@ fn push_field(
     }
 }
 
-/// Map one [`ProviderRecord`] into a surface Target candidate (keyed on the
-/// most stable identifier: domain > host > ip) plus organization-profile field
-/// entries. Mirrors the `profile_fields` naming used by `0-zone.json` /
-/// `quake.json` so native + http_json data land in the same columns.
+/// Map one [`ProviderRecord`] into a surface Target candidate plus
+/// organization-profile field entries. Prefer the concrete observed host over
+/// the provider's registrable/apex `domain` column: two virtual hosts on one
+/// domain/IP can be distinct assets and must survive exact-Target dedupe.
+/// Mirrors the `profile_fields` naming used by `0-zone.json` / `quake.json` so
+/// native + http_json data land in the same columns.
 pub(crate) fn bridge_record(
     provider_id: &str,
     rec: &ProviderRecord,
@@ -110,8 +112,8 @@ pub(crate) fn bridge_record(
     );
 
     let host = f
-        .get("domain")
-        .or_else(|| f.get("host"))
+        .get("host")
+        .or_else(|| f.get("domain"))
         .or_else(|| f.get("ip"))
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());

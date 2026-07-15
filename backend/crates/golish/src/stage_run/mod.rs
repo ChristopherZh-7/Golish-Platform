@@ -35,6 +35,7 @@ use golish_core::hitl::ApprovalDecision;
 use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 use crate::ai::agent_bridge::AgentBridge;
+use crate::ai::task_operation::{FreshOperationScope, SubsidiaryScopePolicy};
 use crate::cli::Args;
 use crate::runtime::CliRuntime;
 use crate::stage_run::fleet::{AlwaysRunOracle, CliFleetProgress, NoopScorer, OrgFleetExecutor};
@@ -52,6 +53,29 @@ fn resolve_slice(
     to: StageKind,
 ) -> Result<(StageKind, HashSet<StageKind>)> {
     golish_agent_kit::harness::resolve_slice(profile_id, from, to).map_err(|e| anyhow!(e))
+}
+
+/// Resolve an explicit forward continuation for an exact resume. The default
+/// remains the persisted current stage only; callers must opt in to every
+/// wider testing slice without changing the operation's frozen profile/scope.
+fn resolve_resume_slice(
+    profile_id: &str,
+    current: StageKind,
+    requested_to: Option<&str>,
+) -> Result<(StageKind, HashSet<StageKind>)> {
+    let terminal = requested_to
+        .map(|value| {
+            StageKind::try_parse(value).ok_or_else(|| anyhow!("unknown --resume-to stage: {value}"))
+        })
+        .transpose()?
+        .unwrap_or(current);
+    let (entry, allowlist) = resolve_slice(profile_id, Some(current), terminal)
+        .context("resume refused: requested continuation is outside the frozen profile")?;
+    anyhow::ensure!(
+        entry == current,
+        "resume refused: requested continuation does not begin at the persisted current stage"
+    );
+    Ok((terminal, allowlist))
 }
 
 const EXACT_RESUME_CHAIN_SQL: &str = r#"SELECT session_id, task_id, agent::text,
@@ -89,6 +113,48 @@ const REPAIR_REAPED_TASK_SQL: &str = r#"UPDATE tasks
                AND os.engagement_org_id IS NOT DISTINCT FROM $7
                AND os.superseded_by IS NULL
                AND os.state_blob = $8
+         )"#;
+
+const REPAIR_ORPHAN_RUNNING_TASK_SQL: &str = r#"UPDATE tasks AS task
+       SET status = 'waiting', updated_at = NOW()
+       WHERE task.id = $1
+         AND task.session_id = $2
+         AND task.status = 'running'
+         AND task.result IS NULL
+         AND task.updated_at = $3
+         AND EXISTS (
+             SELECT 1 FROM operation_state AS operation
+              WHERE operation.operation_id = task.id
+                AND operation.runtime_memory_contract = $4
+                AND operation.profile = $5
+                AND operation.current_stage = $6
+                AND operation.engagement_org_id IS NOT DISTINCT FROM $7
+                AND operation.superseded_by IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM stage_worker_runs AS live_worker
+                     WHERE live_worker.operation_id = operation.operation_id
+                       AND live_worker.lease_token IS NOT NULL
+                       AND live_worker.lease_expires_at > NOW()
+                )
+                AND (
+                    (
+                        $8::uuid IS NOT NULL
+                        AND EXISTS (
+                            SELECT 1 FROM stage_runs AS execution
+                             WHERE execution.id = $8
+                               AND execution.operation_id = operation.operation_id
+                               AND execution.stage_kind = operation.current_stage
+                               AND execution.status = 'started'
+                               AND (
+                                   SELECT COUNT(*) FROM stage_runs AS active_execution
+                                    WHERE active_execution.operation_id = operation.operation_id
+                                      AND active_execution.status = 'started'
+                               ) = 1
+                        )
+                    )
+                    OR
+                    ($8::uuid IS NULL AND operation.state_blob = $9)
+                )
          )"#;
 
 const CLAIM_EXACT_RESUME_TASK_SQL: &str = r#"UPDATE tasks AS task
@@ -283,6 +349,7 @@ struct ValidatedResumeTarget {
     stage: StageKind,
     organization_id: uuid::Uuid,
     state_blob: serde_json::Value,
+    needs_orphan_running_repair: bool,
     needs_graph_repair: bool,
     needs_task_repair: bool,
 }
@@ -448,8 +515,8 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
     };
     validate_expected_identity(candidate, stage, organization_id)?;
 
-    let needs_task_repair = match candidate.task_status {
-        golish_db::models::TaskStatus::Waiting => false,
+    let (needs_task_repair, needs_orphan_running_repair) = match candidate.task_status {
+        golish_db::models::TaskStatus::Waiting => (false, false),
         golish_db::models::TaskStatus::Running => {
             anyhow::ensure!(
                 candidate.expectations.allow_orphan_running,
@@ -459,9 +526,11 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
                 candidate.expectations.has_complete_identity(),
                 "resume refused: orphan running recovery requires all expected identities"
             );
-            anyhow::bail!(
-                "resume refused: exact task is still running; startup reaper and --repair-reaped-task must return it to waiting before durable resume claim"
-            )
+            anyhow::ensure!(
+                candidate.task_result.is_none(),
+                "resume refused: running orphan carries a non-null task result"
+            );
+            (false, true)
         }
         golish_db::models::TaskStatus::Failed => {
             anyhow::ensure!(
@@ -474,7 +543,7 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
                     == Some(golish_db::repo::tasks::ABANDONED_TASK_RESULT),
                 "resume refused: failed task does not carry the exact startup-reaper abandoned marker"
             );
-            true
+            (true, false)
         }
         status => anyhow::bail!(
             "resume refused: task status {status:?} is not resumable (waiting required)"
@@ -591,6 +660,7 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
         stage,
         organization_id,
         state_blob: candidate.state_blob.clone(),
+        needs_orphan_running_repair,
         needs_graph_repair,
         needs_task_repair,
     })
@@ -983,6 +1053,45 @@ async fn repair_reaped_task(
     Ok(())
 }
 
+/// Compare-and-set one explicitly asserted, process-orphaned running task back
+/// to waiting. The selected runtime-memory authority and absence of a live
+/// worker lease are rechecked in the same statement before any resume claim.
+async fn repair_orphan_running_task(
+    claim: &mut StageRunResumeClaim,
+    target: &ValidatedResumeTarget,
+) -> Result<()> {
+    anyhow::ensure!(
+        target.needs_orphan_running_repair,
+        "orphan-running repair requested for a task that is not the asserted running orphan"
+    );
+    let relational_execution_id = match target.authority {
+        ResumeAuthorityKind::RelationalV2 => {
+            Some(target.relational_stage_execution_id.ok_or_else(|| {
+                anyhow!("resume refused: relational execution identity is missing")
+            })?)
+        }
+        ResumeAuthorityKind::LegacyCheckpoint => None,
+    };
+    let result = sqlx::query(REPAIR_ORPHAN_RUNNING_TASK_SQL)
+        .bind(target.operation_id)
+        .bind(target.session_id)
+        .bind(target.task_updated_at)
+        .bind(target.runtime_memory_contract.as_str())
+        .bind(&target.profile)
+        .bind(target.stage.as_str())
+        .bind(target.organization_id)
+        .bind(relational_execution_id)
+        .bind(&target.state_blob)
+        .execute(claim.connection_mut()?)
+        .await
+        .context("compare-and-set asserted orphan running task back to waiting")?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "resume refused: orphan task identity/source/timestamp changed or a live worker lease remains"
+    );
+    Ok(())
+}
+
 /// Atomically claim the exact waiting task after all process-local setup has
 /// succeeded. Relational resumes fence the selected active execution and never
 /// consult the legacy blob; legacy resumes fence the complete validated blob.
@@ -992,7 +1101,9 @@ async fn claim_exact_resume_task(
     target: &ValidatedResumeTarget,
 ) -> Result<()> {
     anyhow::ensure!(
-        !target.needs_graph_repair && !target.needs_task_repair,
+        !target.needs_orphan_running_repair
+            && !target.needs_graph_repair
+            && !target.needs_task_repair,
         "resume refused: exact task cannot be claimed before repairs complete"
     );
     let relational_execution_id = match target.authority {
@@ -1040,6 +1151,43 @@ fn resolve_from_to(args: &Args) -> Result<(Option<StageKind>, StageKind)> {
         None => None,
     };
     Ok((from, to))
+}
+
+fn is_active_stage(stage: StageKind) -> bool {
+    matches!(
+        stage,
+        StageKind::ExternalAttackSurface
+            | StageKind::Enumeration
+            | StageKind::VulnTriage
+            | StageKind::AttackCandidate
+            | StageKind::Verification
+            | StageKind::AccessValidation
+            | StageKind::InternalDiscovery
+            | StageKind::ObjectivePathing
+            | StageKind::ObjectiveSimulation
+    )
+}
+
+/// A fresh slice that bypasses Scoping and can reach active recon may not borrow
+/// durable target rows merely because `--org` reused an existing organization.
+/// The caller must repeat at least one exact `--target` in this invocation so
+/// the trusted seed path upgrades/freezes current launch authority. A full flow
+/// beginning at Scoping revalidates the current operation's review lifecycle;
+/// a passive-only Target Intel slice remains legal without a target.
+fn validate_fresh_slice_target_intake(
+    entry_stage: StageKind,
+    allowlist: &HashSet<StageKind>,
+    targets: &[String],
+) -> Result<()> {
+    let direct_target_authority_required =
+        entry_stage != StageKind::Scoping && allowlist.iter().copied().any(is_active_stage);
+    if direct_target_authority_required && !targets.iter().any(|target| !target.trim().is_empty()) {
+        anyhow::bail!(
+            "fresh slice starting at '{}' and crossing into active recon requires at least one exact --target from this CLI invocation; an existing --org row is engagement context, not current target authority",
+            entry_stage.as_str()
+        );
+    }
+    Ok(())
 }
 
 struct StageRunDbConfig {
@@ -1112,6 +1260,8 @@ pub async fn run(args: Args) -> Result<()> {
         .unwrap_or_else(|| active_profile_id().to_string());
     let (from_opt, to_stage) = resolve_from_to(&args)?;
     let (entry_stage, allowlist) = resolve_slice(&profile_id, from_opt, to_stage)?;
+    validate_fresh_slice_target_intake(entry_stage, &allowlist, &args.target)?;
+    crate::ai::task_operation::validate_current_invocation_exact_targets(&args.target)?;
 
     let mut slice_sorted: Vec<&str> = allowlist.iter().map(|s| s.as_str()).collect();
     slice_sorted.sort_unstable();
@@ -1174,7 +1324,14 @@ pub async fn run(args: Args) -> Result<()> {
     // orchestrator so the gate's in_scope_assets(org_id) only sees THIS org's
     // targets (coverage asset-axis isolation, design 2026-06-09).
     let workspace_str = workspace.to_string_lossy().to_string();
-    let seed = maybe_seed(&db_pool, &workspace_str, &args).await;
+    let seed = match maybe_seed(&db_pool, &workspace_str, entry_stage, &args).await {
+        Ok(seed) => seed,
+        Err(error) => {
+            finish_embedded_pg(pg_handle_rx, !preexisting_pg_on_port).await;
+            maybe_keep_ephemeral_db(&mut stage_db, args.keep_ephemeral_db);
+            return Err(error);
+        }
+    };
     maybe_seed_open_ports(&db_pool, &workspace_str).await;
 
     // Runtime Memory V2 freezes the trusted CLI scope once, before the one
@@ -1280,40 +1437,6 @@ pub async fn run(args: Args) -> Result<()> {
         bridge.set_agent_mode(AgentMode::AutoApprove).await;
     }
 
-    // Unify the DB tracker's session with the orchestrator's session id (both
-    // resolve the SAME chat-session key) so the harness gate's session-scoped
-    // `tool_calls` cross-check (red_team scoping flow) reads THIS run's tool
-    // calls instead of fail-opening. `set_db_backend` built the tracker with a
-    // random uuid; override it here with the chat-key-resolved session row id —
-    // the same id `orchestrate()` uses (upsert is idempotent on the key).
-    let tracker_session_id = {
-        let model_name = bridge.model_name().to_string();
-        let provider_name = bridge.provider_name().to_string();
-        match golish_db::repo::sessions::upsert_by_chat_key(
-            &db_pool,
-            &session_id,
-            golish_db::models::NewSession {
-                title: Some(format!("stage-run {}", entry_stage.as_str())),
-                workspace_path: None,
-                workspace_label: None,
-                model: Some(model_name),
-                provider: Some(provider_name),
-                project_path: None,
-            },
-        )
-        .await
-        {
-            Ok(row) => {
-                bridge.set_tracker_session_uuid(row.id);
-                Some(row.id)
-            }
-            Err(e) => {
-                tracing::warn!("stage-run: tracker/orchestrator session unify failed: {e}");
-                None
-            }
-        }
-    };
-
     if let Err(error) = app_state.memory_supervisor.start().await {
         if let Some(manager) = mcp_manager {
             manager.shutdown().await;
@@ -1340,26 +1463,34 @@ pub async fn run(args: Args) -> Result<()> {
         bridge.clone(),
         collected.clone(),
         args.auto_approve,
-        trusted_scope_review_response(&args.target),
+        StageRunAutoApprovalPolicy {
+            trusted_scope_response: trusted_scope_review_response(&args.target),
+            include_subsidiaries: Some(args.include_subsidiaries),
+            confirmed_organization_id: seed.as_ref().and_then(|seed| seed.org_id),
+            approve_phase_boundaries: args.approve_phase_boundaries,
+        },
     );
 
     // 6) Orchestrate the slice (mirrors execute_task_mode, headless).
     let task_input = build_objective(&args, to_stage, seed.as_ref());
-    let mut result = orchestrate(
+    let execution = orchestrate(
         &bridge,
         &db_pool,
         &session_id,
         &profile_id,
-        &workspace,
         entry_stage,
         allowlist,
         &task_input,
+        args.org.as_deref(),
+        &args.target,
         seed.as_ref().and_then(|s| s.org_id),
         args.include_subsidiaries,
         args.subsidiary_threshold,
         cli_runtime_scope,
     )
     .await;
+    let tracker_session_id = execution.as_ref().ok().map(|outcome| outcome.session_id);
+    let mut result = execution.map(|outcome| outcome.response);
 
     // The deployment rollout read before bootstrap can change concurrently;
     // only the contract frozen on the newly created operation may authorize
@@ -1483,7 +1614,6 @@ pub async fn run(args: Args) -> Result<()> {
                         db_pool: db_pool.clone(),
                         session_id: session_id.clone(),
                         profile_id: profile_id.clone(),
-                        workspace: workspace.clone(),
                         subsidiary_threshold: args.subsidiary_threshold,
                         runtime_memory_contract:
                             golish_agent_kit::runtime_memory::RuntimeMemoryContract::LegacyV1,
@@ -1657,6 +1787,11 @@ async fn run_resume(mut args: Args) -> Result<()> {
 
     let execution_result: Result<()> = async {
         let initial = resolve_stage_run_resume_target(&db_pool, &selector, &expectations).await?;
+        let (resume_terminal, resume_allowlist) = resolve_resume_slice(
+            &initial.profile,
+            initial.stage,
+            args.resume_to.as_deref(),
+        )?;
         let transcripts_dir = golish_events::op_trace::resolve_transcript_base(Some(&workspace));
         let transcript_path =
             golish_events::transcript_path(&transcripts_dir, &initial.chat_session_key);
@@ -1702,6 +1837,9 @@ async fn run_resume(mut args: Args) -> Result<()> {
         args.model = Some(model);
 
         let mut claim = StageRunResumeClaim::acquire(&db_pool, initial.operation_id).await?;
+        if initial.needs_orphan_running_repair {
+            repair_orphan_running_task(&mut claim, &initial).await?;
+        }
         if initial.needs_task_repair {
             repair_reaped_task(&mut claim, &initial).await?;
         }
@@ -1728,6 +1866,10 @@ async fn run_resume(mut args: Args) -> Result<()> {
             "resume refused: persisted session/operation identity changed while acquiring the claim"
         );
         anyhow::ensure!(
+            !target.needs_orphan_running_repair,
+            "resume refused: task is still marked running after orphan repair"
+        );
+        anyhow::ensure!(
             !target.needs_graph_repair,
             "resume refused: graph_flow checkpoint is still missing after repair"
         );
@@ -1742,13 +1884,14 @@ async fn run_resume(mut args: Args) -> Result<()> {
         );
 
         eprintln!(
-            "[stage-run-resume] session={} db_session={} operation={} org={} profile={} stage={}",
+            "[stage-run-resume] session={} db_session={} operation={} org={} profile={} stage={} to={}",
             target.chat_session_key,
             target.session_id,
             target.operation_id,
             target.organization_id,
             target.profile,
             target.stage.as_str(),
+            resume_terminal.as_str(),
         );
 
         let app_state = crate::state::AppState::new(
@@ -1821,16 +1964,23 @@ async fn run_resume(mut args: Args) -> Result<()> {
             bridge.clone(),
             collected.clone(),
             args.auto_approve,
-            trusted_scope_review_response(&args.target),
+            StageRunAutoApprovalPolicy {
+                trusted_scope_response: None,
+                // Exact resume must use frozen operation truth. The resume CLI
+                // has no authority to invent a new subsidiary decision.
+                include_subsidiaries: None,
+                confirmed_organization_id: None,
+                approve_phase_boundaries: args.approve_phase_boundaries,
+            },
         );
 
         let continuation = args.execute.as_deref().unwrap_or("继续");
         let result = orchestrate_resume(
             &bridge,
             &db_pool,
-            &workspace,
             &mut claim,
             &target,
+            &resume_allowlist,
             continuation,
         )
         .await;
@@ -1848,7 +1998,7 @@ async fn run_resume(mut args: Args) -> Result<()> {
             &result,
             &target.profile,
             target.stage,
-            target.stage,
+            resume_terminal,
             &target.chat_session_key,
             &transcripts_dir,
         );
@@ -1934,9 +2084,10 @@ async fn finish_embedded_pg(rx: tokio::sync::oneshot::Receiver<golish_db::Golish
     }
 }
 
-/// Build the [`TaskOrchestrator`] and run the slice via `run_stage`. `org_id`
-/// (from the upstream seed) binds the coverage gate's asset axis to THIS run's
-/// organization (coverage asset-axis isolation, design 2026-06-09).
+/// Run a CLI slice through the same prepared task-operation kernel used by GUI
+/// Task/Profile. `org_id` (from the upstream seed) binds the coverage gate's
+/// asset axis to THIS run's organization (coverage asset-axis isolation,
+/// design 2026-06-09).
 /// `include_subsidiaries` + `subsidiary_threshold` (Phase 2,
 /// 2026-06-12-redteam-phase2) opt the run into the scoping subsidiary gate.
 #[allow(clippy::too_many_arguments)]
@@ -1945,75 +2096,117 @@ pub(crate) async fn orchestrate(
     db_pool: &Arc<sqlx::PgPool>,
     session_id: &str,
     profile_id: &str,
-    workspace: &std::path::Path,
     entry_stage: StageKind,
     allowlist: HashSet<StageKind>,
     task_input: &str,
+    subject_label: Option<&str>,
+    current_invocation_targets: &[String],
     org_id: Option<uuid::Uuid>,
     include_subsidiaries: bool,
     subsidiary_threshold: u8,
     cli_runtime_scope: Option<golish_agent_kit::db_traits::CliRuntimeScope>,
-) -> Result<String> {
-    use golish_agent_bridge::bridge_executor::BridgeAgentExecutor;
-    use golish_agent_kit::task_orchestrator::TaskOrchestrator;
-    use golish_db::{models::NewSession, repo::sessions};
+) -> Result<crate::ai::task_operation::FreshTaskOperationOutcome> {
+    use crate::ai::task_operation::{
+        prepare_task_operation, FreshOperationEntry, FreshTaskOperationLaunch,
+    };
+
+    let subsidiary_policy = SubsidiaryScopePolicy {
+        include_subsidiaries,
+        ownership_threshold_percent: subsidiary_threshold,
+    };
+    let cli_runtime_scope = cli_runtime_scope_for_entry(entry_stage, cli_runtime_scope);
+    let scope = build_fresh_cli_scope(
+        entry_stage,
+        task_input,
+        subject_label,
+        current_invocation_targets,
+        org_id,
+        cli_runtime_scope,
+        &subsidiary_policy,
+    )?;
+    let launch = FreshTaskOperationLaunch::new(
+        task_input,
+        profile_id,
+        FreshOperationEntry::StageSlice {
+            entry_stage,
+            allowlist,
+        },
+        scope,
+        subsidiary_policy,
+        None,
+    )?;
 
     let request = bridge
         .begin_top_level_request()
         .await
         .context("start stage-run request for this agent session")?;
-    let executor = BridgeAgentExecutor::from_request(bridge.clone(), request.clone())
-        .context("upgrade stage-run request into Task execution")?;
-
-    let session_row = sessions::upsert_by_chat_key(
-        db_pool,
-        session_id,
-        NewSession {
-            title: Some(format!("stage-run {}", entry_stage.as_str())),
-            workspace_path: None,
-            workspace_label: None,
-            model: Some(bridge.model_name().to_string()),
-            provider: Some(bridge.provider_name().to_string()),
-            project_path: None,
-        },
-    )
-    .await
-    .context("upsert session row (FK precondition for tasks)")?;
-
-    let event_tx = bridge.get_or_create_event_tx();
-    let provider = Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+    let prepared = prepare_task_operation(
+        bridge.clone(),
         db_pool.clone(),
-    ));
-    let db_repo: Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> = provider.clone();
-    let runtime_repo: Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository> = provider;
-    let (canonical_path, path_sha256) =
-        golish_agent_kit::runtime_memory::canonical_workspace_identity(workspace)
-            .map_err(anyhow::Error::new)
-            .context("resolve trusted stage-run workspace identity")?;
-    let project_scope = runtime_repo
-        .project_scope_register_first_open(&canonical_path, &path_sha256)
-        .await
-        .map_err(anyhow::Error::new)
-        .context("register trusted stage-run project scope")?;
+        session_id,
+        task_input,
+        request,
+    )
+    .await?;
+    prepared.run_fresh(launch).await
+}
 
-    let mut orchestrator = TaskOrchestrator::new(db_repo, runtime_repo, session_row.id, event_tx);
-    orchestrator.set_profile_override(Some(profile_id.to_string()));
-    orchestrator.set_chat_session_id(session_id);
-    orchestrator.set_approval_coordinator(bridge.coordinator().cloned());
-    orchestrator.set_stage_allowlist(Some(allowlist));
-    orchestrator.set_harness_org_id(org_id);
-    orchestrator.set_subsidiary_scope(include_subsidiaries, subsidiary_threshold);
-    orchestrator.set_cli_runtime_scope(cli_runtime_scope);
+/// Scoping must derive and freeze its organization scope from the persisted
+/// typed human decision and the trusted deliverable submission. Pre-freezing
+/// the CLI scope during operation creation would make finalization enter its
+/// replay branch before the Scoping root unit/submission identities exist.
+/// Direct post-Scoping entries already carry an explicit CLI scope decision and
+/// may freeze it atomically with operation creation.
+fn cli_runtime_scope_for_entry(
+    entry_stage: StageKind,
+    runtime_scope: Option<golish_agent_kit::db_traits::CliRuntimeScope>,
+) -> Option<golish_agent_kit::db_traits::CliRuntimeScope> {
+    (entry_stage != StageKind::Scoping)
+        .then_some(runtime_scope)
+        .flatten()
+}
 
-    let result = orchestrator
-        .run_stage(entry_stage, task_input, project_scope, &executor)
-        .await;
-    let cleanup = bridge.clear_top_level_request_state(&request).await;
-    match (result, cleanup) {
-        (Ok(response), Ok(())) => Ok(response),
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
+/// Convert explicit fresh CLI intake into the shared typed scope contract.
+///
+/// `--org` is a deliberate headless Scoping shortcut: the exact label is
+/// get-or-created by the trusted seed path and becomes confirmed organization
+/// authority immediately, so Scoping does not need to reconcile the company
+/// identity with GUI prompt state. It still carries no target authority. Only
+/// current-invocation `--target` values can populate `ConfirmedTargetIntake`,
+/// and the shared pre-EAS barrier remains responsible for holding an empty
+/// trusted target snapshot.
+#[allow(clippy::too_many_arguments)]
+fn build_fresh_cli_scope(
+    _entry_stage: StageKind,
+    task_input: &str,
+    subject_label: Option<&str>,
+    current_invocation_targets: &[String],
+    org_id: Option<uuid::Uuid>,
+    cli_runtime_scope: Option<golish_agent_kit::db_traits::CliRuntimeScope>,
+    subsidiary_policy: &SubsidiaryScopePolicy,
+) -> Result<FreshOperationScope> {
+    if !current_invocation_targets.is_empty() {
+        return FreshOperationScope::confirmed_target_intake(
+            subject_label.map(str::to_owned),
+            current_invocation_targets.to_vec(),
+            org_id,
+            cli_runtime_scope,
+            subsidiary_policy,
+        );
     }
+    if let (Some(subject_label), Some(organization_id)) = (subject_label, org_id) {
+        return FreshOperationScope::confirmed_organization_intake(
+            subject_label,
+            organization_id,
+            cli_runtime_scope,
+            subsidiary_policy,
+        );
+    }
+    anyhow::ensure!(
+        org_id.is_none() && cli_runtime_scope.is_none(),
+        "fresh CLI organization authority requires an explicit --org label"
+    );
+    FreshOperationScope::unconfirmed_subject(subject_label.unwrap_or(task_input))
 }
 
 /// Re-drive the exact persisted operation selected by `--stage-run-resume`.
@@ -2023,79 +2216,96 @@ pub(crate) async fn orchestrate(
 async fn orchestrate_resume(
     bridge: &Arc<AgentBridge>,
     db_pool: &Arc<sqlx::PgPool>,
-    workspace: &std::path::Path,
     claim: &mut StageRunResumeClaim,
     target: &ValidatedResumeTarget,
+    stage_allowlist: &HashSet<StageKind>,
     continuation: &str,
 ) -> Result<String> {
-    use golish_agent_bridge::bridge_executor::BridgeAgentExecutor;
-    use golish_agent_kit::task_orchestrator::TaskOrchestrator;
+    use crate::ai::task_operation::{prepare_task_operation, TaskOperationConfig};
 
     let request = bridge
         .begin_top_level_request()
         .await
         .context("start exact stage-run resume request")?;
-    let executor = BridgeAgentExecutor::from_request(bridge.clone(), request.clone())
-        .context("upgrade exact resume request into Task execution")?;
-    let event_tx = bridge.get_or_create_event_tx();
-    let provider = Arc::new(crate::ai::db_bridge::GolishDbRepoProvider::new(
+    let prepared = prepare_task_operation(
+        bridge.clone(),
         db_pool.clone(),
-    ));
-    let db_repo: Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> = provider.clone();
-    let runtime_repo: Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository> = provider;
-    let (canonical_path, path_sha256) =
-        golish_agent_kit::runtime_memory::canonical_workspace_identity(workspace)
-            .map_err(anyhow::Error::new)
-            .context("resolve trusted exact-resume workspace identity")?;
-    let current_project_scope = runtime_repo
-        .project_scope_register_first_open(&canonical_path, &path_sha256)
-        .await
-        .map_err(anyhow::Error::new)
-        .context("register trusted exact-resume project scope")?;
-    let operation = db_repo
-        .operation_state_get(target.operation_id)
-        .await
-        .context("load exact-resume operation project scope")?
-        .ok_or_else(|| anyhow!("resume operation_state is missing"))?;
-    golish_agent_kit::runtime_memory::authorize_operation_project_scope(
-        operation.project_scope_id,
-        operation.runtime_memory_contract,
-        current_project_scope.project_scope_id,
+        &target.chat_session_key,
+        continuation,
+        request,
     )
-    .map_err(anyhow::Error::new)
-    .context("authorize exact-resume project scope")?;
-    let mut orchestrator =
-        TaskOrchestrator::new(db_repo, runtime_repo, target.session_id, event_tx);
-    orchestrator.set_profile_override(Some(target.profile.clone()));
-    orchestrator.set_chat_session_id(&target.chat_session_key);
-    orchestrator.set_approval_coordinator(bridge.coordinator().cloned());
-    orchestrator.set_stage_allowlist(Some(HashSet::from([target.stage])));
-    orchestrator.set_harness_org_id(Some(target.organization_id));
-    orchestrator.set_force_stage_run_on_resume_once(true);
-    let resume_source =
-        selected_resume_record_source(target.authority, target.runtime_memory_contract)?;
-    orchestrator.set_resume_runtime_memory_source(resume_source);
-    bridge.set_resume_runtime_memory_source(resume_source).await;
-
-    // Perform the durable waiting->running claim only after bridge/provider/
-    // project-scope setup has succeeded, immediately before the orchestrator can
-    // load its selected checkpoint source.
-    claim_exact_resume_task(claim, target).await?;
-    orchestrator.set_resume_task_preclaimed(true);
-
-    let result = orchestrator
-        .resume(target.operation_id, continuation, &executor)
-        .await;
-    let cleanup = bridge.clear_top_level_request_state(&request).await;
-    match (result, cleanup) {
-        (Ok(response), Ok(())) => Ok(response),
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
+    .await?;
+    let prepared_session_id = prepared.session_id();
+    if prepared_session_id != target.session_id {
+        return prepared
+            .finish(Err(anyhow!(
+                "exact-resume chat key resolved to session {}, expected {}",
+                prepared_session_id,
+                target.session_id
+            )))
+            .await;
     }
+
+    let result = async {
+        let current_project_scope = prepared.register_project_scope().await?;
+        let operation = prepared
+            .db_repo()
+            .operation_state_get(target.operation_id)
+            .await
+            .context("load exact-resume operation project scope")?
+            .ok_or_else(|| anyhow!("resume operation_state is missing"))?;
+        golish_agent_kit::runtime_memory::authorize_operation_project_scope(
+            operation.project_scope_id,
+            operation.runtime_memory_contract,
+            current_project_scope.project_scope_id,
+        )
+        .map_err(anyhow::Error::new)
+        .context("authorize exact-resume project scope")?;
+
+        let mut orchestrator = prepared.build_orchestrator(TaskOperationConfig {
+            profile_override: Some(target.profile.clone()),
+            stage_allowlist: Some(stage_allowlist.clone()),
+            harness_org_id: Some(target.organization_id),
+            current_invocation_target_authority: persisted_resume_target_authority(
+                &target.state_blob,
+            )?,
+            ..TaskOperationConfig::default()
+        });
+        orchestrator.set_force_stage_run_on_resume_once(true);
+        let resume_source =
+            selected_resume_record_source(target.authority, target.runtime_memory_contract)?;
+        orchestrator.set_resume_runtime_memory_source(resume_source);
+        bridge.set_resume_runtime_memory_source(resume_source).await;
+
+        // Perform the durable waiting->running claim only after shared
+        // bridge/repository/project-scope setup has succeeded, immediately
+        // before the orchestrator can load its selected checkpoint source.
+        claim_exact_resume_task(claim, target).await?;
+        orchestrator.set_resume_task_preclaimed(true);
+        orchestrator
+            .resume(target.operation_id, continuation, prepared.executor())
+            .await
+    }
+    .await;
+    prepared.finish(result).await
 }
 
-/// Watch the runtime event stream: auto-resolve `ask_human` requests (scoping
-/// HITL) when `--auto-approve`, and collect events for the post-run report.
+fn persisted_resume_target_authority(state_blob: &serde_json::Value) -> Result<Option<bool>> {
+    golish_agent_kit::task_orchestrator::harness_resume::current_invocation_target_authority_from_state_blob(
+        state_blob,
+    )
+    .context("restore persisted fresh target authority for exact resume")
+    // Exact resume is a headless stage-run surface, not the GUI interactive
+    // lifecycle. A missing marker is therefore not permission to consult an
+    // organization's historical targets: fail closed until a fresh invocation
+    // supplies an exact --target again.
+    .map(|authority| Some(authority.unwrap_or(false)))
+}
+
+/// Watch the runtime event stream: resolve only typed, policy-backed
+/// `ask_human` requests when `--auto-approve`, and collect events for the
+/// post-run report. Unsupported/security-sensitive prompts are declined rather
+/// than receiving a fabricated generic approval string.
 fn trusted_scope_review_response(targets: &[String]) -> Option<String> {
     let rows = targets
         .iter()
@@ -2113,19 +2323,135 @@ fn trusted_scope_review_response(targets: &[String]) -> Option<String> {
     (!rows.is_empty()).then(|| serde_json::Value::Array(rows).to_string())
 }
 
-fn stage_run_auto_approval_reason(
-    input_type: &str,
-    trusted_scope_response: Option<&str>,
-) -> String {
-    if input_type == "scope_review" {
-        // Headless approval is derived from trusted CLI seeds, not model-authored
-        // ask_human context. The deterministic scoping gate then compares it
-        // with the rows that seed_upstream actually persisted.
-        if let Some(response) = trusted_scope_response {
-            return response.to_string();
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StageRunAutoApprovalPolicy {
+    trusted_scope_response: Option<String>,
+    /// `Some` only for a fresh CLI invocation where the flag itself is trusted
+    /// intake. Exact resume has no authority to create a new scope decision.
+    include_subsidiaries: Option<bool>,
+    /// Fresh CLI `--org` identity. A subsidiary-scope choice is machine
+    /// resolvable only when its typed context names this exact seeded root.
+    confirmed_organization_id: Option<uuid::Uuid>,
+    /// Exact CLI authority corresponding to the GUI's phase Confirm action.
+    approve_phase_boundaries: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StageRunAutoResolution {
+    Approve(String),
+    Decline(&'static str),
+}
+
+impl StageRunAutoApprovalPolicy {
+    fn resolve(
+        &self,
+        input_type: &str,
+        _question: &str,
+        options: &[String],
+        context: &str,
+    ) -> StageRunAutoResolution {
+        match input_type {
+            "scope_review" => self
+                .trusted_scope_response
+                .clone()
+                .map(StageRunAutoResolution::Approve)
+                .unwrap_or(StageRunAutoResolution::Decline(
+                    "scope_review requires exact trusted CLI target rows",
+                )),
+            "confirmation" if self.approve_phase_boundaries => StageRunAutoResolution::Approve(
+                "approved by explicit CLI --approve-phase-boundaries".to_string(),
+            ),
+            "confirmation" => StageRunAutoResolution::Decline(
+                "phase confirmation requires --approve-phase-boundaries",
+            ),
+            "choice" => {
+                let Some(request_organization_id) = subsidiary_scope_choice_org(context) else {
+                    return StageRunAutoResolution::Decline(
+                        "choice is not a typed subsidiary-scope decision",
+                    );
+                };
+                if self.confirmed_organization_id != Some(request_organization_id) {
+                    return StageRunAutoResolution::Decline(
+                        "subsidiary choice organization does not match trusted CLI --org",
+                    );
+                }
+                let Some(include) = self.include_subsidiaries else {
+                    return StageRunAutoResolution::Decline(
+                        "resume cannot create a new subsidiary scope decision",
+                    );
+                };
+                options
+                    .iter()
+                    .find(|option| {
+                        if include {
+                            subsidiary_option_includes(option)
+                        } else {
+                            subsidiary_option_excludes(option)
+                        }
+                    })
+                    .cloned()
+                    .map(StageRunAutoResolution::Approve)
+                    .unwrap_or(StageRunAutoResolution::Decline(
+                        "subsidiary choice has no option matching trusted CLI policy",
+                    ))
+            }
+            "unit_review" => StageRunAutoResolution::Decline(
+                "unit_review requires an explicit reviewed organization table",
+            ),
+            "credentials" => StageRunAutoResolution::Decline(
+                "credentials cannot be synthesized by headless auto policy",
+            ),
+            "freetext" => StageRunAutoResolution::Decline(
+                "freetext cannot be synthesized by headless auto policy",
+            ),
+            _ => StageRunAutoResolution::Decline(
+                "unknown ask_human input type is not auto-authorized",
+            ),
         }
     }
-    format!("auto-approved (headless --stage-run, {input_type})")
+}
+
+fn subsidiary_scope_choice_org(raw: &str) -> Option<uuid::Uuid> {
+    // Match the persisted tool-call parser exactly: `context` is one JSON
+    // object, never a JSON string containing a second JSON document.
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    (value.get("decision")?.as_str()? == "subsidiary_scope").then_some(())?;
+    value
+        .get("organization_id")?
+        .as_str()?
+        .parse::<uuid::Uuid>()
+        .ok()
+}
+
+fn subsidiary_option_excludes(option: &str) -> bool {
+    let normalized = option.trim().to_lowercase();
+    [
+        "不纳入子公司",
+        "不包含子公司",
+        "仅母公司",
+        "仅测试母公司",
+        "只测试母公司",
+        "no subsidiaries",
+        "exclude subsidiaries",
+        "parent company only",
+        "root only",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn subsidiary_option_includes(option: &str) -> bool {
+    let normalized = option.trim().to_lowercase();
+    !subsidiary_option_excludes(option)
+        && [
+            "纳入：",
+            "纳入:",
+            "纳入子公司",
+            "include subsidiaries",
+            "subsidiaries in scope",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
 }
 
 fn spawn_event_consumer(
@@ -2133,7 +2459,7 @@ fn spawn_event_consumer(
     bridge: Arc<AgentBridge>,
     collected: Arc<Mutex<Vec<AiEvent>>>,
     auto_approve: bool,
-    trusted_scope_response: Option<String>,
+    policy: StageRunAutoApprovalPolicy,
 ) {
     tokio::spawn(async move {
         while let Some(rt_ev) = rx.recv().await {
@@ -2147,16 +2473,27 @@ fn spawn_event_consumer(
                 if let AiEvent::AskHumanRequest {
                     request_id,
                     input_type,
-                    ..
+                    question,
+                    options,
+                    context,
                 } = &event
                 {
+                    let (approved, reason) =
+                        match policy.resolve(input_type, question, options, context) {
+                            StageRunAutoResolution::Approve(response) => (true, response),
+                            StageRunAutoResolution::Decline(reason) => {
+                                tracing::warn!(
+                                    input_type,
+                                    reason,
+                                    "stage-run: typed auto policy declined ask_human request"
+                                );
+                                (false, reason.to_string())
+                            }
+                        };
                     let decision = ApprovalDecision {
                         request_id: request_id.clone(),
-                        approved: true,
-                        reason: Some(stage_run_auto_approval_reason(
-                            input_type,
-                            trusted_scope_response.as_deref(),
-                        )),
+                        approved,
+                        reason: Some(reason),
                         remember: false,
                         always_allow: false,
                     };
@@ -2183,37 +2520,50 @@ struct SeedResult {
     targets_added: usize,
 }
 
-/// Run the P1 upstream seed if `--org`/`--target` were given. Best-effort: a
-/// seed failure is logged and the run continues (the stage will surface the gap).
+/// Decide whether the current adapter input is trusted upstream intake.
+/// Explicit CLI `--org` is a headless-only confirmed organization shortcut,
+/// including at Scoping; it never implies a domain/IP/CIDR/URL target. An
+/// explicit target is separate current-invocation target authority.
+fn should_seed_upstream(
+    _entry_stage: StageKind,
+    org_name: Option<&str>,
+    targets: &[String],
+) -> bool {
+    let has_target = targets.iter().any(|target| !target.trim().is_empty());
+    let has_org = org_name.is_some_and(|name| !name.trim().is_empty());
+    has_target || has_org
+}
+
+/// Run the trusted upstream seed only when [`should_seed_upstream`] accepts the
+/// current adapter input. A failed write is fatal: continuing would silently
+/// discard explicit CLI authority and make the shared orchestrator observe a
+/// different scope than the caller requested.
 async fn maybe_seed(
     db_pool: &Arc<sqlx::PgPool>,
     project_path: &str,
+    entry_stage: StageKind,
     args: &Args,
-) -> Option<SeedResult> {
-    if args.org.is_none() && args.target.is_empty() {
-        return None;
+) -> Result<Option<SeedResult>> {
+    if !should_seed_upstream(entry_stage, args.org.as_deref(), &args.target) {
+        return Ok(None);
     }
-    match seed_upstream(db_pool, project_path, args.org.as_deref(), &args.target).await {
-        Ok(s) => {
-            eprintln!(
-                "[stage-run] seeded upstream: org={:?} (id={:?}) targets={} project_path={project_path}",
-                s.org_name, s.org_id, s.targets_added
-            );
-            Some(s)
-        }
-        Err(e) => {
-            eprintln!("[stage-run] upstream seed failed (continuing): {e:#}");
-            None
-        }
-    }
+    let seed = seed_upstream(db_pool, project_path, args.org.as_deref(), &args.target)
+        .await
+        .context("persist trusted CLI organization/target intake")?;
+    eprintln!(
+        "[stage-run] seeded upstream: org={:?} (id={:?}) targets={} project_path={project_path}",
+        seed.org_name, seed.org_id, seed.targets_added
+    );
+    Ok(Some(seed))
 }
 
 /// Test enablement: seed an intel-provider API key into the vault from the file
 /// path in `GOLISH_SEED_VAULT_KEY_FILE` (single line `provider=key`), so a
 /// headless `--stage-run` can populate `organizations.*` via enrich without the
 /// GUI. The value is obfuscated to match the vault read path
-/// ([`golish_core::vault::deobfuscate`]) and upserted as an `api_key` row named
-/// after the provider. Opt-in: env unset → no-op. The key is read from a FILE
+/// ([`golish_core::vault::deobfuscate`]) and upserted to both the canonical
+/// `<provider>.default.api_key` row and the legacy provider-named row. Opt-in:
+/// env unset → no-op. The key is read from a FILE
 /// (never argv / process list / shell history). Best-effort: failures are logged
 /// and the run continues (enrich will then surface the missing-credential gap).
 async fn maybe_seed_vault_key(pool: &sqlx::PgPool) {
@@ -2237,19 +2587,49 @@ async fn maybe_seed_vault_key(pool: &sqlx::PgPool) {
         return;
     }
     let obfuscated = golish_core::vault::obfuscate(key);
+    let (legacy_name, canonical_name) = vault_seed_entry_names(provider);
     let res: Result<(), sqlx::Error> = async {
+        let mut tx = pool.begin().await?;
         sqlx::query("DELETE FROM vault_entries WHERE name = $1 AND entry_type = 'api_key'")
-            .bind(provider)
-            .execute(pool)
+            .bind(&legacy_name)
+            .execute(&mut *tx)
             .await?;
         sqlx::query(
             "INSERT INTO vault_entries (name, entry_type, value, notes, tags) \
              VALUES ($1, 'api_key'::vault_entry_type, $2, 'seeded by --stage-run', '[\"intel-provider\"]'::jsonb)",
         )
-        .bind(provider)
+        .bind(&legacy_name)
         .bind(&obfuscated)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+        let canonical_tags = serde_json::json!([
+            "integration",
+            provider,
+            "default",
+            "intel-provider"
+        ]);
+        let updated = sqlx::query(
+            "UPDATE vault_entries \
+             SET value = $1, tags = $2, updated_at = NOW() \
+             WHERE name = $3",
+        )
+        .bind(&obfuscated)
+        .bind(&canonical_tags)
+        .bind(&canonical_name)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() == 0 {
+            sqlx::query(
+                "INSERT INTO vault_entries (name, entry_type, value, notes, tags) \
+                 VALUES ($1, 'api_key'::vault_entry_type, $2, 'seeded by --stage-run', $3)",
+            )
+            .bind(&canonical_name)
+            .bind(&obfuscated)
+            .bind(&canonical_tags)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
     .await;
@@ -2257,6 +2637,10 @@ async fn maybe_seed_vault_key(pool: &sqlx::PgPool) {
         Ok(()) => eprintln!("[stage-run] seeded vault api_key for '{provider}' (value redacted)"),
         Err(e) => eprintln!("[stage-run] vault key seed failed (continuing): {e}"),
     }
+}
+
+fn vault_seed_entry_names(provider: &str) -> (String, String) {
+    (provider.to_string(), format!("{provider}.default.api_key"))
 }
 
 /// Create an organization (if named) + in-scope targets bound to it, scoped to
@@ -2424,14 +2808,15 @@ fn child_slice(profile_id: &str, to: StageKind) -> Option<(StageKind, HashSet<St
     resolve_slice(profile_id, Some(StageKind::TargetIntel), to).ok()
 }
 
-/// Build the task objective. When `-e/--execute` is given it wins; otherwise
-/// synthesize one that names the seeded organization (with its real id, so the
-/// agent can call `recon_*` without first guessing the org) and in-scope targets.
+/// Build the task objective. `-e/--execute` controls the operator prose, but it
+/// cannot erase server-owned intake metadata: the seeded organization name/id
+/// and current-invocation targets are always appended so typed Scoping choices
+/// can name the exact root without guessing across a persistent workspace.
 fn build_objective(args: &Args, to: StageKind, seed: Option<&SeedResult>) -> String {
-    if let Some(e) = args.execute.clone() {
-        return e;
-    }
-    let mut s = format!("Run the {} stage for this engagement.", to.as_str());
+    let mut s = args
+        .execute
+        .clone()
+        .unwrap_or_else(|| format!("Run the {} stage for this engagement.", to.as_str()));
     match seed {
         Some(sd) => {
             if let (Some(name), Some(id)) = (&sd.org_name, &sd.org_id) {
@@ -2777,6 +3162,8 @@ fn format_report(
     let mut evidence_lines = Vec::new();
     let mut tool_lines = Vec::new();
     let mut askhuman = 0usize;
+    let mut askhuman_approved = 0usize;
+    let mut askhuman_declined = 0usize;
     let mut errors = Vec::new();
 
     for ev in events {
@@ -2820,6 +3207,13 @@ fn format_report(
                 ));
             }
             AiEvent::AskHumanRequest { .. } => askhuman += 1,
+            AiEvent::AskHumanResponse { skipped, .. } => {
+                if *skipped {
+                    askhuman_declined += 1;
+                } else {
+                    askhuman_approved += 1;
+                }
+            }
             AiEvent::Error { message, .. } => errors.push(format!("  {message}")),
             _ => {}
         }
@@ -2848,7 +3242,7 @@ fn format_report(
 
     if askhuman > 0 {
         out.push_str(&format!(
-            "\n-- HITL --\n  {askhuman} ask_human request(s) (auto-approved)\n"
+            "\n-- HITL --\n  {askhuman} ask_human request(s); typed policy responses: approved={askhuman_approved}, declined={askhuman_declined}\n"
         ));
     }
     if !errors.is_empty() {
@@ -2897,15 +3291,100 @@ mod tests {
     }
 
     #[test]
-    fn headless_scope_review_returns_exact_table_payload() {
-        let rows = trusted_scope_review_response(&["moresec.cn".to_string()])
+    fn headless_typed_approval_policy_uses_only_explicit_cli_authority() {
+        let rows = trusted_scope_review_response(&["portal.gzyouchuang.test".to_string()])
             .expect("CLI target becomes a trusted review row");
+        let root_only = StageRunAutoApprovalPolicy {
+            trusted_scope_response: Some(rows.clone()),
+            include_subsidiaries: Some(false),
+            confirmed_organization_id: Some(ORG_ID),
+            approve_phase_boundaries: true,
+        };
         assert_eq!(
-            stage_run_auto_approval_reason("scope_review", Some(&rows)),
-            rows
+            root_only.resolve("scope_review", "confirm targets", &[], ""),
+            StageRunAutoResolution::Approve(rows)
         );
-        assert!(stage_run_auto_approval_reason("scope_review", None).contains("auto-approved"));
-        assert!(stage_run_auto_approval_reason("unit_review", Some(&rows)).contains("unit_review"));
+        assert_eq!(
+            root_only.resolve("confirmation", "continue?", &[], ""),
+            StageRunAutoResolution::Approve(
+                "approved by explicit CLI --approve-phase-boundaries".to_string()
+            )
+        );
+        let options = vec![
+            "不纳入子公司（仅母公司）".to_string(),
+            "纳入：≥51% 控股子公司".to_string(),
+        ];
+        let context = format!(r#"{{"decision":"subsidiary_scope","organization_id":"{ORG_ID}"}}"#);
+        assert_eq!(
+            root_only.resolve("choice", "是否纳入子公司？", &options, &context),
+            StageRunAutoResolution::Approve(options[0].clone())
+        );
+        assert!(matches!(
+            root_only.resolve(
+                "choice",
+                "是否纳入子公司？",
+                &options,
+                &format!(
+                    r#"{{"decision":"subsidiary_scope","organization_id":"{}"}}"#,
+                    uuid::Uuid::new_v4()
+                ),
+            ),
+            StageRunAutoResolution::Decline(_)
+        ));
+        assert!(matches!(
+            root_only.resolve("choice", "ordinary choice", &options, ""),
+            StageRunAutoResolution::Decline(_)
+        ));
+        let double_encoded_context = serde_json::to_string(&context).expect("encode context");
+        assert!(matches!(
+            root_only.resolve(
+                "choice",
+                "是否纳入子公司？",
+                &options,
+                &double_encoded_context,
+            ),
+            StageRunAutoResolution::Decline(_)
+        ));
+        assert!(matches!(
+            root_only.resolve(
+                "choice",
+                "是否纳入子公司？",
+                &["仅根组织".to_string(), "纳入控股单位".to_string()],
+                &context,
+            ),
+            StageRunAutoResolution::Decline(_)
+        ));
+
+        let include = StageRunAutoApprovalPolicy {
+            trusted_scope_response: None,
+            include_subsidiaries: Some(true),
+            confirmed_organization_id: Some(ORG_ID),
+            approve_phase_boundaries: false,
+        };
+        assert!(matches!(
+            include.resolve("confirmation", "continue?", &[], ""),
+            StageRunAutoResolution::Decline(_)
+        ));
+        assert_eq!(
+            include.resolve("choice", "是否纳入子公司？", &options, &context),
+            StageRunAutoResolution::Approve(options[1].clone())
+        );
+        assert!(matches!(
+            include.resolve("scope_review", "confirm targets", &[], ""),
+            StageRunAutoResolution::Decline(_)
+        ));
+        assert!(matches!(
+            include.resolve("unit_review", "review units", &[], ""),
+            StageRunAutoResolution::Decline(_)
+        ));
+        assert!(matches!(
+            include.resolve("credentials", "login", &[], ""),
+            StageRunAutoResolution::Decline(_)
+        ));
+        assert!(matches!(
+            include.resolve("unexpected", "?", &[], ""),
+            StageRunAutoResolution::Decline(_)
+        ));
     }
 
     fn valid_resume_candidate() -> ResumeCandidate {
@@ -2970,6 +3449,7 @@ mod tests {
         assert_eq!(validated.session_id, SESSION_ID);
         assert_eq!(validated.organization_id, ORG_ID);
         assert_eq!(validated.stage, StageKind::Enumeration);
+        assert!(!validated.needs_orphan_running_repair);
         assert!(!validated.needs_graph_repair);
     }
 
@@ -3108,9 +3588,15 @@ mod tests {
         assert!(error.to_string().contains("expected identities"));
 
         candidate.expectations.stage = Some(StageKind::Enumeration);
+        let validated = validate_resume_candidate(&candidate)
+            .expect("a fully asserted orphan may proceed to a fenced repair claim");
+        assert!(validated.needs_orphan_running_repair);
+        assert!(!validated.needs_task_repair);
+
+        candidate.task_result = Some("unexpected partial result".to_string());
         let error = validate_resume_candidate(&candidate)
-            .expect_err("asserted orphan still needs a durable waiting-state claim");
-        assert!(error.to_string().contains("startup reaper"));
+            .expect_err("running orphan with a result must fail closed");
+        assert!(error.to_string().contains("non-null task result"));
     }
 
     #[test]
@@ -3261,6 +3747,25 @@ mod tests {
         assert!(REPAIR_REAPED_TASK_SQL.contains("updated_at = $4"));
         assert!(REPAIR_REAPED_TASK_SQL.contains("os.state_blob = $8"));
         for required in [
+            "task.status = 'running'",
+            "task.result IS NULL",
+            "task.updated_at = $3",
+            "operation.runtime_memory_contract = $4",
+            "operation.profile = $5",
+            "operation.current_stage = $6",
+            "operation.engagement_org_id IS NOT DISTINCT FROM $7",
+            "operation.superseded_by IS NULL",
+            "execution.id = $8",
+            "active_execution.status = 'started'",
+            "live_worker.lease_expires_at > NOW()",
+            "$8::uuid IS NULL AND operation.state_blob = $9",
+        ] {
+            assert!(
+                REPAIR_ORPHAN_RUNNING_TASK_SQL.contains(required),
+                "orphan repair is missing {required:?}"
+            );
+        }
+        for required in [
             "task.status = 'waiting'",
             "task.updated_at = $3",
             "operation.runtime_memory_contract = $4",
@@ -3291,9 +3796,31 @@ mod tests {
             .find("claim_exact_resume_task(claim, target).await?")
             .expect("durable task claim");
         let resume = body
-            .find(".resume(target.operation_id, continuation, &executor)")
+            .find(".resume(target.operation_id, continuation, prepared.executor())")
             .expect("orchestrator resume call");
         assert!(claim < resume, "durable task claim must precede resume");
+    }
+
+    #[test]
+    fn orphan_repair_precedes_graph_repair_and_resume_reresolution() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split_once("async fn run_resume(")
+            .expect("run_resume definition")
+            .1
+            .split_once("async fn orchestrate(")
+            .expect("run_resume body")
+            .0;
+        let orphan = body
+            .find("repair_orphan_running_task(&mut claim, &initial).await?")
+            .expect("orphan repair");
+        let graph = body
+            .find("repair_missing_graph_flow(&mut claim, &initial).await?")
+            .expect("graph repair");
+        let rerun = body
+            .rfind("resolve_stage_run_resume_target(&db_pool, &selector, &expectations).await?")
+            .expect("post-repair target resolution");
+        assert!(orphan < graph && graph < rerun);
     }
 
     #[test]
@@ -3301,6 +3828,44 @@ mod tests {
         let keys = resume_advisory_lock_keys(TASK_ID);
         assert_eq!(keys, resume_advisory_lock_keys(TASK_ID));
         assert_ne!(keys, resume_advisory_lock_keys(uuid::Uuid::new_v4()));
+    }
+
+    #[test]
+    fn exact_resume_target_authority_is_strict_and_missing_marker_fails_closed() {
+        let company_only = golish_agent_kit::task_orchestrator::harness_resume::state_blob_with_current_invocation_target_authority(
+            serde_json::json!({"profile": "red_team", "current_stage": "target_intel"}),
+            false,
+        );
+        assert_eq!(
+            persisted_resume_target_authority(&company_only)
+                .expect("valid persisted company-only marker"),
+            Some(false)
+        );
+
+        let exact_target = golish_agent_kit::task_orchestrator::harness_resume::state_blob_with_current_invocation_target_authority(
+            serde_json::json!({"profile": "red_team", "current_stage": "target_intel"}),
+            true,
+        );
+        assert_eq!(
+            persisted_resume_target_authority(&exact_target)
+                .expect("valid persisted exact-target marker"),
+            Some(true)
+        );
+        assert_eq!(
+            persisted_resume_target_authority(
+                &serde_json::json!({"profile": "red_team", "current_stage": "scoping"})
+            )
+            .expect("old headless operation without a marker must fail closed"),
+            Some(false)
+        );
+
+        let malformed = serde_json::json!({
+            "fresh_launch_authority": {
+                "schema_v": 1,
+                "current_invocation_target_authority": "false"
+            }
+        });
+        assert!(persisted_resume_target_authority(&malformed).is_err());
     }
 
     #[test]
@@ -3338,6 +3903,39 @@ mod tests {
     }
 
     #[test]
+    fn resolve_resume_slice_defaults_to_current_stage() {
+        let (terminal, allowlist) =
+            resolve_resume_slice("pentest", StageKind::TargetIntel, None).expect("same stage");
+        assert_eq!(terminal, StageKind::TargetIntel);
+        assert_eq!(allowlist, HashSet::from([StageKind::TargetIntel]));
+    }
+
+    #[test]
+    fn resolve_resume_slice_expands_only_forward_to_candidate() {
+        let (terminal, allowlist) =
+            resolve_resume_slice("pentest", StageKind::TargetIntel, Some("attack_candidate"))
+                .expect("forward pentest slice");
+        assert_eq!(terminal, StageKind::AttackCandidate);
+        assert_eq!(
+            allowlist,
+            HashSet::from([
+                StageKind::TargetIntel,
+                StageKind::ExternalAttackSurface,
+                StageKind::Enumeration,
+                StageKind::VulnTriage,
+                StageKind::AttackCandidate,
+            ])
+        );
+        assert!(resolve_resume_slice("pentest", StageKind::TargetIntel, Some("scoping")).is_err());
+        assert!(resolve_resume_slice(
+            "assessment",
+            StageKind::TargetIntel,
+            Some("attack_candidate")
+        )
+        .is_err());
+    }
+
+    #[test]
     fn resolve_from_to_only_sets_both() {
         let args = Args::parse_from(["golish", "--stage-run", "--only", "scoping"]);
         let (from, to) = resolve_from_to(&args).unwrap();
@@ -3349,6 +3947,192 @@ mod tests {
     fn resolve_from_to_requires_to_or_only() {
         let args = Args::parse_from(["golish", "--stage-run"]);
         assert!(resolve_from_to(&args).is_err());
+    }
+
+    #[test]
+    fn fresh_direct_active_slice_requires_targets_from_this_cli_invocation() {
+        for stage in [
+            StageKind::ExternalAttackSurface,
+            StageKind::Enumeration,
+            StageKind::VulnTriage,
+            StageKind::AttackCandidate,
+        ] {
+            let error = validate_fresh_slice_target_intake(stage, &HashSet::from([stage]), &[])
+                .expect_err("a reused organization must not lend stale targets to a fresh slice");
+            assert!(format!("{error:#}").contains("--target"));
+        }
+
+        validate_fresh_slice_target_intake(
+            StageKind::ExternalAttackSurface,
+            &HashSet::from([StageKind::ExternalAttackSurface]),
+            &["portal.gzyouchuang.test".to_string()],
+        )
+        .expect("an exact target supplied by this invocation is trusted intake");
+    }
+
+    #[test]
+    fn fresh_company_only_full_flow_reaches_the_shared_pre_eas_barrier() {
+        validate_fresh_slice_target_intake(
+            StageKind::Scoping,
+            &HashSet::from([
+                StageKind::Scoping,
+                StageKind::TargetIntel,
+                StageKind::ExternalAttackSurface,
+                StageKind::Enumeration,
+                StageKind::VulnTriage,
+                StageKind::AttackCandidate,
+            ]),
+            &[],
+        )
+        .expect("company-only full flow is legal until the shared pre-EAS barrier");
+        validate_fresh_slice_target_intake(
+            StageKind::TargetIntel,
+            &HashSet::from([StageKind::TargetIntel]),
+            &[],
+        )
+        .expect("passive target intel may start without an active target");
+    }
+
+    #[test]
+    fn target_intel_slice_cannot_cross_into_active_recon_on_historical_targets() {
+        let active_slice = HashSet::from([
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+            StageKind::Enumeration,
+            StageKind::VulnTriage,
+            StageKind::AttackCandidate,
+        ]);
+        let error = validate_fresh_slice_target_intake(StageKind::TargetIntel, &active_slice, &[])
+            .expect_err(
+                "a direct passive entry must not carry historical targets into active recon",
+            );
+        assert!(format!("{error:#}").contains("--target"));
+
+        validate_fresh_slice_target_intake(
+            StageKind::TargetIntel,
+            &active_slice,
+            &["http://127.0.0.1:18080".to_string()],
+        )
+        .expect("current-invocation exact target can authorize the active boundary");
+    }
+
+    #[test]
+    fn scoping_explicit_company_is_confirmed_org_but_not_target_authority() {
+        let company_only = Args::parse_from([
+            "golish",
+            "--stage-run",
+            "--profile",
+            "red_team",
+            "--to",
+            "attack_candidate",
+            "--org",
+            "广州有创网络科技有限公司",
+        ]);
+        assert!(should_seed_upstream(
+            StageKind::Scoping,
+            company_only.org.as_deref(),
+            &company_only.target,
+        ));
+
+        let policy = crate::ai::task_operation::SubsidiaryScopePolicy::default();
+        let scope = build_fresh_cli_scope(
+            StageKind::Scoping,
+            "Run Scoping for 广州有创网络科技有限公司",
+            company_only.org.as_deref(),
+            &company_only.target,
+            Some(ORG_ID),
+            None,
+            &policy,
+        )
+        .expect("explicit CLI --org becomes confirmed organization intake");
+        assert!(matches!(
+            &scope,
+            crate::ai::task_operation::FreshOperationScope::ConfirmedOrganizationIntake {
+                subject_label,
+                organization_id,
+                runtime_scope: None,
+            } if subject_label == "广州有创网络科技有限公司" && *organization_id == ORG_ID
+        ));
+        let launch = crate::ai::task_operation::FreshTaskOperationLaunch::new(
+            "Run Scoping for 广州有创网络科技有限公司",
+            "red_team",
+            crate::ai::task_operation::FreshOperationEntry::StageSlice {
+                entry_stage: StageKind::Scoping,
+                allowlist: HashSet::from([
+                    StageKind::Scoping,
+                    StageKind::TargetIntel,
+                    StageKind::ExternalAttackSurface,
+                ]),
+            },
+            scope,
+            policy,
+            None,
+        )
+        .expect("confirmed organization launch remains target-empty");
+        let authority = launch
+            .normalized_authority_projection()
+            .expect("project typed launch authority");
+        assert_eq!(authority.organization_id, Some(ORG_ID));
+        assert!(authority.current_invocation_targets.is_empty());
+
+        let confirmed_target = Args::parse_from([
+            "golish",
+            "--stage-run",
+            "--profile",
+            "red_team",
+            "--to",
+            "attack_candidate",
+            "--org",
+            "广州有创网络科技有限公司",
+            "--target",
+            "http://127.0.0.1:18080",
+        ]);
+        assert!(should_seed_upstream(
+            StageKind::Scoping,
+            confirmed_target.org.as_deref(),
+            &confirmed_target.target,
+        ));
+    }
+
+    #[test]
+    fn scoping_defers_runtime_scope_freeze_until_persisted_human_decision() {
+        let runtime_scope = golish_agent_kit::db_traits::CliRuntimeScope {
+            root_organization_id: ORG_ID,
+            include_subsidiaries: false,
+            subsidiary_threshold: 51,
+            units: vec![golish_agent_kit::db_traits::CliRuntimeScopeUnit {
+                organization_id: ORG_ID,
+                parent_organization_id: None,
+                organization_name: "广州有创网络科技有限公司".to_string(),
+                depth: 0,
+                ordinal: 0,
+                ownership_percent: None,
+                approval_source: serde_json::json!({"kind": "cli_flags"}),
+            }],
+        };
+
+        assert!(
+            cli_runtime_scope_for_entry(StageKind::Scoping, Some(runtime_scope.clone())).is_none()
+        );
+        assert_eq!(
+            cli_runtime_scope_for_entry(StageKind::TargetIntel, Some(runtime_scope.clone())),
+            Some(runtime_scope)
+        );
+    }
+
+    #[test]
+    fn direct_passive_slice_may_seed_an_explicit_company_label() {
+        assert!(should_seed_upstream(
+            StageKind::TargetIntel,
+            Some("广州有创网络科技有限公司"),
+            &[],
+        ));
+    }
+
+    #[test]
+    fn subsidiary_threshold_defaults_to_majority_control_boundary() {
+        let args = Args::parse_from(["golish", "--stage-run", "--to", "scoping"]);
+        assert_eq!(args.subsidiary_threshold, 51);
     }
 
     #[test]
@@ -3527,6 +4311,31 @@ mod tests {
     }
 
     #[test]
+    fn build_objective_keeps_custom_text_and_appends_trusted_seed_metadata() {
+        let args = Args::parse_from([
+            "golish",
+            "--stage-run",
+            "--only",
+            "scoping",
+            "--org",
+            "广州有创网络科技有限公司",
+            "-e",
+            "custom smoke objective",
+        ]);
+        let seed = SeedResult {
+            org_id: Some(ORG_ID),
+            org_name: Some("广州有创网络科技有限公司".into()),
+            targets_added: 0,
+        };
+
+        let objective = build_objective(&args, StageKind::Scoping, Some(&seed));
+        assert!(objective.starts_with("custom smoke objective"));
+        assert!(objective.contains("广州有创网络科技有限公司"));
+        assert!(objective.contains(&format!("organization_id: {ORG_ID}")));
+        assert!(!objective.contains("In-scope targets:"));
+    }
+
+    #[test]
     fn parse_seed_open_ports_accepts_sorted_unique_ports() {
         let specs = parse_seed_open_ports("192.0.2.10=443,80,80; 192.0.2.11 = 9001 ");
 
@@ -3536,6 +4345,14 @@ mod tests {
                 ("192.0.2.10".to_string(), vec![80, 443]),
                 ("192.0.2.11".to_string(), vec![9001]),
             ]
+        );
+    }
+
+    #[test]
+    fn vault_seed_updates_runtime_canonical_and_legacy_names() {
+        assert_eq!(
+            vault_seed_entry_names("quake"),
+            ("quake".to_string(), "quake.default.api_key".to_string())
         );
     }
 

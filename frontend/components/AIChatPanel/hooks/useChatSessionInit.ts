@@ -122,7 +122,10 @@ export function useChatSessionInit(opts: UseChatSessionInitOptions) {
         restoredExecMode = normalizeExecutionModeId(restoredExecMode);
 
         if (restoredExecMode !== "chat") {
-          await setExecutionModeBackend(conv.aiSessionId, restoredExecMode).catch(() => {});
+          // Initialization is not complete until the backend accepts the
+          // restored profile. Swallowing this error leaves the GUI showing one
+          // profile while the bridge executes under another.
+          await setExecutionModeBackend(conv.aiSessionId, restoredExecMode);
           setChatExecutionMode(restoredExecMode);
         }
 

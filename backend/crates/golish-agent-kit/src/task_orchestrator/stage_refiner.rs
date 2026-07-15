@@ -611,12 +611,11 @@ fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
                 "stage_worklist_status",
                 "stage_worklist_next",
                 "list_recent_evidence",
-                "vuln_run_formulaic_sweep",
+                "vuln_nuclei_general",
+                "vuln_nuclei_fingerprint_targeted",
+                "vuln_probe_anonymous_access",
                 "query_target_data",
                 "check_stage_asset_coverage",
-                "wait_for_background_jobs",
-                "check_job",
-                "kill_job",
                 "submit_stage_deliverable",
             ],
             _ => stage_allowed_tools(stage),
@@ -645,6 +644,9 @@ fn forbidden_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String>
     }
     if matches!(stage, StageKind::TargetIntel) {
         out.extend(["pentest_run", "run_pty_cmd", "run_command"]);
+    }
+    if matches!(stage, StageKind::VulnTriage) {
+        out.extend(["nuclei", "pentest_run", "run_pty_cmd", "run_command"]);
     }
     out.into_iter().map(str::to_string).collect()
 }
@@ -675,10 +677,12 @@ fn suggested_tool_for(stage: StageKind, technique: &str) -> Option<String> {
         (StageKind::Enumeration, "GOLISH-ENUM-PARAM") => Some("js_extract_apis".to_string()),
         (StageKind::TargetIntel, "GOLISH-INTEL-WHOIS") => Some("recon_lookup_whois".to_string()),
         (StageKind::TargetIntel, _) => Some("recon_map_assets".to_string()),
-        (StageKind::VulnTriage, technique)
-            if technique.starts_with("WSTG-") || technique == "GOLISH-NDAY" =>
-        {
-            Some("vuln_run_formulaic_sweep".to_string())
+        (StageKind::VulnTriage, "GOLISH-NDAY") => {
+            Some("vuln_nuclei_fingerprint_targeted".to_string())
+        }
+        (StageKind::VulnTriage, "WSTG-ATHN-04") => Some("vuln_probe_anonymous_access".to_string()),
+        (StageKind::VulnTriage, technique) if technique.starts_with("WSTG-") => {
+            Some("vuln_nuclei_general".to_string())
         }
         _ => None,
     }
@@ -723,8 +727,14 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
         (StageKind::Enumeration, "js_extract_apis", _) => format!(
             "js_extract_apis direct call: use saved JS/browser observations for {asset}; merge observed query keys, form field names, and targeted param_hints into api_endpoints.params"
         ),
-        (StageKind::VulnTriage, "vuln_run_formulaic_sweep", _) => format!(
-            "vuln_run_formulaic_sweep direct call: include {asset} in targets[] and {technique} in techniques[]; the backend owns nuclei/sqlmap/wpscan recipes and writes technique_outcomes from background job output"
+        (StageKind::VulnTriage, "vuln_nuclei_general", _) => format!(
+            "vuln_nuclei_general foreground call: resolve the work item's target_id and exact target_url={asset}, then pass techniques=[\"{technique}\"]; the backend owns the safe Nuclei profile and lands evidence before technique_outcomes"
+        ),
+        (StageKind::VulnTriage, "vuln_nuclei_fingerprint_targeted", _) => format!(
+            "vuln_nuclei_fingerprint_targeted foreground call: resolve the work item's target_id and exact target_url={asset}, then pass techniques=[\"GOLISH-NDAY\"]; the backend freezes template ids from current-owner fingerprints and never falls back to a general scan"
+        ),
+        (StageKind::VulnTriage, "vuln_probe_anonymous_access", _) => format!(
+            "vuln_probe_anonymous_access foreground call: resolve the work item's server-side target_id and exact target_url={asset}, query_target_data sections=[\"endpoints\"], review the complete potentially-sensitive inventory, then pass reviewed_endpoint_ids=[every eligible id] plus a bounded selected_probes=[{{endpoint_id, query_values, rationale}}] subset (maximum 16); never pass per-endpoint URL/method/header/cookie/token/body/redirect/CLI controls or blindly probe the full inventory"
         ),
         (StageKind::TargetIntel, "recon_lookup_whois", _) => {
             "recon_lookup_whois(organization_id=<current org>)".to_string()
@@ -784,6 +794,24 @@ fn normalized_tool_hint(tool: &str) -> Option<String> {
 
 fn normalized_stage_tool_hint(stage: StageKind, technique: &str, tool: &str) -> Option<String> {
     let token = normalized_tool_hint(tool)?;
+    if stage == StageKind::VulnTriage {
+        return match (technique, token.as_str()) {
+            ("GOLISH-NDAY", "vuln_nuclei_fingerprint_targeted") => Some(token.clone()),
+            ("WSTG-ATHN-04", "vuln_probe_anonymous_access") => Some(token.clone()),
+            (technique, "vuln_nuclei_general") if technique.starts_with("WSTG-") => {
+                if technique == "WSTG-ATHN-04" {
+                    Some("vuln_probe_anonymous_access".to_string())
+                } else {
+                    Some(token.clone())
+                }
+            }
+            ("GOLISH-NDAY", "nuclei") => Some("vuln_nuclei_fingerprint_targeted".to_string()),
+            (technique, "nuclei") if technique.starts_with("WSTG-") => {
+                suggested_tool_for(stage, technique)
+            }
+            _ => suggested_tool_for(stage, technique),
+        };
+    }
     if stage != StageKind::ExternalAttackSurface {
         return Some(token);
     }
@@ -1202,34 +1230,71 @@ mod tests {
     }
 
     #[test]
-    fn vuln_coverage_gap_directive_uses_formulaic_wrapper() {
+    fn vuln_coverage_gap_directive_selects_each_exact_formulaic_wrapper() {
         let d = refine_submit_needs_fix(RefinerContext {
             stage: StageKind::VulnTriage,
             org_id: None,
             agent_path: "main>stage_run:vuln_triage>org:o>vuln_scanner".to_string(),
             reasons: vec!["vuln_triage incomplete: never attempted".to_string()],
-            coverage_gap_actions: vec![CoverageGapAction {
-                asset: "https://app.example.com".to_string(),
-                technique: "WSTG-INPV-05".to_string(),
-                reason: "missing_terminal_coverage".to_string(),
-                suggested_capabilities: Vec::new(),
-                suggested_tools: Vec::new(),
-            }],
+            coverage_gap_actions: vec![
+                CoverageGapAction {
+                    asset: "https://app.example.com".to_string(),
+                    technique: "WSTG-INPV-05".to_string(),
+                    reason: "missing_terminal_coverage".to_string(),
+                    suggested_capabilities: Vec::new(),
+                    suggested_tools: Vec::new(),
+                },
+                CoverageGapAction {
+                    asset: "https://cms.example.com".to_string(),
+                    technique: "GOLISH-NDAY".to_string(),
+                    reason: "missing_terminal_coverage".to_string(),
+                    suggested_capabilities: Vec::new(),
+                    suggested_tools: Vec::new(),
+                },
+                CoverageGapAction {
+                    asset: "https://api.example.com".to_string(),
+                    technique: "WSTG-ATHN-04".to_string(),
+                    reason: "missing_terminal_coverage".to_string(),
+                    suggested_capabilities: Vec::new(),
+                    suggested_tools: Vec::new(),
+                },
+            ],
             available_evidence_ids: Vec::new(),
             running_background_jobs: Vec::new(),
         });
 
         assert_eq!(d.repair_kind, RepairKind::CoverageGap);
+        assert!(d.allowed_tools.contains(&"vuln_nuclei_general".to_string()));
         assert!(d
             .allowed_tools
-            .contains(&"vuln_run_formulaic_sweep".to_string()));
+            .contains(&"vuln_nuclei_fingerprint_targeted".to_string()));
+        assert!(d
+            .allowed_tools
+            .contains(&"vuln_probe_anonymous_access".to_string()));
         assert!(!d.allowed_tools.contains(&"pentest_run".to_string()));
+        let anonymous_hint = d.actions[2]
+            .command_hint
+            .as_deref()
+            .expect("anonymous-access repair hint");
+        assert!(anonymous_hint.contains("reviewed_endpoint_ids"));
+        assert!(anonymous_hint.contains("selected_probes"));
+        assert!(anonymous_hint.contains("query_values"));
         let mode = d.to_submit_repair_mode().unwrap();
-        assert!(mode.allows("vuln_run_formulaic_sweep"));
+        assert!(mode.allows("vuln_nuclei_general"));
+        assert!(mode.allows("vuln_nuclei_fingerprint_targeted"));
+        assert!(mode.allows("vuln_probe_anonymous_access"));
         assert!(!mode.allows("pentest_run"));
         assert_eq!(
             mode.coverage_gap_actions[0].suggested_tools,
-            vec!["vuln_run_formulaic_sweep".to_string()]
+            vec!["vuln_nuclei_general".to_string()]
+        );
+        assert_eq!(
+            mode.coverage_gap_actions[1].suggested_tools,
+            vec!["vuln_nuclei_fingerprint_targeted".to_string()]
+        );
+        assert_eq!(
+            mode.coverage_gap_actions[2].suggested_tools,
+            vec!["vuln_probe_anonymous_access".to_string()]
         );
     }
 

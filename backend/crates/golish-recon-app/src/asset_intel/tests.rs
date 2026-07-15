@@ -6,6 +6,7 @@ fn fake_runtime() -> golish_pentest::models::AssetIntelRuntimeConfig {
         timeout_secs: 30,
         artifact_globs: vec![],
         arg_bindings: std::collections::HashMap::new(),
+        empty_result_failure_patterns: vec![],
     }
 }
 
@@ -31,6 +32,64 @@ fn fake_normalize_config() -> golish_pentest::models::AssetIntelNormalizeConfig 
         profile_fields: vec![],
         pairs: vec![],
     }
+}
+
+#[test]
+fn cli_json_empty_result_failure_pattern_rejects_enscan_captcha_as_checked_empty() {
+    let patterns = vec!["安全验证仍未通过".to_string(), "搜索关键词失败".to_string()];
+    let stderr = "[ERR] 【AQC】安全验证仍未通过，已达最大重试(3)，跳过该源\n\
+                  [ERR] 搜索关键词失败：【AQC】没有查询到关键词";
+
+    assert_eq!(
+        cli_json_empty_result_failure_pattern(b"", stderr.as_bytes(), &patterns),
+        Some("安全验证仍未通过".to_string())
+    );
+    assert_eq!(
+        cli_json_empty_result_failure_pattern(
+            b"provider completed",
+            b"no records matched",
+            &patterns,
+        ),
+        None
+    );
+}
+
+#[test]
+fn fixture_enscan_enrichment_uses_all_sources_and_rejects_captcha_empty() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let toolsconfig_dir = std::path::PathBuf::from(manifest_dir)
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("resources")
+        .join("toolsconfig");
+    let scan = golish_pentest::scan_toolsconfig(&toolsconfig_dir);
+    assert!(scan.success, "toolsconfig scan failed: {:?}", scan.error);
+    let providers = expand_provider_tools(&scan.tools);
+    let provider = providers
+        .iter()
+        .find(|tool| provider_id_for_tool(tool).as_deref() == Some("enscan-go-enrichment"))
+        .expect("ENScan enrichment provider");
+    let asset = provider.asset_intel.as_ref().unwrap();
+    let golish_pentest::models::AssetIntelRuntimeConfig::CliJson {
+        skill_id,
+        empty_result_failure_patterns,
+        ..
+    } = &asset.runtime
+    else {
+        panic!("ENScan enrichment must use cli_json")
+    };
+    let skill = provider
+        .skills
+        .iter()
+        .find(|skill| skill.id == *skill_id)
+        .expect("ENScan enrichment skill");
+
+    assert!(skill.args.contains("-type all"));
+    assert!(!skill.args.contains("-type aqc"));
+    assert!(empty_result_failure_patterns
+        .iter()
+        .any(|pattern| pattern == "安全验证仍未通过"));
 }
 
 fn org_candidate_with_raw(name: &str, scale: &str, status: &str) -> OrganizationCandidate {
@@ -202,19 +261,21 @@ fn bundled_quake_asset_intel_config_loads() {
     assert!(asset.capabilities.iter().any(|cap| cap == "services"));
     match &asset.runtime {
         golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { requests, .. } => {
-            assert_eq!(requests.len(), 3);
+            assert_eq!(requests.len(), 4);
             assert_eq!(requests[0].method, "POST");
             assert_eq!(
                 requests[0].headers.get("X-QuakeToken").map(String::as_str),
                 Some("{{secret:api_key}}")
             );
             assert_eq!(requests[0].json["query"], "org: \"{{company_name}}\"");
+            assert_eq!(requests[1].id, "domain");
+            assert_eq!(requests[1].json["query"], "domain: \"{{domain}}\"");
             assert_eq!(
-                requests[1].json["query"],
+                requests[2].json["query"],
                 "service.http.icp.main_licence.unit: \"{{company_name}}\""
             );
             // cert dimension (passive-intel-pairing Phase D): query CT subject.
-            assert_eq!(requests[2].json["query"], "cert: \"{{company_name}}\"");
+            assert_eq!(requests[3].json["query"], "cert: \"{{company_name}}\"");
         }
         other => panic!("expected quake http_json runtime, got {other:?}"),
     }
@@ -321,6 +382,11 @@ fn quake_config_does_not_promote_hostname_as_asset_owner() {
         "Quake hostname must not become a target candidate"
     );
     let pair_rules = normalize["pairs"].as_array().expect("quake pair rules");
+    assert_eq!(
+        pair_rules[0]["host_field"],
+        serde_json::json!(["service.http.host", "domain"]),
+        "Quake DNS/service ownership must match the concrete host used by its Target candidate"
+    );
     assert!(
         pair_rules.iter().all(|rule| {
             rule["host_field"]
@@ -335,18 +401,20 @@ fn quake_config_does_not_promote_hostname_as_asset_owner() {
 fn native_bridge_record_maps_surface_and_profile() {
     use golish_intel_providers::{ProviderRecord, QueryType};
     let mut fields = std::collections::HashMap::new();
-    fields.insert("domain".to_string(), "api.example.com".to_string());
+    fields.insert("domain".to_string(), "example.com".to_string());
+    fields.insert("host".to_string(), "api.example.com".to_string());
     fields.insert("ip".to_string(), "1.2.3.4".to_string());
     fields.insert("title".to_string(), "Hello".to_string());
     let rec = ProviderRecord::new("fofa", QueryType::Site, fields, serde_json::json!({}));
     let (cand, profile) = bridge_record("fofa", &rec);
     let candidate = cand.expect("candidate");
     assert_eq!(candidate.value, "api.example.com");
-    assert_eq!(candidate.evidence["raw"]["domain"], "api.example.com");
+    assert_eq!(candidate.evidence["raw"]["domain"], "example.com");
+    assert_eq!(candidate.evidence["raw"]["host"], "api.example.com");
     assert_eq!(candidate.evidence["raw"]["ip"], "1.2.3.4");
     assert!(profile
         .iter()
-        .any(|p| p.target_field == "domains" && p.value == "api.example.com"));
+        .any(|p| p.target_field == "domains" && p.value == "example.com"));
     assert!(
         !profile
             .iter()
@@ -383,13 +451,38 @@ fn fofa_toolsconfig_parses_and_is_enrichment_selected() {
             assert_eq!(queries[1].query_type, "cert");
             // b1 (design 2026-06-24): domain-keyed query for apex expansion.
             assert_eq!(queries[2].query_type, "domain");
-            assert!(queries[2].template.contains("{{domain}}"));
+            assert_eq!(queries[2].template, "{{domain}}");
         }
         other => panic!("expected NativeProvider, got {other:?}"),
     }
     // auto-selection: the enrichment phase picks fofa (auto.default + non-subsidiaries).
     let selected = select_enrichment_providers(std::slice::from_ref(&tool), &[]).expect("select");
     assert!(selected.iter().any(|t| t.id == "fofa"));
+}
+
+#[test]
+fn bundled_native_domain_pivots_delegate_dsl_rendering_to_each_provider() {
+    for provider in ["hunter", "shodan"] {
+        let json = std::fs::read_to_string(format!(
+            "{}/../../../resources/intel-providers/{provider}.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let tool: golish_pentest::models::ToolConfig =
+            serde_json::from_value(value["tool"].clone()).unwrap();
+        let asset = tool.asset_intel.expect("asset_intel");
+        let golish_pentest::models::AssetIntelRuntimeConfig::NativeProvider { queries, .. } =
+            asset.runtime
+        else {
+            panic!("{provider} must use native_provider")
+        };
+        let domain = queries
+            .iter()
+            .find(|query| query.query_type == "domain")
+            .expect("domain query");
+        assert_eq!(domain.template, "{{domain}}", "{provider}");
+    }
 }
 
 #[test]

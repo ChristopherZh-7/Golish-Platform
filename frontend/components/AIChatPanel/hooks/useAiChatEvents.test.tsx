@@ -102,6 +102,25 @@ describe("useAiChatEvents — task preparing lifecycle", () => {
     fire({ type: "completed", response: "subtask done", reasoning: null });
     expect(isStreaming()).toBe(true);
   });
+
+  it("labels target-scope review separately from generic approval", async () => {
+    await mount(ref(true));
+
+    fire({
+      type: "task_progress",
+      task_id: "t",
+      status: "waiting_target_scope",
+      message: "ACTIVE_RECON_TRUSTED_TARGET_REQUIRED: review exact targets.",
+    });
+
+    const marker = useStore
+      .getState()
+      .conversations[CONV].messages.find(
+        (message) => message.stageEvent?.status === "waiting_target_scope"
+      );
+    expect(marker?.stageEvent?.label).toBe("Review scan targets");
+    expect(marker?.stageEvent?.detail).toContain("review exact targets");
+  });
 });
 
 function AskHumanHarness() {
@@ -115,6 +134,8 @@ function AskHumanHarness() {
   return (
     <div>
       <div data-testid="ask-human">{askHumanRequest ? "present" : "absent"}</div>
+      <div data-testid="ask-human-raw-type">{askHumanRequest?.rawInputType ?? "none"}</div>
+      <div data-testid="ask-human-effective-type">{askHumanRequest?.inputType ?? "none"}</div>
       <div data-testid="discover-org">{lastDiscoverOrgId ?? "none"}</div>
       <div data-testid="discover-threshold">{lastDiscoverThreshold ?? "none"}</div>
     </div>
@@ -173,6 +194,25 @@ describe("useAiChatEvents — ask_human lifecycle", () => {
       skipped: false,
     });
     expect(screen.getByTestId("ask-human")).toHaveTextContent("absent");
+  });
+
+  it("preserves an unknown raw input type when options require choice rendering", async () => {
+    render(<AskHumanHarness />);
+    await waitFor(() => expect(aiMock.cb).toBeTruthy());
+
+    fire({
+      type: "ask_human_request",
+      request_id: "r-unknown-choice",
+      question: "Pick one",
+      input_type: "future_security_decision",
+      options: ["Approve", "Decline"],
+      context: "",
+    });
+
+    expect(screen.getByTestId("ask-human-raw-type")).toHaveTextContent(
+      "future_security_decision"
+    );
+    expect(screen.getByTestId("ask-human-effective-type")).toHaveTextContent("choice");
   });
 
   it("captures the org id from a recon_discover_subsidiaries tool call (unit_review fallback)", async () => {

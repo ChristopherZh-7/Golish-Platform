@@ -53,6 +53,10 @@ pub struct CandidateClaimQuery {
 pub struct ClaimedCandidateAttempt {
     pub attempt: CandidateAttemptRow,
     pub worker: StageWorkerRunRow,
+    /// At least one external action is already terminal but this Attempt has
+    /// not submitted its terminal result. The resumed executor must expose
+    /// only evidence reads plus `submit_candidate_attempt`.
+    pub submit_only: bool,
     pub execution_plan: serde_json::Value,
     pub allowed_capability_ids: Vec<String>,
     pub allowed_action_kinds: Vec<String>,
@@ -164,6 +168,13 @@ pub struct CandidateExecutionRelease {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseOutcome {
     pub requeued: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateExecutionContinuation {
+    SafeRelease,
+    SubmitOnly,
+    RecoveryRequired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -292,12 +303,28 @@ struct CandidateActionJournalRow {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct TerminalActionJournalRow {
-    action_ordinal: i32,
-    status: String,
+struct CandidateActionFinishAuthorityRow {
+    id: Uuid,
+    capability_id: String,
 }
 
-const ATTEMPT_COLUMNS: &str = "id,candidate_id,approval_id,operation_id,scope_snapshot_id,\
+#[derive(Debug, sqlx::FromRow)]
+struct TerminalActionJournalRow {
+    action_ordinal: i32,
+    capability_id: String,
+    status: String,
+    outcome: Option<serde_json::Value>,
+    error_code: Option<String>,
+}
+
+const NUCLEI_EXACT_REPLAY_CAPABILITY_ID: &str = "verify.nuclei_template_replay";
+const NUCLEI_EXACT_REPLAY_OUTCOME_SCHEMA: &str = "verification.nuclei_template_replay_v1";
+const ANONYMOUS_EXACT_REPLAY_CAPABILITY_ID: &str = "verify.anonymous_request_replay";
+const ANONYMOUS_EXACT_REPLAY_OUTCOME_SCHEMA: &str = "verification.anonymous_request_replay_v1";
+const MAX_EXACT_REPLAY_ACTION_OUTCOME_BYTES: usize = 64 * 1024;
+
+pub(super) const ATTEMPT_COLUMNS: &str =
+    "id,candidate_id,approval_id,operation_id,scope_snapshot_id,\
     wave_run_id,wave_unit_id,organization_id,target_live_id,target_type_at_time,\
     target_value_at_time,target_identity_hash,candidate_plan_hash,ordinal,status,\
     stage_worker_run_id,result_json,result_hash,row_version,created_at,updated_at,terminal_at";
@@ -308,12 +335,12 @@ pub(super) async fn validate_terminal_action_journal(
     tx: &mut Transaction<'_, Postgres>,
     attempt_id: Uuid,
     execution_plan: &serde_json::Value,
-) -> crate::Result<()> {
+) -> crate::Result<Option<BTreeSet<(i64, String)>>> {
     let planned_actions = execution_plan
         .get("actions")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| conflict("Candidate execution plan actions are invalid"))?;
-    let mut expected_ordinals = BTreeSet::new();
+    let mut expected_actions = BTreeMap::new();
     for action in planned_actions {
         let ordinal = action
             .get("ordinal")
@@ -321,32 +348,237 @@ pub(super) async fn validate_terminal_action_journal(
             .and_then(|ordinal| i32::try_from(ordinal).ok())
             .filter(|ordinal| *ordinal >= 0)
             .ok_or_else(|| conflict("Candidate execution plan action ordinal is invalid"))?;
-        if !expected_ordinals.insert(ordinal) {
+        let capability_id = action
+            .get("capability_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|capability_id| !capability_id.trim().is_empty())
+            .ok_or_else(|| conflict("Candidate execution plan capability is invalid"))?;
+        if expected_actions
+            .insert(ordinal, capability_id.to_string())
+            .is_some()
+        {
             return Err(conflict(
                 "Candidate execution plan action ordinal is duplicated",
             ));
         }
     }
     let journal = sqlx::query_as::<_, TerminalActionJournalRow>(
-        "SELECT action_ordinal,status FROM candidate_attempt_actions
+        "SELECT action_ordinal,capability_id,status,outcome,error_code
+         FROM candidate_attempt_actions
          WHERE attempt_id=$1 ORDER BY action_ordinal FOR UPDATE",
     )
     .bind(attempt_id)
     .fetch_all(&mut **tx)
     .await?;
-    let actual_ordinals = journal
+    let actual_actions = journal
         .iter()
-        .map(|action| action.action_ordinal)
-        .collect::<BTreeSet<_>>();
-    if actual_ordinals != expected_ordinals
-        || journal.len() != expected_ordinals.len()
+        .map(|action| (action.action_ordinal, action.capability_id.clone()))
+        .collect::<BTreeMap<_, _>>();
+    if actual_actions != expected_actions
+        || journal.len() != expected_actions.len()
         || journal
             .iter()
             .any(|action| !matches!(action.status.as_str(), "completed" | "failed"))
     {
         return Err(conflict("Candidate action journal is not terminal"));
     }
+    exact_replay_action_evidence(&journal)
+}
+
+fn exact_replay_outcome_schema(capability_id: &str) -> Option<&'static str> {
+    match capability_id {
+        NUCLEI_EXACT_REPLAY_CAPABILITY_ID => Some(NUCLEI_EXACT_REPLAY_OUTCOME_SCHEMA),
+        ANONYMOUS_EXACT_REPLAY_CAPABILITY_ID => Some(ANONYMOUS_EXACT_REPLAY_OUTCOME_SCHEMA),
+        _ => None,
+    }
+}
+
+fn parse_exact_replay_action_evidence(
+    capability_id: &str,
+    status: &str,
+    outcome: &serde_json::Value,
+    journal_error_code: Option<&str>,
+) -> crate::Result<Option<(i64, String)>> {
+    let Some(expected_schema) = exact_replay_outcome_schema(capability_id) else {
+        return Ok(None);
+    };
+    let encoded = serde_json::to_vec(outcome)
+        .map_err(|_| conflict("Exact replay Candidate action outcome is not serializable"))?;
+    if encoded.len() > MAX_EXACT_REPLAY_ACTION_OUTCOME_BYTES {
+        return Err(conflict(
+            "Exact replay Candidate action outcome exceeds the bounded size",
+        ));
+    }
+    let object = outcome
+        .as_object()
+        .ok_or_else(|| conflict("Exact replay Candidate action outcome must be an object"))?;
+    if object.get("schema").and_then(serde_json::Value::as_str) != Some(expected_schema)
+        || !object
+            .get("result")
+            .is_some_and(serde_json::Value::is_object)
+    {
+        return Err(conflict(
+            "Exact replay Candidate action outcome schema/result is invalid",
+        ));
+    }
+    let evidence_role = object
+        .get("evidence_role")
+        .and_then(serde_json::Value::as_str)
+        .filter(|role| matches!(*role, "proof" | "refutation" | "blocker"))
+        .ok_or_else(|| {
+            conflict("Exact replay Candidate action outcome evidence_role is invalid")
+        })?;
+    if status == "failed" && evidence_role != "blocker" {
+        return Err(conflict(
+            "Failed exact replay Candidate action must bind blocker evidence",
+        ));
+    }
+    let evidence_id = match object.get("evidence_id") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(value) => Some(
+            value
+                .as_i64()
+                .filter(|evidence_id| *evidence_id > 0)
+                .ok_or_else(|| {
+                    conflict("Exact replay Candidate action outcome evidence_id is invalid")
+                })?,
+        ),
+    };
+    if let Some(evidence_id) = evidence_id {
+        return Ok(Some((evidence_id, evidence_role.to_string())));
+    }
+    let outcome_error_code = object
+        .get("error_code")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let journal_error_code = journal_error_code
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if status == "failed"
+        && evidence_role == "blocker"
+        && (outcome_error_code.is_some() || journal_error_code.is_some())
+    {
+        return Ok(None);
+    }
+    Err(conflict(
+        "Exact replay Candidate action outcome evidence_id is required",
+    ))
+}
+
+fn exact_replay_action_evidence(
+    journal: &[TerminalActionJournalRow],
+) -> crate::Result<Option<BTreeSet<(i64, String)>>> {
+    let mut evidence = BTreeSet::new();
+    let mut roles_by_id = BTreeMap::new();
+    let mut exact_action_seen = false;
+    for action in journal {
+        let Some(expected_schema) = exact_replay_outcome_schema(&action.capability_id) else {
+            continue;
+        };
+        exact_action_seen = true;
+        let outcome = action.outcome.as_ref().ok_or_else(|| {
+            conflict(&format!(
+                "Exact replay Candidate action outcome is missing for {expected_schema}"
+            ))
+        })?;
+        let pair = parse_exact_replay_action_evidence(
+            &action.capability_id,
+            &action.status,
+            outcome,
+            action.error_code.as_deref(),
+        )?
+        .ok_or_else(|| {
+            conflict("Exact replay Candidate action cannot be submitted without evidence")
+        })?;
+        if roles_by_id
+            .insert(pair.0, pair.1.clone())
+            .is_some_and(|existing| existing != pair.1)
+        {
+            return Err(conflict(
+                "Exact replay Candidate action evidence has conflicting roles",
+            ));
+        }
+        evidence.insert(pair);
+    }
+    if exact_action_seen {
+        Ok(Some(evidence))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(super) fn validate_exact_replay_evidence_pairs(
+    expected: Option<&BTreeSet<(i64, String)>>,
+    submitted: &[AttemptEvidenceLink],
+) -> crate::Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let actual = submitted
+        .iter()
+        .filter(|link| matches!(link.role.as_str(), "proof" | "refutation" | "blocker"))
+        .map(|link| (link.evidence_id, link.role.clone()))
+        .collect::<BTreeSet<_>>();
+    if &actual != expected {
+        return Err(conflict(
+            "Candidate Attempt submission does not match server-derived action evidence",
+        ));
+    }
     Ok(())
+}
+
+fn exact_replay_result_evidence(
+    result: &serde_json::Value,
+) -> crate::Result<BTreeSet<(i64, String)>> {
+    let object = result
+        .as_object()
+        .ok_or_else(|| conflict("Candidate Attempt result must be an object"))?;
+    let mut evidence = BTreeSet::new();
+    for (key, role) in [
+        ("proof_evidence_ids", "proof"),
+        ("refutation_evidence_ids", "refutation"),
+        ("blocker_evidence_ids", "blocker"),
+    ] {
+        let Some(value) = object.get(key) else {
+            continue;
+        };
+        let ids = value
+            .as_array()
+            .ok_or_else(|| conflict("Candidate Attempt result evidence ids are invalid"))?;
+        for id in ids {
+            let id = id
+                .as_i64()
+                .filter(|id| *id > 0)
+                .ok_or_else(|| conflict("Candidate Attempt result evidence id is invalid"))?;
+            evidence.insert((id, role.to_string()));
+        }
+    }
+    Ok(evidence)
+}
+
+pub(super) fn validate_exact_replay_result_evidence_pairs(
+    expected: Option<&BTreeSet<(i64, String)>>,
+    result: &serde_json::Value,
+) -> crate::Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    if &exact_replay_result_evidence(result)? != expected {
+        return Err(conflict(
+            "Candidate Attempt result does not match server-derived action evidence",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn validate_exact_replay_submission_evidence(
+    journal: &[TerminalActionJournalRow],
+    submitted: &[AttemptEvidenceLink],
+) -> crate::Result<()> {
+    let expected = exact_replay_action_evidence(journal)?;
+    validate_exact_replay_evidence_pairs(expected.as_ref(), submitted)
 }
 
 /// Read-only review projection for one exact operation/project/snapshot/wave.
@@ -578,7 +810,7 @@ async fn append_fuel_terminal_event(
     .await
 }
 
-async fn lock_v2_operation(
+pub(super) async fn lock_v2_operation(
     tx: &mut Transaction<'_, Postgres>,
     operation_id: Uuid,
 ) -> crate::Result<()> {
@@ -598,7 +830,7 @@ async fn lock_v2_operation(
     }
 }
 
-async fn lock_claim_scope(
+pub(super) async fn lock_claim_scope(
     tx: &mut Transaction<'_, Postgres>,
     operation_id: Uuid,
     scope_snapshot_id: Uuid,
@@ -630,9 +862,9 @@ async fn lock_claim_scope(
 async fn recover_expired_candidate_lane(
     tx: &mut Transaction<'_, Postgres>,
     lane: &attack_execution_lanes::AttackExecutionLaneRow,
-) -> crate::Result<bool> {
+) -> crate::Result<(bool, bool)> {
     let Some(worker_run_id) = lane.stage_worker_run_id else {
-        return Ok(true);
+        return Ok((true, false));
     };
     let Some(lease_token) = lane.lease_token else {
         return Err(conflict("occupied Candidate lane has no lease token"));
@@ -641,7 +873,7 @@ async fn recover_expired_candidate_lane(
         .lease_expires_at
         .is_some_and(|expiry| expiry > Utc::now())
     {
-        return Ok(false);
+        return Ok((false, false));
     }
 
     let attempt_id: Option<Uuid> = sqlx::query_scalar(
@@ -653,7 +885,7 @@ async fn recover_expired_candidate_lane(
     .await?;
     let attempt_id = attempt_id
         .ok_or_else(|| conflict("expired Candidate lane has no running Attempt owner"))?;
-    let outcome_unknown = sqlx::query(
+    sqlx::query(
         "UPDATE candidate_attempt_actions
          SET status='outcome_unknown',error_code='worker_crashed_after_action_start',
              completed_at=NOW(),updated_at=NOW()
@@ -661,9 +893,72 @@ async fn recover_expired_candidate_lane(
     )
     .bind(attempt_id)
     .execute(&mut **tx)
-    .await?
-    .rows_affected();
-    let next_status = if outcome_unknown == 0 {
+    .await?;
+
+    // Persist the operator-review owner before clearing the Worker/lane fence.
+    // This intentionally scans all existing `outcome_unknown` rows too: a
+    // process may have committed the action transition and lost its response
+    // before it could open the recovery case.
+    let unknown_actions = sqlx::query_as::<_, (Uuid, Option<String>)>(
+        "SELECT id,error_code FROM candidate_attempt_actions
+         WHERE attempt_id=$1 AND status='outcome_unknown'
+         ORDER BY action_ordinal,id FOR UPDATE",
+    )
+    .bind(attempt_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (action_id, error_code) in &unknown_actions {
+        let existing_case_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM candidate_recovery_cases
+             WHERE attempt_id=$1 AND action_id=$2 AND case_kind='outcome_unknown'
+               AND status IN ('open','decision_recorded')
+             FOR UPDATE",
+        )
+        .bind(attempt_id)
+        .bind(action_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if existing_case_id.is_some() {
+            continue;
+        }
+
+        let recovery_case_id = Uuid::new_v5(action_id, b"candidate-recovery:outcome-unknown:v1");
+        let request_id = format!("candidate-recovery:outcome-unknown:{action_id}");
+        let reason_code = error_code
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("outcome_unknown");
+        sqlx::query(
+            "INSERT INTO candidate_recovery_cases(
+                 id,request_id,attempt_id,action_id,case_kind,reason_code)
+             VALUES($1,$2,$3,$4,'outcome_unknown',$5)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(recovery_case_id)
+        .bind(&request_id)
+        .bind(attempt_id)
+        .bind(action_id)
+        .bind(reason_code)
+        .execute(&mut **tx)
+        .await?;
+        let persisted_case_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM candidate_recovery_cases
+             WHERE attempt_id=$1 AND action_id=$2 AND case_kind='outcome_unknown'
+               AND status IN ('open','decision_recorded')
+             FOR UPDATE",
+        )
+        .bind(attempt_id)
+        .bind(action_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if persisted_case_id.is_none() {
+            return Err(conflict(
+                "outcome-unknown Candidate action has no active recovery case",
+            ));
+        }
+    }
+    let next_status = if unknown_actions.is_empty() {
         "queued"
     } else {
         "recovery_required"
@@ -698,7 +993,7 @@ async fn recover_expired_candidate_lane(
     if recovered.rows_affected() != 1 {
         return Err(conflict("expired Candidate WorkerRun recovery CAS lost"));
     }
-    Ok(true)
+    Ok((true, true))
 }
 
 /// Return the exact already-committed claim after a caller loses the response.
@@ -798,7 +1093,17 @@ async fn replay_active_candidate_claim(
               AND candidate.target_identity_hash=$11
               AND candidate.candidate_plan_hash=$12
               AND candidate.disposition='approved'
-              AND approval.status='approved' AND approval.expires_at>NOW()
+              AND (
+                    approval.status='approved'
+                    OR (
+                        approval.status='expired'
+                        AND EXISTS(
+                              SELECT 1 FROM candidate_attempt_actions resumed_action
+                               WHERE resumed_action.attempt_id=$13
+                                 AND resumed_action.status IN ('completed','failed')
+                           )
+                    )
+                  )
             FOR UPDATE OF candidate,approval"#,
     )
     .bind(attempt.candidate_id)
@@ -813,6 +1118,7 @@ async fn replay_active_candidate_claim(
     .bind(&attempt.target_value_at_time)
     .bind(&attempt.target_identity_hash)
     .bind(&attempt.candidate_plan_hash)
+    .bind(attempt.id)
     .fetch_optional(&mut **tx)
     .await?;
     let Some(candidate) = candidate else {
@@ -835,9 +1141,19 @@ async fn replay_active_candidate_claim(
         return Ok(None);
     }
 
+    let submit_only: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM candidate_attempt_actions
+              WHERE attempt_id=$1 AND status IN ('completed','failed')
+         )",
+    )
+    .bind(attempt.id)
+    .fetch_one(&mut **tx)
+    .await?;
     Ok(Some(ClaimedCandidateAttempt {
         attempt,
         worker,
+        submit_only,
         execution_plan: candidate.execution_plan,
         allowed_capability_ids: candidate.allowed_capability_ids,
         allowed_action_kinds: candidate.allowed_action_kinds,
@@ -877,7 +1193,9 @@ pub async fn claim_next_candidate_attempt(
         tx.rollback().await?;
         return Ok(None);
     }
-    if !recover_expired_candidate_lane(&mut tx, &lane).await? {
+    let (lane_available, recovered_expired_lane) =
+        recover_expired_candidate_lane(&mut tx, &lane).await?;
+    if !lane_available {
         tx.rollback().await?;
         return Ok(None);
     }
@@ -926,14 +1244,44 @@ pub async fn claim_next_candidate_attempt(
             WHERE candidate.operation_uuid=$1 AND candidate.scope_snapshot_id=$2
               AND candidate.wave_run_id=$3 AND candidate.wave_unit_id=$4
               AND candidate.organization_id=$5 AND candidate.disposition='approved'
-              AND approval.status='approved' AND approval.expires_at>NOW()
+              AND (
+                    (approval.status='approved' AND approval.start_before>NOW())
+                    OR (
+                        approval.status IN ('approved','expired')
+                        AND EXISTS(
+                              SELECT 1
+                                FROM candidate_attempts continuation
+                                JOIN stage_worker_runs continuation_worker
+                                  ON continuation_worker.id=continuation.stage_worker_run_id
+                               WHERE continuation.candidate_id=candidate.candidate_id
+                                 AND continuation.approval_id=approval.id
+                                 AND continuation.operation_id=candidate.operation_uuid
+                                 AND continuation.status IN ('queued','running')
+                                 AND continuation_worker.status='queued'
+                                 AND EXISTS(
+                                       SELECT 1 FROM candidate_attempt_actions terminal_action
+                                        WHERE terminal_action.attempt_id=continuation.id
+                                          AND terminal_action.status IN ('completed','failed')
+                                    )
+                                 AND NOT EXISTS(
+                                       SELECT 1 FROM candidate_attempt_actions unsafe_action
+                                        WHERE unsafe_action.attempt_id=continuation.id
+                                          AND unsafe_action.status IN ('started','outcome_unknown')
+                                    )
+                                 AND NOT EXISTS(
+                                       SELECT 1 FROM candidate_attempt_terminal_intents terminal_intent
+                                        WHERE terminal_intent.attempt_id=continuation.id
+                                    )
+                           )
+                    )
+                  )
               AND NOT EXISTS(
                     SELECT 1 FROM candidate_attempts active
                     LEFT JOIN stage_worker_runs active_worker
                       ON active_worker.id=active.stage_worker_run_id
                      WHERE active.candidate_id=candidate.candidate_id
                        AND (
-                         active.status='submitted'
+                         active.status IN ('submitted','terminalization_pending')
                          OR (active.status='running' AND active_worker.status<>'queued')
                        ))
             ORDER BY CASE WHEN EXISTS(
@@ -953,7 +1301,14 @@ pub async fn claim_next_candidate_attempt(
     .fetch_optional(&mut *tx)
     .await?;
     let Some(candidate) = candidate else {
-        tx.rollback().await?;
+        if recovered_expired_lane {
+            // Recovery is itself durable progress. Rolling this transaction
+            // back when no replacement Candidate is currently claimable would
+            // strand the same outcome-unknown action forever.
+            tx.commit().await?;
+        } else {
+            tx.rollback().await?;
+        }
         return Ok(None);
     };
 
@@ -1062,6 +1417,7 @@ pub async fn claim_next_candidate_attempt(
                 operation_id: query.operation_id,
                 stage_execution_id: query.verification_stage_execution_id,
                 stage_run_unit_id: query.verification_stage_run_unit_id,
+                work_item_id: None,
                 organization_id: query.organization_id,
                 worker_generation: attempt.ordinal,
                 specialist: "candidate_verifier".to_string(),
@@ -1174,10 +1530,20 @@ pub async fn claim_next_candidate_attempt(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| conflict("Candidate Attempt claim CAS lost"))?;
+    let submit_only: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM candidate_attempt_actions
+              WHERE attempt_id=$1 AND status IN ('completed','failed')
+         )",
+    )
+    .bind(attempt.id)
+    .fetch_one(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(Some(ClaimedCandidateAttempt {
         attempt,
         worker,
+        submit_only,
         execution_plan: candidate.execution_plan,
         allowed_capability_ids: candidate.allowed_capability_ids,
         allowed_action_kinds: candidate.allowed_action_kinds,
@@ -1361,7 +1727,7 @@ pub async fn begin_candidate_action(
               AND attempt.organization_id=$4 AND attempt.stage_worker_run_id=$5
               AND attempt.candidate_plan_hash=$11 AND attempt.status='running'
               AND candidate.disposition='approved'
-              AND approval.status='approved' AND approval.expires_at>NOW()
+              AND approval.status='approved' AND approval.start_before>NOW()
             FOR UPDATE OF attempt,candidate,approval,worker,unit,lane,operation,project,target"#,
     )
     .bind(command.operation_id)
@@ -1387,13 +1753,18 @@ pub async fn begin_candidate_action(
         .execution_plan
         .as_object()
         .ok_or_else(|| conflict("Candidate execution plan must be an object"))?;
+    let legacy_v1 = plan
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        == Some("candidate-plan-v1");
     let candidate_id_text = command.candidate_id.to_string();
-    if plan.get("candidate_id").and_then(serde_json::Value::as_str)
-        != Some(candidate_id_text.as_str())
-        || plan
-            .get("target_identity_hash")
-            .and_then(serde_json::Value::as_str)
-            != Some(authority.target_identity_hash.as_str())
+    if !match plan.get("candidate_id") {
+        Some(value) => value.as_str() == Some(candidate_id_text.as_str()),
+        None => legacy_v1,
+    } || plan
+        .get("target_identity_hash")
+        .and_then(serde_json::Value::as_str)
+        != Some(authority.target_identity_hash.as_str())
         || plan
             .get("foreground_only")
             .and_then(serde_json::Value::as_bool)
@@ -1420,6 +1791,8 @@ pub async fn begin_candidate_action(
         .get("max_runtime_ms")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| conflict("Candidate max_runtime_ms is invalid"))?;
+    let max_runtime_ms = i64::try_from(max_runtime_ms)
+        .map_err(|_| conflict("Candidate max_runtime_ms exceeds database range"))?;
     let actions = plan
         .get("actions")
         .and_then(serde_json::Value::as_array)
@@ -1464,10 +1837,10 @@ pub async fn begin_candidate_action(
                 .allowed_action_kinds
                 .iter()
                 .any(|allowed| allowed == action_kind)
-            || canonical_args
-                .get("background")
-                .and_then(serde_json::Value::as_bool)
-                != Some(false)
+            || match canonical_args.get("background") {
+                Some(value) => value.as_bool() != Some(false),
+                None => !legacy_v1,
+            }
         {
             return Err(conflict(
                 "Candidate capability/action/args authorization fence lost",
@@ -1521,13 +1894,41 @@ pub async fn begin_candidate_action(
 
     let result = match journal.status.as_str() {
         "planned" => {
+            let authorization_receipt_id = Uuid::new_v5(
+                &journal.id,
+                format!(
+                    "candidate-action-authorization:{}:{}",
+                    command.attempt_epoch, command.lease_token
+                )
+                .as_bytes(),
+            );
+            let authorization_request_id = format!(
+                "candidate-action-authorization:{}:{}:{}",
+                command.attempt_id, command.action_ordinal, command.attempt_epoch
+            );
+            sqlx::query(
+                "INSERT INTO candidate_action_authorization_receipts(
+                     id,request_id,attempt_id,action_id,lease_token,execution_deadline)
+                 VALUES($1,$2,$3,$4,$5,
+                        clock_timestamp()+($6::BIGINT*INTERVAL '1 millisecond'))",
+            )
+            .bind(authorization_receipt_id)
+            .bind(&authorization_request_id)
+            .bind(command.attempt_id)
+            .bind(journal.id)
+            .bind(command.lease_token)
+            .bind(max_runtime_ms)
+            .execute(&mut *tx)
+            .await?;
             let started = sqlx::query_as::<_, CandidateActionJournalRow>(
                 "UPDATE candidate_attempt_actions
-                 SET status='started',started_at=NOW(),updated_at=NOW()
+                 SET status='started',authorization_receipt_id=$2,
+                     started_at=NOW(),updated_at=NOW()
                  WHERE id=$1 AND status='planned'
                  RETURNING id,action_ordinal,capability_id,action_kind,canonical_args,status,outcome",
             )
             .bind(journal.id)
+            .bind(authorization_receipt_id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or_else(|| conflict("Candidate action start CAS lost"))?;
@@ -1583,8 +1984,8 @@ pub async fn finish_candidate_action(
     }
     let mut tx = pool.begin().await?;
     lock_v2_operation(&mut tx, command.operation_id).await?;
-    let fence: Option<Uuid> = sqlx::query_scalar(
-        r#"SELECT action.id
+    let fence = sqlx::query_as::<_, CandidateActionFinishAuthorityRow>(
+        r#"SELECT action.id,action.capability_id
              FROM candidate_attempt_actions action
              JOIN candidate_attempts attempt ON attempt.id=action.attempt_id
              JOIN stage_worker_runs worker
@@ -1594,6 +1995,13 @@ pub async fn finish_candidate_action(
               AND worker.organization_id=attempt.organization_id
               AND worker.lease_token=$6 AND worker.attempt_epoch=$7
               AND worker.status='running' AND worker.lease_expires_at>NOW()
+             JOIN candidate_action_authorization_receipts receipt
+               ON receipt.id=action.authorization_receipt_id
+              AND receipt.action_id=action.id
+              AND receipt.attempt_id=action.attempt_id
+              AND receipt.worker_run_id=worker.id
+              AND receipt.lease_token=$6
+              AND receipt.attempt_epoch=$7
              JOIN attack_execution_lanes lane
                ON lane.lane_key='global:exploit'
               AND lane.stage_worker_run_id=worker.id
@@ -1620,16 +2028,23 @@ pub async fn finish_candidate_action(
     .bind(&command.candidate_plan_hash)
     .bind(command.action_id)
     .fetch_optional(&mut *tx)
-    .await?;
-    if fence.is_none() {
-        return Err(conflict("Candidate action completion fence lost"));
-    }
-    let outcome_hash = canonical_result_hash(&command.outcome)?;
+    .await?
+    .ok_or_else(|| conflict("Candidate action completion fence lost"))?;
     let next_status = if command.success {
         "completed"
     } else {
         "failed"
     };
+    if fence.id != command.action_id {
+        return Err(conflict("Candidate action completion identity drift"));
+    }
+    parse_exact_replay_action_evidence(
+        &fence.capability_id,
+        next_status,
+        &command.outcome,
+        command.error_code.as_deref(),
+    )?;
+    let outcome_hash = canonical_result_hash(&command.outcome)?;
     let updated = sqlx::query(
         "UPDATE candidate_attempt_actions
          SET status=$2,outcome=$3,outcome_hash=$4,error_code=$5,
@@ -1648,6 +2063,107 @@ pub async fn finish_candidate_action(
     }
     tx.commit().await?;
     Ok(())
+}
+
+/// Classify the only safe continuation after a verifier/provider turn returns
+/// without an immutable terminal intent. This reads the exact bound
+/// Attempt/Worker/lane under the same operation lock used by release and
+/// action mutation; model-visible input can never select a different chain.
+pub async fn candidate_execution_continuation(
+    pool: &PgPool,
+    command: &CandidateExecutionRelease,
+) -> crate::Result<CandidateExecutionContinuation> {
+    if command.lease_owner.trim().is_empty() {
+        return Err(conflict("invalid Candidate continuation lease owner"));
+    }
+    let mut tx = pool.begin().await?;
+    lock_v2_operation(&mut tx, command.operation_id).await?;
+    lock_claim_scope(
+        &mut tx,
+        command.operation_id,
+        command.scope_snapshot_id,
+        command.wave_run_id,
+        command.wave_unit_id,
+        command.organization_id,
+    )
+    .await?;
+    let exact_authority: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT attempt.id
+             FROM candidate_attempts attempt
+             JOIN stage_worker_runs worker
+               ON worker.id=attempt.stage_worker_run_id
+              AND worker.operation_id=attempt.operation_id
+              AND worker.stage_execution_id=$8
+              AND worker.stage_run_unit_id=$9
+              AND worker.organization_id=attempt.organization_id
+              AND worker.lease_token=$10 AND worker.lease_owner=$11
+              AND worker.attempt_epoch=$12 AND worker.checkpoint_version=$13
+              AND worker.status='running' AND worker.lease_expires_at>NOW()
+              AND worker.active_tool_call_id IS NULL
+             JOIN attack_execution_lanes lane
+               ON lane.lane_key='global:exploit'
+              AND lane.stage_worker_run_id=worker.id
+              AND lane.lease_token=worker.lease_token
+              AND lane.lease_owner=worker.lease_owner
+              AND lane.lease_expires_at>NOW()
+            WHERE attempt.id=$1 AND attempt.operation_id=$2
+              AND attempt.scope_snapshot_id=$3 AND attempt.wave_run_id=$4
+              AND attempt.wave_unit_id=$5 AND attempt.organization_id=$6
+              AND attempt.stage_worker_run_id=$7 AND attempt.status='running'
+              AND attempt.result_json IS NULL AND attempt.result_hash IS NULL
+              AND NOT EXISTS(
+                    SELECT 1 FROM candidate_attempt_terminal_intents intent
+                     WHERE intent.attempt_id=attempt.id
+                  )
+            FOR UPDATE OF attempt,worker,lane"#,
+    )
+    .bind(command.attempt_id)
+    .bind(command.operation_id)
+    .bind(command.scope_snapshot_id)
+    .bind(command.wave_run_id)
+    .bind(command.wave_unit_id)
+    .bind(command.organization_id)
+    .bind(command.worker_run_id)
+    .bind(command.stage_execution_id)
+    .bind(command.stage_run_unit_id)
+    .bind(command.lease_token)
+    .bind(&command.lease_owner)
+    .bind(command.attempt_epoch)
+    .bind(command.expected_checkpoint_version)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if exact_authority.is_none() {
+        return Err(conflict("Candidate continuation authority fence lost"));
+    }
+
+    let (total, pristine_planned, terminal, recovery): (i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT
+                   COUNT(*),
+                   COUNT(*) FILTER (
+                     WHERE status='planned' AND started_at IS NULL
+                       AND authorization_receipt_id IS NULL AND outcome IS NULL
+                       AND outcome_hash IS NULL AND error_code IS NULL
+                       AND completed_at IS NULL
+                   ),
+                   COUNT(*) FILTER (WHERE status IN ('completed','failed')),
+                   COUNT(*) FILTER (WHERE status IN ('started','outcome_unknown'))
+                 FROM candidate_attempt_actions
+                WHERE attempt_id=$1"#,
+    )
+    .bind(command.attempt_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let continuation = if recovery > 0 {
+        CandidateExecutionContinuation::RecoveryRequired
+    } else if terminal > 0 && terminal + pristine_planned == total {
+        CandidateExecutionContinuation::SubmitOnly
+    } else if pristine_planned == total {
+        CandidateExecutionContinuation::SafeRelease
+    } else {
+        CandidateExecutionContinuation::RecoveryRequired
+    };
+    tx.commit().await?;
+    Ok(continuation)
 }
 
 /// End a failed verifier lease without rewriting history. The running Attempt
@@ -1816,6 +2332,56 @@ pub async fn release_candidate_execution(
     }
     if authority.attempt_status != "running" || authority.candidate_disposition != "approved" {
         return Err(conflict("Candidate Attempt release identity mismatch"));
+    }
+
+    // A retryable release is legal only while the journal proves that no
+    // external side effect ever started. A completed/failed action must keep
+    // this exact Attempt/Worker chain alive for submit-only continuation;
+    // started/outcome-unknown actions belong to operator recovery and are
+    // never replayed or rewritten as retryable provider failures.
+    type ReleaseActionState = (
+        Uuid,
+        String,
+        Option<DateTime<Utc>>,
+        Option<Uuid>,
+        Option<serde_json::Value>,
+        Option<String>,
+        Option<String>,
+        Option<DateTime<Utc>>,
+    );
+    let action_states: Vec<ReleaseActionState> = sqlx::query_as(
+        "SELECT id,status,started_at,authorization_receipt_id,outcome,outcome_hash,error_code,completed_at
+           FROM candidate_attempt_actions
+          WHERE attempt_id=$1
+          ORDER BY action_ordinal,id
+          FOR UPDATE",
+    )
+    .bind(release.attempt_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let has_terminal_intent: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM candidate_attempt_terminal_intents WHERE attempt_id=$1
+         )",
+    )
+    .bind(release.attempt_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let journal_is_pristine = action_states.iter().all(
+        |(_, status, started_at, receipt_id, outcome, outcome_hash, error_code, completed_at)| {
+            status == "planned"
+                && started_at.is_none()
+                && receipt_id.is_none()
+                && outcome.is_none()
+                && outcome_hash.is_none()
+                && error_code.is_none()
+                && completed_at.is_none()
+        },
+    );
+    if has_terminal_intent || !journal_is_pristine {
+        return Err(conflict(
+            "Candidate retry release requires an entirely unstarted planned action journal",
+        ));
     }
 
     let (effective_attempt_fuel, retryable_backlog): (i64, i64) = sqlx::query_as(
@@ -2144,7 +2710,7 @@ pub async fn record_attempt_submission(
               AND candidate.scope_snapshot_id=$4 AND candidate.wave_run_id=$5
               AND candidate.wave_unit_id=$6 AND candidate.organization_id=$7
               AND candidate.candidate_plan_hash=$8 AND candidate.disposition='approved'
-              AND approval.status='approved' AND approval.expires_at>NOW()
+              AND approval.status IN ('approved','expired')
             FOR UPDATE OF candidate,approval"#,
     )
     .bind(command.candidate_id)
@@ -2180,7 +2746,13 @@ pub async fn record_attempt_submission(
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| crate::DbError::NotFound("candidate_attempt".to_string()))?;
-    validate_terminal_action_journal(tx, command.attempt_id, &candidate_execution_plan).await?;
+    let server_derived_evidence =
+        validate_terminal_action_journal(tx, command.attempt_id, &candidate_execution_plan).await?;
+    validate_exact_replay_evidence_pairs(server_derived_evidence.as_ref(), &command.evidence)?;
+    validate_exact_replay_result_evidence_pairs(
+        server_derived_evidence.as_ref(),
+        &command.result_json,
+    )?;
     let worker_fence: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM stage_worker_runs
          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
@@ -2287,5 +2859,246 @@ mod fuel_tests {
         assert!(!release_must_terminalize_for_fuel(3, 1, 5));
         assert!(release_must_terminalize_for_fuel(5, 0, 5));
         assert!(release_must_terminalize_for_fuel(6, 0, 5));
+    }
+}
+
+#[cfg(test)]
+mod exact_replay_evidence_tests {
+    use super::{
+        exact_replay_action_evidence, parse_exact_replay_action_evidence,
+        validate_exact_replay_result_evidence_pairs, validate_exact_replay_submission_evidence,
+        AttemptEvidenceLink, TerminalActionJournalRow,
+    };
+    use serde_json::json;
+
+    fn terminal_action(
+        capability_id: &str,
+        status: &str,
+        outcome: serde_json::Value,
+    ) -> TerminalActionJournalRow {
+        TerminalActionJournalRow {
+            action_ordinal: 0,
+            capability_id: capability_id.to_string(),
+            status: status.to_string(),
+            outcome: Some(outcome),
+            error_code: None,
+        }
+    }
+
+    fn evidence(evidence_id: i64, role: &str) -> AttemptEvidenceLink {
+        AttemptEvidenceLink {
+            evidence_id,
+            role: role.to_string(),
+        }
+    }
+
+    #[test]
+    fn exact_replay_requires_matching_server_derived_evidence_role() {
+        let journal = vec![terminal_action(
+            "verify.nuclei_template_replay",
+            "completed",
+            json!({
+                "schema": "verification.nuclei_template_replay_v1",
+                "evidence_id": 41,
+                "evidence_role": "refutation",
+                "result": {"outcome": "empty"}
+            }),
+        )];
+
+        validate_exact_replay_submission_evidence(&journal, &[evidence(41, "refutation")])
+            .expect("the exact server-derived evidence pair should be accepted");
+
+        let error = validate_exact_replay_submission_evidence(&journal, &[evidence(41, "proof")])
+            .expect_err("an empty result must not be relabelled as proof");
+        assert!(error
+            .to_string()
+            .contains("does not match server-derived action evidence"));
+    }
+
+    #[test]
+    fn exact_replay_rejects_missing_or_extra_terminal_evidence() {
+        let journal = vec![terminal_action(
+            "verify.anonymous_request_replay",
+            "failed",
+            json!({
+                "schema": "verification.anonymous_request_replay_v1",
+                "evidence_id": 52,
+                "evidence_role": "blocker",
+                "result": {"outcome": "error"}
+            }),
+        )];
+
+        assert!(validate_exact_replay_submission_evidence(&journal, &[]).is_err());
+        assert!(validate_exact_replay_submission_evidence(
+            &journal,
+            &[evidence(52, "blocker"), evidence(53, "blocker")]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn exact_replay_allows_fact_delta_links_beside_exact_terminal_evidence() {
+        let journal = vec![terminal_action(
+            "verify.nuclei_template_replay",
+            "completed",
+            json!({
+                "schema": "verification.nuclei_template_replay_v1",
+                "evidence_id": 61,
+                "evidence_role": "proof",
+                "result": {"outcome": "found"}
+            }),
+        )];
+
+        validate_exact_replay_submission_evidence(
+            &journal,
+            &[evidence(61, "proof"), evidence(62, "fact_delta")],
+        )
+        .expect("fact delta evidence has an independent server validation path");
+    }
+
+    #[test]
+    fn exact_replay_terminal_outcome_requires_typed_evidence() {
+        for outcome in [
+            json!({"evidence_role": "proof"}),
+            json!({"evidence_id": 0, "evidence_role": "proof"}),
+            json!({"evidence_id": 71, "evidence_role": "support"}),
+            json!({"evidence_id": 71, "evidence_role": ""}),
+        ] {
+            let journal = vec![terminal_action(
+                "verify.nuclei_template_replay",
+                "completed",
+                outcome,
+            )];
+            assert!(validate_exact_replay_submission_evidence(&journal, &[]).is_err());
+        }
+
+        let failed_proof = vec![terminal_action(
+            "verify.anonymous_request_replay",
+            "failed",
+            json!({
+                "schema": "verification.anonymous_request_replay_v1",
+                "evidence_id": 72,
+                "evidence_role": "proof",
+                "result": {"outcome": "error"}
+            }),
+        )];
+        assert!(
+            validate_exact_replay_submission_evidence(&failed_proof, &[evidence(72, "proof")])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn exact_replay_result_json_cannot_relabel_journal_evidence() {
+        let journal = vec![terminal_action(
+            "verify.nuclei_template_replay",
+            "completed",
+            json!({
+                "schema": "verification.nuclei_template_replay_v1",
+                "evidence_id": 73,
+                "evidence_role": "refutation",
+                "result": {"outcome": "empty"}
+            }),
+        )];
+        let expected = exact_replay_action_evidence(&journal)
+            .expect("typed journal evidence")
+            .expect("exact replay action must derive evidence");
+
+        validate_exact_replay_result_evidence_pairs(
+            Some(&expected),
+            &json!({
+                "proof_evidence_ids": [],
+                "refutation_evidence_ids": [73],
+                "blocker_evidence_ids": []
+            }),
+        )
+        .expect("matching result evidence should pass");
+        assert!(validate_exact_replay_result_evidence_pairs(
+            Some(&expected),
+            &json!({
+                "proof_evidence_ids": [73],
+                "refutation_evidence_ids": [],
+                "blocker_evidence_ids": []
+            }),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn failed_exact_replay_may_close_without_evidence_but_cannot_submit() {
+        let outcome = json!({
+            "schema": "verification.anonymous_request_replay_v1",
+            "evidence_role": "blocker",
+            "error_code": "ATTACK_REPLAY_EVIDENCE_APPEND_FAILED",
+            "result": {"outcome": "error"}
+        });
+        assert_eq!(
+            parse_exact_replay_action_evidence(
+                "verify.anonymous_request_replay",
+                "failed",
+                &outcome,
+                None,
+            )
+            .expect("an explicit failed blocker may terminalize the action"),
+            None
+        );
+        let mut null_evidence = outcome.clone();
+        null_evidence
+            .as_object_mut()
+            .expect("fixture outcome object")
+            .insert("evidence_id".to_string(), serde_json::Value::Null);
+        assert_eq!(
+            parse_exact_replay_action_evidence(
+                "verify.anonymous_request_replay",
+                "failed",
+                &null_evidence,
+                None,
+            )
+            .expect("null evidence_id is the serialized form of no evidence"),
+            None
+        );
+
+        let journal = vec![terminal_action(
+            "verify.anonymous_request_replay",
+            "failed",
+            outcome,
+        )];
+        let error = validate_exact_replay_submission_evidence(&journal, &[])
+            .expect_err("an Attempt cannot close without server-derived evidence");
+        assert!(error
+            .to_string()
+            .contains("cannot be submitted without evidence"));
+
+        let no_error_code = json!({
+            "schema": "verification.anonymous_request_replay_v1",
+            "evidence_role": "blocker",
+            "result": {"outcome": "error"}
+        });
+        assert!(parse_exact_replay_action_evidence(
+            "verify.anonymous_request_replay",
+            "failed",
+            &no_error_code,
+            None,
+        )
+        .is_err());
+        assert!(parse_exact_replay_action_evidence(
+            "verify.anonymous_request_replay",
+            "failed",
+            &no_error_code,
+            Some("ATTACK_REPLAY_EVIDENCE_APPEND_FAILED"),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn generic_action_keeps_legacy_submission_compatibility() {
+        let journal = vec![terminal_action(
+            "verify.known_vulnerability",
+            "completed",
+            json!({"execution": {"success": true}}),
+        )];
+
+        validate_exact_replay_submission_evidence(&journal, &[evidence(81, "proof")])
+            .expect("generic actions keep their existing evidence contract");
     }
 }

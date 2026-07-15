@@ -98,6 +98,24 @@
 
   "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout \u00a73.2): specialist = the per-org sub-agent the stage_run tool fans out (EAS \u2192 prober, the ACTIVE surface-mapper split from Pentester, mirroring recon for target_intel); coverage_axis = the human-readable technique columns StageRunView renders per org row (one per expected technique: liveness / port / service-fingerprint / web-fingerprint).",
   "specialist": "prober",
+  "$comment_team_scheduler": "2026-07-16 downstream convergence: every company uses the same durable Company Controller shape as Target Intel. The frozen Prober tool surface remains the active-recon authority; Controller/children cannot widen scope or bypass wrappers/Gate.",
+  "team_scheduler": {
+    "schema_version": 1,
+    "enabled_in_v2_only": true,
+    "allowed_roles": ["company_stage_controller", "prober"],
+    "aggregator_kind": "aggregate_stage_unit",
+    "aggregator_role": "company_stage_controller",
+    "max_company_units_active": 2,
+    "global_provider_cap": 4,
+    "max_workers": 3,
+    "max_dynamic_requests": 8,
+    "allowed_dynamic_request_kinds": [
+      "surface_probe",
+      "coverage_recheck"
+    ],
+    "max_dynamic_subject_refs": 32,
+    "risk_lane": "active_recon"
+  },
   "runtime_memory": {
     "schema_version": 2,
     "unit_identity": "stage_execution_organization",

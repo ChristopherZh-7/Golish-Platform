@@ -8,6 +8,25 @@ use super::DbTracker;
 use crate::db_traits::RuntimeToolIdentity;
 use std::time::Instant;
 
+fn canonical_runtime_task_owner(
+    tracker_task_id: Option<uuid::Uuid>,
+    runtime: Option<&RuntimeToolIdentity>,
+) -> anyhow::Result<Option<uuid::Uuid>> {
+    let Some(runtime) = runtime else {
+        return Ok(tracker_task_id);
+    };
+
+    if let Some(tracker_task_id) = tracker_task_id {
+        anyhow::ensure!(
+            tracker_task_id == runtime.operation_id,
+            "runtime tool-call owner mismatch: tracker task_id {tracker_task_id} does not match operation_id {}",
+            runtime.operation_id
+        );
+    }
+
+    Ok(Some(runtime.operation_id))
+}
+
 impl DbTracker {
     // -- Tool calls --------------------------------------------------------
 
@@ -51,6 +70,7 @@ impl DbTracker {
         runtime: Option<&RuntimeToolIdentity>,
     ) -> anyhow::Result<ToolCallGuard> {
         let session_uuid = self.session_uuid();
+        let task_id = canonical_runtime_task_owner(self.task_id, runtime)?;
         let mut gate = self.ready_gate.clone();
         if !await_db_ready(&mut gate).await {
             if runtime.is_some() {
@@ -69,7 +89,7 @@ impl DbTracker {
             .record_tool_call_start(
                 call_id,
                 session_uuid,
-                self.task_id,
+                task_id,
                 self.subtask_id,
                 tool_name,
                 args,
@@ -348,5 +368,70 @@ impl DbTracker {
                 )
                 .await;
         });
+    }
+}
+
+#[cfg(test)]
+mod runtime_task_owner_tests {
+    use super::canonical_runtime_task_owner;
+    use crate::db_traits::RuntimeToolIdentity;
+    use uuid::Uuid;
+
+    fn runtime_identity(operation_id: Uuid) -> RuntimeToolIdentity {
+        RuntimeToolIdentity {
+            operation_id,
+            stage_execution_id: Uuid::new_v4(),
+            stage_run_unit_id: None,
+            worker_run_id: None,
+            organization_id: None,
+            attempt_epoch: None,
+            lease_token: None,
+        }
+    }
+
+    #[test]
+    fn runtime_identity_supplies_task_owner_when_tracker_is_unbound() {
+        let operation_id = Uuid::new_v4();
+        let runtime = runtime_identity(operation_id);
+
+        assert_eq!(
+            canonical_runtime_task_owner(None, Some(&runtime)).unwrap(),
+            Some(operation_id)
+        );
+    }
+
+    #[test]
+    fn runtime_identity_accepts_the_same_tracker_task_owner() {
+        let operation_id = Uuid::new_v4();
+        let runtime = runtime_identity(operation_id);
+
+        assert_eq!(
+            canonical_runtime_task_owner(Some(operation_id), Some(&runtime)).unwrap(),
+            Some(operation_id)
+        );
+    }
+
+    #[test]
+    fn runtime_identity_rejects_a_different_tracker_task_owner() {
+        let operation_id = Uuid::new_v4();
+        let tracker_task_id = Uuid::new_v4();
+        let runtime = runtime_identity(operation_id);
+
+        let error = canonical_runtime_task_owner(Some(tracker_task_id), Some(&runtime))
+            .expect_err("mismatched runtime owner must fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("runtime tool-call owner mismatch"));
+    }
+
+    #[test]
+    fn legacy_tracking_preserves_the_tracker_task_owner() {
+        let tracker_task_id = Uuid::new_v4();
+
+        assert_eq!(
+            canonical_runtime_task_owner(Some(tracker_task_id), None).unwrap(),
+            Some(tracker_task_id)
+        );
     }
 }

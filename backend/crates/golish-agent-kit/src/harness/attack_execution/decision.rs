@@ -4,13 +4,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use uuid::Uuid;
 
-use super::classifier::{canonical_plan_hash, classify_candidate};
+use super::classifier::{canonical_plan_hash, classify_candidate, supported_candidate_techniques};
 use super::state::AttackExecutionError;
 use super::types::{
     AcceptedCandidateDecision, AcceptedNoCandidateDecision, CandidateAcceptance,
     CandidateClassificationInput, CandidateManifestSnapshot, CandidateManifestWorkItem,
-    CandidateTargetClass, VerificationRiskClass,
+    CandidateTargetClass, VerificationRiskClass, CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE,
 };
+
+const MAX_CANDIDATE_OBSERVATION_BYTES: usize = 64 * 1024;
+const MAX_CANDIDATE_OBSERVATION_HASH_BYTES: usize = 128;
 use crate::harness::types::{
     CandidateDecisionDraft, CandidateDecisionKind, MAX_CANDIDATE_ACCEPTANCE_BYTES,
     MAX_CANDIDATE_DECISION_EVIDENCE_IDS, MAX_CANDIDATE_HYPOTHESIS_BYTES,
@@ -58,6 +61,108 @@ fn stable_reason_code(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn is_surface_analysis(item: &CandidateManifestWorkItem) -> bool {
+    item.observation
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|schema| matches!(schema, "surface_analysis_v1" | "surface_analysis_v2"))
+}
+
+fn fact_delta_route_shape_valid(item: &CandidateManifestWorkItem) -> bool {
+    let schema = item
+        .observation
+        .get("schema")
+        .and_then(serde_json::Value::as_str);
+    if schema != Some(item.observation_kind.as_str()) {
+        return false;
+    }
+    match (item.source_fact_delta_id, item.delta_kind.as_deref()) {
+        (None, None) => !item.enrichment_required && schema != Some("surface_analysis_v2"),
+        (Some(fact_delta_id), Some(delta_kind)) => {
+            matches!(delta_kind, "created" | "updated" | "new_surface")
+                && item
+                    .observation
+                    .get("fact_delta_id")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|value| uuid::Uuid::parse_str(value).ok())
+                    == Some(fact_delta_id)
+                && item
+                    .observation
+                    .get("delta_kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(delta_kind)
+                && item
+                    .observation
+                    .get("observation_kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(item.observation_kind.as_str())
+                && item
+                    .observation
+                    .get("enrichment_required")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(item.enrichment_required)
+                && item.observation.get("allowed_techniques")
+                    == Some(&serde_json::json!(item.allowed_techniques))
+                && (item.enrichment_required == (schema == Some("surface_analysis_v2")))
+        }
+        _ => false,
+    }
+}
+
+fn manifest_item_shape_valid(item: &CandidateManifestWorkItem) -> bool {
+    if item.work_item_id.is_nil()
+        || item
+            .target_live_id
+            .is_some_and(|target_id| target_id.is_nil())
+        || item.target_type_at_time.trim().is_empty()
+        || item.target_value_at_time.trim().is_empty()
+        || item.target_identity_hash.trim().is_empty()
+        || !bounded_nonempty(&item.observation_kind, MAX_CANDIDATE_TECHNIQUE_BYTES)
+        || !bounded_nonempty(&item.work_item_key, MAX_CANDIDATE_WORK_ITEM_KEY_BYTES)
+        || !bounded_nonempty(&item.technique, MAX_CANDIDATE_TECHNIQUE_BYTES)
+        || !bounded_nonempty(&item.observation_hash, MAX_CANDIDATE_OBSERVATION_HASH_BYTES)
+        || !item.observation.is_object()
+        || serde_json::to_vec(&item.observation)
+            .map_or(true, |bytes| bytes.len() > MAX_CANDIDATE_OBSERVATION_BYTES)
+        || item.evidence_ids.is_empty()
+        || item.evidence_ids.len() > MAX_CANDIDATE_DECISION_EVIDENCE_IDS
+        || item.allowed_techniques.is_empty()
+        || item.allowed_techniques.len() > MAX_CANDIDATE_MANIFEST_ITEMS
+        || item
+            .allowed_techniques
+            .iter()
+            .any(|technique| !bounded_nonempty(technique, MAX_CANDIDATE_TECHNIQUE_BYTES))
+        || item
+            .evidence_ids
+            .iter()
+            .any(|evidence_id| *evidence_id <= 0)
+    {
+        return false;
+    }
+    if !fact_delta_route_shape_valid(item) {
+        return false;
+    }
+    let unique_techniques = item.allowed_techniques.iter().collect::<BTreeSet<_>>();
+    let unique_evidence = item.evidence_ids.iter().collect::<BTreeSet<_>>();
+    if unique_techniques.len() != item.allowed_techniques.len()
+        || unique_evidence.len() != item.evidence_ids.len()
+    {
+        return false;
+    }
+    if is_surface_analysis(item) {
+        item.technique == CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE
+            && item.allowed_techniques
+                == supported_candidate_techniques(target_class(&item.target_type_at_time))
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+    } else {
+        item.technique != CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE
+            && item.allowed_techniques.len() == 1
+            && item.allowed_techniques[0] == item.technique
+    }
 }
 
 fn decision_shape_valid(draft: &CandidateDecisionDraft) -> bool {
@@ -133,7 +238,14 @@ pub fn build_candidate_acceptance(
     manifest: &CandidateManifestSnapshot,
     drafts: &[CandidateDecisionDraft],
 ) -> Result<CandidateAcceptance, AttackExecutionError> {
-    if manifest.work_items.is_empty() || manifest.work_items.len() > MAX_CANDIDATE_MANIFEST_ITEMS {
+    if manifest.operation_id.is_nil()
+        || manifest.scope_snapshot_id.is_nil()
+        || manifest.wave_run_id.is_nil()
+        || manifest.wave_unit_id.is_nil()
+        || manifest.organization_id.is_nil()
+        || manifest.work_items.is_empty()
+        || manifest.work_items.len() > MAX_CANDIDATE_MANIFEST_ITEMS
+    {
         return Err(invalid(
             "ATTACK_CANDIDATE_MANIFEST_EMPTY",
             "Candidate reasoning manifest must be non-empty and policy-bounded",
@@ -150,13 +262,17 @@ pub fn build_candidate_acceptance(
         .iter()
         .map(|item| (item.work_item_key.as_str(), item))
         .collect::<BTreeMap<_, _>>();
+    let unique_work_item_ids = manifest
+        .work_items
+        .iter()
+        .map(|item| item.work_item_id)
+        .collect::<BTreeSet<_>>();
     if by_key.len() != manifest.work_items.len()
-        || manifest.work_items.iter().any(|item| {
-            !bounded_nonempty(&item.work_item_key, MAX_CANDIDATE_WORK_ITEM_KEY_BYTES)
-                || !bounded_nonempty(&item.technique, MAX_CANDIDATE_TECHNIQUE_BYTES)
-                || item.evidence_ids.is_empty()
-                || item.evidence_ids.len() > MAX_CANDIDATE_DECISION_EVIDENCE_IDS
-        })
+        || unique_work_item_ids.len() != manifest.work_items.len()
+        || manifest
+            .work_items
+            .iter()
+            .any(|item| !manifest_item_shape_valid(item))
     {
         return Err(invalid(
             "ATTACK_CANDIDATE_MANIFEST_DUPLICATE",
@@ -221,27 +337,60 @@ pub fn build_candidate_acceptance(
                         format!("candidate work item {work_item_key} carries no_candidate reason"),
                     ));
                 }
-                let technique = draft
-                    .technique
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or(item.technique.as_str());
-                if technique != item.technique {
-                    return Err(invalid(
-                        "ATTACK_CANDIDATE_TECHNIQUE_DRIFT",
-                        format!("work item {work_item_key} changed its frozen technique"),
-                    ));
-                }
+                let technique = if is_surface_analysis(item) {
+                    let selected = draft
+                        .technique
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| {
+                            invalid(
+                                "ATTACK_SURFACE_TECHNIQUE_REQUIRED",
+                                format!(
+                                    "surface-analysis work item {work_item_key} requires an explicit technique"
+                                ),
+                            )
+                        })?;
+                    if !item
+                        .allowed_techniques
+                        .iter()
+                        .any(|technique| technique == selected)
+                    {
+                        return Err(invalid(
+                            "ATTACK_CAPABILITY_UNSUPPORTED",
+                            format!(
+                                "surface-analysis work item {work_item_key} selected a technique outside its frozen registry allowlist"
+                            ),
+                        ));
+                    }
+                    selected
+                } else {
+                    let selected = draft
+                        .technique
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or(item.technique.as_str());
+                    if selected != item.technique {
+                        return Err(invalid(
+                            "ATTACK_CANDIDATE_TECHNIQUE_DRIFT",
+                            format!("work item {work_item_key} changed its frozen technique"),
+                        ));
+                    }
+                    selected
+                };
                 let identity = format!("{}:{}", manifest.operation_id, item.work_item_id);
                 let candidate_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, identity.as_bytes());
                 let execution_plan = classify_candidate(&CandidateClassificationInput {
                     candidate_id,
+                    target_live_id: item.target_live_id,
                     target_identity_hash: item.target_identity_hash.clone(),
                     target_class: target_class(&item.target_type_at_time),
                     target_value: item.target_value_at_time.clone(),
                     hypothesis: hypothesis.to_string(),
                     technique: technique.to_string(),
+                    observation: item.observation.clone(),
+                    observation_hash: item.observation_hash.clone(),
                     prior_refs: evidence_ids
                         .iter()
                         .map(|id| format!("audit:{id}"))
@@ -362,16 +511,124 @@ pub fn candidate_manifest_decisions_complete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn observation_hash(observation: &serde_json::Value) -> String {
+        let digest =
+            Sha256::digest(serde_json::to_vec(observation).expect("serialize observation"));
+        let hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("sha256:{hex}")
+    }
 
     fn item(key: &str, evidence_id: i64) -> CandidateManifestWorkItem {
+        let target_id = Uuid::new_v4();
+        let observation = serde_json::json!({
+            "schema": "nuclei_match_v1",
+            "source_mode": "general",
+            "target_id": target_id,
+            "matched_url": "https://example.test/login",
+            "template_id": "fixture",
+            "technique": "WSTG-INPV-05",
+        });
         CandidateManifestWorkItem {
             work_item_id: Uuid::new_v4(),
             work_item_key: key.to_string(),
-            target_live_id: None,
+            target_live_id: Some(target_id),
             target_type_at_time: "url".to_string(),
-            target_value_at_time: "https://example.test/login".to_string(),
+            target_value_at_time: "https://example.test:443".to_string(),
             target_identity_hash: "sha256:target".to_string(),
             technique: "WSTG-INPV-05".to_string(),
+            source_fact_delta_id: None,
+            delta_kind: None,
+            observation_kind: "nuclei_match_v1".to_string(),
+            allowed_techniques: vec!["WSTG-INPV-05".to_string()],
+            enrichment_required: false,
+            observation_hash: observation_hash(&observation),
+            observation,
+            evidence_ids: vec![evidence_id],
+        }
+    }
+
+    fn surface_item(key: &str, evidence_id: i64) -> CandidateManifestWorkItem {
+        let target_id = Uuid::new_v4();
+        let observation = serde_json::json!({
+            "schema": "surface_analysis_v1",
+            "target_id": target_id,
+            "target_identity": {
+                "type": "url",
+                "value": "https://example.test:443",
+                "sha256": "sha256:surface-target",
+            },
+            "formulaic_coverage": [],
+            "upstream_query_required": true,
+        });
+        CandidateManifestWorkItem {
+            work_item_id: Uuid::new_v4(),
+            work_item_key: key.to_string(),
+            target_live_id: Some(target_id),
+            target_type_at_time: "url".to_string(),
+            target_value_at_time: "https://example.test:443".to_string(),
+            target_identity_hash: "sha256:surface-target".to_string(),
+            technique: CANDIDATE_SURFACE_ANALYSIS_TECHNIQUE.to_string(),
+            source_fact_delta_id: None,
+            delta_kind: None,
+            observation_kind: "surface_analysis_v1".to_string(),
+            allowed_techniques: supported_candidate_techniques(CandidateTargetClass::Url)
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            enrichment_required: false,
+            observation_hash: observation_hash(&observation),
+            observation,
+            evidence_ids: vec![evidence_id],
+        }
+    }
+
+    fn directory_entry_item(key: &str, evidence_id: i64) -> CandidateManifestWorkItem {
+        let target_id = Uuid::new_v4();
+        let directory_entry_id = Uuid::new_v4();
+        let row = serde_json::json!({
+            "content_length": 74,
+            "content_type": "",
+            "id": directory_entry_id,
+            "status_code": 200,
+            "target_id": target_id,
+            "tool": "route_probe",
+            "url": "https://example.test/README.md",
+        });
+        let observation = serde_json::json!({
+            "schema": "directory_entry_observation_v1",
+            "target_id": target_id,
+            "directory_entry_id": directory_entry_id,
+            "directory_entry_row_sha256": observation_hash(&row),
+            "url": "https://example.test/README.md",
+            "method": "GET",
+            "status_code": 200,
+            "content_length": 74,
+            "content_type": "",
+            "source_tool": "route_probe",
+            "source_evidence_id": evidence_id,
+            "network_attempted": true,
+            "authority_current_after": true,
+        });
+        CandidateManifestWorkItem {
+            work_item_id: Uuid::new_v4(),
+            work_item_key: key.to_string(),
+            target_live_id: Some(target_id),
+            target_type_at_time: "url".to_string(),
+            target_value_at_time: "https://example.test:443".to_string(),
+            target_identity_hash: "sha256:directory-target".to_string(),
+            technique: "WSTG-INFO".to_string(),
+            source_fact_delta_id: None,
+            delta_kind: None,
+            observation_kind: "directory_entry_observation_v1".to_string(),
+            allowed_techniques: vec!["WSTG-INFO".to_string()],
+            enrichment_required: false,
+            observation_hash: observation_hash(&observation),
+            observation,
             evidence_ids: vec![evidence_id],
         }
     }
@@ -456,5 +713,101 @@ mod tests {
             &["checked-empty".to_string()],
             &[draft],
         ));
+    }
+
+    #[test]
+    fn surface_analysis_requires_a_typed_v2_executor_after_technique_selection() {
+        let manifest = CandidateManifestSnapshot {
+            operation_id: Uuid::new_v4(),
+            scope_snapshot_id: Uuid::new_v4(),
+            wave_run_id: Uuid::new_v4(),
+            wave_unit_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            manifest_hash: "sha256:surface-manifest".to_string(),
+            work_items: vec![surface_item("surface-analysis", 51)],
+        };
+        let mut draft = CandidateDecisionDraft {
+            work_item_key: "surface-analysis".to_string(),
+            decision: CandidateDecisionKind::Candidate,
+            hypothesis: Some("a reflected input may reach a dangerous sink".to_string()),
+            rationale: "derived from the frozen target surface".to_string(),
+            technique: None,
+            evidence_refs: vec![51],
+            no_candidate_reason_code: None,
+        };
+
+        assert!(build_candidate_acceptance(&manifest, std::slice::from_ref(&draft)).is_err());
+        draft.technique = Some("WSTG-INPV-01".to_string());
+        let error = build_candidate_acceptance(&manifest, std::slice::from_ref(&draft))
+            .expect_err("a registry technique without a typed V2 executor must be quarantined");
+        assert_eq!(error.code(), "ATTACK_EXECUTOR_CONTRACT_UNAVAILABLE");
+
+        draft.technique = Some("WSTG-INFO".to_string());
+        let error = build_candidate_acceptance(&manifest, std::slice::from_ref(&draft))
+            .expect_err("WSTG-INFO cannot turn a generic surface into an exact replay");
+        assert_eq!(error.code(), "ATTACK_EXECUTOR_CONTRACT_UNAVAILABLE");
+
+        draft.technique = Some("WSTG-UNREGISTERED".to_string());
+        assert!(build_candidate_acceptance(&manifest, &[draft]).is_err());
+    }
+
+    #[test]
+    fn directory_entry_observation_accepts_only_its_exact_frozen_evidence() {
+        let manifest = CandidateManifestSnapshot {
+            operation_id: Uuid::new_v4(),
+            scope_snapshot_id: Uuid::new_v4(),
+            wave_run_id: Uuid::new_v4(),
+            wave_unit_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            manifest_hash: "sha256:directory-manifest".to_string(),
+            work_items: vec![directory_entry_item("readme", 20)],
+        };
+        let draft = CandidateDecisionDraft {
+            work_item_key: "readme".to_string(),
+            decision: CandidateDecisionKind::Candidate,
+            hypothesis: Some("the exact README path may disclose deployment information".into()),
+            rationale: "target-bound route observation returned 200".to_string(),
+            technique: Some("WSTG-INFO".to_string()),
+            evidence_refs: vec![20],
+            no_candidate_reason_code: None,
+        };
+        let accepted = build_candidate_acceptance(&manifest, std::slice::from_ref(&draft))
+            .expect("exact directory observation should classify");
+        assert_eq!(accepted.candidates.len(), 1);
+        assert_eq!(accepted.candidates[0].evidence_ids, vec![20]);
+        assert_eq!(
+            accepted.candidates[0].execution_plan.actions[0].capability_id,
+            "verify.directory_entry_replay"
+        );
+
+        let mut foreign = draft;
+        foreign.evidence_refs = vec![21];
+        let error = build_candidate_acceptance(&manifest, &[foreign])
+            .expect_err("same-owner but unlinked evidence must remain unavailable");
+        assert_eq!(error.code(), "ATTACK_DECISION_EVIDENCE_UNGROUNDED");
+    }
+
+    #[test]
+    fn concrete_scanner_observation_still_rejects_technique_drift() {
+        let manifest = CandidateManifestSnapshot {
+            operation_id: Uuid::new_v4(),
+            scope_snapshot_id: Uuid::new_v4(),
+            wave_run_id: Uuid::new_v4(),
+            wave_unit_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            manifest_hash: "sha256:scanner-manifest".to_string(),
+            work_items: vec![item("scanner-observation", 61)],
+        };
+        let draft = CandidateDecisionDraft {
+            work_item_key: "scanner-observation".to_string(),
+            decision: CandidateDecisionKind::Candidate,
+            hypothesis: Some("the exact scanner match is exploitable".to_string()),
+            rationale: "typed match".to_string(),
+            technique: Some("WSTG-INPV-01".to_string()),
+            evidence_refs: vec![61],
+            no_candidate_reason_code: None,
+        };
+
+        assert!(build_candidate_acceptance(&manifest, &[draft]).is_err());
     }
 }

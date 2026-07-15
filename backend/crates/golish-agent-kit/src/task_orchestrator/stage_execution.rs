@@ -78,6 +78,16 @@ pub struct TransitionedStageExecution {
     pub current: StageExecution,
 }
 
+/// Compare-and-swap command for a projected DAG terminal. The task and its
+/// exact active stage execution must become terminal in one repository commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompleteTerminalStageExecution {
+    pub operation_id: Uuid,
+    pub current_stage_execution_id: Uuid,
+    pub terminal_stage: StageKind,
+    pub task_result: String,
+}
+
 /// 把 subtask 队列按 harness stage 分组（按 stage **首次出现**的顺序）。
 ///
 /// 返回 `(stage, 属于该 stage 的 subtask 在原队列中的下标)`，下标按队列顺序。无 stage

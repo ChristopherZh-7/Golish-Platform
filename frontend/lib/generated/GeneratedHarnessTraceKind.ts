@@ -5,112 +5,122 @@
  * [`super::event::AiEvent::HarnessTrace`] alongside the correlation spine
  * (`operation_id` + `agent_path` + `stage`).
  */
-export type GeneratedHarnessTraceKind = { "kind": "gate_decision", 
+export type GeneratedHarnessTraceKind = { "kind": "gate_decision",
 /**
  * `"PASS"` | `"BLOCK"`.
  */
-gate: string, findings: number, 
+gate: string, findings: number,
 /**
  * Cited evidence ids that were NOT found in the ledger (fabricated).
  */
-fabricated_evidence_refs?: number[], 
+fabricated_evidence_refs?: number[],
 /**
  * Real evidence ids available for this operation at decision time.
  */
-available_real_ids?: number[], first_blocking_reason?: string | null, } | { "kind": "evidence_booked", tool: string, evidence_id: number, 
+available_real_ids?: number[], first_blocking_reason?: string | null, } | { "kind": "evidence_booked", tool: string, evidence_id: number,
 /**
  * `"sync"` (in-turn tool append) | `"background"` (job listener).
  */
-source: string, } | { "kind": "deliverable_submitted", 
+source: string, } | { "kind": "deliverable_submitted",
 /**
  * `"accepted"` | `"needs_fix"` | `"rejected"` | `"received"`.
  */
-status: string, cited_evidence_refs: number[], available_real_ids: number[], } | { "kind": "background_notes_injected", count: number, evidence_ids: number[], } | { "kind": "mentor_advice_recorded", 
+status: string, cited_evidence_refs: number[], available_real_ids: number[], } | { "kind": "background_notes_injected", count: number, evidence_ids: number[], } | { "kind": "mentor_advice_recorded",
 /**
  * `"shadow"` | `"soft"`.
  */
-mode: string, 
+mode: string,
 /**
  * Monitor reason, e.g. `"execution_monitor"`.
  */
-trigger: string, 
+trigger: string,
 /**
  * Tool name that dominated the recent call pattern.
  */
-tool: string, repeat_count: number, 
+tool: string, repeat_count: number,
 /**
  * Whether this advice was injected into the next model-visible tool
  * response (`true`) or only recorded as telemetry (`false`).
  */
-injected: boolean, 
+injected: boolean,
 /**
  * Short preview for transcript/run-tree rendering. Full advice remains
  * in tracing/tool response depending on mode.
  */
-advice_preview: string, } | { "kind": "runtime_supervisor_decision", 
+advice_preview: string, } | { "kind": "runtime_supervisor_decision",
 /**
  * `"shadow"` | `"soft"` | `"hard"`.
  */
-mode: string, 
+mode: string,
 /**
  * Monitor reason, e.g. `"execution_monitor"`.
  */
-trigger: string, 
+trigger: string,
 /**
  * Tool name that dominated the recent call pattern.
  */
-tool: string, repeat_count: number, 
+tool: string, repeat_count: number,
 /**
  * Whether this directive was injected into the model-visible tool
  * response.
  */
-injected: boolean, 
+injected: boolean,
 /**
  * `"strategy_pivot"` / `"wait_for_background"` / etc.
  */
-strategy_kind: string, root_cause: string, action_count: number, directive_hash: string, } | { "kind": "stage_refiner_decision", repair_kind: string, root_cause: string, action_count: number, gap_count: number, llm_escalated: boolean, directive_hash: string, } | { "kind": "stage_run_org_progress", 
+strategy_kind: string, root_cause: string, action_count: number, directive_hash: string, } | { "kind": "stage_refiner_decision", repair_kind: string, root_cause: string, action_count: number, gap_count: number, llm_escalated: boolean, directive_hash: string, } | { "kind": "stage_run_org_progress",
+/**
+ * Refresh-only pointer to the immutable Stage execution. New durable
+ * Team runs populate this together with `stage_run_unit_id`; legacy
+ * fan-out events omit both. The event remains non-authoritative.
+ */
+stage_execution_id?: string | null,
+/**
+ * Refresh-only pointer to this organization's exact StageRunUnit.
+ */
+stage_run_unit_id?: string | null,
 /**
  * The organization this progress row is for.
  */
-org_id: string, org_name: string, 
+org_id: string, org_name: string,
 /**
  * The per-org specialist sub-agent's `parent_request_id`. Lets the UI
  * link this org row to its sub-agent (its AI conversation / tool calls /
  * reasoning) so each org is independently drill-in-able. `None` when the
  * row is emitted before/without a dispatched sub-agent.
  */
-agent_request_id?: string | null, 
+agent_request_id?: string | null,
 /**
  * Direct-ownership percentage of this org under the engagement parent
  * (root org / unknown → `None`).
  */
-ownership_percent?: number | null, 
+ownership_percent?: number | null,
 /**
  * `"passed"` | `"running"` | `"queued"` | `"blocked"` | `"pending"`.
  */
-status: string, 
+status: string,
 /**
  * Per-technique terminal state on the coverage axis:
  * `(technique, "found"|"checked_empty"|"blocked"|"pending")`.
  */
-coverage: [string, string][], 
+coverage: [string, string][],
 /**
  * Evidence rows this org's specialist has booked into the ledger.
  */
-evidence_count: number, 
+evidence_count: number,
 /**
  * Live one-liner while running (e.g. `"subfinder · pingan.com.cn"`).
  */
-activity?: string | null, 
+activity?: string | null,
 /**
  * Stage display name (e.g. `"Target Intel"`) — for first-frame card build.
  */
-stage_label: string, 
+stage_label: string,
 /**
  * Specialist role label (e.g. `"Recon"`) — for first-frame card build.
  */
-role_label: string, 
+role_label: string,
 /**
  * Coverage technique columns for this stage (config-driven) — first frame.
  */
-coverage_axis: Array<string>, } | { "kind": "candidate_review_required", wave_run_id: string, status: string, resume_version: number, candidate_count: number, proposed_candidate_count: number, } | { "kind": "candidate_review_resumed", wave_run_id: string, resume_version: number, } | { "kind": "candidate_attempt_terminalized", scope_snapshot_id: string, wave_run_id: string, wave_unit_id: string, organization_id: string, candidate_id: string, attempt_id: string, finding_id?: string | null, status: string, evidence_count: number, fact_delta_count: number, replayed: boolean, } | { "kind": "attack_wave_consolidated", scope_snapshot_id: string, consolidation_id: string, source_wave_run_id: string, target_wave_run_id?: string | null, decision_kind: string, accepted_fact_delta_count: number, rejected_fact_delta_count: number, residual_risk_count: number, replayed: boolean, };
+coverage_axis: Array<string>, } | { "kind": "candidate_review_required", wave_run_id: string, status: string, resume_version: number, candidate_count: number, proposed_candidate_count: number, } | { "kind": "candidate_review_resumed", wave_run_id: string, resume_version: number, } | { "kind": "candidate_attempt_terminalized", scope_snapshot_id: string, wave_run_id: string, wave_unit_id: string, organization_id: string, candidate_id: string, attempt_id: string, finding_id?: string | null, status: string, evidence_count: number, fact_delta_count: number, replayed: boolean, } | { "kind": "attack_wave_consolidated", scope_snapshot_id: string, consolidation_id: string, source_wave_run_id: string, target_wave_run_id?: string | null, decision_kind: string, accepted_fact_delta_count: number, rejected_fact_delta_count: number, residual_risk_count: number, pending_enrichment_count: number, replayed: boolean, };

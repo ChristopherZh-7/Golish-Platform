@@ -404,12 +404,13 @@ fn summarize_event(event: &AiEvent) -> String {
                 accepted_fact_delta_count,
                 rejected_fact_delta_count,
                 residual_risk_count,
+                pending_enrichment_count,
                 replayed,
                 ..
             } => {
                 let target_wave_run_id = target_wave_run_id.as_deref().unwrap_or("-");
                 format!(
-                    "attack_wave {source_wave_run_id} -> {target_wave_run_id} {decision_kind} accepted={accepted_fact_delta_count} rejected={rejected_fact_delta_count} residuals={residual_risk_count} replayed={replayed}"
+                    "attack_wave {source_wave_run_id} -> {target_wave_run_id} {decision_kind} accepted={accepted_fact_delta_count} rejected={rejected_fact_delta_count} residuals={residual_risk_count} pending={pending_enrichment_count} replayed={replayed}"
                 )
             }
             K::StageRunOrgProgress {

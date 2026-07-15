@@ -56,8 +56,8 @@ pub use api_request_stats::{
     ApiRequestStats, ApiRequestStatsSnapshot, ProviderRequestStatsSnapshot,
 };
 pub use attack_execution::{
-    check_candidate_tool_boundary, AttackExecutionContract, CandidateAttemptContextRef,
-    CandidateToolBoundaryError,
+    check_candidate_tool_boundary, check_candidate_tool_boundary_mode, AttackExecutionContract,
+    CandidateAttemptContextRef, CandidateToolBoundaryError,
 };
 pub use event_emitter::{emit_opt, EventEmitter, EventEmitterHandle, NullEmitter};
 pub use events::*; // Re-export all event types

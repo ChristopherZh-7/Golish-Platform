@@ -26,11 +26,16 @@ use golish_core::events::AiEvent;
 
 use super::HarnessGateOutcome;
 
+const COMPANY_PARITY_FIXTURE: &str = "广州有创网络科技有限公司";
+const COMPANY_PARITY_TARGET: &str = "http://127.0.0.1:18080";
+
 /// In-memory [`DbRepoProvider`]: only the `operation_state_*` trio is real; the
 /// transition driver touches nothing else, so every other method is a stub.
 struct MemRepo {
     op_state: Mutex<HashMap<Uuid, OperationStateView>>,
     active_stage_executions:
+        Mutex<HashMap<Uuid, crate::task_orchestrator::stage_execution::StageExecution>>,
+    completed_stage_executions:
         Mutex<HashMap<Uuid, crate::task_orchestrator::stage_execution::StageExecution>>,
     fail_operation_insert: AtomicBool,
     fail_stage_transition: AtomicBool,
@@ -53,6 +58,17 @@ struct MemRepo {
     reporting_build_calls: AtomicUsize,
     reporting_gate_reads: AtomicUsize,
     state_blob_write_count: AtomicUsize,
+    scoping_target_snapshots: Mutex<HashMap<Uuid, Vec<ScopingReviewedTarget>>>,
+    scoping_target_snapshot_reads: AtomicUsize,
+    fail_scoping_target_snapshot: AtomicBool,
+    active_recon_scope_candidates: Mutex<HashMap<(Uuid, Uuid), Vec<ScopingReviewedTarget>>>,
+    active_recon_scope_approvals: Mutex<HashMap<(Uuid, Uuid), Vec<ScopingReviewedTarget>>>,
+    active_recon_scope_apply_calls: AtomicUsize,
+    scoping_finalizations: Mutex<HashMap<Uuid, (FinalizeScopingScope, FinalizedScopingScope)>>,
+    scoping_finalize_calls: AtomicUsize,
+    scoping_finalize_replays: AtomicUsize,
+    fail_scoping_finalize: AtomicBool,
+    mismatch_scoping_finalize_identity: AtomicBool,
 }
 
 struct ExhaustedStageRunExecutor {
@@ -83,7 +99,7 @@ impl AgentExecutor for ReportingStageExecutor {
         &self,
         _execution_context: &ExecutionContext,
     ) -> anyhow::Result<AgentResult> {
-        unreachable!("Reporting stage validation must not invoke the legacy reporter")
+        Ok(AgentResult::new("Canonical report prepared".to_string()))
     }
 
     async fn enrich_subtask(
@@ -172,6 +188,7 @@ impl MemRepo {
                 operation_id,
                 initial_stage_execution,
             )])),
+            completed_stage_executions: Mutex::new(HashMap::new()),
             fail_operation_insert: AtomicBool::new(false),
             fail_stage_transition: AtomicBool::new(false),
             stage_transition_count: Mutex::new(0),
@@ -190,6 +207,17 @@ impl MemRepo {
             reporting_build_calls: AtomicUsize::new(0),
             reporting_gate_reads: AtomicUsize::new(0),
             state_blob_write_count: AtomicUsize::new(0),
+            scoping_target_snapshots: Mutex::new(HashMap::new()),
+            scoping_target_snapshot_reads: AtomicUsize::new(0),
+            fail_scoping_target_snapshot: AtomicBool::new(false),
+            active_recon_scope_candidates: Mutex::new(HashMap::new()),
+            active_recon_scope_approvals: Mutex::new(HashMap::new()),
+            active_recon_scope_apply_calls: AtomicUsize::new(0),
+            scoping_finalizations: Mutex::new(HashMap::new()),
+            scoping_finalize_calls: AtomicUsize::new(0),
+            scoping_finalize_replays: AtomicUsize::new(0),
+            fail_scoping_finalize: AtomicBool::new(false),
+            mismatch_scoping_finalize_identity: AtomicBool::new(false),
         })
     }
 
@@ -233,6 +261,25 @@ impl MemRepo {
             golish_core::AttackExecutionContract::V2Only;
     }
 
+    fn enable_v2_scoping(&self, operation_id: Uuid, project_scope_id: Uuid) {
+        let mut operations = self.op_state.lock().unwrap();
+        let operation = operations
+            .get_mut(&operation_id)
+            .expect("fixture operation");
+        operation.runtime_memory_contract =
+            crate::runtime_memory::RuntimeMemoryContract::DualWriteLegacyRead;
+        operation.project_scope_id = Some(project_scope_id);
+    }
+
+    fn fail_next_scoping_finalize(&self) {
+        self.fail_scoping_finalize.store(true, Ordering::SeqCst);
+    }
+
+    fn mismatch_next_scoping_finalize_identity(&self) {
+        self.mismatch_scoping_finalize_identity
+            .store(true, Ordering::SeqCst);
+    }
+
     fn set_state_blob(&self, operation_id: Uuid, state_blob: serde_json::Value) {
         self.op_state
             .lock()
@@ -273,6 +320,34 @@ impl MemRepo {
 
     fn fail_next_operation_insert(&self) {
         self.fail_operation_insert.store(true, Ordering::SeqCst);
+    }
+
+    fn set_scoping_target_snapshot(
+        &self,
+        organization_id: Uuid,
+        targets: Vec<ScopingReviewedTarget>,
+    ) {
+        self.scoping_target_snapshots
+            .lock()
+            .unwrap()
+            .insert(organization_id, targets);
+    }
+
+    fn fail_next_scoping_target_snapshot(&self) {
+        self.fail_scoping_target_snapshot
+            .store(true, Ordering::SeqCst);
+    }
+
+    fn set_active_recon_scope_candidates(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        targets: Vec<ScopingReviewedTarget>,
+    ) {
+        self.active_recon_scope_candidates
+            .lock()
+            .unwrap()
+            .insert((operation_id, organization_id), targets);
     }
 
     /// Seed a `tasks` row with a given status (P1 finalize tests).
@@ -463,6 +538,49 @@ impl RuntimeMemoryRepository for MemRepo {
         })
     }
 
+    async fn complete_terminal_stage_execution(
+        &self,
+        input: crate::task_orchestrator::stage_execution::CompleteTerminalStageExecution,
+    ) -> Result<crate::task_orchestrator::stage_execution::StageExecution, RuntimeMemoryError> {
+        use crate::task_orchestrator::stage_execution::StageExecutionStatus;
+
+        let mut active = self.active_stage_executions.lock().unwrap();
+        let current = active
+            .remove(&input.operation_id)
+            .ok_or(RuntimeMemoryError::Missing {
+                entity: "stage_runs",
+            })?;
+        if current.id != input.current_stage_execution_id
+            || current.operation_id != input.operation_id
+            || current.stage != input.terminal_stage
+            || current.status != StageExecutionStatus::Started
+        {
+            active.insert(input.operation_id, current);
+            return Err(RuntimeMemoryError::IdentityMismatch {
+                code: "terminal_stage_execution_mismatch",
+            });
+        }
+        let mut tasks = self.tasks.lock().unwrap();
+        let task = tasks
+            .get_mut(&input.operation_id)
+            .ok_or(RuntimeMemoryError::Missing { entity: "tasks" })?;
+        if task.status != TaskStatus::Running || task.result.is_some() {
+            active.insert(input.operation_id, current);
+            return Err(RuntimeMemoryError::Conflict {
+                code: "terminal_task_not_running",
+            });
+        }
+        let mut completed = current;
+        completed.status = StageExecutionStatus::Completed;
+        task.status = TaskStatus::Finished;
+        task.result = Some(input.task_result);
+        self.completed_stage_executions
+            .lock()
+            .unwrap()
+            .insert(input.operation_id, completed.clone());
+        Ok(completed)
+    }
+
     async fn runtime_memory_contract_for_operation(
         &self,
         operation_id: Uuid,
@@ -493,6 +611,67 @@ impl RuntimeMemoryRepository for MemRepo {
                     && submission.stage_execution_id == stage_execution_id
             })
             .cloned())
+    }
+
+    async fn finalize_scoping_scope(
+        &self,
+        input: FinalizeScopingScope,
+    ) -> Result<FinalizedScopingScope, RuntimeMemoryError> {
+        self.scoping_finalize_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_scoping_finalize.swap(false, Ordering::SeqCst) {
+            return Err(RuntimeMemoryError::Storage(
+                "injected Scoping finalization failure".to_string(),
+            ));
+        }
+
+        let mut finalizations = self.scoping_finalizations.lock().unwrap();
+        if let Some((frozen_input, frozen_result)) = finalizations.get(&input.operation_id) {
+            if frozen_input != &input {
+                return Err(RuntimeMemoryError::IdentityMismatch {
+                    code: "scoping_finalization_replay_mismatch",
+                });
+            }
+            self.scoping_finalize_replays.fetch_add(1, Ordering::SeqCst);
+            let mut replayed = frozen_result.clone();
+            replayed.replayed = true;
+            return Ok(replayed);
+        }
+
+        let mut finalized = FinalizedScopingScope {
+            operation_id: input.operation_id,
+            project_scope_id: input.project_scope_id,
+            stage_execution_id: input.stage_execution_id,
+            root_organization_id: input.root_organization_id,
+            deliverable_submission_id: input.deliverable_submission_id,
+            scope_decision_id: Uuid::new_v5(
+                &input.deliverable_submission_id,
+                b"test:scoping-scope-decision:v1",
+            ),
+            scope_snapshot_id: input.scope_snapshot_id,
+            scoping_root_unit_id: input.scoping_root_unit_id,
+            mode: "create".to_string(),
+            scope_hash: "test-scope-hash".to_string(),
+            units: vec![FrozenOrganizationScopeUnit {
+                organization_id: input.root_organization_id,
+                parent_organization_id: None,
+                organization_name_at_freeze: COMPANY_PARITY_FIXTURE.to_string(),
+                role: "root".to_string(),
+                depth: 0,
+                ordinal: 0,
+                ownership_percent: None,
+                decision_row_id: "root".to_string(),
+                approval_source: serde_json::json!({"kind": "test"}),
+            }],
+            replayed: false,
+        };
+        if self
+            .mismatch_scoping_finalize_identity
+            .swap(false, Ordering::SeqCst)
+        {
+            finalized.scope_snapshot_id = Uuid::new_v4();
+        }
+        finalizations.insert(input.operation_id, (input, finalized.clone()));
+        Ok(finalized)
     }
 }
 
@@ -548,6 +727,69 @@ impl DbRepoProvider for MemRepo {
         self.state_blob_write_count.fetch_add(1, Ordering::SeqCst);
         self.set_state_blob(operation_id, state_blob);
         Ok(())
+    }
+
+    async fn scoping_target_snapshot(
+        &self,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
+        self.scoping_target_snapshot_reads
+            .fetch_add(1, Ordering::SeqCst);
+        if self
+            .fail_scoping_target_snapshot
+            .swap(false, Ordering::SeqCst)
+        {
+            anyhow::bail!("injected scoping target snapshot failure");
+        }
+        Ok(self
+            .scoping_target_snapshots
+            .lock()
+            .unwrap()
+            .get(&organization_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn active_recon_scope_review_candidates(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
+        Ok(self
+            .active_recon_scope_candidates
+            .lock()
+            .unwrap()
+            .get(&(operation_id, organization_id))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn active_recon_scope_review_apply(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        approval: ActiveReconScopeReviewApproval,
+    ) -> anyhow::Result<Vec<ScopingReviewedTarget>> {
+        self.active_recon_scope_apply_calls
+            .fetch_add(1, Ordering::SeqCst);
+        self.active_recon_scope_approvals
+            .lock()
+            .unwrap()
+            .insert((operation_id, organization_id), approval.selected.clone());
+        self.set_scoping_target_snapshot(organization_id, approval.selected.clone());
+        Ok(approval.selected)
+    }
+
+    async fn active_recon_scope_review_authorized(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        Ok(self
+            .active_recon_scope_approvals
+            .lock()
+            .unwrap()
+            .contains_key(&(operation_id, organization_id)))
     }
 
     async fn attack_v2_review_barrier_for_operation(
@@ -936,6 +1178,34 @@ fn pass(stage: StageKind) -> HarnessGateOutcome {
     }
 }
 
+fn trusted_v2_scoping_pass(
+    operation_id: Uuid,
+    stage_execution_id: Uuid,
+    deliverable_submission_id: Uuid,
+    root_organization_id: Uuid,
+) -> HarnessGateOutcome {
+    use sha2::{Digest, Sha256};
+
+    let canonical_deliverable_json = format!(
+        r#"{{"stage_id":"scoping","claims":[{{"kind":"scope_human_approved","subject":"{root_organization_id}"}}]}}"#
+    );
+    let payload_sha256 = Sha256::digest(canonical_deliverable_json.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let mut outcome = pass(StageKind::Scoping);
+    outcome.engagement_org_id = Some(root_organization_id);
+    outcome.trusted_submission = Some(CapturedStageSubmission {
+        deliverable_submission_id,
+        operation_id,
+        stage_execution_id,
+        stage_run_unit_id: None,
+        canonical_deliverable_json,
+        payload_sha256,
+    });
+    outcome
+}
+
 fn block(stage: StageKind) -> HarnessGateOutcome {
     HarnessGateOutcome {
         gated_stage: stage,
@@ -1107,6 +1377,7 @@ fn consolidation_for(
         accepted_fact_delta_count: usize::from(target_wave_run_id.is_some()),
         rejected_fact_delta_count: 0,
         residual_risk_count: 0,
+        pending_enrichment_count: 0,
         replayed: false,
     }
 }
@@ -1123,6 +1394,22 @@ fn saw_waiting_approval(events: &[AiEvent]) -> bool {
     events
         .iter()
         .any(|e| matches!(e, AiEvent::TaskProgress { status, .. } if status == "waiting_approval"))
+}
+
+fn scoping_target(value: &str, scope: &str) -> ScopingReviewedTarget {
+    ScopingReviewedTarget {
+        value: value.to_string(),
+        target_type: "domain".to_string(),
+        scope: scope.to_string(),
+    }
+}
+
+fn company_parity_target(scope: &str) -> ScopingReviewedTarget {
+    ScopingReviewedTarget {
+        value: COMPANY_PARITY_TARGET.to_string(),
+        target_type: "url".to_string(),
+        scope: scope.to_string(),
+    }
 }
 
 /// Block until the next `AskHumanRequest` arrives, returning its `request_id`
@@ -1279,6 +1566,280 @@ async fn pass_emits_stage_passed_progress() {
 }
 
 #[tokio::test]
+async fn v2_scoping_pass_finalizes_scope_before_stage_passed() {
+    let operation_id = Uuid::new_v4();
+    let project_scope_id = Uuid::new_v4();
+    let root_organization_id = Uuid::new_v4();
+    let deliverable_submission_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", StageKind::Scoping.as_str());
+    repo.enable_v2_scoping(operation_id, project_scope_id);
+    repo.op_state
+        .lock()
+        .unwrap()
+        .get_mut(&operation_id)
+        .unwrap()
+        .engagement_org_id = Some(root_organization_id);
+    let stage_execution_id = repo
+        .active_stage_execution_id(operation_id)
+        .expect("active Scoping execution");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(
+            operation_id,
+            trusted_v2_scoping_pass(
+                operation_id,
+                stage_execution_id,
+                deliverable_submission_id,
+                root_organization_id,
+            ),
+        )
+        .await;
+
+    assert_eq!(repo.scoping_finalize_calls.load(Ordering::SeqCst), 1);
+    let finalizations = repo.scoping_finalizations.lock().unwrap();
+    let (input, finalized) = finalizations
+        .get(&operation_id)
+        .expect("Scoping finalization recorded");
+    assert_eq!(input.project_scope_id, project_scope_id);
+    assert_eq!(input.stage_execution_id, stage_execution_id);
+    assert_eq!(input.root_organization_id, root_organization_id);
+    assert_eq!(input.deliverable_submission_id, deliverable_submission_id);
+    assert_eq!(
+        input.scope_snapshot_id,
+        Uuid::new_v5(
+            &deliverable_submission_id,
+            super::SCOPING_SCOPE_SNAPSHOT_ID_V1
+        )
+    );
+    assert_eq!(
+        input.scoping_root_unit_id,
+        Uuid::new_v5(&deliverable_submission_id, super::SCOPING_ROOT_UNIT_ID_V1)
+    );
+    assert_eq!(finalized.scope_snapshot_id, input.scope_snapshot_id);
+    assert_eq!(finalized.scoping_root_unit_id, input.scoping_root_unit_id);
+    assert!(!finalized.replayed);
+    drop(finalizations);
+
+    let flow = orchestrator
+        .stage_outcome_acc
+        .expect("Scoping flow outcome");
+    assert!(flow.gate_allowed);
+    assert_eq!(
+        repo.stage_transition_count(),
+        0,
+        "consume only publishes the finalized PASS; graph stage entry owns the later transition"
+    );
+    assert!(drain(&mut rx).iter().any(|event| matches!(
+        event,
+        AiEvent::TaskProgress { status, message, .. }
+            if status == "stage_passed" && message == StageKind::Scoping.as_str()
+    )));
+}
+
+#[tokio::test]
+async fn v2_scoping_same_submission_replays_deterministic_finalization() {
+    let operation_id = Uuid::new_v4();
+    let root_organization_id = Uuid::new_v4();
+    let deliverable_submission_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", StageKind::Scoping.as_str());
+    repo.enable_v2_scoping(operation_id, Uuid::new_v4());
+    let stage_execution_id = repo
+        .active_stage_execution_id(operation_id)
+        .expect("active Scoping execution");
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    orchestrator
+        .consume_gate_outcome(
+            operation_id,
+            trusted_v2_scoping_pass(
+                operation_id,
+                stage_execution_id,
+                deliverable_submission_id,
+                root_organization_id,
+            ),
+        )
+        .await;
+    orchestrator
+        .consume_gate_outcome(
+            operation_id,
+            trusted_v2_scoping_pass(
+                operation_id,
+                stage_execution_id,
+                deliverable_submission_id,
+                root_organization_id,
+            ),
+        )
+        .await;
+
+    assert_eq!(repo.scoping_finalize_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(repo.scoping_finalize_replays.load(Ordering::SeqCst), 1);
+    assert_eq!(repo.scoping_finalizations.lock().unwrap().len(), 1);
+    assert!(
+        orchestrator
+            .stage_outcome_acc
+            .expect("replayed Scoping flow outcome")
+            .gate_allowed
+    );
+}
+
+#[tokio::test]
+async fn v2_scoping_finalize_failure_blocks_without_stage_passed() {
+    let operation_id = Uuid::new_v4();
+    let root_organization_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", StageKind::Scoping.as_str());
+    repo.enable_v2_scoping(operation_id, Uuid::new_v4());
+    repo.fail_next_scoping_finalize();
+    let stage_execution_id = repo
+        .active_stage_execution_id(operation_id)
+        .expect("active Scoping execution");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(
+            operation_id,
+            trusted_v2_scoping_pass(
+                operation_id,
+                stage_execution_id,
+                Uuid::new_v4(),
+                root_organization_id,
+            ),
+        )
+        .await;
+
+    assert!(
+        !orchestrator
+            .stage_outcome_acc
+            .expect("blocked Scoping flow outcome")
+            .gate_allowed
+    );
+    assert_eq!(repo.stage_transition_count(), 0);
+    let events = drain(&mut rx);
+    assert!(!events.iter().any(
+        |event| matches!(event, AiEvent::TaskProgress { status, .. } if status == "stage_passed")
+    ));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AiEvent::HarnessTrace {
+            trace: golish_core::events::HarnessTraceKind::GateDecision {
+                gate,
+                first_blocking_reason: Some(reason),
+                ..
+            },
+            ..
+        } if gate == "BLOCK" && reason.contains("Scoping finalization failed")
+    )));
+}
+
+#[tokio::test]
+async fn v2_scoping_mismatched_finalizer_identity_blocks_without_stage_passed() {
+    let operation_id = Uuid::new_v4();
+    let root_organization_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", StageKind::Scoping.as_str());
+    repo.enable_v2_scoping(operation_id, Uuid::new_v4());
+    repo.mismatch_next_scoping_finalize_identity();
+    let stage_execution_id = repo
+        .active_stage_execution_id(operation_id)
+        .expect("active Scoping execution");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(
+            operation_id,
+            trusted_v2_scoping_pass(
+                operation_id,
+                stage_execution_id,
+                Uuid::new_v4(),
+                root_organization_id,
+            ),
+        )
+        .await;
+
+    assert!(
+        !orchestrator
+            .stage_outcome_acc
+            .expect("identity mismatch must block Scoping")
+            .gate_allowed
+    );
+    let events = drain(&mut rx);
+    assert!(!events.iter().any(
+        |event| matches!(event, AiEvent::TaskProgress { status, .. } if status == "stage_passed")
+    ));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AiEvent::HarnessTrace {
+            trace: golish_core::events::HarnessTraceKind::GateDecision {
+                gate,
+                first_blocking_reason: Some(reason),
+                ..
+            },
+            ..
+        } if gate == "BLOCK" && reason.contains("mismatched authority identity")
+    )));
+}
+
+#[tokio::test]
+async fn v2_scoping_prebound_org_mismatch_blocks_before_finalize() {
+    let operation_id = Uuid::new_v4();
+    let claimed_root_organization_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", StageKind::Scoping.as_str());
+    repo.enable_v2_scoping(operation_id, Uuid::new_v4());
+    repo.op_state
+        .lock()
+        .unwrap()
+        .get_mut(&operation_id)
+        .unwrap()
+        .engagement_org_id = Some(Uuid::new_v4());
+    let stage_execution_id = repo
+        .active_stage_execution_id(operation_id)
+        .expect("active Scoping execution");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(
+            operation_id,
+            trusted_v2_scoping_pass(
+                operation_id,
+                stage_execution_id,
+                Uuid::new_v4(),
+                claimed_root_organization_id,
+            ),
+        )
+        .await;
+
+    assert_eq!(
+        repo.scoping_finalize_calls.load(Ordering::SeqCst),
+        0,
+        "an untrusted claimed root must not reach the atomic finalizer"
+    );
+    assert!(
+        !orchestrator
+            .stage_outcome_acc
+            .expect("prebound org mismatch must block Scoping")
+            .gate_allowed
+    );
+    let events = drain(&mut rx);
+    assert!(!events.iter().any(
+        |event| matches!(event, AiEvent::TaskProgress { status, .. } if status == "stage_passed")
+    ));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AiEvent::HarnessTrace {
+            trace: golish_core::events::HarnessTraceKind::GateDecision {
+                gate,
+                first_blocking_reason: Some(reason),
+                ..
+            },
+            ..
+        } if gate == "BLOCK" && reason.contains("trusted organization binding")
+    )));
+}
+
+#[tokio::test]
 async fn reporting_stage_builds_and_validates_but_never_auto_finalizes() {
     let operation_id = Uuid::new_v4();
     let repo = MemRepo::seed(operation_id, "assessment", "reporting");
@@ -1337,6 +1898,69 @@ async fn reporting_stage_builds_and_validates_but_never_auto_finalizes() {
         truth.publication_status, "unpublished",
         "the stage seam has no artifact/finalizer operation"
     );
+}
+
+#[tokio::test]
+async fn terminal_graph_completion_closes_exact_active_stage_execution_and_task() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "assessment", "reporting");
+    let stage_execution_id = repo
+        .active_stage_execution_id(operation_id)
+        .expect("fixture has an active Reporting execution");
+    repo.tasks.lock().unwrap().insert(
+        operation_id,
+        TaskView {
+            id: operation_id,
+            input: "compile the canonical report".to_string(),
+            status: TaskStatus::Running,
+            result: None,
+        },
+    );
+    repo.set_reporting_truth(valid_reporting_truth(operation_id));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    orchestrator.set_stage_allowlist(Some(std::collections::HashSet::from([
+        StageKind::Reporting,
+    ])));
+    let executor = ReportingStageExecutor {
+        execute_calls: AtomicUsize::new(0),
+    };
+
+    let report = orchestrator
+        .run_executor_driven(
+            operation_id,
+            &[],
+            &executor,
+            false,
+            None,
+            Some(stage_execution_id),
+        )
+        .await
+        .expect("terminal Reporting slice completes");
+
+    assert_eq!(report, "Canonical report prepared");
+    assert!(repo.active_stage_execution_id(operation_id).is_none());
+    let completed = repo
+        .completed_stage_executions
+        .lock()
+        .unwrap()
+        .get(&operation_id)
+        .cloned()
+        .expect("terminal execution was closed");
+    assert_eq!(completed.id, stage_execution_id);
+    assert_eq!(
+        completed.status,
+        crate::task_orchestrator::stage_execution::StageExecutionStatus::Completed
+    );
+    let task = repo
+        .tasks
+        .lock()
+        .unwrap()
+        .get(&operation_id)
+        .cloned()
+        .expect("terminal task exists");
+    assert_eq!(task.status, TaskStatus::Finished);
+    assert_eq!(task.result.as_deref(), Some("Canonical report prepared"));
 }
 
 #[tokio::test]
@@ -1537,6 +2161,55 @@ async fn exact_v2_verification_closed_no_delta_does_not_reopen() {
 }
 
 #[tokio::test]
+async fn exact_v2_pending_enrichment_is_an_explicit_observable_block() {
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "verification");
+    repo.enable_exact_candidate_v2(operation_id);
+    let truth = exact_verification_truth(operation_id);
+    repo.set_verification_truth(truth.clone());
+    let mut consolidation = consolidation_for(&truth, "pending_enrichment", None);
+    consolidation.accepted_fact_delta_count = 1;
+    consolidation.pending_enrichment_count = 1;
+    repo.set_wave_consolidation(consolidation);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+
+    orchestrator
+        .consume_gate_outcome(operation_id, pass(StageKind::Verification))
+        .await;
+
+    assert_eq!(
+        orchestrator.stage_outcome_acc,
+        Some(crate::harness::operation_flow::StageFlowOutcome::blocked())
+    );
+    assert_eq!(repo.wave_consolidation_calls.load(Ordering::SeqCst), 1);
+    let events = drain(&mut rx);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AiEvent::HarnessTrace {
+            trace: golish_core::events::HarnessTraceKind::AttackWaveConsolidated {
+                decision_kind,
+                target_wave_run_id: None,
+                pending_enrichment_count: 1,
+                ..
+            },
+            ..
+        } if decision_kind == "pending_enrichment"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AiEvent::HarnessTrace {
+            trace: golish_core::events::HarnessTraceKind::GateDecision {
+                gate,
+                first_blocking_reason: Some(reason),
+                ..
+            },
+            ..
+        } if gate == "BLOCK" && reason.contains("ATTACK_FACT_DELTA_ENRICHMENT_REQUIRED")
+    )));
+}
+
+#[tokio::test]
 async fn exact_v2_closed_no_delta_routes_to_access_validation_only_for_verified_finding_truth() {
     let operation_id = Uuid::new_v4();
     let repo = MemRepo::seed(operation_id, "red_team", "verification");
@@ -1670,12 +2343,12 @@ fn info_stage_evidence_counts_as_progress_without_findings() {
 }
 
 #[test]
-fn vulnerability_stage_without_findings_is_not_progress() {
+fn vulnerability_stage_evidence_counts_as_progress_without_findings() {
     let outcome = pass_without_findings(StageKind::VulnTriage, vec![42]);
 
     assert!(
-        !super::gate_outcome_made_progress(&outcome),
-        "vulnerability stages still need findings to take a progress-gated main path"
+        super::gate_outcome_made_progress(&outcome),
+        "VulnTriage suppresses findings; authoritative scan evidence must still feed the Candidate path"
     );
 }
 
@@ -1881,7 +2554,7 @@ async fn fresh_executor_run_rejects_initial_execution_that_is_not_exactly_active
     let repo = MemRepo::seed(op, "red_team", "target_intel");
     let expected_but_inactive_id = Uuid::new_v4();
     let (tx, _rx) = mpsc::unbounded_channel();
-    let mut orch = TaskOrchestrator::new(repo.clone(), repo, Uuid::new_v4(), tx);
+    let mut orch = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
     let executor = ExhaustedStageRunExecutor {
         execute_calls: AtomicUsize::new(0),
     };
@@ -1922,17 +2595,406 @@ async fn resume_fails_before_stage_work_when_exact_active_execution_is_missing()
     assert_eq!(executor.execute_calls.load(Ordering::SeqCst), 0);
 }
 
-/// The live graph-flow approval gate: crossing a 大阶段 boundary (two-level model:
-/// prep → active_recon at target_intel → external_attack_surface, pentest policy
-/// on) emits `waiting_approval`; a non-affirmative reply withholds approval (the
-/// caller then downgrades the stage outcome to blocked so the engine interrupts).
-/// Intra-phase advances (e.g. vuln_triage → verification) never gate — approval
-/// converged onto phase boundaries.
+/// Company-only input without a clickable coordinator cannot promote passive
+/// discovery. It holds with the dedicated target-scope status instead of
+/// pretending that a generic approval can manufacture target authority.
+#[tokio::test]
+async fn red_team_pre_eas_barrier_holds_company_only_scope_before_phase_approval() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+
+    let op = Uuid::new_v4();
+    let org_id = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "red_team", "target_intel");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    orch.set_harness_org_id(Some(org_id));
+
+    let graph = crate::harness::base_operation_graph().unwrap();
+    let profile = crate::harness::load_embedded_profile("red_team")
+        .unwrap()
+        .unwrap();
+    let dag = graph.project(&profile.allowed_stage_set());
+
+    // A generic affirmative phase reply must never authorize an empty trusted
+    // target snapshot. The deterministic barrier must hold before consuming it.
+    orch.user_input_sender()
+        .send("approve".to_string())
+        .unwrap();
+    let decision = orch
+        .two_level_phase_gate(
+            op,
+            StageKind::TargetIntel,
+            &StageFlowOutcome::pass_with_progress(),
+            &dag,
+            Some(&profile),
+        )
+        .await;
+
+    assert!(matches!(decision, super::PhaseGateDecision::Held));
+    assert_eq!(repo.stage_transition_count(), 0);
+    assert!(repo.submissions.lock().unwrap().is_empty());
+    assert_eq!(repo.candidate_review_reads.load(Ordering::SeqCst), 0);
+    assert!(drain(&mut rx).iter().any(|event| matches!(
+        event,
+        AiEvent::TaskProgress { status, message, .. }
+            if status == "waiting_target_scope"
+                && message.contains("ACTIVE_RECON_TRUSTED_TARGET_REQUIRED")
+    )));
+}
+
+#[tokio::test]
+async fn active_recon_scope_review_accepts_subset_and_skips_generic_phase_approval() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+    use golish_core::hitl::ApprovalDecision;
+
+    let op = Uuid::new_v4();
+    let org_id = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "red_team", "target_intel");
+    let presented = vec![
+        scoping_target("a.example", "in"),
+        scoping_target("b.example", "in"),
+    ];
+    let selected = vec![scoping_target("b.example", "in")];
+    repo.set_active_recon_scope_candidates(op, org_id, presented.clone());
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    orch.set_harness_org_id(Some(org_id));
+    orch.set_current_invocation_target_authority(Some(false));
+    let coordinator = crate::EventCoordinator::spawn(
+        "active-recon-scope-review".to_string(),
+        Arc::new(GateMockRuntime),
+        None,
+    );
+    orch.set_approval_coordinator(Some(coordinator.clone()));
+
+    let graph = crate::harness::base_operation_graph().expect("embedded operation graph");
+    let profile = crate::harness::load_embedded_profile("red_team")
+        .expect("load profile")
+        .expect("red_team profile");
+    let dag = graph.project(&profile.allowed_stage_set());
+    let outcome = StageFlowOutcome::pass_with_progress();
+
+    let responder = async {
+        let mut saw_waiting_target_scope = false;
+        loop {
+            match rx.recv().await {
+                Some(AiEvent::TaskProgress { status, .. }) => {
+                    assert_ne!(status, "waiting_approval");
+                    saw_waiting_target_scope |= status == "waiting_target_scope";
+                }
+                Some(AiEvent::AskHumanRequest {
+                    request_id,
+                    input_type,
+                    context,
+                    ..
+                }) => {
+                    assert_eq!(input_type, "scope_review");
+                    let rows: Vec<ScopingReviewedTarget> =
+                        serde_json::from_str(&context).expect("exact review rows");
+                    assert_eq!(rows, presented);
+                    coordinator.resolve_approval(ApprovalDecision {
+                        request_id,
+                        approved: true,
+                        reason: Some(serde_json::to_string(&selected).unwrap()),
+                        remember: false,
+                        always_allow: false,
+                    });
+                    return saw_waiting_target_scope;
+                }
+                Some(_) => {}
+                None => panic!("event channel closed before target-scope review"),
+            }
+        }
+    };
+    let gate =
+        orch.two_level_phase_gate(op, StageKind::TargetIntel, &outcome, &dag, Some(&profile));
+    let (decision, saw_waiting_target_scope) = tokio::join!(gate, responder);
+
+    assert!(matches!(decision, super::PhaseGateDecision::Allowed));
+    assert!(saw_waiting_target_scope);
+    assert_eq!(
+        repo.active_recon_scope_apply_calls.load(Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        repo.scoping_target_snapshots.lock().unwrap().get(&org_id),
+        Some(&selected)
+    );
+    assert!(!saw_waiting_approval(&drain(&mut rx)));
+}
+
+#[tokio::test]
+async fn active_recon_scope_review_rejects_edited_target_without_persisting() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+    use golish_core::hitl::ApprovalDecision;
+
+    let op = Uuid::new_v4();
+    let org_id = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "red_team", "target_intel");
+    repo.set_active_recon_scope_candidates(op, org_id, vec![scoping_target("a.example", "in")]);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    orch.set_harness_org_id(Some(org_id));
+    let coordinator = crate::EventCoordinator::spawn(
+        "active-recon-scope-review-edited".to_string(),
+        Arc::new(GateMockRuntime),
+        None,
+    );
+    orch.set_approval_coordinator(Some(coordinator.clone()));
+    let graph = crate::harness::base_operation_graph().unwrap();
+    let profile = crate::harness::load_embedded_profile("red_team")
+        .unwrap()
+        .unwrap();
+    let dag = graph.project(&profile.allowed_stage_set());
+    let outcome = StageFlowOutcome::pass_with_progress();
+
+    let responder = async {
+        let request_id = recv_ask_human_request_id(&mut rx).await;
+        coordinator.resolve_approval(ApprovalDecision {
+            request_id,
+            approved: true,
+            reason: Some(
+                serde_json::to_string(&vec![scoping_target("new.example", "in")]).unwrap(),
+            ),
+            remember: false,
+            always_allow: false,
+        });
+    };
+    let gate =
+        orch.two_level_phase_gate(op, StageKind::TargetIntel, &outcome, &dag, Some(&profile));
+    let (decision, ()) = tokio::join!(gate, responder);
+
+    assert!(matches!(decision, super::PhaseGateDecision::Held));
+    assert_eq!(
+        repo.active_recon_scope_apply_calls.load(Ordering::SeqCst),
+        0
+    );
+}
+
+#[tokio::test]
+async fn persisted_confirmed_org_only_launch_still_holds_historical_target_on_resume() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+
+    let op = Uuid::new_v4();
+    let org_id = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "red_team", "target_intel");
+    repo.set_scoping_target_snapshot(org_id, vec![company_parity_target("in")]);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    orch.set_harness_org_id(Some(org_id));
+    let persisted = crate::task_orchestrator::harness_resume::state_blob_with_current_invocation_target_authority(
+        serde_json::json!({"profile": "red_team", "current_stage": "target_intel"}),
+        false,
+    );
+    let restored = crate::task_orchestrator::harness_resume::current_invocation_target_authority_from_state_blob(&persisted)
+        .expect("restore server-owned fresh authority marker");
+    orch.set_current_invocation_target_authority(restored);
+
+    let graph = crate::harness::base_operation_graph().expect("embedded operation graph");
+    let profile = crate::harness::load_embedded_profile("red_team")
+        .expect("load profile")
+        .expect("red_team profile");
+    let dag = graph.project(&profile.allowed_stage_set());
+    orch.user_input_sender()
+        .send("approve".to_string())
+        .expect("queue generic phase reply that must remain unconsumed");
+
+    let decision = orch
+        .two_level_phase_gate(
+            op,
+            StageKind::TargetIntel,
+            &StageFlowOutcome::pass_with_progress(),
+            &dag,
+            Some(&profile),
+        )
+        .await;
+
+    assert!(matches!(decision, super::PhaseGateDecision::Held));
+    assert_eq!(repo.stage_transition_count(), 0);
+    assert!(repo.submissions.lock().unwrap().is_empty());
+    assert_eq!(repo.candidate_review_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        repo.scoping_target_snapshot_reads.load(Ordering::SeqCst),
+        0,
+        "confirmed-organization-only authority must HOLD before reading historical target rows"
+    );
+    assert!(drain(&mut rx).iter().any(|event| matches!(
+        event,
+        AiEvent::TaskProgress { status, message, .. }
+            if status == "waiting_target_scope"
+                && message.contains("ACTIVE_RECON_TRUSTED_TARGET_REQUIRED")
+                && message.contains("current CLI invocation")
+    )));
+}
+
+#[tokio::test]
+async fn direct_eas_stage_slice_without_trusted_target_holds_before_stage_work() {
+    let op = Uuid::new_v4();
+    let org_id = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "red_team", "external_attack_surface");
+    let initial_stage_execution_id = repo
+        .active_stage_execution_id(op)
+        .expect("fixture has an active EAS execution shell");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    orch.set_harness_org_id(Some(org_id));
+    orch.set_stage_allowlist(Some(std::collections::HashSet::from([
+        StageKind::ExternalAttackSurface,
+    ])));
+    let executor = ExhaustedStageRunExecutor {
+        execute_calls: AtomicUsize::new(0),
+    };
+
+    let paused = orch
+        .run_executor_driven(
+            op,
+            &[],
+            &executor,
+            false,
+            Some(COMPANY_PARITY_FIXTURE),
+            Some(initial_stage_execution_id),
+        )
+        .await
+        .expect("an untrusted direct EAS slice must pause cleanly");
+
+    assert!(!paused.trim().is_empty());
+    assert_eq!(executor.execute_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(repo.stage_transition_count(), 0);
+    assert!(repo.submissions.lock().unwrap().is_empty());
+    assert_eq!(repo.candidate_review_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        repo.active_stage_execution_id(op),
+        Some(initial_stage_execution_id),
+        "the preflight must not rotate the initial resumable EAS shell"
+    );
+    assert!(drain(&mut rx).iter().any(|event| matches!(
+        event,
+        AiEvent::TaskProgress { status, message, .. }
+            if status == "waiting_target_scope"
+                && message.contains("ACTIVE_RECON_TRUSTED_TARGET_REQUIRED")
+    )));
+}
+
+#[tokio::test]
+async fn direct_eas_entry_accepts_company_fixture_with_exact_in_scope_target() {
+    let op = Uuid::new_v4();
+    let org_id = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "red_team", "external_attack_surface");
+    repo.set_scoping_target_snapshot(org_id, vec![company_parity_target("in")]);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    orch.set_harness_org_id(Some(org_id));
+    orch.set_current_invocation_target_authority(Some(true));
+
+    assert!(orch.active_recon_trusted_target_ready(op).await);
+    assert_eq!(
+        repo.scoping_target_snapshot_reads.load(Ordering::SeqCst),
+        1,
+        "confirmed exact-target authority must still be verified against DB truth"
+    );
+}
+
+#[tokio::test]
+async fn red_team_loopback_target_passes_pre_eas_barrier_without_duplicate_approval() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+
+    let op = Uuid::new_v4();
+    let org_id = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "red_team", "target_intel");
+    repo.set_scoping_target_snapshot(org_id, vec![company_parity_target("in")]);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), repo, Uuid::new_v4(), tx);
+    orch.set_harness_org_id(Some(org_id));
+
+    let graph = crate::harness::base_operation_graph().expect("embedded operation graph");
+    let profile = crate::harness::load_embedded_profile("red_team")
+        .expect("load profile")
+        .expect("red_team profile");
+    let dag = graph.project(&profile.allowed_stage_set());
+    let decision = orch
+        .two_level_phase_gate(
+            op,
+            StageKind::TargetIntel,
+            &StageFlowOutcome::pass_with_progress(),
+            &dag,
+            Some(&profile),
+        )
+        .await;
+
+    assert!(matches!(decision, super::PhaseGateDecision::Allowed));
+    assert!(!saw_waiting_approval(&drain(&mut rx)));
+}
+
+#[tokio::test]
+async fn pre_eas_barrier_treats_only_out_of_scope_targets_as_empty() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+
+    let op = Uuid::new_v4();
+    let org_id = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "pentest", "target_intel");
+    repo.set_scoping_target_snapshot(org_id, vec![scoping_target("example.test", "out")]);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), repo, Uuid::new_v4(), tx);
+    orch.set_harness_org_id(Some(org_id));
+
+    let graph = crate::harness::base_operation_graph().unwrap();
+    let profile = crate::harness::load_embedded_profile("pentest")
+        .unwrap()
+        .unwrap();
+    let dag = graph.project(&profile.allowed_stage_set());
+    orch.user_input_sender()
+        .send("approve".to_string())
+        .unwrap();
+
+    let decision = orch
+        .two_level_phase_gate(
+            op,
+            StageKind::TargetIntel,
+            &StageFlowOutcome::pass_with_progress(),
+            &dag,
+            Some(&profile),
+        )
+        .await;
+
+    assert!(matches!(decision, super::PhaseGateDecision::Held));
+}
+
+#[tokio::test]
+async fn pre_eas_barrier_fails_closed_when_trusted_snapshot_read_fails() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+
+    let op = Uuid::new_v4();
+    let org_id = Uuid::new_v4();
+    let repo = MemRepo::seed(op, "pentest", "target_intel");
+    repo.fail_next_scoping_target_snapshot();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orch = TaskOrchestrator::new(repo.clone(), repo, Uuid::new_v4(), tx);
+    orch.set_harness_org_id(Some(org_id));
+
+    let graph = crate::harness::base_operation_graph().unwrap();
+    let profile = crate::harness::load_embedded_profile("pentest")
+        .unwrap()
+        .unwrap();
+    let dag = graph.project(&profile.allowed_stage_set());
+
+    let decision = orch
+        .two_level_phase_gate(
+            op,
+            StageKind::TargetIntel,
+            &StageFlowOutcome::pass_with_progress(),
+            &dag,
+            Some(&profile),
+        )
+        .await;
+
+    assert!(matches!(decision, super::PhaseGateDecision::Held));
+}
+
 #[tokio::test]
 async fn two_level_phase_gate_withholds_on_non_affirmative_reply() {
     use crate::harness::operation_flow::StageFlowOutcome;
     let op = Uuid::new_v4();
-    let repo = MemRepo::seed(op, "pentest", "target_intel");
+    let repo = MemRepo::seed(op, "pentest", "enumeration");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut orch = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
 
@@ -1946,7 +3008,7 @@ async fn two_level_phase_gate_withholds_on_non_affirmative_reply() {
     let decision = orch
         .two_level_phase_gate(
             op,
-            StageKind::TargetIntel,
+            StageKind::Enumeration,
             &StageFlowOutcome::pass_with_progress(),
             &dag,
             Some(&profile),
@@ -1968,7 +3030,7 @@ async fn two_level_phase_gate_withholds_on_non_affirmative_reply() {
 async fn two_level_phase_gate_approves_on_affirmative_reply() {
     use crate::harness::operation_flow::StageFlowOutcome;
     let op = Uuid::new_v4();
-    let repo = MemRepo::seed(op, "pentest", "target_intel");
+    let repo = MemRepo::seed(op, "pentest", "enumeration");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut orch = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
 
@@ -1984,7 +3046,7 @@ async fn two_level_phase_gate_approves_on_affirmative_reply() {
     let decision = orch
         .two_level_phase_gate(
             op,
-            StageKind::TargetIntel,
+            StageKind::Enumeration,
             &StageFlowOutcome::pass_with_progress(),
             &dag,
             Some(&profile),
@@ -2068,6 +3130,49 @@ async fn review_barrier_holds_attack_candidate_until_the_exact_db_wave_is_resume
         repo.candidate_review_reads.load(Ordering::SeqCst),
         2,
         "exact V2Only must reload the durable barrier on both hold and resume"
+    );
+}
+
+#[tokio::test]
+async fn v2_only_terminal_attack_candidate_slice_never_reads_review_barrier() {
+    use crate::harness::operation_flow::StageFlowOutcome;
+
+    let operation_id = Uuid::new_v4();
+    let repo = MemRepo::seed(operation_id, "red_team", "attack_candidate");
+    repo.enable_exact_candidate_v2(operation_id);
+    repo.set_candidate_review_barrier(AttackV2ReviewBarrierView {
+        operation_id,
+        wave_run_id: Uuid::new_v4(),
+        status: "open".to_string(),
+        resume_version: 1,
+        wave_unit_count: 1,
+        review_closed_unit_count: 0,
+        candidate_count: 1,
+        proposed_candidate_count: 1,
+        dispatch_is_stale: false,
+    });
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut orchestrator = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
+    let graph = crate::harness::base_operation_graph().expect("embedded operation graph");
+    let dag = graph.project(&std::collections::HashSet::from([
+        StageKind::AttackCandidate,
+    ]));
+
+    let decision = orchestrator
+        .two_level_phase_gate(
+            operation_id,
+            StageKind::AttackCandidate,
+            &StageFlowOutcome::pass_with_progress(),
+            &dag,
+            None,
+        )
+        .await;
+
+    assert!(matches!(decision, super::PhaseGateDecision::Allowed));
+    assert_eq!(
+        repo.candidate_review_reads.load(Ordering::SeqCst),
+        0,
+        "a terminal Candidate slice has no Verification crossing to review"
     );
 }
 
@@ -2200,7 +3305,7 @@ async fn two_level_phase_gate_reworks_on_declined_with_reason() {
     use golish_core::hitl::ApprovalDecision;
 
     let op = Uuid::new_v4();
-    let repo = MemRepo::seed(op, "pentest", "target_intel");
+    let repo = MemRepo::seed(op, "pentest", "enumeration");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut orch = TaskOrchestrator::new(repo.clone(), repo.clone(), Uuid::new_v4(), tx);
 
@@ -2241,7 +3346,7 @@ async fn two_level_phase_gate_reworks_on_declined_with_reason() {
     };
 
     let gate =
-        orch.two_level_phase_gate(op, StageKind::TargetIntel, &outcome, &dag, Some(&profile));
+        orch.two_level_phase_gate(op, StageKind::Enumeration, &outcome, &dag, Some(&profile));
     let (decision, ()) = tokio::join!(gate, responder);
 
     match decision {

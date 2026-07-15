@@ -6,6 +6,630 @@
 
 ---
 
+#### 2026-07-16 · 组织级联删除 Memory invalidation dead-letter 修复
+
+- **本轮目标**：修复 Target 页面删除组织时 two-phase job 永久停在
+  `waiting_for_invalidation_delivery`，并恢复用户已确认删除的
+  `广州有创网络科技有限公司`（org `4faf048b-3625-40cb-a2a1-829c470b151c`，18 targets）。
+- **根因**：`knowledge_assertions::invalidate_projection_chain_with_event_with_connection`
+  过去用裸 SQL 把 assertion `status` 改为 `expired`、写入 `valid_to`，但没有同步重算覆盖这两个字段的
+  canonical `content_hash`。`assertion-promoter` 读回时得到 `Corrupt("content_hash")`，线上 delivery
+  重试 5 次进入 `dead_letter(memory_port_failure)`，document/embedding/graph dependency 全部阻塞，删除
+  worker因此永远不能 claim artifact cleanup。
+- **已完成**：
+  - assertion invalidation 现在先按 exact source、稳定 assertion id 顺序 `FOR UPDATE`，把每行还原为
+    hash-valid domain object，再由 `KnowledgeAssertionDraft` 计算 lifecycle 变化后的 canonical hash；
+    `status`、`valid_to`、`content_hash` 以旧 hash CAS 同步写入，同一事务随后关闭 document/embedding 并
+    追加 typed invalidation event。exact no-op replay 不改写行，缺 source / 旧行损坏继续 fail closed。
+  - 新增 integration regression，直接证明失效行仍能通过 repo integrity read，并可被 assertion projector
+    的 exact event-source selector 读取。RED 证据为 `Corrupt("content_hash")`，修复后转绿。
+  - 对线上旧 job `51eeaf9a-3253-4bfa-915c-946f16f85cf3` 做 exact CAS 恢复：先重算并用失效前
+    active hash 完全匹配证明 canonical 序列化无漂移，再只更新目标 assertion hash并重排 exact
+    `memory_port_failure` dead-letter。四个 projector随后全部终态成功，job 到
+    `hard_delete_committed`；DB复核组织不存在且 target count=`0`。
+  - 同步更新 `golish-db/repo` 模块卡与 INDEX，明确 lifecycle mutation 必须同步重算 hash。
+- **验证证据**（Cargo前均执行 `just space-guard` → exit 0）：
+  - RED：`cargo nextest run -p golish-agent-app -E
+    'test(source_invalidation_preserves_assertion_hash_integrity_for_the_projector)' --status-level fail`
+    → exit 100，1/1 failed，`Corrupt("content_hash")`。
+  - GREEN：同命令 → exit 0，1/1 passed，nextest run
+    `da8fa997-8588-4ddb-b446-50b56cf6c346`（含 exact invalidation replay）。
+  - `cargo nextest run -p golish-agent-app --test knowledge_memory_runtime --status-level fail`
+    → exit 0，6/6 passed，run `5402ef70-5313-4722-a102-16903876edb4`。
+  - golish-db invalidation + deletion 聚焦 3 tests → exit 0，3/3 passed，run
+    `bb283c72-3755-45a4-a463-6d07d20578c8`。
+  - `cargo check -p golish-db -p golish-agent-app --tests` → exit 0；
+    `cargo clippy -p golish-db -p golish-agent-app --tests -- -D warnings` → exit 0。
+- **边界 / 状态**：按用户明确要求未运行 `init.sh`；沿用共享 active feature 边界未跑
+  `just precommit`，未改 schema/migration/generated IPC，未 commit/stage/push。该修复作为窄 production
+  bugfix，不切换 `feature_list.json` 当前唯一 `in_progress` feature。
+- **提交记录**：未 commit、未 stage、未 push。
+- **风险 / 下一步最佳动作**：本次线上删除已完成，当前没有需要人工补删的 org/target；后续重新加载
+  backend时会使用 hash-consistent invalidation实现。若再出现组织删除超时，先查 exact deletion job 与
+  projector delivery truth，不能把前端 10 秒文案当成仍会自动完成的证明。
+- **以下文件已修改但未提交**：`backend/crates/golish-db/src/repo/knowledge_assertions.rs`、
+  `backend/crates/golish-agent-app/tests/knowledge_memory_runtime.rs`、
+  `docs/modules/backend/golish-db/repo.md`、`docs/modules/INDEX.md`、本记录。共享 dirty tree其它既有修改未
+  回滚、未接管，也未替它们声明完成。
+
+#### 2026-07-15 · Stage Run 每公司一个 Codex 式 Company Controller（进行中）
+
+- **本轮目标**：按用户最新确认，把 `target_intel` V2 Team从服务器固定六个 Producer、结束后再启动
+  Aggregator，改成每家公司一个一开始即可进入的真实 Controller；由 Controller决定调用 0..N 个
+  durable SubAgent、等待结果后继续补派，并由 Controller自己提交 deterministic Gate。
+- **当前 feature / 边界**：继续唯一 `in_progress`
+  `stage-team-scheduler-verification-recovery-2026-07-14`。用户明确允许使用 subagent协作；本轮并行完成
+  backend、DB可行性、产品协议、前端 identity/read-model与模块卡收口。沿用既有边界：不执行外部目标、
+  commit/push、`init.sh`、`just precommit` 或 broad suites。用户已授权删除旧 fixed Team兼容，但数据库
+  schema/migration仍按 AGENTS.md等待单独明确授权。
+- **设计决策**：新增
+  `docs/design/2026-07-15-stage-run-company-controller-agent.md` 与同名实现计划；2026-07-14 fixed
+  sibling + later Aggregator编排形态标为 superseded，但保留 WorkItem/WorkerRun/lease/checkpoint/Gate底座。
+  Controller在 DB兼容层同时占用 leader/aggregator/final-submitter角色，产品上不再出现第二个
+  Aggregator。Coverage axis只是 Gate obligation，不再是固定 Worker清单。
+- **用户补充的队列语义**：若 scope含一个主公司和十个子公司，`stage_run` 是十一个 durable Unit的
+  可并发公司队列；每个已领取 Unit再拥有一个 Controller及其动态 child队列。实现必须同时限制公司级
+  并发、每公司 child并发和 operation总 live-agent数；一家 waiting/blocked不能卡住其他公司。
+- **已完成的运行时替换**：Stage Team policy不再有 fixed-shards分支；`target_intel` 每个 Unit只 seed
+  `leader:primary` Company Controller。`stage_run`按冻结 C并发公司 Unit，所有 Controller/child provider
+  turn再受 operation级 G semaphore限制，每公司 K（含 Controller）限制 live Worker。Controller通过 exact
+  trusted binding独占 `stage_team_dispatch_workers` / `stage_team_prepare_final_submission`；child拥有独立
+  WorkItem/WorkerRun/message chain/lease/checkpoint且不能再组队或提交 Unit。派发后同一 Controller进入内部
+  `waiting_for_subagents`，scheduler持续 drain/监控 children，满足 barrier后 claim回同一
+  WorkerRun/message chain继续决定补派或 final。partial batch中已有 child落库、后续项失败时仍进入 barrier
+  并执行已接受 child，不遗留无人处理的依赖。
+- **已完成的 Gate/UI替换**：同一 Controller关闭 request epoch、绑定自己为唯一 final submitter并执行
+  deterministic Gate；产品中没有晚启动的第二 Aggregator。UI外层为公司队列，详情只提供 exact
+  `::lead:<worker>` Controller与 `::worker:<worker>` child树；`waiting_dependency`显示“Controller正在监控
+  SubAgent”，事件静默/短暂无工具不解释为暂停。旧 fixed Team没有执行或运行流兼容，只提示重新运行。
+  `aggregator_*` / `is_aggregator`只保留为当前 DB/wire字段，不产生产品 Agent。
+- **已完成的 Codex Plan对齐**：按用户追加要求和当前 Codex工具合同，exact Controller额外看到同名
+  `update_plan`；plan严格为1..12个必填 `{step,status}`，status仅
+  `pending|in_progress|completed`且最多一个`in_progress`。普通 child看不到，bound child伪造调用也
+  fail closed；非StageTeam unbound orchestrator原有通用plan路径不受影响。Controller复杂首轮、dispatch
+  前、child outputs回流后与Gate gap恢复后更新计划；prepare前全部completed。该工具不是scheduler
+  barrier，不写主Agent全局PlanManager/`execution_plans`或`PlanUpdated`事件，tool-call/result随exact
+  Controller message chain checkpoint持久化。Controller与child仍都使用`recon` executor保留阶段业务工具。
+  `SubAgentDetailView`把合法调用渲染为Codex式历史计划快照；任一非法step、超12步或多个in-progress整卡
+  回退普通工具展示，计划进度不改变Unit/Gate truth。
+- **当前唯一实现阻塞**：Gate BLOCK compound transaction已能保存 gap/checkpoint并恢复同一
+  WorkItem/WorkerRun/message chain，但现 trigger禁止 same-epoch reopen；推进 epoch又使原 Controller
+  WorkItem不能作为新 child parent，且 gap来源 WorkerRun有唯一约束。因此无 migration版本只能让同一
+  Controller恢复后自己补，不能安全追加新 SubAgent。完整 Codex式 repair需要用户明确授权一条向前
+  migration：受限 same-epoch Controller reopen、移除 gap来源 WorkerRun唯一约束并保留普通索引、以 gap
+  数量约束 fuel。
+- **记忆核对**：现有 harness sub-agent在 provider调用前已经按 operation/stage/unit/org/worker读取
+  scoped ContextPack，并注入 canonical/runtime/handoff/episode/assertion/document/temporal-graph；失败时
+  fail closed，不退回 global/sibling customer memory。每个 Worker已有独立 durable message chain。
+  当前 query embedding provider为 `None`，所以 vector similarity层未实际启用；新 Controller必须复用
+  同一 scoped入口，不能把“有记忆底座”夸成完全等同 Codex内部实现。
+- **运行过的验证 / 已记录证据**（Cargo前 `just space-guard` → exit 0）：
+  - `cargo fmt -p golish-agent-kit -p golish-agent-runtime -p golish-db -p golish-agent-app -p golish-sub-agents -- --check` → exit 0。
+  - StageSpec聚焦 → 40/40；Company Controller scheduler → 14/14；Lead/dispatch router（含 partial persist）
+    → 18/18；Controller host barrier → 1/1。
+  - `cargo check -p golish-agent-kit -p golish-db -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents --tests`
+    → exit 0；只有共享树既有 `stage_coverage.rs::merge_source_query_row` dead-code warning。
+  - DB `company_controller_parks_for_dynamic_child_and_resumes_same_worker_chain` → 1/1；
+    `company_controller_gate_block_reopens_same_worker_chain_until_repair_fuel_is_exhausted` → 1/1。
+  - `StageTeamRunView.test.tsx` 9/9 + `ToolCallDetailView.test.ts` 14/14；四个前端文件 scoped Biome
+    → exit 0。
+  - Codex Plan聚焦合并验证：`golish-sub-agents` Controller tool visibility/schema 1/1、plan非barrier
+    1/1；runtime bound-child拒绝/strict plan/chain-local normalize 3/3、unbound generic route 1/1、
+    Company Controller prompt/turn/scheduler 6/6；`cargo check -p golish-sub-agents -p golish-agent-runtime --tests`
+    → exit 0。
+  - `SubAgentDetailView`计划卡/原有detail suite 58/58；连同StageTeamRunView 9/9、ToolCallDetailView 14/14
+    合并为3 files / 81 tests passed；六个前端文件 scoped Biome → exit 0。
+- **当前状态 / 下一步**：Controller主循环、Codex Plan、旧执行路径删除、UI与文档已完成聚焦验证。未跑 fresh app/live
+  rerun、`init.sh`、`just precommit`或 broad suites，且 repair-child migration等待用户明确授权，因此 feature
+  继续 `in_progress`，不能把整个共享 dirty tree宣称为完成。
+- **提交记录**：未 commit、未 stage、未 push。
+- **以下文件已修改但未提交**：本切片涉及 StageSpec/Target Intel spec、Stage Team scheduler与
+  `stage_run`/sub-agent host-tool runtime、runtime-memory Controller compound transaction及其 trait/app bridge与
+  DB聚焦测试、Company Controller/SubAgentDetail/ToolCallDetail前端组件与测试、设计/计划、backend/frontend模块卡、INDEX、
+  `feature_list.json`和本记录。共享 dirty tree中其它既有修改未回滚、未接管，也未替它们声明完成。
+
+
+#### 2026-07-15 · Stage Team 运行流 / Gate truth / Aggregator repair 收敛（进行中）
+
+- **本轮目标**：修复 Team 外层 Producer 已显示完成、Agent 运行流却到 Aggregator 才出现，以及
+  Producer 自报 checked_empty 冒充 Gate truth、Aggregator 相同 needs_fix 连续报错的问题。
+- **当前 feature / 边界**：继续唯一 `in_progress`
+  `stage-team-scheduler-verification-recovery-2026-07-14`；不改 DB schema/migration/generated IPC，
+  不执行真实目标、外部请求、commit/push。沿用已记录用户边界，不跑 `init.sh`、`just precommit`
+  或全量测试，采用聚焦 TDD。
+- **设计 / 计划**：新增
+  `docs/design/2026-07-15-stage-team-flow-gate-repair-convergence.md` 与同名实现计划；旧设计保留。
+- **已完成**：
+  - Team UI 将 Producer returned、Aggregator 和最终 Stage Gate 分层；Producer 在 final seal 前只显示
+    “已返回，待 Gate”，Aggregator 未创建时不再出现空运行流入口。
+  - Producer/Aggregator 使用 exact `::worker:<worker_run_id>` / `::aggregator:<worker_run_id>` Agent
+    identity；前端从 active SubAgent 构建 WorkerRun 映射，`::team::` retry仍正确绑定原 stage_run。
+  - Target Intel Producer 的 `found/checked_empty` 在 immutable output 前按 exact technique 对齐
+    authoritative coverage snapshot；ASN 等不能再用任意 evidence id 自报“查空”。
+  - Team Aggregator 的首次 durable accepted/needs_fix submission在完整 checkpoint 后交回 scheduler；
+    外层执行既有 Gate/repair generation，不再让同一 Aggregator 连续重复提交到 stall。
+  - 架构复核确认当前是 server-seeded fixed six-axis pilot，不是 Codex 式 AI Team Lead；动态 Lead
+    可以复用 WorkItem/WorkerRun/lease/checkpoint/Gate 底座，一次规划 MVP无需 DB migration，但未混入
+    本 bugfix。
+- **运行过的验证 / 已记录证据**（Cargo 前 `just space-guard` → exit 0）：
+  - RED：前端聚焦测试最初 6 failed；runtime缺 authoritative snapshot validator；sub-agent缺 durable
+    needs_fix barrier。实现后均转绿。
+  - `cargo test -p golish-agent-runtime stage_team --lib -- --nocapture` → 17/17 passed。
+  - `cargo test -p golish-sub-agents --lib -- --nocapture` → 194/194 passed。
+  - 前端聚焦 Vitest 4 files / 36 tests passed；`pnpm exec tsc --noEmit --pretty false`、8-file scoped
+    Biome、targeted rustfmt与 scoped `git diff --check` 均 exit 0。
+- **提交记录**：未 commit、未 stage、未 push。
+- **当前状态 / 风险**：代码级聚焦验证通过；未跑 `init.sh`、`just precommit`、全量测试或 fresh
+  application rerun，因此 feature 继续 `in_progress`，不能把整个共享 dirty tree声明为完成。当前仍是
+  fixed six-axis Team pilot；若用户确认切换为 Codex 式动态 Lead，应作为下一架构切片推进。
+- **下一步最佳动作**：重新加载含本 backend/frontend 的应用后跑一次 fresh Target Intel，用新 session
+  的 `run.log`、`transcript.json`、`scripts/run_tree.py --full --db` 验证 Producer flow即时可见、外层只
+  显示 returned待 Gate、Aggregator needs_fix进入 fresh repair generation。随后再决定是否启动一次规划型
+  Team Lead MVP。
+- **以下文件已修改但未提交**：本轮 design/plan；`stage_team_scheduler.rs`、`stage_run_call.rs`、
+  `executor_types.rs`、`executor/response_parsing.rs` 及因新增 bound-context 字段同步的构造点；
+  `StageTeamRunView`、`StageRunOrgRows`、`ToolCallDetailView`、`harness-handlers` 及聚焦测试；相关
+  backend/frontend 模块卡、`docs/modules/INDEX.md`、`feature_list.json` 与本记录。共享 dirty tree 的
+  其它既有修改未回滚、未接管，也未替它们声明完成。
+
+
+#### 2026-07-15 · Stage Team DNS tool-fence 与 SubAgent 运行流修复
+
+- **本轮目标**：修复最新 `target_intel` session 中 DNS 已写入业务事实，却因
+  `recon_list_providers` tool-fence finish 遇到 PostgreSQL deadlock 而长期停在
+  `recovery_required`；同时修复 sibling producer 并发运行流被合并后出现大量伪
+  `Thought for 0.001s` 的问题。
+- **当前 feature / 执行边界**：继续处理唯一 `in_progress`
+  `stage-team-scheduler-verification-recovery-2026-07-14`。未删除旧组件或历史 runtime rows，未执行
+  真实扫描、外部请求、commit/push；按已记录用户边界未运行 `init.sh`、`just precommit` 或全量测试。
+- **已完成**：
+  - Stage Team 每个 WorkerRun 派生独立 SubAgent UI `parent_request_id`；组织级 pointer 仍只用于 Team
+    progress，sibling reasoning/tool timeline 不再互相拼接。
+  - sub-agent streaming buffer 保留 reasoning batch 首末到达时间，并在 tool request/result、completed、
+    error 前同步 flush；零宽 batch 仅显示 `Thought`，真实小于 100ms 显示 `<0.1s`。
+  - `finish_worker_tool` 仅对 SQLSTATE `40P01` / `40001` 做最多三次整事务重试，其他 DB/fence 错误仍
+    fail closed。
+  - recovery 只自动收敛 exact terminal-failed 本地只读 `recon_list_providers` split state：旧 Worker
+    supersede、稳定 WorkItem 重新排队并创建新 attempt；网络/副作用工具仍保持 manual recovery，历史行不删。
+- **运行过的验证 / 已记录证据**（Cargo 前 `just space-guard` → exit 0）：
+  - 前端 RED 最初 7 failed，分别锁定 `0.001s`、生命周期边界未 flush、batch timing 未进入 store；实现后
+    聚焦 3 files / 32 tests passed，扩展 AIChatPanel/event/store suite → 5 files / 64 tests passed。
+  - backend RED 先证明 Worker UI identity 与 SQLSTATE 分类 helper 缺失；DB integration 首次运行进一步
+    暴露 `recovery_required -> retry_pending` 非法 transition，改为合法 `recovery_required -> queued` 后转绿。
+  - `golish-agent-runtime -E 'test(stage_team)'` → 15/15 passed，nextest run
+    `de3f9dc4-4866-4812-a6a9-5b30a2baf1a7`；`golish-db -E 'test(stage_team)'` → 13/13 passed，run
+    `b61193c1-8d49-430e-b2cc-eb04254e061a`，其中既有 external-tool manual recovery 测试继续通过。
+  - scoped Biome、`pnpm typecheck`、`cargo fmt --manifest-path backend/Cargo.toml --all -- --check`、scoped
+    `git diff --check` 均 exit 0。full `git diff --check` 只被共享树中既有 generated files
+    `GeneratedAiEvent.ts:355,359` / `GeneratedHarnessTraceKind.ts:77,81` 尾随空格阻断；未手改生成文件。
+- **提交记录**：未 commit、未 stage、未 push。
+- **已知风险 / 未解决问题**：代码级根因已修，但没有用真实目标 fresh rerun，也没有跑全量
+  `just precommit`；feature 继续保持 `in_progress`。旧 DNS row 不被原地篡改，只有下一次 producer claim
+  才会按窄 allowlist 自动 supersede/requeue。
+- **下一步最佳动作**：应用加载新 backend 后，在当前 task 输入一次 `继续跑` 即可；无需新建 task。
+  随后用该 session 的 `run.log`、`transcript.json`、`scripts/run_tree.py --full --db` 确认 DNS 新 attempt
+  被领取、Barrier 从 5/6 收敛。得到用户允许后再跑 `just precommit`。
+- **以下文件已修改但未提交**：`stage_run_call.rs`、`runtime_memory_tx.rs`、`stage_teams.rs`、
+  `runtime_memory_worker_transactions.rs`；`ThinkingBlock.tsx` 及新测试、`streaming-buffer.ts`、
+  `sub-agent-handlers.ts` 及新测试、workflow store/type/tests；本轮 design/plan、相关 backend/frontend
+  模块卡、`docs/modules/INDEX.md`、`feature_list.json` 与本记录。共享工作树其它改动未回滚或接管。
+
+#### 2026-07-15 · Target 删除后页面即时收敛修复
+
+- **本轮目标**：修复 Target 页面单条/批量/组织级删除后仍显示旧目标，且旧的并发
+  `target_list` 响应可能覆盖较新删除结果的问题。
+- **范围与状态**：这是未列入 `feature_list.json` 的小型前端行为修复；未切换当前唯一
+  `in_progress` feature。按用户明确要求未运行 `init.sh`、`just precommit` 或大测试，也未修改
+  backend、DB schema、migration、generated types。
+- **已完成**：
+  - `useTargetData` 为所有列表重载增加单调请求序号，只允许最新请求写 React state；旧轮询、
+    旧事件与失败重试不能再把删除行写回来。
+  - 单条删除和批量删除在后端确认成功后立即从本地 state 移除成功 ID，再等待 DB 重读并发送
+    `targets-changed`；批量部分失败时只移除实际成功的 ID。
+  - 组织删除不再只依赖易丢失的 refresh event，也不在 two-phase deletion job 刚接受时立即读取
+    旧行；应用内弹窗保持 submitting，轮询 organization read model 直到 root row 确实消失后，才
+    重载 targets、关闭弹窗并发送 umbrella refresh hint。
+  - 移除 TargetPanel 全部 active 删除入口对 WebView/Tauri 全局 `confirm()` 的依赖；单条、分组和
+    组织删除统一使用受控的应用内 Dialog。现场日志已证明旧调用会 rejection，但 Promise truthy
+    仍让删除继续，存在确认失败后误删风险。
+  - 新增 hook 与交互回归测试，覆盖“删除后的 DB 重读仍 pending 时立即消失”、“删除前旧查询晚
+    返回不能恢复已删目标”以及“native confirm 抛错时应用内取消不删除、显式确认才调用后端”；
+    同步更新 `frontend/components` 模块卡与索引。
+- **验证证据**：RED 时新增测试按预期失败（目标仍保留）；实现后
+  `pnpm exec vitest run frontend/components/TargetPanel/TargetGroupedView.delete.test.tsx
+  frontend/components/TargetPanel/hooks/useTargetData.test.ts
+  frontend/components/TargetPanel/TargetGroupedView.actions.test.ts` → exit 0，3 files / 31 tests passed；
+  scoped `pnpm exec biome check`、`pnpm exec tsc --noEmit` 与 scoped `git diff --check` 均通过。
+- **提交与风险**：未 commit、未 stage、未 push；没有启动应用做手工 UI 点击验收。共享工作树中
+  其它大量既有改动未回滚、未接管，也未替它们声明完成。
+- **下一步最佳动作**：重新打开当前应用中的 Target 页面，分别点一次单条 Target 删除、分组批量
+  删除和组织级联删除，确认行/计数/右侧选中详情立即收敛；代码级回归证据已经覆盖旧响应回写。
+- **以下文件已修改但未提交**：`frontend/components/TargetPanel/hooks/useTargetData.ts`、新增
+  `useTargetData.test.ts` / `TargetGroupedView.delete.test.tsx`、`TargetPanel.tsx`、
+  `TargetGroupedView.tsx`、`OrgTreeSidebar.tsx`、`TargetTreeRow.tsx`、
+  `docs/modules/frontend/components.md`、`docs/modules/INDEX.md`、本记录。
+
+#### 2026-07-15 · Stage Team producer BLOCK 修复与前端收口
+
+- **本轮目标**：修复 live session `pentest-chat-1784102030587-1` 暴露的 producer 输出无效即
+  永久 BLOCK、同 Unit 重试 `stage_team_unit_not_runnable`，以及 Team/legacy 前端重复渲染和
+  内部调试字段默认全展开问题。
+- **当前 feature**：按用户最新优先级把
+  `stage-team-scheduler-verification-recovery-2026-07-14` 恢复为唯一 `in_progress`；CLI/GUI parity
+  保留全部实现和证据并转回 `blocked`，没有回滚其代码。
+- **执行边界**：不修改或删除既有 immutable runtime rows，不重跑真实目标，不调用外部服务，
+  不 commit/push；沿用本 feature 已记录的用户边界，不跑 `init.sh`、`just precommit` 或大测试，
+  只做聚焦 TDD 与静态检查。
+- **设计**：新增
+  `docs/design/2026-07-15-stage-team-producer-retry-ui-convergence.md` 与配套实现计划。协议/authority
+  错误属于可重试 attempt failure；只有合法 business blocker 才成为 immutable output。旧 BLOCK
+  rows 保持审计历史，不原地更新或删除。
+- **已完成**：
+  - producer parser 接受“外层简短说明 + 唯一 fenced JSON object”，多 fence/歧义对象仍 fail
+    closed；runtime chain marker 继续只在 UUID 与结构化 chain id 精确匹配时剥离。
+  - `producer_completion_from_result` 改为返回 typed violation。执行失败、invalid JSON、无 authority
+    的 `found/checked_empty` 和已登记的 `no_registrable_domain` dependency blocker 均复用
+    `retry_stage_worker` compound API，在 frozen attempt budget 内重新排队；未知但合法 business
+    blocker仍正常落 immutable blocked output。
+  - `StageRunOrgRows` 在 exact Team pointer 存在时只渲染 DB-backed Team view；无 pointer 才保留
+    legacy org card，未删除旧协议兼容组件。
+  - `StageTeamRunView` 默认只显示 producer 的有效/运行/阻塞计数和 DNS/WHOIS/ASN 等业务状态；
+    output disposition 优先于 Worker lifecycle，故 `Worker passed + invalid output` 显示“输出无效”。
+    Plan/hash/epoch/lease/schema/chain/request 收进“调度详情”，manual recovery 仍保持可见和永不重放。
+- **运行过的验证 / 已记录证据**（Cargo 前执行 `just space-guard`，exit 0）：
+  - RED：`cargo test -p golish-agent-runtime producer_completion --lib -- --nocapture` 因新增
+    `producer_completion_from_result` 尚不存在而按预期编译失败；实现后聚焦模块
+    `cargo test -p golish-agent-runtime stage_team_scheduler::tests --lib -- --nocapture` → exit 0，
+    11/11 passed，覆盖 fenced object、invalid checked-empty retry、dependency retry 与 terminal blocker。
+  - RED：两份前端测试最初 3 failed，分别证明 legacy/Team 重复、缺业务计数、invalid output仍画
+    completed；实现后
+    `pnpm exec vitest run frontend/components/Engagement/StageRunOrgRows.test.tsx frontend/components/Engagement/StageTeamRunView.test.tsx`
+    → exit 0，9/9 passed（另覆盖 mixed/incomplete Team pointer 必须回退 legacy）。
+  - `pnpm exec biome check`（上述 4 个组件/测试文件）→ exit 0；`pnpm exec tsc --noEmit` → exit 0；
+    `cargo check -p golish-agent-runtime` → exit 0；targeted
+    `rustfmt --edition 2021 --check` 最初仅报告一处换行，修正后复跑 exit 0；`jq empty
+    feature_list.json` exit 0且唯一 `in_progress` id 正确。
+- **提交记录**：未 commit、未 stage、未 push；未删组件/文件，未修改 migration/DB schema，未执行
+  真实目标或外部服务。
+- **已知风险 / 未解决问题**：旧 session 已写入的 immutable invalid outputs 和 `gate_blocked` Unit
+  不会被本修复篡改；必须新建 Stage execution 才能验证新 retry 路径。未跑 `init.sh`、
+  `just precommit`、全量 Rust/前端测试或 live provider/Tauri→PG 验收，因此 feature 保持
+  `in_progress`，不能宣称整个共享 dirty tree 已完成。
+- **下一步最佳动作**：用户允许后，重新打开应用并对离线/授权 fixture 发起 fresh Target Intel
+  Stage execution；用 `run.log`、`transcript.json`、`scripts/run_tree.py --full --db` 证明 invalid
+  first attempt → queued retry → valid immutable output → Aggregator/Gate 收敛。随后再跑 `just precommit`。
+- **以下文件已修改但未提交**：本轮两份 design/plan、runtime 的
+  `stage_team_scheduler.rs` / `stage_run_call.rs`、`StageRunOrgRows` / `StageTeamRunView` 及测试、相关
+  backend/frontend 模块卡、`docs/modules/INDEX.md`、`feature_list.json` 与本记录。共享工作树其他既有
+  修改未回滚、未接管，也未替它们声明完成。
+
+#### 2026-07-14 · Stage Team Scheduler + Candidate→Verification 一次性实现
+
+- **本轮目标**：在已经评审通过的两份 2026-07-14 设计上直接实现：把 `stage_run` 从串行
+  单 Worker 执行升级为服务端持久化的 sibling multi-agent Team Scheduler；把 Candidate
+  review 后的 Verification 改为带 TerminalIntent、checkpoint barrier、确定性恢复、审批
+  start-before 与版本化 executor contract 的 exact CandidateAttempt 闭环。
+- **当前 feature**：新增并切换唯一 `in_progress` 为
+  `stage-team-scheduler-verification-recovery-2026-07-14`；原 CLI/GUI company closure 因缺少
+  exact authorized target 且用户切换优先级，转为 `blocked`，没有丢弃既有实现和 evidence。
+- **执行边界**：用户已明确要求“两份全部实现”，本轮据此允许 additive migration/DB schema；
+  不做 destructive migration，不执行外部扫描或真实目标动作，不 commit、不 push。用户随后
+  明确要求先写代码，禁止继续 `init.sh` 和大测试；因此只跑与当前切片直接相关的小型 TDD
+  测试。此前一次 `init.sh` 已在 fmt/check-fe/test-fe/lint-rust 通过、进入 Rust 全量测试后被
+  按用户指令立即中止，exit 130；它不是本功能完成证据。
+- **已完成 · Stage Team Scheduler**：
+  - additive `20260714000003_stage_team_scheduler.sql` 已落 TeamPlan、WorkItem/dependency、
+    WorkerOutput、WorkerRequest、barrier、unit gap、repair generation 与 operator recovery decision；
+    owner tuple、immutable row、epoch/manifest/lease/checkpoint CAS 均由 DB 约束。
+  - V2-only `stage_run` 已接 durable sibling queue：Main Agent 只调度；每个 producer/helper 是独立
+    WorkerRun + chain + lease；全局/每 Team 有界并发和 org round-robin；nested sub-agent fence保留；
+    dynamic request 只入队，不在父 Worker 栈中直接运行。
+  - `target_intel` 是首个启用 pilot。唯一 Aggregator 才能提交/finalize；每次只提交一次、评估
+    一次 Gate。BLOCK 会终结旧 Aggregator 为 `gate_blocked`，原子创建 bounded repair producer +
+    新 Aggregator，同次 `stage_run` 继续收敛；repair fuel耗尽显式返回
+    `STAGE_TEAM_REPAIR_FUEL_EXHAUSTED`。worker lifetime budget 已预留两代 repair attempts。
+  - startup reaper 与 LocalDesktop operator recovery 使用 exact row/checkpoint/active-tool CAS；未知
+    外部工具只可关闭为 blocked outcome-unknown，永不重放。Tauri read/recovery command、ts-rs API、
+    `StageTeamRunView` 与 loading/error/empty/mutation 状态已接通；IPC不暴露 lease secret、raw
+    checkpoint、工具参数/结果或 dynamic request body。
+- **已完成 · Candidate→Verification**：
+  - additive `20260714000002_candidate_verification_recovery.sql` 已落 approval `start_before`、
+    authorization receipt、TerminalIntent/barrier/receipt、recovery case/decision；plan hash冻结
+    recipe/executor contract version。action 未开始而审批过期会回 review；action 已开始/结束后允许
+    finish/submit/checkpoint/terminalize，不会因 expiry 形成永久 blocker。
+  - `submit_candidate_attempt` 只写 immutable TerminalIntent；active tool清空后 checkpoint exact
+    chain/barrier，再由 server terminalizer 单事务写 Attempt/Candidate、Finding/lineage、FactDelta、
+    outbox并释放 Worker/lane。action 已 terminal 但尚未提交时，只在同一 Attempt/Worker/chain进入
+    submit-only continuation，runtime tool boundary拒绝再次执行 action。
+  - additive `20260714000004_candidate_fact_delta_follow_on.sql` 与 consolidation route严格分离
+    `delta_kind / observation_kind / allowed_techniques / enrichment_required`：exact Nuclei/anonymous
+    typed evidence可 direct follow-on；`refuted` 只形成 no-attack；recognized unsupported adapter
+    整个事务回滚；信息不足只落 immutable pending enrichment，source Wave保持 open、delta不消费、
+    不创建 target Wave/Seed/WorkItem。orchestrator显式 BLOCK
+    `ATTACK_FACT_DELTA_ENRICHMENT_REQUIRED`，Verification queue/UI只读展示安全 subject/reason/
+    allowed techniques。当前版本有意没有自动 enrichment executor，未伪装已完成。
+- **聚焦验证 / 已记录证据**（每次 Cargo 前均执行 `just space-guard`）：
+  - Stage Team foundation：RED 3条 run `a7cfb7b4-6b96-4e20-bc62-973fbff5ab06`；expiry/reaper
+    GREEN 3/3 run `f3bf7459-5243-4fda-92d3-b54aec47b879`；migration fixture run
+    `4c7f012b-a360-4199-a254-163fb9519c5e`；WorkerRequest semantic replay 1/1 run
+    `8181b634-c982-45ee-b43a-13d571d1f7da`。
+  - Gate repair pure/runtime 2/2 run `bb422e47-e984-4c31-a4da-95eb1fe91742`；新增 DB exact
+    repair epoch/current-Aggregator测试先因 fixture failure payload不符合 closed schema RED
+    (`16d95063-8c26-4e3e-96c9-2bc6ca20ce90`)，修正后 1/1 GREEN run
+    `40955d8b-61cd-4c1f-b120-552815b5bdc8`。Target Intel plan/lifetime budget 1/1。
+  - operator recovery DB exact CAS/cross-scope FK/immutable replay 1/1 run
+    `d468653c-88b8-4fd1-a90c-37b998eb8877`；app stage-team tests 15/15；StageTeam UI 3/3；
+    relevant Rust library checks通过，仅有既存 `stage_coverage.rs` dead-code warning。
+  - Candidate TerminalIntent：P0 crash window 1/1 run
+    `149d2cff-8420-4ed7-8be0-d95fdc98c89e`；checkpoint exact replay/drift 1/1 run
+    `01f38f64-fde9-41c7-8406-1424c2765ee9`；submit-only host guard 1/1 run
+    `e079b678-172c-4e3c-b559-6085dd204e1b`；expiry submit-only 1/1 run
+    `76872e1c-ea69-47cf-a465-cf9eceabf792`；其余三个 crash boundaries 3/3 run
+    `6a7dd812-a108-4ffe-873f-3d6d78a239ad`。
+  - FactDelta 精确命令各 1/1：`sibling_or_stale_canonical_ref_delta_is_rejected`（direct +
+    refuted）、`pending_fact_delta_enrichment_is_stable_and_does_not_advance_wave`、
+    `recognized_unsupported_fact_delta_route_rolls_back_atomically`、
+    `fact_delta_seed_rejects_cross_owner_binding`；orchestrator pending BLOCK 1/1；两条 ts-rs export
+    各 1/1；CandidateVerificationProtocol 3/3、CandidateAttemptRows 5/5、scoped Biome通过。
+  - `jq empty feature_list.json`、本功能 scoped `git diff --check` 通过。没有把 Codex PTY session id
+    冒充 Golish runtime Run ID；本轮没有启动真实 Golish application run。
+- **当前状态 / completion gate**：代码切片和聚焦验证已收口，但 feature 继续保持唯一
+  `in_progress`。原因是用户明确要求本轮不跑 `init.sh`、`just precommit` 或大测试，且没有做
+  live provider/restart/Tauri→PG acceptance；Phase 3–5 的 EAS/Enumeration/Vuln/Candidate Team
+  rollout仍按设计 gate，Verification继续使用专用 CandidateAttempt scheduler。全工作树
+  `git diff --check` 仅报告 ts-rs 自动生成的 `GeneratedAiEvent.ts` /
+  `GeneratedHarnessTraceKind.ts` 四处行尾空格；Biome配置明确忽略 generated 目录，未手改生成物；
+  排除这两份生成器输出后全工作树 diff check exit 0。
+- **提交记录**：未 commit、未 stage、未 push；未发起真实扫描、外部 API、付费服务或目标动作。
+- **已知风险 / 未解决问题**：没有 fresh `init.sh` / `just precommit` / 全量 Clippy 与真实
+  provider+DB restart acceptance，故不能证明整个共享脏树无回归；EAS/Enumeration/Vuln/
+  Candidate Team 尚未解除 rollout gate；pending FactDelta enrichment 目前需要未来的 typed
+  executor设计，不能由操作员按钮或 generic AI 临时绕过。
+- **下一步最佳动作**：用户允许较慢验证后，先跑 `just space-guard` + `just precommit`，再用
+  离线/授权测试 workspace 做一次 Target Intel V2 Team 的 process-restart acceptance，以
+  `run.log`、`transcript.json`、`scripts/run_tree.py --full --db` 和 Team/Worker/Gap DB rows证明
+  queue→Aggregator→Gate repair/recovery；通过后才按 Phase 3依次为 EAS/Enumeration增加 exact
+  target/origin batch policy并保持 K=1。FactDelta enrichment executor应作为独立 additive
+  feature，以 typed result table消费当前 pending authority，不能在本 feature 里假装完成。
+- **以下本功能文件已修改但未提交**：三份 additive migrations（`20260714000002`–`00004`）、
+  Stage Team/Candidate recovery/FactDelta 的 kit/db/runtime/app/sub-agent repos与测试、
+  `resources/harness/stages/target_intel/spec.json`、Stage Team/Verification 前端 API/generated types/
+  Engagement components及测试、两份 design、两份 implementation plan、相关模块卡、
+  `feature_list.json` 与本记录。共享工作树仍有其他 feature 的大量既有改动/删除，本轮未回滚、
+  接管或替它们声明完成。
+
+#### 2026-07-14 · Stage Run Team Scheduler 与 Candidate→Verification 设计审计
+
+- **本轮目标**：按用户要求只做设计，基于当前 checkout 仔细审计两条实际链路：
+  1) `stage_run` 与现有 sub-agent/Worker/Unit/lease/chain 的边界，设计可排队、可恢复的多 Agent
+  协同；2) `attack_candidate` 进入 durable review 后，Verification 如何逐 CandidateAttempt
+  确定性验证、恢复和收口。
+- **已完成**：新增
+  `docs/design/2026-07-14-stage-run-multi-agent-team-scheduler.md`，明确 harness 外层保留一个
+  Main Agent，`stage_run` 升级为 durable Team Scheduler；每个协作 Agent 必须是独立 sibling
+  WorkerRun，不能共用 prebound Worker lease/chain。设计补齐 TeamPlan、durable WorkItem、
+  WorkerOutput、worker-only completion、manifest closure fence、唯一 Aggregator/finalizer、
+  sibling barrier、限流、公平、恢复、取消、UI、迁移和验收合同。
+- **文档历史**：在 `docs/design/2026-06-13-stage-run-fanout-design.md` 头部补充部分取代说明；
+  旧文件继续保留 chat/UI/fan-out 决策历史，但不再作为共享 lease 嵌套 sub-agent 的实现依据。
+- **已完成**：新增
+  `docs/design/2026-07-14-candidate-to-verification-execution.md`，明确 Candidate 是对前序
+  canonical facts/typed observations/evidence 与 scoped provenance context 的综合推理，不是
+  再扫描；Verification 保持一 CandidateAttempt 一 verifier。设计识别并收口当前
+  submitted crash window、outcome_unknown 无 operator 闭环、approval expiry 永久 blocker、
+  generic legacy recipe 证据不足、FactDelta technique 错配和 V2 stage dependency drift。
+  交叉复审后采用 `TerminalIntent → finish active tool → checkpoint barrier → recoverable server
+  terminalizer`，避免在 submit 工具内提前释放 Worker/lane；同时把
+  `recipe_version/executor_contract_version` 纳入 plan/approval，禁止同 plan hash 静默换执行语义。
+- **运行过的验证**：本轮是文档设计，没有改 runtime/schema/IPC，未运行 `init.sh`、Cargo、
+  前端测试或 `just precommit`。执行了两份新文档的 trailing-whitespace 搜索、Markdown code
+  fence 计数与 heading 结构检查；code fence 分别为 30/60，均为偶数；`jq` 确认
+  `feature_list.json` 仍只有
+  `cli-gui-operation-parity-company-closure-2026-07-14` 一个 `in_progress`。trailing-whitespace
+  `rg` 无匹配（预期 exit 1）；scoped `git diff --check` exit 0；scoped status 显示本轮两份新
+  design 文档为 untracked，旧 fan-out 设计头部与 `agent-progress.md` 为 modified。
+- **已记录证据**：两位独立只读审计分别复核 stage-run ownership 与
+  Candidate→Verification 当前代码；第三次交叉复审发现并促成四项修正：Aggregator 必须在
+  finalization 事务中与 Unit/handoff 一起关闭；dynamic WorkerRequest 聚合前必须关闭 manifest
+  epoch；submit/terminalize 必须尊重 active-tool/checkpoint 生命周期；legacy adapter cutover
+  必须先版本化执行合同。文档内已列当前代码路径、失败矩阵和 RED-first 验收测试。
+- **提交记录**：未 commit、未 stage、未 push；未修改任何 migration/schema、运行时代码、
+  feature 状态或模块卡；未发起外部 API、扫描或真实目标请求。
+- **已知风险 / 未解决问题**：两份文件是 Proposed 设计，不代表实现或 live acceptance；
+  TeamPlan/WorkItem/TerminalIntent 的物理 schema、cutover migration 和 IPC 需要后续实现计划，
+  且任何 DB schema/migration 变更必须先取得用户确认。共享工作树已有大量其他未提交改动，
+  本轮未回滚、接管或替它们做完成声明。
+- **下一步最佳动作**：先由用户评审两份设计边界。若认可，分别创建实现计划；执行优先级
+  建议先做 Candidate/Verification Phase 1 的 TerminalIntent/recovery/approval-expiry/
+  follow-on-Wave fail-closed 正确性闭环，再做 Stage Team Scheduler Phase 1 的 team-of-one
+  兼容模型与 Worker/Unit lifecycle 解耦，之后才开启多 Worker 或 Verification 并发。
+- **以下文件已修改但未提交**：
+  `docs/design/2026-07-14-stage-run-multi-agent-team-scheduler.md`、
+  `docs/design/2026-07-14-candidate-to-verification-execution.md`、
+  `docs/design/2026-06-13-stage-run-fanout-design.md`、`agent-progress.md`。
+
+#### 2026-07-14 · CLI Scoping → Attack Candidate live acceptance
+
+- **本轮目标**：按用户要求，从 headless CLI 的 `scoping` 开始，连续运行到
+  `attack_candidate`，以 fresh `run.log`、transcript、`run_tree.py --full --db` 与持久化
+  DB truth 检查各阶段是否真实闭合，并整理需要修改的问题。本轮先诊断，不预设代码改动。
+- **执行边界**：保持现有唯一 `in_progress`
+  `target-surface-fingerprint-network-failure-closure-2026-07-12` 不变；不扩展既有授权目标、
+  不运行 `verification`/exploit，不修改 schema/migration，不 push。启动前先按 AGENTS.md
+  完成上下文、模块卡、`just space-guard` 与 `./init.sh` 检查。
+- **当前状态**：正在执行；CLI session、阶段结果、验证证据、发现、风险与下一步将在本轮收尾补齐。
+
+#### 2026-07-14 · JS/API contextual resolution v1 实现与验证完成
+
+- **本轮目标**：保留 browser collector、deterministic broad capture 与 AI opt-in 边界，
+  在 raw JS/API candidate 和 `api_endpoints` 之间实现确定性上下文解析，解决多 axios
+  client、局部 baseURL、相对 path、歧义证据和 resolved URL 后去重。按用户要求未运行
+  `./init.sh`。
+- **已完成实现**：
+  - `golish-js-analyzer` 新增 additive `EndpointCandidate`/`CallSiteContext`/`SourceSpan`
+    API，保留 occurrence、callee、完整 receiver 与 byte span；context-only relative custom
+    client 及 member/optional chain 只进入 candidate API，legacy `Endpoint` 行为保持兼容。
+  - `js_extract_apis` 建同文件 client/base index，支持 `axios.create({baseURL})`、
+    `defaults.baseURL`、静态 literal 与 alias；lexical scope、source-order、mutable/reassigned、
+    duplicate/spread 对象语义均 fail closed。命名 Axios 使用真实 combine 语义；fetch/
+    Request/jQuery 固定 origin-root；无 exact binding 的 member chain 保留 unresolved evidence。
+  - deterministic/HAE/AI supplemental candidate 全部先 contextual resolve，再按
+    `(method,resolved URL)` 去重并经过 HTTP(S)+exact-origin classifier。raw
+    `contextual_resolution_v1` 保存带 fingerprint 的 candidate/binding/disposition，数组和
+    字符串都有上限及 total/omitted；dry-run 有 resolved projection 时不再误报 empty。
+- **运行过的验证 / 已记录证据**（Cargo 前均执行 `just space-guard`）：
+  - TDD RED：新增 analyzer 测试先因 `extract_candidates_from_source/files` 不存在报 E0425；
+    实现后 nextest run `8ebf1c3f-af80-46d7-9a6f-c3e4cfe4ab62`，59/59 passed。
+  - 最终 bridge 全聚焦 nextest run `40f858ce-7009-4a08-bb00-cb653017e00e`，77/77
+    passed，355 skipped；覆盖多 client、relative、Axios combine、scope/time-order、
+    duplicate/spread、fetch/global 隔离、member/optional chain、exact-origin、raw bounds、
+    supplemental post-resolution dedupe 与 dry-run outcome。
+  - `cargo fmt -p golish-js-analyzer -p golish-pentest-app --check` exit 0；targeted
+    all-targets Clippy `-D warnings` exit 0；`git diff --check` exit 0。
+  - `just precommit` exit 0，最终输出 `✓ All checks passed!`；fmt、check-fe、test-fe、
+    lint-rust、test-rust-all、check-types 及最终 `test` 依赖均通过。一次 space guard 在
+    79GB free 时按仓库策略回收 78.35GiB 旧 Cargo 产物，回到 160GB；未用 `cargo clean`。
+- **提交记录**：未 commit、未 push；未执行外部 HTTP/扫描、AI/LLM、付费 API 或 Test1
+  live rerun。
+- **以下本功能文件已修改但未提交**：
+  `backend/crates/golish-js-analyzer/src/{lib.rs,lib_tests.rs,patterns.rs}`、
+  `backend/crates/golish-pentest-app/src/pentest_bridge/js_extract_apis.rs`、
+  `docs/design/2026-07-14-js-api-contextual-resolution.md`、
+  `docs/superpowers/plans/2026-07-14-js-api-contextual-resolution.md`、
+  `docs/modules/backend/golish-js-analyzer.md`、
+  `docs/modules/backend/golish-pentest-app/pentest_bridge.md`、`docs/modules/INDEX.md`、
+  `feature_list.json`、`agent-progress.md`。共享 working tree 另有其他 feature 的大量既有
+  未提交改动，本轮未回滚或接管。
+- **已知风险 / 未解决问题**：v1 有意不做跨 chunk import/export、递归 wrapper/data-flow、
+  登录/点击/Service Worker 闭包，也未解析 JSON/FormData body params；本轮证明代码与仓库
+  门禁通过，不代表 2026-07-12 Test1 真实站点闭环已 fresh 重跑。未做 `just dev` 启动烟测，
+  因本轮未改 Tauri command/IPC 且用户明确禁止 init；全量 precommit 已通过。
+- **feature / clean-state**：`js-api-contextual-resolution-v1-2026-07-14` 已转 `passing` 并
+  填入 evidence；当前唯一 `in_progress` 仍是共享树的
+  `target-surface-fingerprint-network-failure-closure-2026-07-12`，未抢占其 active slot。
+- **下一步最佳动作**：若要把“真实站点闭环”也证明掉，在明确授权的 Test1 scope 下启动
+  fresh producer operation，依次跑 browser collect + `js_extract_apis`，再用
+  `scripts/run_tree.py --full --db`、run.log/transcript 和 `api_endpoints`/raw analysis DB truth
+  核对多 prefix、unresolved 与 outcome；若只需交付代码，则先从共享脏树中审阅并提交本功能
+  文件，不把其他 active feature 混入同一 commit。
+
+#### 2026-07-14 · Vuln → Candidate exact Verification 全闭环续做
+
+- **本轮目标**：按用户明确要求完成 evidence operation 身份修复、Candidate 精确
+  Nuclei/匿名重放、旧 `auth_probe` 删除、仓库门禁，以及“广州有创网络科技有限公司”
+  的 Scoping→Vuln→Candidate→Verification CLI acceptance。按用户要求不运行 `init.sh`。
+- **feature 状态**：本功能代码已实现并完成仓库门禁；共享工作树当前由
+  `target-surface-fingerprint-network-failure-closure-2026-07-12` 保持唯一 `in_progress`，因此本功能
+  继续标 `blocked`，避免与并行 JS/API 工作争抢唯一 active slot。剩余 blocker 仅是 CLI acceptance
+  缺少明确授权的 domain/IP/CIDR/URL，不是代码回滚。
+- **已完成实现**：
+  - `BridgeEvidenceInput` 接受 trusted operation id；Vuln Nuclei、匿名观察和 Candidate
+    Verification 都写真实 harness operation，而不是 chat session 派生 UUID。
+  - classifier 对 `nuclei_match_v1` 生成 exact template-id + matched-URL replay，对
+    `anonymous_access_v1` 生成 exact endpoint row/request plan/method/path/query replay；未知
+    schema、observation hash、target/technique 漂移 fail closed。
+  - verifier 保持 ordinal-only，Nuclei 不允许 tag fallback；匿名 replay 重载 endpoint 并在
+    network 前逐项比较 row hash、plan hash、method/path/query/no-auth。两者都生成 typed
+    `proof|refutation|blocker` evidence；begin 后所有路径都会 terminalize action journal。
+  - CandidateAttempt submission 对 action journal、`command.evidence`、result evidence arrays 做
+    evidence id/role 三方全等校验。删除旧 `golish-auth-probe` crate、bridge、依赖、注册、策略、
+    prompt/taxonomy/ownership 引用和 legacy-only Vault helper。
+  - 新增用户已明确授权的 additive migration
+    `20260714000001_candidate_observation_shadow_hash.sql`：不新增表/列，只替换 DB shadow rebuild
+    function，让数据库和 Rust canonical manifest 同时覆盖 `observation + observation_hash`；历史
+    migration 未改写。
+- **TDD / 已记录证据**（所有 Cargo build/test 前均运行 `just space-guard`）：
+  - `bridge_evidence_uses_the_real_harness_operation_id`：先以派生 UUID 失败（exit 101），
+    修复后 1/1 passed。
+  - `nuclei_replay_uses_the_exact_frozen_template_and_url`：旧 verifier 缺 canonical target 的
+    RED 后，exact plan 1/1 passed；`frozen_anonymous_replay_rejects_identity_endpoint_or_query_drift`
+    1/1 passed。
+  - pentest exact/anonymous focused：nextest run `c88debce-7e77-41e5-80e1-4e62148afdbf`，
+    13/13 passed。
+  - DB exact evidence + classifier/attack/final-seal regression：run
+    `e03056ef-bbf2-44cd-a6d1-d63c7ce08cb0`，45/45 passed。
+  - 六核心包完整定向：run `7e14cbe1-ddd3-487f-9f62-d6480658f077`，
+    2407 passed / 4 skipped / 0 failed。
+  - 六核心包 `cargo clippy ... --all-targets -- -D warnings` 首轮暴露 JS 路径拼接的两处
+    `obfuscated_if_else`；改为明确 `if/else` 后重跑 exit 0。`git diff --check` exit 0；
+    运行代码/前端/resources/scripts 对 `auth_probe` 的 `rg` 结果为空。
+  - 首轮 workspace gate 暴露 `attack shadow source manifest hash drift`：Rust manifest 已冻结
+    observation，但旧 DB rebuild function 仍使用旧投影。新增 additive migration 后，
+    `attack_execution_v2_migrations` run `900b9e83-30cd-47d9-b7d6-dd98b1a5373d` 56/56 passed；
+    第二组共享 fixture 修复后，`attack_rollout_cohort_migrations` run
+    `b68954f5-347d-4b2e-818f-95d45177061e` 13/13 passed。
+  - 并行 JS/API 改动的 full gate 编译暴露 SHA-256 display 与 base-resolution 回归；修复后
+    contextual run `a56c5981-8266-46fb-a7be-9f51434a220e` 13/13 passed，
+    `cargo clippy -p golish-pentest-app --all-targets -- -D warnings` exit 0。
+  - 最终 `just precommit` exit 0，依次通过 fmt、check-fe、test-fe、workspace
+    `lint-rust`、`test-rust-all`、`check-types`，最终输出 `✓ All checks passed!`；全量 Rust
+    测试阶段无失败。收尾 `git diff --check`、`jq empty feature_list.json`、57-crate DAG、
+    `auth_probe` 零残留检查均 exit 0。
+  - 最终二进制 `./backend/target/debug/golish --version` → `golish 0.2.43`、exit 0；端口
+    1420 无监听残留。该二进制 mtime 晚于新 migration，但尚未在默认持久 DB 启动，因此
+    `_sqlx_migrations` 中 20260714000001 仍为空，等待真实 CLI 启动时正常应用。
+- **init 说明**：本轮早期启动过一次 `./init.sh`，在用户说“不要跑init”后立即 SIGINT；
+  中止前 fmt/check-fe/test-fe 已通过，exit 130 是用户中止而非基线失败。之后不再运行 init。
+- **当前 blocker / 风险**：默认持久 DB 没有“广州有创网络科技有限公司”的 org/target。公开资料只能
+  确认主体存在；`huanyou7.com` 属于关联运营方，不能擅自升级为该公司的授权 target。必须由用户
+  提供明确授权的 domain/IP/CIDR/URL 后，才能安全执行 Scoping→Verification 并审计
+  `run.log`、`transcript.json`、`run_tree.py --full --db` 与 DB rows。未获得该输入前不伪造 live
+  acceptance，feature 保持 `blocked`。
+- **下一步最佳动作**：收到 target 后，先用最终源码构建的 `golish` 在 Test1 持久 DB 运行
+  `--profile pentest --from scoping --to verification --org ... --target ...`；锁定打印的
+  `stage-run-*` session，逐项核对 operation/scope/evidence/CandidateAttempt/Verification truth。
+- **提交状态 / 未提交范围**：未 commit、未 push。本轮 evidence/exact replay、Candidate DB
+  constraints、additive migration、legacy `auth_probe` 删除、测试、设计/计划、模块卡、
+  `agent-progress.md` 与 `feature_list.json` 均在共享工作树中未提交；并行功能既有改动未回退。
+
+#### 2026-07-14 · JS/API contextual resolution v1 实现启动
+
+- **本轮目标**：在 raw JS call-site 与 `api_endpoints` 之间增加确定性上下文解析层，
+  先解决同文件多 axios client、各自 `baseURL`、一步常量/alias 与 resolved URL 后去重；
+  AI 保持默认关闭，歧义继续作为 raw evidence。
+- **根因结论**：当前不只是 base detector 规则少；`js_extract_apis` 还会在解析前按
+  `(method, raw_path)` 去重，所以两个 client 的同名 leaf 会先丢一条。analyzer 已捕获
+  generic client receiver，但构造 `Endpoint` 时丢弃，现有 file+line 也无法区分 minified
+  同行调用。
+- **设计 / 计划**：新增
+  `docs/design/2026-07-14-js-api-contextual-resolution.md` 与
+  `docs/superpowers/plans/2026-07-14-js-api-contextual-resolution.md`。
+- **feature 状态**：`js-api-contextual-resolution-v1-2026-07-14` 是唯一
+  `in_progress`；原 `vuln-observation-candidate-closure-2026-07-14` 保留全部未提交实现并
+  转 `blocked`，仅表示用户优先级切换，不是回滚。
+- **边界**：不改 DB schema/migration、generated IPC、`route_probe_paths` 或
+  `browser_collect_js_api`；不发外部请求、不启用 AI。按用户要求不运行 `./init.sh`；
+  Rust 命令前仍执行 `just space-guard`。
+- **验证状态**：尚未写生产代码；下一步按 TDD 先补 analyzer candidate API 红测。
+
+#### 2026-07-14 · Vuln observation → Candidate → Verification 闭环实现启动
+
+- **本轮目标**：实现三个可扩展 AI capability：通用 Nuclei、指纹选模板的定向
+  Nuclei、基于 Enumeration 已持久化 JS/API endpoint 的匿名 GET/HEAD 访问检查；三者
+  只写 typed observation/evidence/outcome。然后让 Candidate AI 读到冻结 observation、上游
+  target data 和 scoped ContextPack，Verification 按精确 template/request 重放。
+- **启动前审计结论**：
+  - 旧 `vuln_run_formulaic_sweep` 使用未绑 target guard 的 background runner，Nuclei
+    malformed JSON 会被静默跳过，存在 unknown 被误记 empty 的 I8 风险。
+  - fingerprint→PoC→targeted Nuclei 仅存在 GUI/legacy 路径，并会直写 Finding，
+    未连到 AI stage。
+  - 旧 `auth_probe` 会猜路径 id、允许 OPTIONS、未绑 exact-origin redirect、无界读 body
+    并直写 Finding，不作为新 stage capability 复用。
+  - Candidate V2 已有 observation JSONB/final Gate/approval/Attempt/terminalizer，但当前
+    manifest 没投影 observation，analyst objective 也没有 exact manifest。
+  - Memory/RAG/KG/ContextPack 底座已实现，但 bound Worker 的 exact unit identity 没透传给
+    retrieval subject，Candidate worker 实际可能拿不到 pack。
+- **已写文档**：
+  - `docs/design/2026-07-14-vuln-observation-candidate-closure.md`
+  - `docs/superpowers/plans/2026-07-14-vuln-observation-candidate-closure.md`
+- **feature 状态**：新增 `vuln-observation-candidate-closure-2026-07-14` 并设为唯一
+  `in_progress`。`runtime-memory-candidate-pipeline-v2-2026-07-12` 实现不回退，因仍等待
+  明确授权的 live acceptance 而转 `blocked`。
+- **验证状态**：`just space-guard` exit 0。`./init.sh` 开始后按用户指令立即中止，
+  中止前 fmt/check-fe 通过，不将 SIGINT/exit 130 写成基线失败，后续不再重复 init。
+- **安全边界**：本轮不改 migration/schema，不发起真实外部扫描/LLM/embedding/
+  Graphiti/API 请求；只用 pure/fake/loopback 测试。
+
 #### 2026-07-14 · Runtime Memory / Candidate Pipeline V2 full implementation closure
 
 - **本轮目标**：在 checkpoint `13b29628` 上完成已授权的 Runtime Memory whole-record resume、
@@ -705,6 +1329,36 @@
   核对不再出现 outer `timed out after 300s`，并确认 Nmap 产出的 SERVICE rows、
   `source=nmap` fingerprints、evidence ids、terminal outcomes 与 coverage pending 数同步下降。
 - **提交记录**：未 commit、未 stage、未 push。
+
+### 2026-07-15 · Candidate Verification migration checksum drift 修复
+
+- **本轮目标**：修复 Target 页触发 `organization_list: Database failed to start`；保留现有持久化数据，不删除 pgdata，不无条件篡改 migration metadata。
+- **用户授权**：用户在确认根因是已执行 migration checksum drift 后明确回复“修啊”，授权本轮 DB/migration 修复。
+- **根因证据**：backend startup 在 PostgreSQL ready 后先拒绝 `20260714000002`：数据库 checksum=`5228caa9...b80b855`、当前文件=`bedba079...9ab955b`。第一条修复后真实重启继续暴露 `20260714000003`：数据库=`43af87b8...9e6f8e60`、当前文件=`cc615057...887f4b58`。SQLx 每次只报告首个 drift；Target 页只是最先调用依赖 DB 的 `organization_list`。
+- **schema 审计**：手动启动现有 embedded PG，仅做 catalog/data audit；临时库顺序应用到当前 `00002/00003`。`00002` 的 9 张相关表/约束/索引/trigger 与数据后置条件均一致，仅两个 Candidate 函数为旧定义。`00003` 的 catalog diff 证明旧库缺 `stage_team_recovery_decisions`、`stage_team_unit_gaps`、`stage_team_repair_generations`、deliverable submitter trigger/function，并有三个旧函数定义；缺失表不存在待迁移业务行。
+- **修复实现**：`pool.rs` 只登记上述两个 version+description+exact old/new SHA-384 pair；`20260715000001` 重放两个 Candidate 函数，`20260715000002` 只安装 Stage Team catalog diff。任一不匹配、dirty row 或 forward SQL 失败仍 fail closed。设计与计划分别见 `docs/design/2026-07-15-candidate-verification-migration-checksum-repair.md`、`docs/superpowers/plans/2026-07-15-candidate-verification-migration-checksum-repair.md`。
+- **TDD RED**：`candidate_verification_recovery_known_checksum_drift_is_exactly_repairable` 按预期因 `not explicitly allowlisted` 失败（nextest `4f7ad980-0cb2-4713-bd8d-e81f328da8d6`）；Candidate forward 文件缺失 RED 为 `87587f5a-30d6-45d2-a10f-6e3f31ed9b89`；Stage Team exact pair + forward objects 两个 RED 为 `df526bae-9234-443d-8ac6-d5856a546c3e`。首次 clean-install 集成跑出 4/4 RED（`75d369a6-d49b-4b05-b7e7-445aa3ef8a34`）：当前 `00003` 已建表，forward 初稿重复 `CREATE TABLE`；改成幂等 SQL 后，初稿→当前 checksum 未登记的 RED 为 `97f78ce1-16a7-4056-9fe8-2ad48b60db89`。
+- **GREEN / clone / clean-install 验收**：最初 `pool::tests` 8/8 passed（`acfda881-e122-47fb-a9c4-079a614f9888`）。从真实库建立临时 clone 后，以 `psql -1 -v ON_ERROR_STOP=1` 顺序执行 missing `20260714000004`、`20260715000001`、`20260715000002` 全部 exit 0；Stage Team 11 张相关表 dump 与 14 个函数定义对 fresh audit 库的两个 `diff` 均 exit 0。幂等修复后的 `pool::tests` + Candidate/Stage Team clean-install integration 最终 13/13 passed，run `52bbe19d-dc71-4cdc-9b72-f9cd5fa2361f`。临时数据库已删除。
+- **真实 DB / UI 验收**：15:14:14 开发应用真实启动同时修复 `00002/00003`，随后 migration complete。15:24:18 对 forward 初稿→幂等版本执行第三条 exact checksum repair；15:24:57 再次冷启动直接记录 `Database migrations complete`（没有 `Migration failed` / repair），随后 `Embedded PostgreSQL is fully ready`。`_sqlx_migrations` 中 `00002/00003/00004/15000001/15000002` 均 `success=true` 且 checksum 等于当前文件；三张 Stage Team repair 表均存在，`organizations` 可读且 count=5。15:14 后无新的 `organization_list/Database failed to start/Failed to load targets`；当前 dev app 保持运行。
+- **环境/验证约束**：所有 Cargo 测试/build 前均执行 `just space-guard` exit 0；targeted `rustfmt --check` 与 scoped `git diff --check` exit 0。`cargo clippy -p golish-db --all-targets -- -D warnings` 被共享 dirty tree 既有 8 个告警阻断（`attack_candidate_work_items.rs`、`runtime_memory_tx.rs`、`stage_teams.rs`），本轮未顺手修改。曾按 AGENTS 启动 `./init.sh`，用户要求停止后立即 SIGINT，最终 exit 130；此后没有再次运行 init。未运行全量 `just precommit`，父 feature 保持唯一 `in_progress`。
+- **提交记录**：未 commit、未 stage、未 push。
+
+#### 2026-07-15 · Scoping slice 收口（用户确认的 CLI 公司名快通）
+
+- **口径更正**：本任务早期“company-only `--org` 不预创建组织、与 GUI 对齐为 `UnconfirmedSubject`”的记录已被用户后续明确决策取代。fresh CLI `--org='广州有创网络科技有限公司'` 现在直接确认 organization identity，在当前 project 内 get-or-create exact root，并通过 shared typed launch 进入 `ConfirmedOrganizationIntake`；该 Scoping intake 不要求与 GUI prompt 交互对齐。
+- **已完成行为**：公司名只确认组织，current-invocation target 仍为空，不从公司名/provider/历史 org 推导 domain/IP/CIDR/URL；custom `-e` objective 也会追加 trusted org name/UUID。`--auto-approve` 只可处理 exact target `scope_review` 和 context 中 `decision=subsidiary_scope` + exact seeded organization UUID 的 choice；默认选择 DB gate 可解析的“不纳入子公司（仅母公司）”分支。double-encoded context、宽泛“仅根组织/纳入控股单位”、generic confirmation/phase、ordinary choice、unit_review/credentials/freetext/unknown 全部 decline。Scoping create 不预冻结 runtime scope；trusted gate PASS 后、发布 `stage_passed` 前调用 V2 finalizer，原子绑定 decision/sealed snapshot/passed root Unit/trusted submission，同 submission 以 UUIDv5 稳定重放，预绑定 org、返回 identity 或存储任一异常都先 BLOCK。
+- **主动边界**：`ConfirmedOrganizationIntake` 投影 `Some(false)`，TargetIntel→EAS 在读历史 target rows、phase approval、stage transition 与 executor/tool work 前 HOLD。headless exact resume 只在合法 marker 存在时恢复其值；marker 缺失一律收紧为 `Some(false)`，malformed 拒绝。不依赖非原子 post-create state-blob 写入，因为该路径在 V2Only 会零行更新却返回成功。安全代价是旧 exact-target operation 没有 marker 时也会 HOLD，需带本次 exact `--target` 新起 fresh run。
+- **profile**：本 slice 和全部 fixture 固定 `red_team`，其他 profile 不计验收。
+- **聚焦验证**：
+  - `just space-guard` → exit 0。
+  - `cargo nextest run -p golish-agent-app -p golish -p golish-agent-kit -E '<12 个 Scoping/typed launch/fresh+resume barrier/loopback tests>' --no-tests=fail --status-level fail` → 12/12 passed，run `eaf281bb-7b15-4e5f-9ccd-099c56bbe290`。
+  - CLI typed subsidiary response 与现有 DB persisted parser 合同联合验证 → 2/2 passed，run `7397e3b5-680a-4e8c-9c0a-a9995c0cce3a`。
+  - `cargo nextest run -p golish-agent-kit -E '<5 个 v2_scoping finalization tests>' --no-tests=fail --status-level fail` → 5/5 passed，run `2a455917-1d8a-4476-a723-6644877fe669`；覆盖首次冻结、同 submission exact replay、存储失败、返回 identity mismatch 与 CLI 预绑定 org mismatch。
+  - `cargo nextest run -p golish-db --test runtime_scope_freeze -E 'test(finalize_scoping_scope_atomically_binds_submission_and_replays_without_closing_execution)' --no-tests=fail --status-level fail` → 1/1 passed，run `315bd2d6-be87-4511-af51-cc0daf83e888`。
+  - 最终 `golish-agent-app + golish + golish-agent-kit + golish-db` Scoping/authority/finalizer 联合 selector → 20/20 passed，run `31c6372d-3123-4a26-bfd0-ba5912f0f207`。
+  - AskHuman focused Vitest → 60/60 passed；相关 8 个前端文件 Biome → exit 0；`pnpm typecheck` → exit 0。Ask 模式不再倒计时自批；只有 Run Everything 的原始 low-risk typed choice/confirmation 可倒计时，phase/scope boundary 永远人审。
+  - 7 个 Scoping Rust 文件 targeted `rustfmt --check`、scoped `git diff --check`、`feature_list.json` JSON parse 均 exit 0。构建仅报共享 dirty tree 既有 `merge_source_query_row` dead-code warning，本 slice 未修改该函数。
+- **完成边界**：Scoping 实现 slice 已收口并有 focused evidence；未运行真实 LLM/provider/外部目标，所以不宣称 live E2E。按用户指令未运行 `./init.sh` / `just precommit`，未继续 Candidate，未改 schema/migration/generated IPC，未 commit/stage/push。父 parity feature 仍为唯一 `in_progress`；换模型后从 Candidate/完整 fixture 继续，live active-stage 验收仍需用户另给 exact target 与外部请求授权。
 
 #### 2026-07-13 · Runtime Memory / Candidate V2 C9 canonical cited Reporting closeout
 
@@ -5150,3 +5804,136 @@
   - Windows 文件 `rustfmt --edition 2021 --check`、tracked progress/cards scoped `git diff --check` → exit 0。
 - **当前状态 / 风险**：当前 host 是 macOS，Windows race tests 已真实交叉编译但不能在本机执行；需要 Windows CI/runner 执行 runtime regressions。共享树 full `just precommit` 尚未由本子任务执行，父 feature 继续 `in_progress`，不虚报 passing。未 commit、未 stage、未 push，也未执行外部请求或真实 artifact publish/GC。
 - **以下文件已修改但未提交**：`backend/crates/golish-projects/src/file_storage/report_artifacts_windows.rs`、`docs/modules/backend/golish-projects.md`、`docs/modules/backend/golish-projects/file_storage.md` 与本 progress；共享树其余改动均未回滚或覆盖。
+
+#### 2026-07-14 · runtime tool-call task-owner binding
+
+- **本轮目标**：修复 Scoping 等 harness stage 的所有工具在 dispatch 前被 `tool_calls_runtime_task_owner_check` 拦截的问题；保持数据库 owner fence 不变。
+- **已完成实现**：`DbTracker::start_tool_call_with_runtime` 现在从 trusted `RuntimeToolIdentity.operation_id` 派生 canonical `task_id`；tracker 未绑定 task 时正常落 exact operation owner，已绑定同一 owner 时接受，已绑定不同 owner 时在 dispatch 前 fail closed。legacy 无 runtime 的 tool tracking 语义保持不变。新增四个纯函数回归测试，覆盖 unbound、exact match、mismatch reject 与 legacy preserve；同步 `golish-agent-kit` / `db_tracking` 模块卡与模块索引。
+- **验证状态**：按用户要求未运行修改后的测试。修改前执行 `just space-guard && ./init.sh`：`fmt`、`check-fe`、`test-fe`、`lint-rust` 已通过；用户要求停止后在 `test-rust-all` 阶段发送 SIGINT，命令 exit 130，因此本轮不能宣称完整验证或 passing。
+- **当前状态 / 风险**：代码修复已落地但尚无 post-change fresh test evidence；未修改 DB schema/migration、未放宽 constraint、未 commit/stage/push。当前 `feature_list.json` 的既有唯一 `in_progress` 功能未改动。
+- **以下文件已修改但未提交**：`backend/crates/golish-agent-kit/src/db_tracking/recording.rs`、`docs/modules/backend/golish-agent-kit.md`、`docs/modules/backend/golish-agent-kit/db_tracking.md`、`docs/modules/INDEX.md`、`agent-progress.md`。
+
+## 2026-07-14 - Persistent AIChatPanel context-compaction notice
+
+- Goal: make short-term context compaction visible in the main ChatPanel in a Codex-like, persistent form.
+- Implemented: successful compaction state is no longer cleared after five seconds; the existing notice now expands to explain the transition and show the pre-compaction token count.
+- Privacy boundary: raw summarizer input and summary text are not rendered.
+- Scope: frontend presentation and local event state only; no IPC, generated type, database, migration, or Memory Fabric backend changes.
+- Verification: not run in this turn, following the user's instruction to edit directly without initialization or broad validation. This work is not claimed as `passing`.
+- Feature tracking: `feature_list.json` was left unchanged so the repository's existing single `in_progress` feature was not displaced.
+- Modified but uncommitted: `frontend/components/AIChatPanel/hooks/useAiChatEvents.ts`, `frontend/components/AIChatPanel/CompactionNotice.tsx`, `docs/modules/frontend/components.md`, `docs/modules/INDEX.md`, and `agent-progress.md`.
+
+### 2026-07-15 · CLI/GUI Operation parity 与广州有创闭环恢复
+
+- **本轮目标**：恢复 `cli-gui-operation-parity-company-closure-2026-07-14`，先让 CLI 与 GUI 复用同一 operation/session/profile/project/scope/approval/gate/evidence 内核，再以公司名-only 和 localhost fixture 验证 Scoping→Candidate 边界；取得 exact authorized target 后才做广州有创真实 active-stage 验收。
+- **功能切换**：按用户本轮明确指令，把 Stage Team/Candidate→Verification 功能暂停为 `blocked`，保留全部 dirty-tree 实现；parity 功能恢复为唯一 `in_progress`。
+- **授权边界**：`广州有创网络科技有限公司` 只作为 engagement subject。不得从公司名、公开 provider 结果或历史 workspace 猜测 domain/IP/CIDR/URL 授权；没有 exact target 时，两端必须在 EAS 前同样停住，且不得产生 scan evidence/Candidate rows。
+- **环境验证**：`just space-guard` exit 0。随后启动 `./init.sh`；用户要求“不跑 init”后立即 Ctrl-C。终止前 `install`、`fmt`、`check-fe`、`test-fe` 已通过，命令最终在 `lint-rust`/`just check` 链路被 SIGINT，exit 130；本轮不把它当完整基线，也不再运行 init/precommit。
+- **当前工作方式**：保留共享 dirty tree，不回滚/覆盖其他功能；仅运行 parity 直接相关的 focused RED/GREEN tests，不调用外部 LLM、企业 provider、扫描器或真实目标。
+- **profile 约束**：用户明确要求本闭环只用 `red_team`；company-only、localhost、CLI/GUI parity 和后续 live run 全部固定该 profile，其他尚未完成的 profile 不作为验收证据。
+- **已完成 · CLI fresh authority（后续用户决策已修订）**：direct EAS/Enumeration/Vuln/Candidate 等主动 slice 必须在本次 invocation 重传 exact `--target`，不能借同名组织的历史 target；从 Scoping 起跑且只有 `--org='广州有创网络科技有限公司'` 时现在会 get-or-create exact root 并用 `ConfirmedOrganizationIntake` 直接确认组织身份，但不预冻结 scope、不产生 target authority。明确 target 或 direct passive TargetIntel 仍走现有 bootstrap。
+- **已完成 · GUI profile fail-closed**：发送、session 初始化和 picker 切换都必须先成功同步 backend profile；失败时不发 prompt、不标 initialized、不提交 UI/localStorage 状态，stage reset 也在 profile sync 失败时停止。
+- **已完成 · smoke budget**：`scripts/stage_smoke.py` 现在按实际 slice 是否经过 Enumeration 决定 route-probe 小预算；`scoping -> attack_candidate` 会获得预算，Vuln/Candidate 起跑不会伪装经过 Enumeration。
+- **focused evidence**：CLI direct-active/company barrier 2/2（nextest `33eb322a-c48a-4d7f-83ae-a6c9a5ff14fe`）；`red_team` shared company-only/direct-EAS barrier + TaskOperation 6/6（`acec8f5e-18e3-43e9-ae4b-e898ad49e078`）；GUI hooks 5/5、scoped Biome exit 0、`pnpm typecheck` exit 0；stage_smoke 5/5；Python combined diagnostics 6/6。新增 company-only CLI seed RED 为缺少 `should_seed_upstream` 编译失败，GREEN 2/2（nextest `bd4e5d99-4885-4ad6-befc-e5da5bafedf2`）。现有 `merge_source_query_row` dead_code warning 属共享 dirty tree，本功能未改。
+- **本轮继续验证 / 修复**：按用户再次强调未运行 `./init.sh`。现有 `red_team_loopback_parity` 只证明 typed authority，nextest `98e0543e-463e-4f9c-8dfc-7b1a5bf33642` 为 2/2；production company-only HOLD、loopback pre-EAS、Candidate review barrier 与 CLI intake 合并 selector 为 6/6，nextest `b277d43e-a8b8-41cf-b1f5-930332e6eadd`。审计发现 shared fresh launch 接受未知 profile，而 CLI slice 会更早拒绝、orchestrator 又会静默 fallback `assessment`，可造成 GUI/CLI DAG 漂移；TDD RED nextest `b9580f62-2949-40e9-978f-d97d6fcb7f89` 0/1，随后在 `FreshTaskOperationLaunch::validate` 统一校验 embedded profile 并 fail closed，TaskOperation + loopback selector GREEN 10/10，nextest `dd86098d-3835-4b19-b3de-af9509b61445`。同步更新 `golish-agent-app/ai` 模块卡与索引。
+- **live CLI acceptance**：在用户确认的 exact target 上以新二进制跑完 `scoping → attack_candidate`，session `stage-run-054467a0-e5a0-4b88-ac3e-57b386153772`、operation `7c86a7a5-38ca-476a-bc31-fda1fedee9ec`，CLI exit 0。Scoping、TargetIntel、EAS、Enumeration、Vuln、Candidate 全部最终 PASS；两个 phase boundary 都由显式 CLI authority 跨越；graph `next_node=__end__`、task `finished`，没有进入 Verification。TargetIntel 曾因 GOLISH-INTEL-ASN 使用 org-level identifier 得到一次 `needs_fix`，同一 run 修正后通过。
+- **Enumeration 实况**：实际调用 `enum_preflight_web_origins`、`enum_crawl_same_origin_urls`、`browser_collect_js_api`、`js_extract_apis` 和三次 checkpoint-resume 的 `route_probe_paths`；落库 4 条目录/路径结果（`README.md=200`、`css/images/js=403`）、5 个 JS 文件 / 194691 bytes，0 promoted endpoint。Evidence 16/17/18/20 分别为 JS found、JSAPI empty、PARAM empty、DIR found。这是目录/路径枚举，不是目录遍历漏洞利用。当前 `max_requests=800` 是每次 wrapper invocation 上限而非 stage 总上限，三次恢复累计可超过 800，作为后续预算语义风险保留。
+- **Vuln/Candidate 实况**：10 个 formulaic cell 均形成 terminal outcome。8 个 general Nuclei cell 是 evidence-backed `blocked`，精确原因是“本地没有可运行的可信模板”，`network_attempted=false`；GOLISH-NDAY 与 WSTG-ATHN-04 各为 `not_applicable`。Candidate 冻结 1 个 surface-analysis work item，最终 `no_candidate`、`candidate_count=0`、reason code `no_dynamic_attack_surface`；final handoff `f6a241bc-ef47-423c-9cd6-8d04377342d4` 引用 evidence 41–50。模型 rationale 错把 8 个 Nuclei tooling/template blockers 写成 WAF；已给 shared Candidate methodology 与 evidence-list contract 加 fail-closed 语义，并以 `candidate_reasoning_never_invents_a_blocker_cause` 回归覆盖。
+- **Candidate 终点修复证据**：双 V2Only terminal slice 的 review barrier 顺序 TDD RED nextest `c1eae075-1504-4fa7-b7a3-225af0eb609e` 0/1，修复为先解析 successor；无 successor 直接 Allowed，完整 Candidate→Verification DAG 仍按 exact barrier HOLD。Candidate blocker semantics + terminal/full-DAG tests GREEN 3/3，nextest `f93f10d0-9ea8-40c5-b0cd-ec251c25ef89`。一次错误 filter run `6e91bbbe-4754-4070-83ff-0730d19e83e2` 选中 0 tests，不计 evidence。
+- **已知未闭合**：Candidate unit/handoff/graph/task 均已终态，但 exact `stage_runs` row `b9eb3295-31a4-4463-bde3-affc17cfaf68` 仍为 `started`。根因是现有逻辑只在进入 successor 时关闭上一 stage execution，投影 DAG 终点没有 successor。正确修复需要在 `golish-db` 增加不改 schema/migration 的原子 terminal close transaction；按 AGENTS 高风险规则，等待用户明确授权后再动。WaveUnit 保持 `review`、consolidation `pending` 是本次停在 Candidate 的预期状态，不应被强行关闭。
+- **仍缺**：用户授权后的 terminal `stage_runs` 原子 close、完整 GUI↔CLI normalized fixture，以及 AGENTS 要求但被用户明确排除的 full precommit；功能继续 `in_progress`，不宣称 passing。
+- **提交记录**：未 commit、未 stage、未 push。
+
+### 2026-07-15 · GUI Scoping Tokio worker stack overflow 修复
+
+- **本轮目标**：修复 GUI Task 模式下 Scoping deliverable 已被 gate 接受、主 agent 已 `Turn complete` 后，后端 `tokio-rt-worker` 打穿 32 MiB stack 并 abort 的问题；不改 gate、DB schema、provider failover policy、授权边界或 stage 业务语义。
+- **根因证据**：session `pentest-chat-1784100749109-1` 的 `run.log` 最后正常记录 `submit_stage_deliverable accepted` 与 `Turn complete`；`transcript.json` 缺少 Completed 事件；`run_tree.py --full --db` 显示 submission `c08ebfe5-...` 已落库，但 execution `4fb52720-...` 仍为 `started`、无 handoff/scope snapshot。macOS crash reports `golish-2026-07-15-153140.ips` 与 `golish-2026-07-15-153339.ips` 两次在同一 `AgentBridge::execute_with_context_inner` 指令 abort，faulting thread 均为 `tokio-rt-worker`，stack guard 两侧均为 32 MiB。旧 debug binary 反汇编显示 `execute_with_context_inner` poll frame 约 10.9 MiB、`maybe_failover_to_fallback_model` 约 10.3 MiB，成功结果也会进入后者并与 TaskOrchestrator/bridge 外层 frame 同步叠加。
+- **已完成实现**：`execute_with_context_inner` 现在对 `Ok(response)` 直接保留成功结果；只有 `Err(primary_error)` 才构造并 poll `maybe_failover_to_fallback_model`。failover helper 改为只接受 `anyhow::Error`，默认关闭、eligibility、fallback client rebuild 和 error event 语义不变。没有通过继续增大 `RUST_MIN_STACK` 掩盖问题。
+- **新鲜验证证据**：
+  - `cargo fmt --manifest-path backend/crates/golish-agent-bridge/Cargo.toml -- --check` 与 scoped `git diff --check` → exit 0。
+  - `cargo nextest run -p golish-agent-bridge failover --no-fail-fast --status-level fail` → exit 0（7 个 failover tests）；`cargo nextest run -p golish-agent-bridge --no-fail-fast --status-level fail` → exit 0（list 共 35 tests）。
+  - `cargo clippy -p golish-agent-bridge --all-targets --no-deps -- -D warnings` → exit 0。
+  - `cargo build -p golish --bin golish` → exit 0，新 debug binary UUID `E34E942C-976B-365F-B2F1-3657F999E07F`；LLDB/反汇编确认 failover future 的构造/poll 仅位于源码 `Err(primary_error)` 分支，success path 不再经过本次 crash instruction。
+  - 用户要求停止 broad init 前，已经启动的 `./init.sh` 在 fmt/check-fe/test-fe 通过后，被共享 dirty tree 的七个既有 `golish-db` Clippy finding 阻塞；随后未再运行 init/precommit。一次带依赖的 scoped Clippy 同样只因这七项 DB finding exit 101，改用 `--no-deps` 后本 crate 通过。未修改这些无关 DB 文件。
+- **当前状态 / 风险**：代码、focused tests、生产 debug build 与机器码分支证据均已闭合；尚未调用外部 LLM/provider 做 fresh GUI Scoping 实跑，因此不能把旧 execution `4fb52720-...` 当作已完成，也不把父 parity feature 标为 passing。需要重启应用后由用户发起新一轮 Scoping 验收；原样 resume 旧半完成 execution 前应先走产品现有 recovery/continuity 选择。
+- **以下文件已修改但未提交**：`backend/crates/golish-agent-bridge/src/agent_bridge/execution.rs`、`docs/modules/backend/golish-agent-bridge/agent_bridge.md`、`docs/modules/INDEX.md`、`feature_list.json`、`agent-progress.md`。共享树其他改动均未回滚或覆盖；未 commit、未 stage、未 push。
+
+### 2026-07-15 · CLI Company Controller parity 验证与 run_tree 诊断增强
+
+- **本轮目标**：确认 headless CLI 与 GUI Task 是否进入同一 Company Controller 运行内核；增强 `scripts/run_tree.py`，让后续新 run 能直接暴露 Controller 计划、动态 SubAgent、同链恢复、Gate 与 AI 调用信息。未调用外部 LLM/provider、企业情报源或真实目标。
+- **CLI/GUI 结论**：两端入口语义不同（GUI=`FullProfile`，CLI=`StageSlice`），但都进入共享 `prepare_task_operation`、`PreparedTaskOperation::run_fresh`、`TaskOrchestrator`、`BridgeAgentExecutor`、agentic loop 与唯一 `stage_run` tool handler。当前本机 `runtime_memory_rollout` 为 `v2_only` rank 3；当前源码在 `target_intel` 的新 operation 会进入 `company_controller_v1`。现有 session `pentest-chat-1784105910280-1` 虽为 V2Only，但其已持久化 TeamPlan 是改造前的固定 Producer/Aggregator 形态，不能作为新 Controller 验收证据。
+- **run_tree 实现**：timeline 现在使用最新 observed stage；按真实 team prefix 把 `::lead:` Controller 与 `::worker:` 动态 child 关联，显示 Controller chain/turn/resume、`update_plan` 总览和最多 12 个具体步骤、dispatch→wait→child tool/prose/output、prepare/final submit、Gate 与异常。`run.log` 另汇总 main completed turns/provider/model/token 以及 SubAgent model starts（明确不等同于工具调用或完成 turn，且不伪造 child token）。旧固定 Team transcript/DB plan 明确标 `legacy-fixed (not Company Controller)`。
+- **新鲜验证证据**：每次 Cargo 前 `just space-guard` exit 0；`cargo nextest run -p golish stage_run::tests --no-fail-fast --status-level fail` → 47/47，run `7ae232e0-2413-4ba5-9681-3a61c7bb77e8`；`cargo nextest run -p golish-agent-app --test red_team_loopback_parity --no-fail-fast --status-level fail` → 2/2，run `acb87a02-176d-4b80-b476-04b43245521f`；`cargo nextest run -p golish-agent-runtime company_controller --no-fail-fast --status-level fail` → 6/6，run `2c284c47-7f16-4c2a-af53-d9e6a434b90b`；`cargo nextest run -p golish-agent-runtime stage_team_scheduler --no-fail-fast --status-level fail` → 14/14，run `3733cd62-4dcd-4b65-8d05-52d4988532c2`；`cargo nextest run -p golish-agent-runtime stage_team_update_plan --no-fail-fast --status-level fail` → 3/3，run `1793570a-dc50-4748-91d8-6c0fc4a398eb`；run_tree Python 13/13、`py_compile`、scoped `git diff --check` 均 exit 0。
+- **真实旧日志回放**：`python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 pentest-chat-1784105910280-1 --full --db` exit 0；header 正确显示 latest `target_intel`（seen `scoping,target_intel`），9 个旧 worker 均标 legacy，`controllers=0`，AI-call summary 显示 main 2 turns 与 SubAgent 9 starts，DB Team plan 标 `mode=legacy_fixed_team`。
+- **边界 / 仍缺**：没有执行新的真实 CLI provider smoke，因为生产 bridge 拒绝 mock client，而 Target Intel 活体会访问外部 provider；需要用当前构建新建一次获授权的 run，才能现场证明每公司唯一 Controller、动态 child、同 Controller Gate repair。当前只有 `target_intel` stage spec 配置 `team_scheduler`；不能把本轮测试表述为所有 stage 均已切换。父功能继续 `in_progress`，未跑 `init.sh`/`just precommit`，未 commit/stage/push。
+- **以下文件已修改但未提交**：`scripts/run_tree.py`、`scripts/tests/test_run_tree_company_controller.py`、`docs/modules/backend/golish/stage_run.md`、`docs/modules/INDEX.md` 与本 progress；共享 dirty tree 中其他既有改动未回滚或覆盖。
+
+### 2026-07-15 · Company Controller live BLOCK 收口与当前 Plan UI
+
+- **现场 / 根因**：最新 live session `pentest-chat-1784117461035-1` 使用 20:08 启动的旧 binary。Target Intel 已完成 5/6，唯一缺口是组织级 `GOLISH-INTEL-ASN`：Quake 返回 `HTTP 401 /quake/login`，FOFA/Hunter/Shodan 无凭据；这应作为 `credential_missing` 的 terminal `blocked` cell 收口，而不是伪装 found/checked_empty。旧 prepare-final 没有先 durable close request epoch 并绑定唯一 Controller final submitter，先报 `stage_team_submission_requires_unique_aggregator`；外层 Agent 越权直提随后报 `missing_stage_run_unit`；过期 Controller 又报 `stage_team_leader_claim_replay_mismatch`。首次 `update_plan` 同时给两步 `in_progress` 被严格校验拒绝，随后 Controller 已自行合并并成功更新，因此该红叉不是 Gate BLOCK 根因。
+- **已完成实现**：当前源码的 Company Controller finalization 使用 `close_stage_request_epoch → bind_stage_team_leader_final_submitter → same Worker final turn`；本轮补空闲过期 Controller 的 exact operation/execution/unit/org/item/checkpoint fenced reclaim，保留原 WorkerRun/message chain，只递增 attempt epoch，active-tool split state仍 fail closed 到 recovery。Coverage terminal preview 复用 `StageDeliverable::ReasonKind` 反序列化，非法 `env_unavailable` 不再得到 `ready_to_submit=true`，合法 `credential_missing` 保留。Controller objective 与专属 `update_plan` schema 明确“plan 表示当前 focus 而非并发度”，并行工具/worker 必须合并成一个复合 `in_progress` step。Controller 详情页只显示最新有效 live/completed 的“当前计划”；旧版、失败和非法 `update_plan` 不再渲染普通工具卡，原始事件仍保留在 transcript/run.log/run_tree 诊断面。
+- **TDD / targeted evidence**：expired Controller RED nextest `6c157e13-b804-4683-ba9b-0f89cd442108` 复现 replay mismatch，GREEN `4798d7c7-4ebc-497e-9580-09c6d5cbb878` 1/1。主线程合并验证：DB Company Controller + unique submitter/producer fence 4/4，nextest `7b542482-9122-4c2a-8a6b-d9c82743d1c5`；runtime/sub-agents Controller + plan 9/9，`4ebdea95-de67-4135-a744-bd03587267ed`；coverage reason parity 3/3，`37ef2e4e-4969-4629-b85a-4f3ab222ecf6`；Controller detail Vitest 59/59，Biome、`cargo fmt --all -- --check`、scoped diff check均 exit 0。`just check-fe` 与 `just test-fe` exit 0。dev backend 已于 21:48 重启到新 binary。
+- **全量门禁**：`just precommit` 的 fmt、check-fe、test-fe 通过；lint-rust 被共享 dirty tree 中 7 个既有 Clippy finding 阻塞（`runtime_memory_tx.rs:3118/5820/5862/7507/8122`、`stage_teams.rs:1700/2075`），均不在本轮 scoped hunk，未越界顺手修改。因此功能继续保持唯一 `in_progress`，不宣称 passing。
+- **边界 / 下一步**：本轮未调用外部 LLM/provider 或真实目标。旧 session 已进入错误重试链，不作为新代码验收证据；取消旧 run 后使用 21:48+ binary 新建 run。网络/认证失败可以让阶段以诚实的 blocked coverage 完成，但不能把采集本身显示为成功。未改 DB schema/migration，未 commit/stage/push。
+- **以下文件已修改但未提交**：Controller reclaim repo/test、coverage preview、Controller prompt/tool schema、Controller detail Plan UI/test、相关模块卡/索引与本 progress；共享 dirty tree其它改动均未回滚或覆盖。
+
+### 2026-07-15 · Intel Gate 最新日志纠偏与真实 CLI 最终闭环
+
+- **用户纠偏 / 精确日志**：用户确认已经重新编译；本轮不再沿用旧 binary/session 结论。最初精确 GUI session 为 `/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1784124538690-2`：Company Controller 已返回业务 JSON，但末尾兼容 `[sub_agent_session_id: ...]` 被 whole-response `serde_json::from_str` 当作 trailing characters；随后重试进入 unique finalizer/replay dead-end，Intel deterministic Gate 根本没有获得可接受的 aggregate closeout。
+- **已完成修复**：durable structured `chain_id` 成为唯一 resume authority，只剥离 UUID 完全一致的 legacy marker；Stage Team claim 返回并刷新锁后当前 Unit，避免沿用 stale `row_version/status`；Company Controller success 从 current operation aggregate truth 生成 exact `pass_token/closeout_claim`；CLI terminal report 在 task finished 且 active execution 为零时确定性选择 current-stage 最新 completed execution。新实跑又暴露 Gate BLOCK 后 Controller coordination turn 可误用 generic `submit_result` 绕过 router、继而触发 barrier JSON parse/replay mismatch；executor 现返回非终态 `STAGE_TEAM_CONTROLLER_REQUIRES_ROUTER`，保持同一 chain，直到 trusted dispatch/prepare-final router 收回控制权。`scripts/run_tree.py --db` 使用相同 terminal selection 语义，不再把合法 finished run 误报为 missing active/incomplete V2。
+- **TDD RED → GREEN**：claimed Unit 回归先因返回结构缺 `unit` 失败；Controller aggregate closeout 回归先缺 exact token/claim；terminal CLI report 回归先报 `V2 CLI requires one exact active stage execution, found 0`；Controller router 回归先因 rejection helper 尚不存在而编译失败；run_tree terminal 回归先复现 missing active，初版 selector 又以 row shape `IndexError` 失败。修复后 `cargo nextest run -p golish-sub-agents` 197/197、`cargo nextest run -p golish-agent-runtime company_controller_` 9/9、`python3 -m unittest scripts.tests.test_run_tree_runtime_memory` 8/8；affected crates all-target Clippy `-D warnings`、`cargo build -p golish`、`cargo fmt --all` 均 exit 0。
+- **真实 CLI 最终验收**：fresh workspace `/private/tmp/golish-company-controller-marker-v2-20260715-5`，session `stage-run-bfd451bf-71b4-4a09-a805-65f5ca64d3fa`，operation `75186eb3-0e38-4074-a7ef-20d41a367e6f`，organization `75f1cbac-d4ba-477e-8a31-1f975de524ba`，Target Intel execution `80e23462-7695-4d55-b306-fa8bc4c8b290`。使用重新构建的 `./backend/target/debug/golish` 从 Scoping 跑到 Target Intel，显式 passive-only objective、`--auto-approve --approve-phase-boundaries --json --db-smoke-summary`，进程 exit 0。
+- **业务 / DB 真相**：Scoping Gate PASS；Target Intel `stage_run` 返回 `success=true, passed=true, team_units_passed=1`，Controller submission `912de35a-f4a7-4bd3-a2b7-b78917d9a575`、handoff `5834efa4-1852-4781-a6d1-f33681cbc215` 与 pass token `2d1fb570eeceda4dcf2e7bb3349c17be43103762304bc9ee0c3e3731dc704837` 持久化；外层 Target Intel Gate PASS，graph 访问 Scoping/TargetIntel 后 Completed，task `finished`。DB 为 `v2_only`，两个 execution 均 completed，Unit passed row_version=2，Controller Worker passed，plan barrier ready，唯一 final submitter、submission/handoff 与 selected V2 read source一致。模型在调用 `stage_run` 前曾越权主提交一次并被 `missing_stage_run_unit` fail closed，随后自行走正确 stage_run；这不是最终失败。run_tree 仍记录一次错误 `query_target_data` 参数作为可恢复 model anomaly，但不影响 Gate/DB/exit 0。
+- **全仓 RED → GREEN 补证据**：第一次 full precommit 依次暴露并修复 Candidate preview 未把 decision evidence 限定在 exact frozen manifest、EAS WEB `checked_empty` 未优先返回 exact-origin terminal rejection、以及三个旧 migration/test fixture 与新严格血缘/typed follow-on 语义不一致。随后全仓首轮 5731 tests 收齐 3 个独立失败：foundation-only submission repo 误查尚不存在的 Team 表、pre-attestation Worker fixture 使用后续 `work_item_id` 列、domain expansion 旧断言未反映显式 apex query 去重；均按真实 schema/contract 修正。`attack_execution_v2_migrations` 完整 76/76 passed（nextest `31e4d3fa-c1bf-43ab-9fe4-a8c613c19a20`）；最终 workspace 5731/5731 passed、11 skipped（nextest `f7912b77-af7c-4b85-a00a-28cc384cf0cc`）。
+- **最终门禁 / 已记录证据**：`just precommit` 的 fmt、check-fe、test-fe、lint-rust、test-rust-all 全部通过。首次 `check-types` 仅因共享 dirty tree 的正确 ts-rs 生成结果尚未进入 Git index 而退出 1；未改真实 index，复制临时 index 并只登记 `frontend/lib/generated/` 后重跑同一个 `just precommit`，生成器若有任何二次漂移仍会 fail。进一步发现后半段 `just test` 会再次执行 export tests并恢复 ts-rs 的行尾空格，现由 `normalize-ts-rs-bindings.mjs` 在 gen-types及两种全 Rust recipe 后确定性归一化 aggregate unions。最终整条命令依次通过 `check`、独立 `test`、稳定 `check-types`、`git diff --check`、`jq empty`、唯一 in-progress 与真实 staged-list 断言，输出 `✓ All checks passed!` 和 `FINAL_GATE_OK real_cached_entries=0`，exit 0。
+- **提交记录**：未 commit、未 stage、未 push；未改 DB schema/migration，未执行额外真实目标扫描或外部 provider 请求。
+- **状态 / 已知风险**：Intel CLI slice 已用新 binary 真实闭环，不再需要新 task/chat，也不是只靠重启应用。当前共享父 feature 还包含更广的 Candidate→Verification recovery DoD 与需用户授权的新 forward migration，因此保持唯一 `in_progress`，不虚报整项 passing。共享 dirty tree 中其他功能改动均保留并已在本节和既有记录列明。
+- **下一步最佳动作**：Intel incident 无后续补救项；后续若继续父 feature，按既有 design/plan 在获得 migration 授权后实现 Gate repair generation，再按 `feature_list.json.verification` 全项重验后决定是否转 `passing`。
+- **本轮相关未提交文件**：`golish-agent-runtime` Stage Team scheduler/call、`golish-sub-agents` executor parsing、`golish-db`/`golish-agent-kit`/`golish-agent-app` runtime-memory claim contracts、`golish` CLI V2 report、`scripts/run_tree.py` 与回归测试、`justfile`、`frontend/scripts/normalize-ts-rs-bindings.mjs` 及同步生成 bindings，以及对应模块卡、索引、`feature_list.json` 和本 progress。
+### 2026-07-16 · Active Recon 目标范围一次确认（实现中）
+
+- **本轮目标**：修复 Target Intel Gate PASS 后 UI 只显示 `Waiting for approval`、实际却因缺少可信精确目标而停住的问题。采用一次明确授权：展示当前 operation 的 provider-discovered target 列表，用户确认全部或子集后直接进入 EAS，不再弹第二个通用 phase approval。
+- **设计边界**：公司名继续只代表 engagement subject；provider discovery 不自动授权。只接受当前 operation/org/Target Intel window 的非空原样子集，新增、改写、空选、Skip、timeout、DB 错误、候选漂移全部 fail closed；direct EAS stage slice 仍要求预先可信目标。
+- **文档**：新增 `docs/design/2026-07-16-active-recon-target-scope-confirmation.md` 与 `docs/superpowers/plans/2026-07-16-active-recon-target-scope-confirmation.md`，并并入既有唯一 `in_progress` 父 feature，未创建第二个 active feature。
+- **验证约束**：用户明确要求不跑 `init.sh`。此前已启动的 init 在 fmt/check-fe 后进入 test-fe 时立即中断；本轮后续只跑 focused Rust/Vitest/format/diff checks，不跑 `just precommit` 或全量门禁，因此 feature 保持 `in_progress`。
+- **当前状态**：设计与实现计划已落盘，下一步先写 RED tests，再实现 repository transaction、orchestrator boundary 与前端状态语义。未调用外部 LLM/provider、未扫描真实目标、未改 migration、未 commit/stage/push。
+- **已完成实现**：`TargetIntel -> EAS` 先检查当前 operation/org 是否有本阶段 refreshed `asset_intel` row；有则展示该 org 当前完整 trusted + asset-intel active denominator。人工只能确认原样非空子集；DB 在 operation row lock 下重读并防 candidate drift，selected provider rows 原子升级为 `customer_provided/in`，未选 rows 改为 `out`，同事务写 operation-bound state marker 与 authorization audit。确认成功后直接进入 EAS，不再调用 generic `before_active_scan` approval。direct EAS 仍只有 trusted-target preflight，company-only resume 只接受同 operation marker 与当前 trusted set exact-match。
+- **前端语义**：新增 `waiting_target_scope` stage marker，显示 `Review scan targets` 而不是 `Waiting for approval`；继续复用不可 auto-confirm 的 `scope_review` 表，删除行代表缩小范围，新增/编辑由后端拒绝。
+- **新鲜 focused 验证**：
+  - `cargo nextest run -p golish-agent-kit -E 'test(active_recon_scope)'` → 3/3，run `45c51a52-9ef0-4161-a362-e0588a7c0ba7`。
+  - `cargo nextest run -p golish-agent-kit -E 'test(active_recon_scope) | test(pre_eas) | test(two_level_phase_gate) | test(direct_eas)'` → 12/12，run `54436c19-f787-49b4-9c5e-4a517861faf5`。
+  - `cargo nextest run -p golish-agent-app -E 'test(active_recon_scope)'` → 2/2，run `be716aab-0b61-42de-a5c1-9a2cf56f6e25`。
+  - AIChat target review/event 聚焦 Vitest → 72/72；affected Biome → exit 0。
+  - `cargo clippy -p golish-agent-kit -p golish-agent-app --lib --no-deps -- -D warnings`、两个 affected crate rustfmt check、`jq empty feature_list.json`、scoped/new-file diff check → exit 0。每次 Cargo 前均运行 `just space-guard`。
+- **未做 / 不能宣称**：没有运行 `init.sh`、`just precommit` 或全量测试；没有连接真实 embedded Postgres 做 transaction integration，也没有调用 provider/真实目标或发起 fresh GUI continuation。因此这里只证明编译、纯逻辑、SQL contract 与 UI 回归，不把父 feature 标为 passing。dev watcher 曾在 01:36 使用新代码完成重编译并成功启动 DB，但收尾检查时 Golish app process 已不在运行；用户需要重新打开应用，在原 task 发送“继续”即可验收，无需新建 task。
+- **提交记录**：未 commit、未 stage、未 push；未改 DB schema/migration。共享 dirty tree 其它改动未回滚或覆盖。
+
+### 2026-07-16 · Downstream Stage Team Company Controller 收敛（实现中）
+
+- **本轮目标**：修复 `target_intel` 使用 durable Company Controller / 链内 `update_plan` / DB-backed Team UI，而 EAS、Enumeration、Vuln 仍回落 legacy specialist 的真实产品分叉；把这三个按公司执行的后续阶段接入同一 Controller 合同并跑隔离 CLI 到闭环。
+- **已确认根因**：只有 `resources/harness/stages/target_intel/spec.json` 声明 `team_scheduler`；EAS、Enumeration、Vuln 均为 `null`。runtime 因而只为 Intel seed `leader:primary`，其余阶段走 legacy `Main Agent -> Specialist`；同时 `stage_team_executor_specialist` 还把所有 Controller/child role 硬编码成 `recon`，无法安全直接打开下游 rollout。
+- **设计边界**：新增 `docs/design/2026-07-16-stage-team-downstream-convergence.md` 与对应实现计划，并入现有唯一 `in_progress` 父 feature。只统一 EAS/Enumeration/Vuln；Candidate/Verification 保留 Wave/CandidateAttempt 调度，Post-exploit/Reporting/Cleanup 保留 typed scheduler。无 migration、不放宽 scope/Gate、不扫描真实外部目标。
+- **验证约束**：用户明确要求不运行 `init.sh`，并要求自行运行 CLI 直到闭环。本轮采用聚焦 TDD、scoped lint/format/type checks 与 ephemeral DB + localhost fixture CLI；未 commit/stage/push。
+- **已完成实现**：EAS/Enumeration/Vuln StageSpec 均开启 Company Controller，runtime 从 durable Unit frozen specialist 精确映射 `prober` / `enumerator` / `vuln_scanner`；Controller 可自行收口或动态派发本阶段 child，只有 Controller 拥有计划与 final submit。EAS/Enumeration/Vuln 纳入 Team stage admission；Gate PASS 后只有 Intel/EAS 走兼容 terminal coverage materializer，Enumeration/Vuln 保持 producer-owned authoritative outcomes。Controller park 后先停 heartbeat 再 drain child，消除假 lease-lost 警告。当前无 migration schema 将 Controller Gate repair 冻结为 1 轮，避免第二条 gap source 违反唯一约束。
+- **实跑才发现并修复的两个缺口**：`vuln_probe_anonymous_access` 的 server eligible endpoint 集合比通用 endpoint query 更窄，过去 Controller 只能猜 id 组合；现在 mismatch 保留 partial result 并返回排序后的 `eligible_endpoint_ids` / count / exact retry action。legacy `agent_logs.agent_type` 不接受 `vuln_scanner`；tracking bridge 现仅在 legacy telemetry 表将 `vuln_scanner` / `attack_analyst` / `candidate_verifier` 折叠为 `pentester`，runtime/UI 仍保留精确 role。
+- **前端对齐**：`StageRunOrgRows` 在 exact Team pointer 存在时对 Intel/EAS/Enumeration/Vuln 一律渲染 DB-backed `StageTeamRunView`，抑制 legacy Main Agent 卡；compact summary/detail 共用 stage agent label，Company Controller / Prober / Enumerator / Vuln Scanner 口径一致。
+- **TDD / 运行过的验证**：StageSpec RED `d74d4771-a281-4f46-b5d8-e649ed267085` → GREEN `c5eed411-47f4-4263-8860-30610ce8e124`，StageSpec focused 42/42（`f0f993a0-3fe2-4b3f-bc68-41269892cac8`）；runtime 聚焦 15/15（`dbae4668-9f00-4223-8e6e-267f265f47ba`）、27/27（`ac4e7b7a-3efb-44b3-b5a1-95134ca326d1`）、stage admission 3/3（`f85c3296-bd8c-4772-9ec7-2c279e860f28`）、Team wider 36/36（`2fff1b6a-7f02-4b26-a870-329f8975ca1a`）、latest `stage_team` 25/25（`39e5d633-e4d3-442c-ac17-c3e9b2b597e5`）；`golish-sub-agents` 197/197（`c583d23d-de0b-4cd9-b40c-c10c2ff468c3`）；Vuln bridge 32/32（`903811c2-be9b-4eef-9fbf-76c0e7b03bae`）；anonymous recovery RED compile → GREEN 1/1（`dd83cda7-7c57-4810-ac81-360d0bce37c6`）；Controller repair cap RED `e79557d4-9139-4408-9396-022394238633` → GREEN 1/1（`ef2ed890-6d1d-4c8d-8fa4-90c2b0cb622f`）；telemetry RED compile → GREEN 1/1（`3f72b3e1-100d-4483-9977-9e730bb1714d`）。Frontend tools/StageRunOrgRows/StageTeamRunView 39/39，`pnpm typecheck`、affected Biome、spec/feature JSON、scoped Clippy 与 `cargo build -p golish --bin golish` 均 exit 0。每次 Cargo 前均运行 `just space-guard`。
+- **最终聚焦门禁**：`cargo fmt --manifest-path backend/Cargo.toml --all -- --check` exit 0；`cargo clippy -p golish-agent-kit -p golish-agent-runtime -p golish-sub-agents -p golish-agent-app -p golish-pentest-app --all-targets -- -D warnings` exit 0（53.57s）；frontend tools/StageRunOrgRows/StageTeamRunView 39/39 + ToolCallSummary 9/9；`pnpm typecheck`、affected Biome 6 files、`jq empty` 四个 JSON、唯一 `in_progress` 断言与 `git diff --check` 均 exit 0。
+- **全仓 `just precommit` 结果**：实际执行 `just space-guard && just precommit`，`fmt` passed（3s）、`check-fe` passed（10s）、`test-fe` passed（20s）、`lint-rust` passed（60s）、`test-rust-all` passed（292s）；最后 `check-types` exit 1。差异仅为共享 dirty tree 中已有的 ts-rs 源码→generated 漂移：`AttackCandidateApprovalView.startBefore`、`AttackCandidateReviewDecisionRequest.startBefore`、`GeneratedAiEvent` / `GeneratedHarnessTraceKind` 的 Stage Team pointer、pending enrichment 字段与空格归一化。本 scope 未手改 generated IPC。随后以当前工作树为基线、仅在临时 `GIT_INDEX_FILE` 中执行 `just check-types` 已 exit 0，证明 Rust→TS 当前生成内容语义一致；真实 `.git/index` 前后 SHA-1 均为 `286d5ee695f602166e45fc967b0ed1331cb52000`，未 stage 任何文件。普通 precommit 仍会因这些未提交 generated diff 相对真实 index 而退出 1，不虚报该退出码。
+- **CLI 闭环 / 已记录证据**：最终使用当前编译 binary、fresh workspace `/private/tmp/golish-downstream-v2only-finalfix-20260716-bsYnCm`、仅绑定 `127.0.0.1:54610` 的 fixture，session `stage-run-2cebfd1b-87cf-4863-97b6-df263032aead`，operation `9599a356-58be-40f7-b34f-19754a607976`，CLI exit 0。报告为 EAS / Enumeration / Vuln 三阶段全部 PASS，Fleet 1/1 PASS；三次 `stage_run` 均 `scheduler=company_controller_v1, units=1, success=true`。`run_tree.py --full --db` 证明三个 Unit/Controller Worker 均 passed，frozen specialist 依次为 `prober` / `enumerator` / `vuln_scanner`，三个 durable submission + handoff 与 16 条 exact evidence 存在；Vuln 含 10 条 evidence-bound technique，anonymous access 产生 found evidence。最终 `run.log` 无 heartbeat loss、invalid agent enum、duplicate gap source、replay mismatch 或 Company Controller failure 签名。legacy telemetry DB 计数为 `primary/enumerator=4, primary/pentester=2, primary/prober=4`，证明折叠仅发生在 legacy 表。fixture 已停止，全程未接触外部目标。
+- **诊断跑说明**：前一条 workspace `/private/tmp/golish-downstream-v2only-telemetry-20260716-Pnhx4p`、session `stage-run-e6f6e5dc-2209-4981-9dd0-d2dd2ae6e27b` 在确定 anonymous eligible-set、duplicate Controller gap 和手工再调用 seed epoch 问题后人工中断（exit 130），不算成功证据。本 slice 修复正常 Controller 一轮 repair 路径，没有宣称修复泛化的 terminal stage 手工重调用/resume seed 语义。
+- **提交记录**：未 commit、未 stage、未 push；未改 DB schema/migration/generated IPC；未运行 `init.sh`。
+- **已知风险 / 未解决**：这个 downstream slice 已闭环，但父 feature 仍包含 Candidate→Verification 更广的 recovery/migration/GUI DoD，因此继续保持唯一 `in_progress`。多于一轮的 Controller Gate repair 仍需用户单独批准向前 migration；泛化 terminal stage 手工重调用的 seed epoch continuation 不属于本次对齐范围。全仓唯一未绿门禁是上述跨 scope generated IPC 漂移，不影响本次 CLI/DB 闭环，但阻止父 feature 标 `passing`。
+- **下一步最佳动作**：将这个已验收的下游合同保持不动；后续回到父 feature 时，先对 Candidate/Verification 未完成 DoD 建立独立验收，不要再把 CandidateAttempt 强行改成普通 Company Controller UI。
+- **以下文件已修改但未提交（本 scope）**：三个 downstream stage specs；`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/{stage_run_call.rs,stage_team_scheduler.rs}`；`backend/crates/golish-agent-app/src/ai/tracking_bridge/records.rs`；`backend/crates/golish-pentest-app/src/pentest_bridge/anonymous_access.rs`；`frontend/lib/tools.ts`、`frontend/components/AIChatPanel/ToolCallSummary.tsx`、`frontend/components/Engagement/StageRunOrgRows.tsx` 及聚焦测试；对应 design/plan、模块卡、INDEX、`feature_list.json`、`agent-progress.md`。共享 dirty tree 中其它既有改动均未回滚或覆盖。
+
+### 2026-07-16 · Company Controller terminal progress / compact card 收敛
+
+- **本轮目标**：修复最新 `pentest-chat-1784137594582-1` 中 Target Intel 的 durable Team/Gate 已 PASS，但聊天里的 `Running specialist agents` 仍显示 `0/1 passed · 1 进行` 的矛盾状态；用户明确要求不运行 `init.sh`。
+- **根因与证据**：该 transcript 对 request `call_00_Omv441BijaCHd18Ky2nO4536` 只记录 `queued → running` 两帧 `stage_run_org_progress`，随后直接得到 `stage_run {success:true, passed:true, team_units_passed:1}`、deliverable accepted 和 Gate PASS。DB read model 已显示 Unit/Controller Worker passed。当前 Company Controller scheduler 在 success match 里只递增 aggregate passed count，没有发 terminal per-org progress；前端 compact card 又只从最后一帧 progress tally active worker，因此绿勾与“进行”并存。
+- **已完成实现**：`stage_run_call.rs` 对每个 runnable Controller result 用同一 exact operation/execution/unit/org/request pointer 发 terminal progress：final-sealed 发 `passed`，non-pass/error 发 `blocked`；保留 DB-backed `StageTeamRunView` 作为 authoritative truth。`tool-handlers.ts` 在 main `stage_run` terminal result 明确 `success=true, passed=true` 时把同 request snapshot 的残留非-passed rows 收敛为 passed，保证旧 transcript event replay。`ToolCallSummary.tsx` 还从已持久化 terminal result 做 render-time fallback，使不重新 replay handler 的旧 session/hot reload 也立即显示 `1/1 passed`、清掉 active/queued/blocked。普通 prose、失败 result 或非-main source均不能推导 PASS。
+- **TDD / 已记录证据**：新增 frontend replay regression 后先 RED：`tool-handlers.test.ts` 8 tests 中 1 failed，`upsertStageRunRow` 调用数 0；实现后 focused frontend 5 files 36/36 passed，TypeScript `tsc --noEmit` exit 0，Biome 4 files exit 0。新增 backend terminal event identity regression；`cargo nextest run -p golish-agent-runtime -E 'test(company_controller_)' --status-level fail` → 10/10 passed、407 skipped，run `e6d117cb-e86a-429e-af11-d2bd53e0f44c`。`cargo clippy -p golish-agent-runtime --lib --no-deps -- -D warnings`、`cargo fmt --manifest-path backend/Cargo.toml --all -- --check` 均 exit 0；每次 Cargo 前均执行 `just space-guard`。收尾实际执行 `just space-guard && just precommit`：fmt、check-fe、test-fe、lint-rust、test-rust-all 均 passed，其中全量 Rust 测试耗时 552s；随后 `check-types` exit 1，原因是共享 dirty tree 中既有/并发的生成类型漂移（`AttackCandidateApprovalView.startBefore`、`AttackCandidateReviewDecisionRequest.startBefore`、`GeneratedAiEvent` / `GeneratedHarnessTraceKind` 新 Stage Team / attack consolidation 字段与 ts-rs 空格归一化），不属于本轮 terminal-progress scope。未回退或手改这些 generated IPC 文件。
+- **提交记录**：未 commit、未 stage、未 push；未改 DB schema/migration、generated IPC 或外部服务/目标。
+- **已知风险 / 未解决**：尚未用 fresh GUI run 生成一条新 terminal progress 做现场验收；现有截图对应的已完成 run 应在前端热更新/重载后由 render-time fallback 立即纠正。父 Stage Team/Candidate→Verification 功能仍包含其它未完成 DoD，因此 `feature_list.json` 继续保持唯一 `in_progress`，不虚报整项 passing。完整 `just precommit` 的唯一未绿步骤是上述跨 scope generated type drift；在其所有者同步/归一化生成文件前，当前共享工作树不能宣称全仓门禁通过。
+- **下一步最佳动作**：刷新/重开当前应用并回到旧 Target Intel 工具卡，应看到 `1/1 passed` 且无“进行”；后续新 Company Controller run 的 transcript 还应新增 exact `status:"passed"` terminal progress。若现场仍不一致，先检查该消息块持久化的 `tc.result` 是否保留 `passed:true`，不要修改 Gate/DB truth。
+- **以下文件已修改但未提交（本 scope）**：`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`、`frontend/services/ai-events/tool-handlers.ts`、`frontend/services/ai-events/tool-handlers.test.ts`、`frontend/components/AIChatPanel/ToolCallSummary.tsx`、`frontend/components/AIChatPanel/ToolCallSummary.test.ts`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/frontend/components.md`、`docs/modules/INDEX.md`、`feature_list.json`、`agent-progress.md`。共享 dirty tree 其它既有改动均未回滚或覆盖。

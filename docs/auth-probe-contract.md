@@ -1,5 +1,7 @@
 # `auth_probe` Tool Contract
 
+> Superseded by [Vuln Observation → Candidate → Verification 闭环](design/2026-07-14-vuln-observation-candidate-closure.md). The legacy tool and crate were removed; this document is retained for historical context.
+
 Stage 2 of the API security pipeline (after `js_extract_apis`).
 Probes a list of API endpoints for **未授权访问 / IDOR / 越权** issues.
 

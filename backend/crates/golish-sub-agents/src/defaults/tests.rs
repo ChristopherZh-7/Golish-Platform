@@ -405,26 +405,29 @@ fn test_enumerator_prompt_is_content_enum() {
 }
 
 #[test]
-fn test_vuln_scanner_has_formulaic_wrapper_only() {
+fn test_vuln_scanner_has_only_the_three_formulaic_wrappers() {
     let agents = create_default_sub_agents();
     let vuln_scanner = agents.iter().find(|a| a.id == "vuln_scanner").unwrap();
 
     assert!(has_tool(vuln_scanner, "stage_worklist_status"));
     assert!(has_tool(vuln_scanner, "stage_worklist_next"));
-    assert!(has_tool(vuln_scanner, "vuln_run_formulaic_sweep"));
-    assert!(has_tool(vuln_scanner, "wait_for_background_jobs"));
-    assert!(has_tool(vuln_scanner, "check_job"));
-    assert!(has_tool(vuln_scanner, "kill_job"));
+    assert!(has_tool(vuln_scanner, "vuln_nuclei_general"));
+    assert!(has_tool(vuln_scanner, "vuln_nuclei_fingerprint_targeted"));
+    assert!(has_tool(vuln_scanner, "vuln_probe_anonymous_access"));
     assert!(has_tool(vuln_scanner, "list_recent_evidence"));
     assert!(has_tool(vuln_scanner, "check_stage_asset_coverage"));
     assert!(has_tool(vuln_scanner, "query_target_data"));
     assert!(has_tool(vuln_scanner, "submit_stage_deliverable"));
-    assert!(has_tool(vuln_scanner, "record_finding"));
+    assert!(!has_tool(vuln_scanner, "record_finding"));
     assert!(has_tool(vuln_scanner, "search_knowledge_base"));
     assert!(has_tool(vuln_scanner, "read_knowledge"));
 
     assert!(!has_tool(vuln_scanner, "pentest_run"));
     assert!(!has_tool(vuln_scanner, "pentest_list_tools"));
+    assert!(!has_tool(vuln_scanner, "nuclei"));
+    assert!(!has_tool(vuln_scanner, "wait_for_background_jobs"));
+    assert!(!has_tool(vuln_scanner, "check_job"));
+    assert!(!has_tool(vuln_scanner, "kill_job"));
     assert!(!has_tool(vuln_scanner, "list_in_scope_targets"));
     assert!(!has_tool(vuln_scanner, "list_attack_surface_seeds"));
     assert!(!has_tool(vuln_scanner, "manage_targets"));
@@ -438,14 +441,25 @@ fn test_vuln_scanner_prompt_is_wrapper_based() {
     assert!(prompt.contains("vuln_triage"));
     assert!(prompt.contains("stage_worklist_status"));
     assert!(prompt.contains("stage_worklist_next"));
-    assert!(prompt.contains("vuln_run_formulaic_sweep(targets=[...]"));
-    assert!(prompt.contains("wait_for_background_jobs"));
+    assert!(prompt.contains("vuln_nuclei_general"));
+    assert!(prompt.contains("vuln_nuclei_fingerprint_targeted"));
+    assert!(prompt.contains("vuln_probe_anonymous_access"));
+    assert!(prompt.contains("WSTG-ATHN-04"));
+    assert!(prompt.contains("reviewed_endpoint_ids"));
+    assert!(prompt.contains("selected_probes"));
+    assert!(prompt.contains("query_values"));
+    assert!(prompt.contains("potentially sensitive endpoint"));
+    assert!(prompt.contains("Do not blindly probe every endpoint"));
+    assert!(
+        prompt.contains("Do not pass per-endpoint URLs, methods, headers, cookies, tokens, bodies")
+    );
+    assert!(prompt.contains("GOLISH-NDAY"));
+    assert!(prompt.contains("foreground"));
     assert!(prompt.contains("check_stage_asset_coverage"));
     assert!(prompt.contains("ready_to_submit=true"));
     assert!(prompt.contains("Do NOT call pentest_run"));
     assert!(prompt.contains("nuclei"));
-    assert!(prompt.contains("sqlmap"));
-    assert!(prompt.contains("wpscan"));
+    assert!(!prompt.contains("wait_for_background_jobs"));
     assert!(prompt.contains("The gate reads the DATABASE"));
     assert!(!prompt.contains("list_in_scope_targets first"));
 }
@@ -469,7 +483,8 @@ fn candidate_verifier_has_exact_closed_tool_surface() {
     for forbidden in [
         "pentest_run",
         "record_finding",
-        "vuln_run_formulaic_sweep",
+        "vuln_nuclei_general",
+        "vuln_nuclei_fingerprint_targeted",
         "wait_for_background_jobs",
         "check_job",
         "kill_job",
