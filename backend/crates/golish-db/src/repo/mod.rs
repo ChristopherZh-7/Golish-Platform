@@ -54,6 +54,7 @@ pub mod objective_attempts;
 pub mod operation_org_scope;
 pub mod operation_scope_decisions;
 pub mod operation_state;
+pub mod operation_turns;
 pub mod operator_principals;
 pub mod org_stage_completions;
 pub mod organization_deletion_jobs;

@@ -1256,6 +1256,211 @@ fn initial_history_phase04(user_message_text: &str) -> Vec<Message> {
     }]
 }
 
+#[derive(Default)]
+struct OperatorRecoveryStageRunExecutor {
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl crate::agentic_loop::McpToolExecutor for OperatorRecoveryStageRunExecutor {
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        _args: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)> {
+        self.calls.lock().unwrap().push(tool_name.to_string());
+        (tool_name == "stage_run").then(|| {
+            (
+                serde_json::json!({
+                    "gaps": [{
+                        "code": "STAGE_TEAM_OPERATOR_RECOVERY_REQUIRED",
+                        "recovery_required_workers": 1,
+                    }],
+                    "operator_recovery_required": true,
+                    "passed": false,
+                    "retry_budget_exhausted": true,
+                    "runtime_control": {
+                        "kind": "halt_current_request",
+                        "reason": "operator_recovery_required",
+                    },
+                    "scheduler": "company_controller_v1",
+                    "stage": "external_attack_surface",
+                }),
+                true,
+            )
+        })
+    }
+}
+
+large_stack_async_test!(
+    test_headless_stage_run_operator_recovery_ends_current_request,
+    {
+        let test_ctx = TestContextBuilder::new()
+            .agent_mode(AgentMode::AutoApprove)
+            .build()
+            .await;
+        let client = test_llm_client();
+        let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+        let executor = Arc::new(OperatorRecoveryStageRunExecutor::default());
+        ctx.custom_tool_executor = Some(executor.clone());
+        ctx.harness_stage = Some(golish_agent_kit::harness::StageKind::ExternalAttackSurface);
+        ctx.harness_forced_tool = Some("stage_run".to_string());
+        ctx.additional_tool_definitions = vec![rig::completion::ToolDefinition {
+            name: "stage_run".to_string(),
+            description: "Headless stage scheduler fixture".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"orgs": {"type": "array"}},
+                "required": ["orgs"],
+            }),
+        }];
+
+        // Response two deliberately reproduces the live bug: if the runtime asks
+        // the model for another completion after the authoritative BLOCK, it tries
+        // coverage inspection, a plan mutation and a stage submission.
+        let model = MockCompletionModel::new(vec![
+            MockResponse::tool_call("stage_run", serde_json::json!({"orgs": []})),
+            MockResponse::tool_calls(vec![
+                MockToolCall::new("check_stage_asset_coverage", serde_json::json!({})),
+                MockToolCall::new(
+                    "update_plan",
+                    serde_json::json!({
+                        "plan": [{"step": "bypass blocked scheduler", "status": "in_progress"}],
+                    }),
+                ),
+                MockToolCall::new(
+                    "submit_stage_deliverable",
+                    serde_json::json!({"stage": "external_attack_surface"}),
+                ),
+            ]),
+            MockResponse::text("BUG: the post-block model turn ran"),
+        ]);
+
+        let result = run_agentic_loop_generic(
+            &model,
+            "Call stage_run once.",
+            initial_history_phase04("继续"),
+            test_sub_agent_context(),
+            &ctx,
+        )
+        .await
+        .expect("headless operator-recovery turn should return cleanly");
+
+        assert_eq!(
+            model.call_count(),
+            1,
+            "operator recovery is terminal for this top-level request; no second model completion"
+        );
+        assert_eq!(
+            executor.calls.lock().unwrap().as_slice(),
+            &["stage_run".to_string()],
+            "no post-block tool may execute"
+        );
+        assert!(
+            result.0.is_empty(),
+            "the runtime must not fabricate model prose after the tool result"
+        );
+    }
+);
+
+#[derive(Default)]
+struct CompanyControllerBlockedStageRunExecutor {
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl crate::agentic_loop::McpToolExecutor for CompanyControllerBlockedStageRunExecutor {
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        _args: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)> {
+        self.calls.lock().unwrap().push(tool_name.to_string());
+        (tool_name == "stage_run").then(|| {
+            (
+                serde_json::json!({
+                    "gaps": [{
+                        "code": "COMPANY_CONTROLLER_FAILED",
+                        "detail": "bounded Gate repair ended blocked",
+                    }],
+                    "operator_recovery_required": false,
+                    "passed": false,
+                    "retry_budget_exhausted": true,
+                    "runtime_control": {
+                        "kind": "halt_current_request",
+                        "reason": "company_controller_blocked",
+                    },
+                    "scheduler": "company_controller_v1",
+                    "stage": "external_attack_surface",
+                }),
+                true,
+            )
+        })
+    }
+}
+
+large_stack_async_test!(
+    test_headless_company_controller_block_ends_current_request,
+    {
+        let test_ctx = TestContextBuilder::new()
+            .agent_mode(AgentMode::AutoApprove)
+            .build()
+            .await;
+        let client = test_llm_client();
+        let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+        let executor = Arc::new(CompanyControllerBlockedStageRunExecutor::default());
+        ctx.custom_tool_executor = Some(executor.clone());
+        ctx.harness_stage = Some(golish_agent_kit::harness::StageKind::ExternalAttackSurface);
+        ctx.harness_forced_tool = Some("stage_run".to_string());
+        ctx.additional_tool_definitions = vec![rig::completion::ToolDefinition {
+            name: "stage_run".to_string(),
+            description: "Headless stage scheduler fixture".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"orgs": {"type": "array"}},
+                "required": ["orgs"],
+            }),
+        }];
+
+        let model = MockCompletionModel::new(vec![
+            MockResponse::tool_call("stage_run", serde_json::json!({"orgs": []})),
+            MockResponse::tool_calls(vec![
+                MockToolCall::new("check_stage_asset_coverage", serde_json::json!({})),
+                MockToolCall::new(
+                    "submit_stage_deliverable",
+                    serde_json::json!({"stage": "external_attack_surface"}),
+                ),
+            ]),
+            MockResponse::text("BUG: the post-block model turn ran"),
+        ]);
+
+        let result = run_agentic_loop_generic(
+            &model,
+            "Call stage_run once.",
+            initial_history_phase04("继续"),
+            test_sub_agent_context(),
+            &ctx,
+        )
+        .await
+        .expect("headless Company Controller blocked turn should return cleanly");
+
+        assert_eq!(
+            model.call_count(),
+            1,
+            "ordinary Company Controller block is terminal for this top-level request"
+        );
+        assert_eq!(
+            executor.calls.lock().unwrap().as_slice(),
+            &["stage_run".to_string()],
+            "no post-block tool may execute"
+        );
+        assert!(
+            result.0.is_empty(),
+            "the runtime must not fabricate model prose after the tool result"
+        );
+    }
+);
+
 #[tokio::test]
 async fn test_agentic_loop_simple_text_response() {
     // Test: Model returns text only, loop completes with that response

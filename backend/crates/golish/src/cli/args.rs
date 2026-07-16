@@ -112,8 +112,9 @@ pub struct Args {
     #[arg(long, value_name = "STAGE", requires = "stage_run_resume")]
     pub resume_to: Option<String>,
 
-    /// Explicitly assert that a `running` task is an orphan left by a dead
-    /// process. Requires exact expected identities; never inferred from age.
+    /// Backward-compatible exact-identity assertion for a `running` task.
+    /// Durable resume no longer downgrades it to `waiting`; the shared open-Turn
+    /// claim fences the continuation directly.
     #[arg(long, requires = "stage_run_resume")]
     pub allow_orphan_running: bool,
 

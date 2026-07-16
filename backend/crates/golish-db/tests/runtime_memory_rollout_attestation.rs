@@ -571,11 +571,20 @@ async fn migration_backfill_rehydrates_missing_dual_worker_samples() {
     // only the old binary's no-op equivalent and removes it before migration.
     sqlx::raw_sql(
         r#"CREATE FUNCTION lock_execution_rollout_pair()
-           RETURNS VOID AS $$ BEGIN RETURN; END; $$ LANGUAGE plpgsql;"#,
+           RETURNS VOID AS $$ BEGIN RETURN; END; $$ LANGUAGE plpgsql;
+           CREATE TABLE operation_turns (
+               id UUID PRIMARY KEY,
+               operation_id UUID NOT NULL REFERENCES operation_state(operation_id) ON DELETE CASCADE,
+               ordinal BIGINT NOT NULL,
+               trigger_input TEXT NOT NULL,
+               status TEXT NOT NULL,
+               started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+               terminal_at TIMESTAMPTZ
+           );"#,
     )
     .execute(&pool)
     .await
-    .expect("install pre-attestation pair-lock compatibility stub");
+    .expect("install pre-attestation repository compatibility stubs");
     let matching = create_admitted_worker_in_pool(&pool, "upgrade-matching").await;
     install_pre_attestation_worker_as_legacy(&pool, matching, "upgrade-matching").await;
     let missing = create_admitted_worker_in_pool(&pool, "upgrade-missing").await;

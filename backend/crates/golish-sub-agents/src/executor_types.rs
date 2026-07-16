@@ -141,6 +141,17 @@ pub enum BoundWorkerRuntimeMemorySource {
 }
 
 impl BoundWorkerChainContext {
+    /// Whether this binding belongs to an ordinary durable Stage Team child.
+    ///
+    /// Candidate verifiers and Company Controllers have their own terminal
+    /// contracts. Only ordinary children must return `stage_worker_output.v1`
+    /// through the generic `submit_result` barrier.
+    pub fn is_stage_team_child(&self) -> bool {
+        self.candidate_attempt.is_none()
+            && self.stage_team_leader.is_none()
+            && !self.return_on_first_durable_stage_submission
+    }
+
     pub fn current_checkpoint_version(&self) -> i64 {
         self.checkpoint_version.load(Ordering::SeqCst)
     }

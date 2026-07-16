@@ -20,20 +20,38 @@ use uuid::Uuid;
 use crate::ai::AgentBridge;
 use crate::state::AgentState;
 
-pub(super) async fn select_exact_resume_runtime_source(
+#[derive(Debug, Clone, Copy)]
+/// Whole-record runtime source plus the opaque open-Turn witness selected for
+/// one exact continuation attempt.
+pub struct SelectedExactResume {
+    /// Runtime-memory record that every resume-time read must remain pinned to.
+    pub source: RuntimeMemoryRecordSource,
+    open_turn_id: Uuid,
+}
+
+/// Select one complete runtime record and capture its current open Turn before
+/// any caller attempts the durable continuation claim.
+pub async fn select_exact_resume_runtime_source(
     pool: &sqlx::PgPool,
     operation_id: Uuid,
     session_id: Uuid,
-) -> anyhow::Result<RuntimeMemoryRecordSource> {
+) -> anyhow::Result<SelectedExactResume> {
     use golish_db::repo::runtime_memory_tx::RuntimeMemoryRecordSource as DbSource;
 
+    // Capture the open Turn first. If another caller advances it while the
+    // whole-record source is decoded below, the claim CAS still carries this
+    // prior witness and fails instead of claiming that caller's successor.
+    let open_turn = golish_db::repo::operation_turns::get_open(pool, operation_id)
+        .await
+        .context("load exact open operation Turn")?
+        .ok_or_else(|| anyhow::anyhow!("resume refused: operation has no open durable Turn"))?;
     let source =
         golish_db::repo::tasks::exact_resumable_runtime_source(pool, operation_id, session_id)
             .await
             .context("select one complete runtime-memory source for exact resume")?
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "resume refused: operation has no complete idle runtime-memory source"
+                    "resume refused: operation has no complete resumable runtime-memory source"
                 )
             })?;
     let source = match source {
@@ -80,18 +98,24 @@ pub(super) async fn select_exact_resume_runtime_source(
             }
         }
     }
-    Ok(source)
+    Ok(SelectedExactResume {
+        source,
+        open_turn_id: open_turn.id,
+    })
 }
 
-pub(super) async fn claim_exact_resume_runtime_source(
+/// Atomically close the selected prior Turn, append its successor, and claim
+/// the exact task/source for execution.
+pub async fn claim_exact_resume_runtime_source(
     pool: &sqlx::PgPool,
     operation_id: Uuid,
     session_id: Uuid,
-    source: RuntimeMemoryRecordSource,
+    selected: SelectedExactResume,
+    trigger_input: &str,
 ) -> anyhow::Result<()> {
     use golish_db::repo::runtime_memory_tx::RuntimeMemoryRecordSource as DbSource;
 
-    let source = match source {
+    let source = match selected.source {
         RuntimeMemoryRecordSource::Legacy => DbSource::Legacy,
         RuntimeMemoryRecordSource::V2 => DbSource::V2,
         RuntimeMemoryRecordSource::LegacyFallback => DbSource::LegacyFallback,
@@ -101,6 +125,9 @@ pub(super) async fn claim_exact_resume_runtime_source(
         operation_id,
         session_id,
         source,
+        selected.open_turn_id,
+        Uuid::new_v4(),
+        trigger_input,
     )
     .await
     .context("atomically claim exact runtime-memory resume source")?;
@@ -209,7 +236,7 @@ pub(crate) async fn start_trusted_candidate_review_resume(
     {
         anyhow::bail!("Candidate resume operation/project/profile/stage identity drifted");
     }
-    let resume_source = select_exact_resume_runtime_source(
+    let selected_resume = select_exact_resume_runtime_source(
         state.db_pool.as_ref(),
         claim.operation_id,
         claim.session_id,
@@ -231,9 +258,11 @@ pub(crate) async fn start_trusted_candidate_review_resume(
         state.db_pool.as_ref(),
         claim.operation_id,
         claim.session_id,
-        resume_source,
+        selected_resume,
+        "Resume verification after durable Candidate review.",
     )
     .await?;
+    let resume_source = selected_resume.source;
     orchestrator.set_resume_runtime_memory_source(resume_source);
     orchestrator.set_resume_task_preclaimed(true);
     bridge.set_resume_runtime_memory_source(resume_source).await;
@@ -264,4 +293,30 @@ pub(crate) async fn start_trusted_candidate_review_resume(
         }
     });
     Ok(bridge)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn exact_resume_selection_captures_open_turn_before_source_decode() {
+        let source = include_str!("operation_resume.rs");
+        let body = source
+            .split_once("pub async fn select_exact_resume_runtime_source(")
+            .expect("shared resume selector")
+            .1
+            .split_once("pub async fn claim_exact_resume_runtime_source(")
+            .expect("shared resume claim")
+            .0;
+        let open_turn = body
+            .find("operation_turns::get_open(")
+            .expect("capture open Turn witness");
+        let runtime_source = body
+            .find("tasks::exact_resumable_runtime_source(")
+            .expect("decode whole-record runtime source");
+
+        assert!(
+            open_turn < runtime_source,
+            "a concurrent caller must not advance the Turn before this selector captures its witness"
+        );
+    }
 }

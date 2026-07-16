@@ -46,10 +46,11 @@ use golish_agent_kit::db_traits::{
     FinishWorkerAttempt, LoadInheritedStageHandoffs, LoadStageTeamBarrier, LoadWorkerCheckpoint,
     OrgScopeUnit, ParkStageTeamLeader, RecoverCandidateTerminalIntent,
     ReopenStageTeamLeaderAfterGateBlock, ReopenedStageTeamLeaderAfterGateBlockView,
-    RetryStageWorker, RuntimeExpiredWorkerDisposition, RuntimeMemoryRecordSource,
-    RuntimeMemoryRepository, RuntimeStageHandoffView, RuntimeStageUnitStatus, RuntimeWorkerFence,
-    RuntimeWorkerStatus, SeedStageRuntime, SeededStageRuntime, SeededStageTeamRuntime,
-    StageAssetWaveView, TechniqueOutcomeFact, TerminalizeCandidateIntent,
+    RetryStageWorker, RuntimeExpiredWorkerDisposition, RuntimeMemoryError,
+    RuntimeMemoryRecordSource, RuntimeMemoryRepository, RuntimeStageHandoffView,
+    RuntimeStageUnitStatus, RuntimeWorkerFence, RuntimeWorkerStatus, SeedStageRuntime,
+    SeededStageRuntime, SeededStageTeamRuntime, StageAssetWaveView, StageTeamBarrierView,
+    TechniqueOutcomeFact, TerminalizeCandidateIntent,
 };
 use golish_agent_kit::harness::attack_execution::CandidateManifestSnapshot;
 use golish_agent_kit::harness::handoff_catalog::{
@@ -84,7 +85,9 @@ use golish_sub_agents::{
 
 use super::super::super::worker_lease::{WorkerLeaseSupervisor, WORKER_LEASE_TTL_SECS};
 use super::super::super::worker_tool_lifecycle::RuntimeWorkerToolLifecycle;
-use super::super::super::{AgenticLoopContext, StageRunReentryGuard, ToolExecutionResult};
+use super::super::super::{
+    emit_to_frontend, AgenticLoopContext, StageRunReentryGuard, ToolExecutionResult,
+};
 use super::candidate_verification::claim_candidate_verifier;
 use super::stage_team_scheduler::{
     build_stage_team_seed, controller_final_objective, sha256_json,
@@ -389,6 +392,23 @@ enum StageTeamChildExecution {
     Completed,
     RetryScheduled,
     Exhausted,
+}
+
+fn emit_stage_team_child_failure(
+    ctx: &AgenticLoopContext<'_>,
+    agent_id: &str,
+    parent_request_id: &str,
+    failure_code: &str,
+    detail: &str,
+) {
+    emit_to_frontend(
+        ctx,
+        AiEvent::SubAgentError {
+            agent_id: agent_id.to_string(),
+            error: format!("{failure_code}: {detail}"),
+            parent_request_id: parent_request_id.to_string(),
+        },
+    );
 }
 
 async fn retry_stage_team_child_attempt(
@@ -3101,6 +3121,10 @@ fn blocked_stage_run_reentry(
             "stage": stage.as_str(),
             "reentry_blocked": true,
             "retry_budget_exhausted": true,
+            "runtime_control": {
+                "kind": "halt_current_request",
+                "reason": "stage_run_reentry_blocked",
+            },
             "gaps": [],
             "summary": format!(
                 "stage_run {}: bounded retry budget was already exhausted for this stage in the same top-level request; no specialist was dispatched. End this request with the existing BLOCK details. A separate user request or session may resume the saved worker chain with a fresh bounded budget.",
@@ -4718,6 +4742,17 @@ fn stage_team_worker_parent_request_id(
     format!("{team_parent_request_id}::worker:{worker_run_id}")
 }
 
+fn stage_team_child_parent_request_id(
+    durable_dispatch_parent_request_id: Option<&str>,
+    team_parent_request_id: &str,
+    worker_run_id: uuid::Uuid,
+) -> String {
+    let parent_request_id = durable_dispatch_parent_request_id
+        .filter(|request_id| !request_id.trim().is_empty())
+        .unwrap_or(team_parent_request_id);
+    stage_team_worker_parent_request_id(parent_request_id, worker_run_id)
+}
+
 fn stage_team_leader_parent_request_id(
     team_parent_request_id: &str,
     worker_run_id: uuid::Uuid,
@@ -4729,6 +4764,61 @@ fn stage_team_leader_parent_request_id(
 enum CompanyControllerTurn {
     Dispatched,
     PrepareFinal,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Company Controller is waiting on {recovery_required_workers} outcome-unknown child tool(s) that require explicit operator recovery"
+)]
+struct CompanyControllerOperatorRecoveryRequired {
+    recovery_required_workers: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompanyControllerWaitingAction {
+    DrainChildren,
+    OperatorRecoveryRequired { workers: i64 },
+    NoRunnableChild,
+}
+
+fn company_controller_waiting_action(
+    barrier: &StageTeamBarrierView,
+) -> CompanyControllerWaitingAction {
+    if barrier.recovery_required_workers > 0 {
+        CompanyControllerWaitingAction::OperatorRecoveryRequired {
+            workers: barrier.recovery_required_workers,
+        }
+    } else if barrier.live_workers > 0 || barrier.retry_pending_work_items > 0 {
+        CompanyControllerWaitingAction::DrainChildren
+    } else {
+        CompanyControllerWaitingAction::NoRunnableChild
+    }
+}
+
+fn company_controller_waiting_error(barrier: &StageTeamBarrierView) -> anyhow::Error {
+    match company_controller_waiting_action(barrier) {
+        CompanyControllerWaitingAction::OperatorRecoveryRequired { workers } => {
+            CompanyControllerOperatorRecoveryRequired {
+                recovery_required_workers: workers,
+            }
+            .into()
+        }
+        CompanyControllerWaitingAction::DrainChildren => anyhow::anyhow!(
+            "Company Controller has live child WorkItems, but none were claimable by this scheduler"
+        ),
+        CompanyControllerWaitingAction::NoRunnableChild => {
+            anyhow::anyhow!("Company Controller is waiting but no runnable child WorkItem remains")
+        }
+    }
+}
+
+fn is_stage_team_operator_recovery_conflict(error: &RuntimeMemoryError) -> bool {
+    matches!(
+        error,
+        RuntimeMemoryError::Conflict {
+            code: "stage_team_worker_recovery_required"
+        }
+    )
 }
 
 fn company_controller_turn_from_result(
@@ -4881,6 +4971,35 @@ fn stage_team_worker_fence(worker: &ClaimedStageTeamWorker) -> RuntimeWorkerFenc
     }
 }
 
+fn interrupted_stage_team_tool_recovery_directive(checkpoint: &Value) -> Option<String> {
+    let recovery = checkpoint.get("stage_team_interrupted_tool_recovery")?;
+    let tool_name = recovery.get("tool_name").and_then(Value::as_str)?;
+    if recovery.get("kind").and_then(Value::as_str) != Some("resume_after_reconcile")
+        || recovery.get("schema_version").and_then(Value::as_u64) != Some(1)
+        || !matches!(
+            tool_name,
+            "enum_crawl_same_origin_urls"
+                | "eas_probe_http_liveness"
+                | "eas_discover_ports"
+                | "eas_fingerprint_services"
+                | "eas_fingerprint_web_stack"
+        )
+    {
+        return None;
+    }
+    Some(format!(
+        "SERVER INTERRUPTED-TOOL RECOVERY (deterministic): the prior bounded `{tool_name}` \
+         call was interrupted before its result landed. Its outcome is unknown and the old \
+         tool/lease have been durably fenced; do not assume it completed and do not replay its old \
+         arguments. Continue this exact Worker/message chain. Your first calls must refresh \
+         stage_worklist_status and then \
+         stage_worklist_next(prefer=[\"pending\",\"error\",\"partial\"]). Preserve every terminal \
+         cell and work only the returned current gaps. Re-run `{tool_name}` only if the refreshed \
+         worklist still assigns an exact in-scope gap to that capability, then continue the \
+         authoritative producers and submit only when ready_to_submit=true."
+    ))
+}
+
 async fn execute_stage_team_child<M>(
     repository: Arc<dyn RuntimeMemoryRepository>,
     worker: ClaimedStageTeamWorker,
@@ -4898,12 +5017,18 @@ where
         !worker.claimed.work_item.is_aggregator,
         "stage child executor received the Company Controller WorkItem"
     );
-    let objective = child_objective_without_plan_ownership(stage_child_objective(
+    let mut objective = child_objective_without_plan_ownership(stage_child_objective(
         spec,
         organization_name,
         worker.claimed.work_item.organization_id,
         &worker.claimed.work_item,
     ));
+    if let Some(recovery_directive) =
+        interrupted_stage_team_tool_recovery_directive(&worker.claimed.worker.checkpoint)
+    {
+        objective.push_str("\n\n");
+        objective.push_str(&recovery_directive);
+    }
     let executor_specialist = stage_team_executor_specialist(
         &worker.claimed.work_item.role,
         worker.claimed.unit.specialist.as_deref(),
@@ -4914,14 +5039,11 @@ where
             worker.claimed.work_item.role
         )
     })?;
-    let worker_parent_request_id = worker
-        .claimed
-        .worker
-        .parent_request_id
-        .clone()
-        .unwrap_or_else(|| {
-            stage_team_worker_parent_request_id(parent_request_id, worker.claimed.worker.id)
-        });
+    let worker_parent_request_id = stage_team_child_parent_request_id(
+        worker.claimed.worker.parent_request_id.as_deref(),
+        parent_request_id,
+        worker.claimed.worker.id,
+    );
     let sub_args = json!({"task": objective});
     let result = execute_sub_agent_call_with_bound(
         &sub_agent_tool_for_specialist(executor_specialist),
@@ -4955,6 +5077,13 @@ where
         }
     };
     if let Some(failure_code) = failure_code {
+        emit_stage_team_child_failure(
+            ctx,
+            executor_specialist,
+            &worker_parent_request_id,
+            failure_code,
+            "stage child execution failed before a valid business output was available",
+        );
         return retry_stage_team_child_attempt(
             repository,
             &worker,
@@ -4971,6 +5100,13 @@ where
     ) {
         Ok(output) => output,
         Err(violation) => {
+            emit_stage_team_child_failure(
+                ctx,
+                executor_specialist,
+                &worker_parent_request_id,
+                &violation.failure_code,
+                &violation.detail,
+            );
             return retry_stage_team_child_attempt(
                 repository,
                 &worker,
@@ -5415,12 +5551,56 @@ where
                     ctx.llm.model_name,
                 ),
             })
-            .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Company Controller is waiting but no runnable child WorkItem remains"
-                )
-            })?;
+            .await;
+        let claimed = match claimed {
+            Ok(claimed) => claimed,
+            Err(ref error) if is_stage_team_operator_recovery_conflict(error) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let Some(claimed) = claimed else {
+            let barrier = repository
+                .load_stage_team_barrier(LoadStageTeamBarrier {
+                    operation_id: team.unit.operation_id,
+                    stage_execution_id: team.unit.stage_execution_id,
+                    stage_run_unit_id: team.unit.id,
+                    stage_team_plan_id: team.plan.id,
+                    dispatch_epoch: team.plan.dispatch_epoch,
+                })
+                .await?;
+            match company_controller_waiting_action(&barrier) {
+                CompanyControllerWaitingAction::OperatorRecoveryRequired { .. }
+                | CompanyControllerWaitingAction::NoRunnableChild => {
+                    return Err(company_controller_waiting_error(&barrier));
+                }
+                CompanyControllerWaitingAction::DrainChildren => {
+                    let completed = drain_company_controller_children(
+                        repository.clone(),
+                        tracker,
+                        &team,
+                        ctx,
+                        model,
+                        context,
+                        spec,
+                        parent_request_id,
+                        provider_permits.clone(),
+                    )
+                    .await?;
+                    if completed > 0 {
+                        continue;
+                    }
+                    let refreshed = repository
+                        .load_stage_team_barrier(LoadStageTeamBarrier {
+                            operation_id: team.unit.operation_id,
+                            stage_execution_id: team.unit.stage_execution_id,
+                            stage_run_unit_id: team.unit.id,
+                            stage_team_plan_id: team.plan.id,
+                            dispatch_epoch: team.plan.dispatch_epoch,
+                        })
+                        .await?;
+                    return Err(company_controller_waiting_error(&refreshed));
+                }
+            }
+        };
         team.unit = claimed.unit.clone();
         team.plan = claimed.plan.clone();
         let mut leader =
@@ -5723,6 +5903,9 @@ where
             }
             Err(error) => {
                 let detail = error.to_string();
+                let recovery_required_workers = error
+                    .downcast_ref::<CompanyControllerOperatorRecoveryRequired>()
+                    .map(|recovery| recovery.recovery_required_workers);
                 emit_stage_team_progress(
                     ctx,
                     spec,
@@ -5731,12 +5914,21 @@ where
                     "blocked",
                     Some(detail.clone()),
                 );
-                gaps.push(json!({
-                    "code": "COMPANY_CONTROLLER_FAILED",
-                    "detail": detail,
-                    "organization_id": organization_id,
-                    "parent_request_id": parent_request_id,
-                }));
+                gaps.push(match recovery_required_workers {
+                    Some(recovery_required_workers) => json!({
+                        "code": "STAGE_TEAM_OPERATOR_RECOVERY_REQUIRED",
+                        "detail": detail,
+                        "organization_id": organization_id,
+                        "parent_request_id": parent_request_id,
+                        "recovery_required_workers": recovery_required_workers,
+                    }),
+                    None => json!({
+                        "code": "COMPANY_CONTROLLER_FAILED",
+                        "detail": detail,
+                        "organization_id": organization_id,
+                        "parent_request_id": parent_request_id,
+                    }),
+                });
             }
         }
     }
@@ -5751,9 +5943,24 @@ where
             "detail": "all Company Controller units final-sealed, but the current operation completion ledger could not produce the aggregate closeout token",
         }));
     }
+    mark_company_controller_request_exhausted_on_final_gaps(
+        &ctx.stage_run_reentry_guard,
+        spec.kind,
+        &gaps,
+    );
     Ok(company_controller_scheduler_result(
         spec.kind, gaps, passed, pass_token, true,
     ))
+}
+
+fn mark_company_controller_request_exhausted_on_final_gaps(
+    guard: &StageRunReentryGuard,
+    stage: StageKind,
+    gaps: &[Value],
+) {
+    if !gaps.is_empty() {
+        guard.mark_exhausted(stage);
+    }
 }
 
 async fn company_controller_completion_scope_ids(ctx: &AgenticLoopContext<'_>) -> Vec<uuid::Uuid> {
@@ -5831,7 +6038,10 @@ fn company_controller_scheduler_result(
     pass_token: Option<String>,
     provider_dispatched: bool,
 ) -> ToolExecutionResult {
-    let success = gaps.is_empty() && pass_token.is_some();
+    let stage_passed = gaps.is_empty() && pass_token.is_some();
+    let operator_recovery_required = gaps.iter().any(|gap| {
+        gap.get("code").and_then(Value::as_str) == Some("STAGE_TEAM_OPERATOR_RECOVERY_REQUIRED")
+    });
     let closeout_claim = pass_token.as_ref().map(|token| {
         json!({
             "kind": STAGE_RUN_PASS_TOKEN_KIND,
@@ -5839,24 +6049,61 @@ fn company_controller_scheduler_result(
             "summary": token,
         })
     });
-    let summary = pass_token.as_ref().map(|token| {
-        format!(
+    let summary = if let Some(token) = pass_token.as_ref() {
+        Some(format!(
             "all Company Controller units final-sealed; close this stage with the exact server-authored closeout_claim carrying pass_token {token}"
+        ))
+    } else if operator_recovery_required {
+        Some(
+            "stage_run stopped on durable outcome-unknown child tool state; explicit operator recovery is required before the same Controller and child chain can continue"
+                .to_string(),
         )
-    });
+    } else if !gaps.is_empty() {
+        Some(format!(
+            "{} Company Controller unit(s) remain blocked after bounded repair; end this top-level request and continue the same Controller chain in a separate request",
+            gaps.len()
+        ))
+    } else {
+        None
+    };
+    let halt_reason = if operator_recovery_required {
+        Some("operator_recovery_required")
+    } else if !gaps.is_empty() {
+        Some("company_controller_blocked")
+    } else {
+        None
+    };
+    let next_action = if operator_recovery_required {
+        Some(
+            "Do not call stage_run or substitute direct tools again in this top-level request. Resolve the listed Stage Team operator recovery item from the DB-backed recovery control, then send a separate continue request to resume the same worker chain.",
+        )
+    } else if !gaps.is_empty() {
+        Some(
+            "Do not call stage_run or substitute direct tools again in this top-level request. Send a separate continue request to resume the same Controller chain from its durable Gate block.",
+        )
+    } else {
+        None
+    };
     ToolExecutionResult {
         value: json!({
             "closeout_claim": closeout_claim,
             "gaps": gaps,
-            "passed": success,
+            "next_action": next_action,
+            "operator_recovery_required": operator_recovery_required,
+            "passed": stage_passed,
             "pass_token": pass_token,
             "provider_dispatched": provider_dispatched,
+            "retry_budget_exhausted": halt_reason.is_some(),
+            "runtime_control": halt_reason.map(|reason| json!({
+                "kind": "halt_current_request",
+                "reason": reason,
+            })),
             "scheduler": "company_controller_v1",
             "stage": stage.as_str(),
             "summary": summary,
             "team_units_passed": passed,
         }),
-        success,
+        success: true,
     }
 }
 
@@ -9401,6 +9648,48 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_crawler_recovery_requires_worklist_first_on_same_chain() {
+        for tool_name in ["enum_crawl_same_origin_urls", "eas_fingerprint_services"] {
+            let checkpoint = serde_json::json!({
+                "previous_checkpoint": [],
+                "stage_team_interrupted_tool_recovery": {
+                    "kind": "resume_after_reconcile",
+                    "schema_version": 1,
+                    "tool_call_record_id": uuid::Uuid::from_u128(41),
+                    "tool_name": tool_name,
+                }
+            });
+
+            let directive = interrupted_stage_team_tool_recovery_directive(&checkpoint)
+                .unwrap_or_else(|| panic!("missing recovery directive for {tool_name}"));
+
+            assert!(directive.contains("Continue this exact Worker/message chain"));
+            assert!(directive.contains("stage_worklist_status"));
+            assert!(directive.contains("stage_worklist_next"));
+            assert!(directive.contains("do not replay its old arguments"));
+            assert!(directive.contains("Preserve every terminal cell"));
+            assert!(directive.contains("ready_to_submit=true"));
+        }
+    }
+
+    #[test]
+    fn interrupted_tool_recovery_directive_is_closed_to_unknown_or_high_risk_tools() {
+        assert!(interrupted_stage_team_tool_recovery_directive(&serde_json::json!([])).is_none());
+        for tool_name in ["route_probe_paths", "vuln_nuclei_general"] {
+            assert!(
+                interrupted_stage_team_tool_recovery_directive(&serde_json::json!({
+                    "stage_team_interrupted_tool_recovery": {
+                        "kind": "resume_after_reconcile",
+                        "schema_version": 1,
+                        "tool_name": tool_name,
+                    }
+                }))
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
     fn build_org_objective_pins_org_id_and_scope() {
         let unit = OrgUnit {
             id: "abc".to_string(),
@@ -10004,6 +10293,13 @@ mod tests {
         assert_eq!(blocked.value["passed"], false);
         assert_eq!(blocked.value["reentry_blocked"], true);
         assert_eq!(blocked.value["retry_budget_exhausted"], true);
+        assert_eq!(
+            blocked.value["runtime_control"],
+            json!({
+                "kind": "halt_current_request",
+                "reason": "stage_run_reentry_blocked",
+            })
+        );
 
         guard.reset();
         assert!(blocked_stage_run_reentry(StageKind::Enumeration, &guard).is_none());
@@ -10193,6 +10489,31 @@ mod tests {
     }
 
     #[test]
+    fn stage_team_claimed_siblings_keep_the_dispatch_parent_but_split_by_worker_run() {
+        let team_parent = "stage-run-call::team::org";
+        let dispatch_parent = "dispatch-tool-call";
+        let first = uuid::Uuid::from_u128(1);
+        let second = uuid::Uuid::from_u128(2);
+
+        assert_eq!(
+            stage_team_child_parent_request_id(Some(dispatch_parent), team_parent, first),
+            format!("{dispatch_parent}::worker:{first}")
+        );
+        assert_eq!(
+            stage_team_child_parent_request_id(Some(dispatch_parent), team_parent, second),
+            format!("{dispatch_parent}::worker:{second}")
+        );
+        assert_ne!(
+            stage_team_child_parent_request_id(Some(dispatch_parent), team_parent, first),
+            stage_team_child_parent_request_id(Some(dispatch_parent), team_parent, second)
+        );
+        assert_eq!(
+            stage_team_child_parent_request_id(None, team_parent, first),
+            format!("{team_parent}::worker:{first}")
+        );
+    }
+
+    #[test]
     fn company_controller_success_returns_aggregate_closeout_claim() {
         let pass_token = "server-derived-pass-token".to_string();
 
@@ -10233,6 +10554,189 @@ mod tests {
         assert_eq!(result.value["provider_dispatched"], false);
         assert_eq!(result.value["team_units_passed"], 2);
         assert_eq!(result.value["scheduler"], "company_controller_v1");
+    }
+
+    #[test]
+    fn company_controller_recovery_gap_requires_operator_and_stops_request_reentry() {
+        let result = company_controller_scheduler_result(
+            StageKind::Enumeration,
+            vec![json!({
+                "code": "STAGE_TEAM_OPERATOR_RECOVERY_REQUIRED",
+                "detail": "one outcome-unknown child tool requires an operator decision",
+                "organization_id": uuid::Uuid::new_v4(),
+                "recovery_required_workers": 1,
+            })],
+            0,
+            None,
+            true,
+        );
+
+        assert!(
+            result.success,
+            "a durable recovery blocker is a successful scheduler read, not a failed tool call"
+        );
+        assert_eq!(result.value["passed"], false);
+        assert_eq!(result.value["operator_recovery_required"], true);
+        assert_eq!(result.value["retry_budget_exhausted"], true);
+        assert_eq!(
+            result.value["runtime_control"],
+            json!({
+                "kind": "halt_current_request",
+                "reason": "operator_recovery_required",
+            })
+        );
+        assert!(result.value["next_action"]
+            .as_str()
+            .is_some_and(|next| next.contains("operator recovery")));
+    }
+
+    #[test]
+    fn company_controller_ordinary_gap_stops_the_current_request() {
+        let result = company_controller_scheduler_result(
+            StageKind::ExternalAttackSurface,
+            vec![json!({
+                "code": "COMPANY_CONTROLLER_FAILED",
+                "detail": "the stage Gate remains blocked after bounded Controller repair",
+                "organization_id": uuid::Uuid::new_v4(),
+            })],
+            0,
+            None,
+            true,
+        );
+
+        assert!(
+            result.success,
+            "a durable Gate block remains a successful read"
+        );
+        assert_eq!(result.value["passed"], false);
+        assert_eq!(result.value["operator_recovery_required"], false);
+        assert_eq!(result.value["retry_budget_exhausted"], true);
+        assert_eq!(
+            result.value["runtime_control"],
+            json!({
+                "kind": "halt_current_request",
+                "reason": "company_controller_blocked",
+            })
+        );
+    }
+
+    #[test]
+    fn company_controller_final_gaps_exhaust_only_the_current_request_guard() {
+        let current_request = StageRunReentryGuard::default();
+        let ordinary_gap = vec![json!({
+            "code": "COMPANY_CONTROLLER_FAILED",
+            "detail": "the deterministic Gate remains blocked",
+        })];
+
+        mark_company_controller_request_exhausted_on_final_gaps(
+            &current_request,
+            StageKind::ExternalAttackSurface,
+            &ordinary_gap,
+        );
+
+        assert!(current_request.is_exhausted(StageKind::ExternalAttackSurface));
+        assert!(
+            !StageRunReentryGuard::default().is_exhausted(StageKind::ExternalAttackSurface),
+            "a separate top-level request owns a fresh request-scoped guard"
+        );
+
+        let aggregate_token_gap = StageRunReentryGuard::default();
+        mark_company_controller_request_exhausted_on_final_gaps(
+            &aggregate_token_gap,
+            StageKind::ExternalAttackSurface,
+            &[json!({
+                "code": "COMPANY_CONTROLLER_AGGREGATE_PASS_TOKEN_UNAVAILABLE",
+            })],
+        );
+        assert!(aggregate_token_gap.is_exhausted(StageKind::ExternalAttackSurface));
+
+        let passed_request = StageRunReentryGuard::default();
+        mark_company_controller_request_exhausted_on_final_gaps(
+            &passed_request,
+            StageKind::ExternalAttackSurface,
+            &[],
+        );
+        assert!(!passed_request.is_exhausted(StageKind::ExternalAttackSurface));
+    }
+
+    #[test]
+    fn company_controller_waiting_barrier_preserves_operator_recovery_state() {
+        let barrier = StageTeamBarrierView {
+            stage_team_plan_id: uuid::Uuid::new_v4(),
+            dispatch_epoch: 0,
+            requests_closed_at: None,
+            required_work_items: 3,
+            terminal_required_work_items: 2,
+            live_workers: 0,
+            retry_pending_work_items: 0,
+            recovery_required_workers: 1,
+            missing_outputs: 1,
+            manifest_sha256: format!("sha256:{}", "4".repeat(64)),
+        };
+
+        let error = company_controller_waiting_error(&barrier);
+        let recovery = error
+            .downcast_ref::<CompanyControllerOperatorRecoveryRequired>()
+            .expect("waiting Controller exposes the durable recovery blocker");
+        assert_eq!(recovery.recovery_required_workers, 1);
+    }
+
+    #[test]
+    fn company_controller_waiting_action_drains_live_reconciled_child() {
+        let barrier = StageTeamBarrierView {
+            stage_team_plan_id: uuid::Uuid::new_v4(),
+            dispatch_epoch: 0,
+            requests_closed_at: None,
+            required_work_items: 2,
+            terminal_required_work_items: 0,
+            live_workers: 1,
+            retry_pending_work_items: 0,
+            recovery_required_workers: 0,
+            missing_outputs: 1,
+            manifest_sha256: format!("sha256:{}", "5".repeat(64)),
+        };
+
+        assert_eq!(
+            company_controller_waiting_action(&barrier),
+            CompanyControllerWaitingAction::DrainChildren,
+            "a parked Controller must drain the safe-reconciled queued child before it can be reclaimed"
+        );
+    }
+
+    #[test]
+    fn company_controller_waiting_action_keeps_operator_recovery_terminal() {
+        let barrier = StageTeamBarrierView {
+            stage_team_plan_id: uuid::Uuid::new_v4(),
+            dispatch_epoch: 0,
+            requests_closed_at: None,
+            required_work_items: 2,
+            terminal_required_work_items: 0,
+            live_workers: 1,
+            retry_pending_work_items: 0,
+            recovery_required_workers: 1,
+            missing_outputs: 1,
+            manifest_sha256: format!("sha256:{}", "6".repeat(64)),
+        };
+
+        assert_eq!(
+            company_controller_waiting_action(&barrier),
+            CompanyControllerWaitingAction::OperatorRecoveryRequired { workers: 1 },
+            "outcome-unknown tools remain operator-owned even if another child is live"
+        );
+    }
+
+    #[test]
+    fn company_controller_claim_recovery_conflict_uses_the_same_operator_path() {
+        assert!(is_stage_team_operator_recovery_conflict(
+            &RuntimeMemoryError::Conflict {
+                code: "stage_team_worker_recovery_required",
+            }
+        ));
+        assert!(!is_stage_team_operator_recovery_conflict(
+            &RuntimeMemoryError::Conflict {
+                code: "stage_team_parent_work_item_not_running",
+            }
+        ));
     }
 
     #[test]

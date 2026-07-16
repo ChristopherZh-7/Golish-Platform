@@ -21,7 +21,9 @@ import {
   parseStageRefinerDirectiveSummary,
   parseStageRunOrgRequestId,
   parseSubAgentUpdatePlanArgs,
+  projectSubAgentPlanForPassedStage,
   resolveLatestVisibleSubAgentUpdatePlanTool,
+  resolveParentStageRunStatusForSubAgent,
   resolveStageCoverageContextForSubAgent,
   SUB_AGENT_DETAIL_PENDING_OUTPUT_SPINNER_CLASS,
   SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS,
@@ -148,6 +150,35 @@ describe("Controller update_plan rendering", () => {
     expect(getByText("调度 DNS worker")).toBeTruthy();
   });
 
+  it("converges an unfinished Controller plan only after the exact parent stage passes", () => {
+    const { getAllByLabelText, getByText, queryByLabelText } = render(
+      createElement(SubAgentUpdatePlanCard, {
+        parentStagePassed: true,
+        tool: {
+          args: planArgs,
+          completedAt: "2026-07-15T10:00:01.000Z",
+          id: "plan-terminal-pass",
+          name: "update_plan",
+          startedAt: "2026-07-15T10:00:00.000Z",
+          status: "completed",
+        },
+      })
+    );
+
+    expect(getByText("计划已完成")).toBeTruthy();
+    expect(getByText("3/3 已完成")).toBeTruthy();
+    expect(getAllByLabelText("步骤状态：completed")).toHaveLength(3);
+    expect(queryByLabelText("步骤状态：in_progress")).toBeNull();
+  });
+
+  it("does not complete unfinished plan steps for blocked or other non-passed terminal states", () => {
+    const parsed = parseSubAgentUpdatePlanArgs(planArgs);
+    expect(parsed).not.toBeNull();
+    expect(projectSubAgentPlanForPassedStage(parsed!, false)).toBe(parsed);
+    expect(projectSubAgentPlanForPassedStage(parsed!, false).completedCount).toBe(1);
+    expect(projectSubAgentPlanForPassedStage(parsed!, false).inProgressCount).toBe(1);
+  });
+
   it("keeps only the latest valid current plan and hides failed or superseded updates", () => {
     const first = {
       args: planArgs,
@@ -258,6 +289,307 @@ describe("stripAgentXmlTags", () => {
 });
 
 describe("SubAgentDetailView rendering", () => {
+  it("renders every accepted dispatch assignment as a distinct card including queued children", () => {
+    const sessionId = "controller-three-children-session";
+    const startedAt = "2026-07-16T02:47:26.000Z";
+    const controllerRequestId = "stage-run::team::org-1::lead:controller-worker";
+    const dispatchRequestId = "dispatch-three-workers";
+    const firstWorkItemId = "work-item-1";
+    const secondWorkItemId = "work-item-2";
+
+    useStore.setState({
+      activeSubAgents: {
+        [sessionId]: [
+          {
+            agentId: "enumerator",
+            agentName: "Enumerator",
+            depth: 0,
+            entries: [{ kind: "tool_call", toolCallId: dispatchRequestId }],
+            parentRequestId: controllerRequestId,
+            startedAt,
+            status: "completed",
+            task: "Coordinate enumeration",
+            toolCalls: [
+              {
+                args: {
+                  workers: [
+                    {
+                      dedupe_key: "group-1",
+                      kind: "content_enumeration",
+                      objective: "Enumerate domain roots",
+                      role: "enumerator",
+                    },
+                    {
+                      dedupe_key: "group-2",
+                      kind: "content_enumeration",
+                      objective: "Enumerate first IP roots",
+                      role: "enumerator",
+                    },
+                    {
+                      dedupe_key: "group-3",
+                      kind: "content_enumeration",
+                      objective: "Enumerate remaining IP roots",
+                      role: "enumerator",
+                    },
+                  ],
+                },
+                completedAt: startedAt,
+                id: dispatchRequestId,
+                name: "stage_team_dispatch_workers",
+                result: {
+                  accepted_count: 3,
+                  requests: [
+                    {
+                      created_work_item_id: firstWorkItemId,
+                      decision: "accepted",
+                      dedupe_key: "group-1",
+                    },
+                    {
+                      created_work_item_id: secondWorkItemId,
+                      decision: "accepted",
+                      dedupe_key: "group-2",
+                    },
+                    {
+                      created_work_item_id: "work-item-3",
+                      decision: "accepted",
+                      dedupe_key: "group-3",
+                    },
+                  ],
+                },
+                startedAt,
+                status: "completed",
+              },
+            ],
+          },
+          {
+            agentId: "enumerator",
+            agentName: "Enumerator",
+            depth: 1,
+            entries: [{ kind: "thinking", text: "Working on domains." }],
+            parentRequestId: `${dispatchRequestId}::worker:worker-1`,
+            startedAt,
+            status: "running",
+            task: `Run bounded assignment. Durable work_item_id: ${firstWorkItemId}; role: enumerator.`,
+            toolCalls: [],
+          },
+          {
+            agentId: "enumerator",
+            agentName: "Enumerator",
+            depth: 1,
+            entries: [{ kind: "thinking", text: "Working on IP roots." }],
+            parentRequestId: `${dispatchRequestId}::worker:worker-2`,
+            startedAt,
+            status: "completed",
+            task: `Run bounded assignment. Durable work_item_id: ${secondWorkItemId}; role: enumerator.`,
+            toolCalls: [],
+          },
+        ],
+      },
+      backgroundJobs: {},
+      sessions: {
+        [sessionId]: {
+          createdAt: startedAt,
+          detailViewMode: "sub-agent-detail",
+          id: sessionId,
+          mode: "agent",
+          name: "Three Enumerator Session",
+          toolDetailRequestIds: [controllerRequestId],
+          workingDirectory: "/tmp",
+        },
+      },
+      timelines: {},
+    });
+
+    const view = render(createElement(SubAgentDetailView, { sessionId }));
+
+    expect(view.getAllByTestId("stage-team-dispatch-assignment")).toHaveLength(3);
+    expect(view.getByText("Enumerate domain roots")).toBeInTheDocument();
+    expect(view.getByText("Enumerate first IP roots")).toBeInTheDocument();
+    expect(view.getByText("Enumerate remaining IP roots")).toBeInTheDocument();
+    expect(view.getAllByRole("button", { name: /Enumerator/ })).toHaveLength(2);
+    expect(view.getByText("ai.subAgentDetail.status.queued")).toBeInTheDocument();
+  });
+
+  it("groups retry generations for one WorkItem into one assignment card", () => {
+    const sessionId = "controller-retried-child-session";
+    const startedAt = "2026-07-16T06:14:54.000Z";
+    const controllerRequestId = "stage-run::team::org-1::lead:controller-worker";
+    const dispatchRequestId = "dispatch-retried-worker";
+    const workItemId = "work-item-retried";
+
+    useStore.setState({
+      activeSubAgents: {
+        [sessionId]: [
+          {
+            agentId: "prober",
+            agentName: "Prober",
+            depth: 0,
+            entries: [{ kind: "tool_call", toolCallId: dispatchRequestId }],
+            parentRequestId: controllerRequestId,
+            startedAt,
+            status: "completed",
+            task: "Coordinate surface probing",
+            toolCalls: [
+              {
+                args: {
+                  workers: [
+                    {
+                      dedupe_key: "surface-all",
+                      kind: "surface_probe",
+                      objective: "Map the external attack surface",
+                      role: "prober",
+                    },
+                  ],
+                },
+                completedAt: startedAt,
+                id: dispatchRequestId,
+                name: "stage_team_dispatch_workers",
+                result: {
+                  accepted_count: 1,
+                  requests: [
+                    {
+                      created_work_item_id: workItemId,
+                      decision: "accepted",
+                      dedupe_key: "surface-all",
+                    },
+                  ],
+                },
+                startedAt,
+                status: "completed",
+              },
+            ],
+          },
+          {
+            agentId: "prober",
+            agentName: "Prober",
+            completedAt: "2026-07-16T06:34:08.000Z",
+            depth: 1,
+            entries: [],
+            parentRequestId: `${dispatchRequestId}::worker:worker-generation-0`,
+            response: "Markdown output rejected by the durable worker contract",
+            startedAt,
+            status: "completed",
+            task: `Run bounded assignment. Durable work_item_id: ${workItemId}; role: prober.`,
+            toolCalls: [],
+          },
+          {
+            agentId: "prober",
+            agentName: "Prober",
+            depth: 1,
+            entries: [{ kind: "thinking", text: "Retrying from DB truth." }],
+            parentRequestId: `${dispatchRequestId}::worker:worker-generation-1`,
+            startedAt: "2026-07-16T06:34:09.000Z",
+            status: "running",
+            task: `Run bounded assignment. Durable work_item_id: ${workItemId}; role: prober.`,
+            toolCalls: [],
+          },
+        ],
+      },
+      backgroundJobs: {},
+      sessions: {
+        [sessionId]: {
+          createdAt: startedAt,
+          detailViewMode: "sub-agent-detail",
+          id: sessionId,
+          mode: "agent",
+          name: "Retried Prober Session",
+          toolDetailRequestIds: [controllerRequestId],
+          workingDirectory: "/tmp",
+        },
+      },
+      timelines: {},
+    });
+
+    const view = render(createElement(SubAgentDetailView, { sessionId }));
+
+    expect(view.getAllByTestId("stage-team-dispatch-assignment")).toHaveLength(1);
+    expect(view.getAllByTestId("stage-team-dispatch-retry")).toHaveLength(1);
+    expect(view.getByText("ai.subAgentDetail.retry.active")).toBeInTheDocument();
+    expect(view.getAllByRole("button", { name: /Prober/ })).toHaveLength(1);
+  });
+
+  it("renders a Company Controller dispatch as a clickable child SubAgent", () => {
+    const sessionId = "controller-child-session";
+    const startedAt = "2026-07-16T01:39:15.000Z";
+    const controllerRequestId =
+      "stage-run-request::team::org-1::lead:controller-worker-run";
+    const dispatchRequestId = "dispatch-tool-request";
+
+    useStore.setState({
+      activeSubAgents: {
+        [sessionId]: [
+          {
+            agentId: "prober",
+            agentName: "Prober",
+            depth: 0,
+            entries: [{ kind: "tool_call", toolCallId: dispatchRequestId }],
+            parentRequestId: controllerRequestId,
+            startedAt,
+            status: "completed",
+            task: "You are the sole Company Controller for this stage.",
+            toolCalls: [
+              {
+                args: {
+                  workers: [
+                    {
+                      kind: "surface_probe",
+                      objective: "Map the external attack surface",
+                      role: "prober",
+                    },
+                  ],
+                },
+                id: dispatchRequestId,
+                name: "stage_team_dispatch_workers",
+                result: { accepted_count: 1, status: "dispatch_accepted" },
+                startedAt,
+                status: "completed",
+              },
+            ],
+          },
+          {
+            agentId: "prober",
+            agentName: "Prober",
+            depth: 1,
+            entries: [{ kind: "thinking", text: "Scanning confirmed ports." }],
+            parentRequestId: dispatchRequestId,
+            startedAt,
+            status: "running",
+            task: "Map the external attack surface",
+            toolCalls: [],
+          },
+        ],
+      },
+      backgroundJobs: {},
+      sessions: {
+        [sessionId]: {
+          createdAt: startedAt,
+          detailViewMode: "sub-agent-detail",
+          id: sessionId,
+          mode: "agent",
+          name: "Controller Child Session",
+          toolDetailRequestIds: [controllerRequestId],
+          workingDirectory: "/tmp",
+        },
+      },
+      timelines: {},
+    });
+
+    const view = render(createElement(SubAgentDetailView, { sessionId }));
+
+    expect(view.getByText("Company Controller")).toBeInTheDocument();
+    const childCard = view.getByRole("button", { name: /Prober/ });
+    expect(childCard).toHaveTextContent("Map the external attack surface");
+
+    fireEvent.click(childCard);
+
+    expect(useStore.getState().sessions[sessionId]?.toolDetailRequestIds).toEqual([
+      controllerRequestId,
+      dispatchRequestId,
+    ]);
+    expect(view.getByText("Scanning confirmed ports.")).toBeInTheDocument();
+    expect(view.getByText("ai.subAgentDetail.backToParent")).toBeInTheDocument();
+  });
+
   it("renders stage-run backed detail without unstable selector loops", () => {
     const sessionId = "detail-session";
     const startedAt = "2026-06-28T14:00:00.000Z";
@@ -788,6 +1120,46 @@ describe("stage-run org coverage context", () => {
       organizationId: "org-1",
     });
     expect(parseStageRunOrgRequestId("plain-tool")).toBeNull();
+  });
+
+  it("parses an exact Company Controller team request id without leaking the worker suffix", () => {
+    expect(
+      parseStageRunOrgRequestId("tool-1::team::org-1::lead:controller-worker-run")
+    ).toEqual({
+      stageRunRequestId: "tool-1",
+      organizationId: "org-1",
+    });
+  });
+
+  it("resolves exact passed truth for a Company Controller team request", () => {
+    const controllerRequestId = "tool-1::team::org-1::lead:controller-worker-run";
+    expect(
+      resolveParentStageRunStatusForSubAgent(
+        controllerRequestId,
+        {
+          "tool-1": {
+            requestId: "tool-1",
+            stageLabel: "Target Intel",
+            roleLabel: "Company Controller",
+            coverageAxis: ["DNS"],
+            summary: { total: 1, covered: 1, active: 0, queued: 0, blocked: 0 },
+            rows: [
+              {
+                id: "org-1",
+                name: "Acme Root",
+                ownershipPercent: 100,
+                status: "passed",
+                agentRequestId: controllerRequestId,
+                evidenceCount: 3,
+                coverage: { DNS: "found" },
+                stage: "target_intel",
+              },
+            ],
+          },
+        },
+        null
+      )
+    ).toBe("passed");
   });
 
   it("resolves target_intel coverage context for the current sub-agent detail page", () => {

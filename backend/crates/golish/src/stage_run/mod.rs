@@ -35,6 +35,9 @@ use golish_core::hitl::ApprovalDecision;
 use golish_core::runtime::{GolishRuntime, RuntimeEvent};
 
 use crate::ai::agent_bridge::AgentBridge;
+use crate::ai::commands::core::operation_resume::{
+    claim_exact_resume_runtime_source, select_exact_resume_runtime_source,
+};
 use crate::ai::task_operation::{FreshOperationScope, SubsidiaryScopePolicy};
 use crate::cli::Args;
 use crate::runtime::CliRuntime;
@@ -115,90 +118,6 @@ const REPAIR_REAPED_TASK_SQL: &str = r#"UPDATE tasks
                AND os.state_blob = $8
          )"#;
 
-const REPAIR_ORPHAN_RUNNING_TASK_SQL: &str = r#"UPDATE tasks AS task
-       SET status = 'waiting', updated_at = NOW()
-       WHERE task.id = $1
-         AND task.session_id = $2
-         AND task.status = 'running'
-         AND task.result IS NULL
-         AND task.updated_at = $3
-         AND EXISTS (
-             SELECT 1 FROM operation_state AS operation
-              WHERE operation.operation_id = task.id
-                AND operation.runtime_memory_contract = $4
-                AND operation.profile = $5
-                AND operation.current_stage = $6
-                AND operation.engagement_org_id IS NOT DISTINCT FROM $7
-                AND operation.superseded_by IS NULL
-                AND NOT EXISTS (
-                    SELECT 1 FROM stage_worker_runs AS live_worker
-                     WHERE live_worker.operation_id = operation.operation_id
-                       AND live_worker.lease_token IS NOT NULL
-                       AND live_worker.lease_expires_at > NOW()
-                )
-                AND (
-                    (
-                        $8::uuid IS NOT NULL
-                        AND EXISTS (
-                            SELECT 1 FROM stage_runs AS execution
-                             WHERE execution.id = $8
-                               AND execution.operation_id = operation.operation_id
-                               AND execution.stage_kind = operation.current_stage
-                               AND execution.status = 'started'
-                               AND (
-                                   SELECT COUNT(*) FROM stage_runs AS active_execution
-                                    WHERE active_execution.operation_id = operation.operation_id
-                                      AND active_execution.status = 'started'
-                               ) = 1
-                        )
-                    )
-                    OR
-                    ($8::uuid IS NULL AND operation.state_blob = $9)
-                )
-         )"#;
-
-const CLAIM_EXACT_RESUME_TASK_SQL: &str = r#"UPDATE tasks AS task
-       SET status = 'running', updated_at = NOW()
-       WHERE task.id = $1
-         AND task.session_id = $2
-         AND task.status = 'waiting'
-         AND task.result IS NULL
-         AND task.updated_at = $3
-         AND EXISTS (
-             SELECT 1 FROM operation_state AS operation
-              WHERE operation.operation_id = task.id
-                AND operation.runtime_memory_contract = $4
-                AND operation.profile = $5
-                AND operation.current_stage = $6
-                AND operation.engagement_org_id IS NOT DISTINCT FROM $7
-                AND operation.superseded_by IS NULL
-                AND NOT EXISTS (
-                    SELECT 1 FROM stage_worker_runs AS live_worker
-                     WHERE live_worker.operation_id = operation.operation_id
-                       AND live_worker.lease_token IS NOT NULL
-                       AND live_worker.lease_expires_at > NOW()
-                )
-                AND (
-                    (
-                        $8::uuid IS NOT NULL
-                        AND EXISTS (
-                            SELECT 1 FROM stage_runs AS execution
-                             WHERE execution.id = $8
-                               AND execution.operation_id = operation.operation_id
-                               AND execution.stage_kind = operation.current_stage
-                               AND execution.status = 'started'
-                               AND (
-                                   SELECT COUNT(*) FROM stage_runs AS active_execution
-                                    WHERE active_execution.operation_id = operation.operation_id
-                                      AND active_execution.status = 'started'
-                               ) = 1
-                        )
-                    )
-                    OR
-                    ($8::uuid IS NULL AND operation.state_blob = $9)
-                )
-         )"#;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ResumeSelector {
     ChatKey(String),
@@ -210,6 +129,10 @@ fn classify_resume_selector(selector: &str) -> ResumeSelector {
         Ok(id) => ResumeSelector::Uuid(id),
         Err(_) => ResumeSelector::ChatKey(selector.trim().to_string()),
     }
+}
+
+fn is_supported_resume_chat_key(chat_key: &str) -> bool {
+    chat_key.starts_with("stage-run-") || chat_key.starts_with("pentest-chat-")
 }
 
 #[derive(Debug, Clone, Default)]
@@ -349,7 +272,6 @@ struct ValidatedResumeTarget {
     stage: StageKind,
     organization_id: uuid::Uuid,
     state_blob: serde_json::Value,
-    needs_orphan_running_repair: bool,
     needs_graph_repair: bool,
     needs_task_repair: bool,
 }
@@ -454,9 +376,11 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
     let chat_session_key = candidate
         .chat_session_key
         .as_deref()
-        .filter(|key| key.starts_with("stage-run-"))
+        .filter(|key| is_supported_resume_chat_key(key))
         .ok_or_else(|| {
-            anyhow!("resume refused: DB session is not owned by a stage-run chat key")
+            anyhow!(
+                "resume refused: DB session is not owned by a supported stage-run or pentest Task chat key"
+            )
         })?;
     anyhow::ensure!(
         candidate.task_session_id == candidate.session_id,
@@ -515,22 +439,14 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
     };
     validate_expected_identity(candidate, stage, organization_id)?;
 
-    let (needs_task_repair, needs_orphan_running_repair) = match candidate.task_status {
-        golish_db::models::TaskStatus::Waiting => (false, false),
+    let needs_task_repair = match candidate.task_status {
+        golish_db::models::TaskStatus::Waiting => false,
         golish_db::models::TaskStatus::Running => {
             anyhow::ensure!(
-                candidate.expectations.allow_orphan_running,
-                "resume refused: task is running; pass --allow-orphan-running with exact expected identities only after confirming the old process is dead"
-            );
-            anyhow::ensure!(
-                candidate.expectations.has_complete_identity(),
-                "resume refused: orphan running recovery requires all expected identities"
-            );
-            anyhow::ensure!(
                 candidate.task_result.is_none(),
-                "resume refused: running orphan carries a non-null task result"
+                "resume refused: running operation carries a non-null task result"
             );
-            (false, true)
+            false
         }
         golish_db::models::TaskStatus::Failed => {
             anyhow::ensure!(
@@ -543,10 +459,10 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
                     == Some(golish_db::repo::tasks::ABANDONED_TASK_RESULT),
                 "resume refused: failed task does not carry the exact startup-reaper abandoned marker"
             );
-            (true, false)
+            true
         }
         status => anyhow::bail!(
-            "resume refused: task status {status:?} is not resumable (waiting required)"
+            "resume refused: task status {status:?} is not resumable (running or waiting required)"
         ),
     };
 
@@ -660,7 +576,6 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
         stage,
         organization_id,
         state_blob: candidate.state_blob.clone(),
-        needs_orphan_running_repair,
         needs_graph_repair,
         needs_task_repair,
     })
@@ -711,10 +626,12 @@ async fn session_by_chat_key(
 
 fn resume_task_status_is_selectable(
     status: golish_db::models::TaskStatus,
-    allow_orphan_running: bool,
+    _allow_orphan_running: bool,
 ) -> bool {
-    matches!(status, golish_db::models::TaskStatus::Waiting)
-        || (allow_orphan_running && matches!(status, golish_db::models::TaskStatus::Running))
+    matches!(
+        status,
+        golish_db::models::TaskStatus::Waiting | golish_db::models::TaskStatus::Running
+    )
 }
 
 async fn task_for_resume_session(
@@ -772,8 +689,8 @@ async fn load_resume_rows(
     match selector {
         ResumeSelector::ChatKey(chat_key) => {
             anyhow::ensure!(
-                chat_key.starts_with("stage-run-"),
-                "resume refused: chat selector must be a stage-run-* key"
+                is_supported_resume_chat_key(chat_key),
+                "resume refused: chat selector must be a stage-run-* or pentest-chat-* key"
             );
             let session = session_by_chat_key(pool, chat_key)
                 .await?
@@ -1049,87 +966,6 @@ async fn repair_reaped_task(
     anyhow::ensure!(
         result.rows_affected() == 1,
         "resume refused: reaped task changed before exact repair claim completed"
-    );
-    Ok(())
-}
-
-/// Compare-and-set one explicitly asserted, process-orphaned running task back
-/// to waiting. The selected runtime-memory authority and absence of a live
-/// worker lease are rechecked in the same statement before any resume claim.
-async fn repair_orphan_running_task(
-    claim: &mut StageRunResumeClaim,
-    target: &ValidatedResumeTarget,
-) -> Result<()> {
-    anyhow::ensure!(
-        target.needs_orphan_running_repair,
-        "orphan-running repair requested for a task that is not the asserted running orphan"
-    );
-    let relational_execution_id = match target.authority {
-        ResumeAuthorityKind::RelationalV2 => {
-            Some(target.relational_stage_execution_id.ok_or_else(|| {
-                anyhow!("resume refused: relational execution identity is missing")
-            })?)
-        }
-        ResumeAuthorityKind::LegacyCheckpoint => None,
-    };
-    let result = sqlx::query(REPAIR_ORPHAN_RUNNING_TASK_SQL)
-        .bind(target.operation_id)
-        .bind(target.session_id)
-        .bind(target.task_updated_at)
-        .bind(target.runtime_memory_contract.as_str())
-        .bind(&target.profile)
-        .bind(target.stage.as_str())
-        .bind(target.organization_id)
-        .bind(relational_execution_id)
-        .bind(&target.state_blob)
-        .execute(claim.connection_mut()?)
-        .await
-        .context("compare-and-set asserted orphan running task back to waiting")?;
-    anyhow::ensure!(
-        result.rows_affected() == 1,
-        "resume refused: orphan task identity/source/timestamp changed or a live worker lease remains"
-    );
-    Ok(())
-}
-
-/// Atomically claim the exact waiting task after all process-local setup has
-/// succeeded. Relational resumes fence the selected active execution and never
-/// consult the legacy blob; legacy resumes fence the complete validated blob.
-/// Both reject any still-live V2 worker lease.
-async fn claim_exact_resume_task(
-    claim: &mut StageRunResumeClaim,
-    target: &ValidatedResumeTarget,
-) -> Result<()> {
-    anyhow::ensure!(
-        !target.needs_orphan_running_repair
-            && !target.needs_graph_repair
-            && !target.needs_task_repair,
-        "resume refused: exact task cannot be claimed before repairs complete"
-    );
-    let relational_execution_id = match target.authority {
-        ResumeAuthorityKind::RelationalV2 => {
-            Some(target.relational_stage_execution_id.ok_or_else(|| {
-                anyhow!("resume refused: relational execution identity is missing")
-            })?)
-        }
-        ResumeAuthorityKind::LegacyCheckpoint => None,
-    };
-    let result = sqlx::query(CLAIM_EXACT_RESUME_TASK_SQL)
-        .bind(target.operation_id)
-        .bind(target.session_id)
-        .bind(target.task_updated_at)
-        .bind(target.runtime_memory_contract.as_str())
-        .bind(&target.profile)
-        .bind(target.stage.as_str())
-        .bind(target.organization_id)
-        .bind(relational_execution_id)
-        .bind(&target.state_blob)
-        .execute(claim.connection_mut()?)
-        .await
-        .context("durably claim exact stage-run resume task")?;
-    anyhow::ensure!(
-        result.rows_affected() == 1,
-        "resume refused: exact task/source claim changed or task is not waiting; reap/repair any orphan first"
     );
     Ok(())
 }
@@ -1837,9 +1673,6 @@ async fn run_resume(mut args: Args) -> Result<()> {
         args.model = Some(model);
 
         let mut claim = StageRunResumeClaim::acquire(&db_pool, initial.operation_id).await?;
-        if initial.needs_orphan_running_repair {
-            repair_orphan_running_task(&mut claim, &initial).await?;
-        }
         if initial.needs_task_repair {
             repair_reaped_task(&mut claim, &initial).await?;
         }
@@ -1864,10 +1697,6 @@ async fn run_resume(mut args: Args) -> Result<()> {
                 && target.provider == initial.provider
                 && target.model == initial.model,
             "resume refused: persisted session/operation identity changed while acquiring the claim"
-        );
-        anyhow::ensure!(
-            !target.needs_orphan_running_repair,
-            "resume refused: task is still marked running after orphan repair"
         );
         anyhow::ensure!(
             !target.needs_graph_repair,
@@ -2216,7 +2045,7 @@ fn build_fresh_cli_scope(
 async fn orchestrate_resume(
     bridge: &Arc<AgentBridge>,
     db_pool: &Arc<sqlx::PgPool>,
-    claim: &mut StageRunResumeClaim,
+    _claim: &mut StageRunResumeClaim,
     target: &ValidatedResumeTarget,
     stage_allowlist: &HashSet<StageKind>,
     continuation: &str,
@@ -2272,15 +2101,33 @@ async fn orchestrate_resume(
             ..TaskOperationConfig::default()
         });
         orchestrator.set_force_stage_run_on_resume_once(true);
-        let resume_source =
+        let expected_resume_source =
             selected_resume_record_source(target.authority, target.runtime_memory_contract)?;
+        let selected_resume = select_exact_resume_runtime_source(
+            db_pool.as_ref(),
+            target.operation_id,
+            target.session_id,
+        )
+        .await?;
+        anyhow::ensure!(
+            selected_resume.source == expected_resume_source,
+            "resume refused: shared runtime source selection disagrees with the validated CLI authority"
+        );
+        let resume_source = selected_resume.source;
         orchestrator.set_resume_runtime_memory_source(resume_source);
         bridge.set_resume_runtime_memory_source(resume_source).await;
 
-        // Perform the durable waiting->running claim only after shared
-        // bridge/repository/project-scope setup has succeeded, immediately
-        // before the orchestrator can load its selected checkpoint source.
-        claim_exact_resume_task(claim, target).await?;
+        // The GUI and CLI share the same source + open-Turn witness. Closing
+        // that Turn and appending its successor is the durable claim; the CLI
+        // advisory lock remains held as an additional cross-process guard.
+        claim_exact_resume_runtime_source(
+            db_pool.as_ref(),
+            target.operation_id,
+            target.session_id,
+            selected_resume,
+            continuation,
+        )
+        .await?;
         orchestrator.set_resume_task_preclaimed(true);
         orchestrator
             .resume(target.operation_id, continuation, prepared.executor())
@@ -3449,7 +3296,6 @@ mod tests {
         assert_eq!(validated.session_id, SESSION_ID);
         assert_eq!(validated.organization_id, ORG_ID);
         assert_eq!(validated.stage, StageKind::Enumeration);
-        assert!(!validated.needs_orphan_running_repair);
         assert!(!validated.needs_graph_repair);
     }
 
@@ -3540,23 +3386,21 @@ mod tests {
     }
 
     #[test]
-    fn resume_candidate_rejects_unasserted_running_task() {
+    fn resume_candidate_accepts_running_task_via_open_turn_claim() {
         let mut candidate = valid_resume_candidate();
         candidate.task_status = golish_db::models::TaskStatus::Running;
 
-        let error = validate_resume_candidate(&candidate).expect_err("running must fail closed");
-        assert!(error.to_string().contains("--allow-orphan-running"));
+        let validated = validate_resume_candidate(&candidate)
+            .expect("a running task is fenced by the shared source and open-Turn claim");
+        assert!(!validated.needs_task_repair);
     }
 
     #[test]
-    fn resume_session_selection_excludes_running_without_orphan_assertion() {
+    fn resume_session_selection_includes_running_without_orphan_assertion() {
         use golish_db::models::TaskStatus;
 
         assert!(resume_task_status_is_selectable(TaskStatus::Waiting, false));
-        assert!(!resume_task_status_is_selectable(
-            TaskStatus::Running,
-            false
-        ));
+        assert!(resume_task_status_is_selectable(TaskStatus::Running, false));
         assert!(resume_task_status_is_selectable(TaskStatus::Running, true));
         assert!(!resume_task_status_is_selectable(TaskStatus::Created, true));
         assert!(!resume_task_status_is_selectable(
@@ -3577,25 +3421,23 @@ mod tests {
     }
 
     #[test]
-    fn resume_candidate_running_requires_every_expected_identity() {
+    fn running_resume_flag_does_not_downgrade_the_durable_turn() {
         let mut candidate = valid_resume_candidate();
         candidate.task_status = golish_db::models::TaskStatus::Running;
         candidate.expectations = complete_expectations();
         candidate.expectations.stage = None;
 
-        let error = validate_resume_candidate(&candidate)
-            .expect_err("orphan running without expected stage must fail");
-        assert!(error.to_string().contains("expected identities"));
+        let validated = validate_resume_candidate(&candidate)
+            .expect("running resume uses its open Turn instead of a waiting downgrade");
+        assert!(!validated.needs_task_repair);
 
         candidate.expectations.stage = Some(StageKind::Enumeration);
-        let validated = validate_resume_candidate(&candidate)
-            .expect("a fully asserted orphan may proceed to a fenced repair claim");
-        assert!(validated.needs_orphan_running_repair);
-        assert!(!validated.needs_task_repair);
+        validate_resume_candidate(&candidate)
+            .expect("legacy exact identity assertions remain compatible");
 
         candidate.task_result = Some("unexpected partial result".to_string());
         let error = validate_resume_candidate(&candidate)
-            .expect_err("running orphan with a result must fail closed");
+            .expect_err("running operation with a result must fail closed");
         assert!(error.to_string().contains("non-null task result"));
     }
 
@@ -3644,6 +3486,19 @@ mod tests {
         candidate.expectations = complete_expectations();
         candidate.chat_session_key = Some("normal-chat".to_string());
         assert!(validate_resume_candidate(&candidate).is_err());
+    }
+
+    #[test]
+    fn resume_candidate_accepts_exact_gui_task_session() {
+        let mut candidate = valid_resume_candidate();
+        candidate.chat_session_key = Some("pentest-chat-1784179823492-1".to_string());
+
+        let target = validate_resume_candidate(&candidate)
+            .expect("an exact GUI Task session uses the same durable operation resume contract");
+
+        assert_eq!(target.operation_id, candidate.operation_id);
+        assert_eq!(target.session_id, candidate.session_id);
+        assert_eq!(target.chat_session_key, "pentest-chat-1784179823492-1");
     }
 
     #[test]
@@ -3746,43 +3601,6 @@ mod tests {
         assert!(REPAIR_REAPED_TASK_SQL.contains("result = $3"));
         assert!(REPAIR_REAPED_TASK_SQL.contains("updated_at = $4"));
         assert!(REPAIR_REAPED_TASK_SQL.contains("os.state_blob = $8"));
-        for required in [
-            "task.status = 'running'",
-            "task.result IS NULL",
-            "task.updated_at = $3",
-            "operation.runtime_memory_contract = $4",
-            "operation.profile = $5",
-            "operation.current_stage = $6",
-            "operation.engagement_org_id IS NOT DISTINCT FROM $7",
-            "operation.superseded_by IS NULL",
-            "execution.id = $8",
-            "active_execution.status = 'started'",
-            "live_worker.lease_expires_at > NOW()",
-            "$8::uuid IS NULL AND operation.state_blob = $9",
-        ] {
-            assert!(
-                REPAIR_ORPHAN_RUNNING_TASK_SQL.contains(required),
-                "orphan repair is missing {required:?}"
-            );
-        }
-        for required in [
-            "task.status = 'waiting'",
-            "task.updated_at = $3",
-            "operation.runtime_memory_contract = $4",
-            "operation.profile = $5",
-            "operation.current_stage = $6",
-            "operation.engagement_org_id IS NOT DISTINCT FROM $7",
-            "operation.superseded_by IS NULL",
-            "execution.id = $8",
-            "active_execution.status = 'started'",
-            "live_worker.lease_expires_at > NOW()",
-            "$8::uuid IS NULL AND operation.state_blob = $9",
-        ] {
-            assert!(
-                CLAIM_EXACT_RESUME_TASK_SQL.contains(required),
-                "durable resume claim is missing {required:?}"
-            );
-        }
     }
 
     #[test]
@@ -3793,8 +3611,8 @@ mod tests {
             .expect("orchestrate_resume definition")
             .1;
         let claim = body
-            .find("claim_exact_resume_task(claim, target).await?")
-            .expect("durable task claim");
+            .find("claim_exact_resume_runtime_source(")
+            .expect("shared durable source and Turn claim");
         let resume = body
             .find(".resume(target.operation_id, continuation, prepared.executor())")
             .expect("orchestrator resume call");
@@ -3802,7 +3620,31 @@ mod tests {
     }
 
     #[test]
-    fn orphan_repair_precedes_graph_repair_and_resume_reresolution() {
+    fn stage_run_resume_uses_shared_operation_turn_claim() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split_once("async fn orchestrate_resume(")
+            .expect("orchestrate_resume definition")
+            .1;
+        let select = body
+            .find("select_exact_resume_runtime_source(")
+            .expect("shared exact runtime source and open Turn selection");
+        let claim = body
+            .find("claim_exact_resume_runtime_source(")
+            .expect("shared exact operation Turn claim");
+        let resume = body
+            .find(".resume(target.operation_id, continuation, prepared.executor())")
+            .expect("orchestrator resume call");
+
+        assert!(select < claim && claim < resume);
+        assert!(
+            !body[..resume].contains("claim_exact_resume_task(claim, target)"),
+            "CLI must not keep a second waiting-to-running resume protocol"
+        );
+    }
+
+    #[test]
+    fn explicit_repairs_precede_resume_reresolution() {
         let source = include_str!("mod.rs");
         let body = source
             .split_once("async fn run_resume(")
@@ -3811,16 +3653,16 @@ mod tests {
             .split_once("async fn orchestrate(")
             .expect("run_resume body")
             .0;
-        let orphan = body
-            .find("repair_orphan_running_task(&mut claim, &initial).await?")
-            .expect("orphan repair");
+        let reaped = body
+            .find("repair_reaped_task(&mut claim, &initial).await?")
+            .expect("startup-reaped task repair");
         let graph = body
             .find("repair_missing_graph_flow(&mut claim, &initial).await?")
             .expect("graph repair");
         let rerun = body
             .rfind("resolve_stage_run_resume_target(&db_pool, &selector, &expectations).await?")
             .expect("post-repair target resolution");
-        assert!(orphan < graph && graph < rerun);
+        assert!(reaped < graph && graph < rerun);
     }
 
     #[test]

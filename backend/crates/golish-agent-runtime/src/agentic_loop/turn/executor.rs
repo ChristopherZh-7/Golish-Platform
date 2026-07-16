@@ -33,6 +33,7 @@ use golish_sub_agents::SubAgentContext;
 use super::super::config::AgenticLoopConfig;
 use super::super::context::{AgenticLoopContext, LoopCaptureContext};
 use super::super::stream_processor::StreamProcessOutcome;
+use super::super::tool_dispatch::ToolDispatchHaltReason;
 use super::super::tool_list::build_tool_list;
 use super::super::unified_helpers::{
     record_agent_turn_start, record_turn_completion, trace_input_for_span,
@@ -59,6 +60,13 @@ fn accepted_stage_submission_ends_loop(
     harness_stage_active: bool,
 ) -> bool {
     stage_submission_accepted && harness_stage_active
+}
+
+fn terminal_stage_run_ends_loop(
+    halt_reason: Option<ToolDispatchHaltReason>,
+    harness_stage_active: bool,
+) -> bool {
+    halt_reason.is_some() && harness_stage_active
 }
 
 /// E1 · corrective prompt injected when the model degenerated into repetition.
@@ -403,6 +411,20 @@ where
                 );
                 break;
             }
+            if terminal_stage_run_ends_loop(
+                dispatch.halt_current_request,
+                ctx.harness_stage.is_some(),
+            ) {
+                let reason = dispatch
+                    .halt_current_request
+                    .expect("terminal stage_run predicate requires a halt reason");
+                tracing::info!(
+                    target: "harness::stage_run",
+                    halt_reason = reason.as_str(),
+                    "server-authored stage_run control ended the current top-level request"
+                );
+                break;
+            }
         }
 
         record_turn_completion(
@@ -450,7 +472,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::accepted_stage_submission_ends_loop;
+    use super::{
+        accepted_stage_submission_ends_loop, terminal_stage_run_ends_loop, ToolDispatchHaltReason,
+    };
 
     #[test]
     fn accepted_submission_ends_only_an_active_harness_stage_loop() {
@@ -458,5 +482,18 @@ mod tests {
         assert!(!accepted_stage_submission_ends_loop(true, false));
         assert!(!accepted_stage_submission_ends_loop(false, true));
         assert!(!accepted_stage_submission_ends_loop(false, false));
+    }
+
+    #[test]
+    fn stage_run_halt_ends_only_an_active_harness_request() {
+        assert!(terminal_stage_run_ends_loop(
+            Some(ToolDispatchHaltReason::OperatorRecoveryRequired),
+            true
+        ));
+        assert!(!terminal_stage_run_ends_loop(
+            Some(ToolDispatchHaltReason::OperatorRecoveryRequired),
+            false
+        ));
+        assert!(!terminal_stage_run_ends_loop(None, true));
     }
 }

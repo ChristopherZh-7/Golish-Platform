@@ -1310,12 +1310,28 @@ pub(crate) struct ReapedCleanStageWorkerRow {
     pub retry_scheduled: bool,
 }
 
+pub(crate) async fn work_item_attempts_used(
+    connection: &mut PgConnection,
+    work_item_id: Uuid,
+) -> RuntimeMemoryStoreResult<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE(SUM(GREATEST(attempt_epoch, 1)), 0)::BIGINT
+           FROM stage_worker_runs
+          WHERE work_item_id=$1",
+    )
+    .bind(work_item_id)
+    .fetch_one(connection)
+    .await?)
+}
+
 /// Resolve one expired Team worker that has no in-flight tool.  An expired
 /// lease consumes an attempt just like an ordinary execution failure.  The
-/// stable WorkItem is requeued only while both its frozen attempt allowance
-/// and the TeamPlan lifetime-worker allowance can fund a fresh WorkerRun.
-/// Otherwise the final attempt and WorkItem become terminal together and a
-/// deterministic blocked output is written for the barrier/Gate to consume.
+/// stable WorkItem and WorkerRun are requeued only while the frozen attempt
+/// allowance can fund a new Turn on the exact same message chain.  The
+/// TeamPlan lifetime-worker allowance is not consumed by a continuation Turn;
+/// it limits distinct logical workers, not restarts of one worker. Otherwise
+/// the final attempt and WorkItem become terminal together and a deterministic
+/// blocked output is written for the barrier/Gate to consume.
 pub(crate) async fn reap_expired_clean_stage_worker(
     connection: &mut PgConnection,
     plan: &StageTeamPlanRow,
@@ -1340,21 +1356,11 @@ pub(crate) async fn reap_expired_clean_stage_worker(
     }
 
     let max_attempts = work_item_max_attempts(item)?;
-    let attempts_used: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE work_item_id=$1")
-            .bind(item.id)
-            .fetch_one(&mut *connection)
-            .await?;
-    let total_workers: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE stage_run_unit_id=$1")
-            .bind(plan.stage_run_unit_id)
-            .fetch_one(&mut *connection)
-            .await?;
-    let retry_scheduled =
-        attempts_used < max_attempts && total_workers < i64::from(plan.max_workers_total);
+    let attempts_used = work_item_attempts_used(&mut *connection, item.id).await?;
+    let retry_scheduled = attempts_used < max_attempts;
 
     let (next_worker_status, next_item_status, terminal_checkpoint) = if retry_scheduled {
-        ("superseded", "retry_pending", worker.checkpoint.clone())
+        ("queued", "retry_pending", worker.checkpoint.clone())
     } else {
         (
             "failed",
@@ -1374,7 +1380,9 @@ pub(crate) async fn reap_expired_clean_stage_worker(
               SET status='{next_worker_status}',checkpoint=$3,
                   checkpoint_version=checkpoint_version+1,
                   lease_token=NULL,lease_owner=NULL,lease_acquired_at=NULL,
-                  lease_expires_at=NULL,heartbeat_at=NULL,terminal_at=NOW(),updated_at=NOW()
+                  lease_expires_at=NULL,heartbeat_at=NULL,
+                  terminal_at=CASE WHEN '{next_worker_status}'='queued' THEN NULL ELSE NOW() END,
+                  updated_at=NOW()
             WHERE id=$1 AND attempt_epoch=$2
               AND status IN ('running','waiting_background','gate_blocked')
               AND active_tool_call_id IS NULL

@@ -53,7 +53,11 @@ pub(super) async fn build_tool_definitions<P: ToolProvider>(
 
     // Universal barrier tool — every sub-agent uses this to submit its final
     // structured result.
-    tools.push(barrier_tool_definition());
+    tools.push(barrier_tool_definition(
+        ctx.bound_worker_chain
+            .as_ref()
+            .is_some_and(|bound| bound.is_stage_team_child()),
+    ));
 
     // These are host controls rather than ordinary allowlisted tools. Only an
     // exact server-owned Company Controller binding grants visibility.
@@ -125,7 +129,57 @@ fn apply_stage_tool_hiding(
 ///
 /// Calling this tool terminates the agent loop and the structured result is
 /// surfaced to the caller (PentAGI `hack_result` / `code_result` pattern).
-fn barrier_tool_definition() -> ToolDefinition {
+fn barrier_tool_definition(stage_team_child: bool) -> ToolDefinition {
+    let result_schema = if stage_team_child {
+        serde_json::json!({
+            "type": "object",
+            "description": "The exact stage_worker_output.v1 business result. Return this object directly; do not wrap it in Markdown or prose.",
+            "properties": {
+                "business_disposition": {
+                    "type": "string",
+                    "enum": ["found", "checked_empty", "blocked"],
+                    "description": "Business outcome for this WorkItem"
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Concise evidence-grounded outcome summary"
+                },
+                "fact_refs": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Typed canonical fact references returned by tools; use [] when none were returned"
+                },
+                "evidence_ids": {
+                    "type": "array",
+                    "items": {"type": "integer", "minimum": 1},
+                    "description": "IDs of evidence already booked in the evidence ledger"
+                },
+                "checked_empty_units": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Exact provider or asset subunits checked empty; use [] when none"
+                },
+                "blocker_code": {
+                    "type": ["string", "null"],
+                    "description": "Stable blocker code for blocked outcomes, otherwise null"
+                }
+            },
+            "required": [
+                "business_disposition",
+                "summary",
+                "fact_refs",
+                "evidence_ids",
+                "checked_empty_units",
+                "blocker_code"
+            ],
+            "additionalProperties": false
+        })
+    } else {
+        serde_json::json!({
+            "type": "string",
+            "description": "Your complete result: findings, outputs, code, data, or error details"
+        })
+    };
     ToolDefinition {
         name: BARRIER_TOOL_NAME.to_string(),
         description:
@@ -136,10 +190,7 @@ fn barrier_tool_definition() -> ToolDefinition {
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
-                "result": {
-                    "type": "string",
-                    "description": "Your complete result: findings, outputs, code, data, or error details"
-                },
+                "result": result_schema,
                 "success": {
                     "type": "boolean",
                     "description": "Whether the task was completed successfully"
@@ -362,6 +413,33 @@ mod tests {
                 "required": ["plan"]
             }),
         }
+    }
+
+    #[test]
+    fn stage_team_child_barrier_requires_a_typed_worker_output_object() {
+        let stage_child = barrier_tool_definition(true);
+        let result = &stage_child.parameters["properties"]["result"];
+
+        assert_eq!(result["type"], "object");
+        assert_eq!(
+            result["required"],
+            serde_json::json!([
+                "business_disposition",
+                "summary",
+                "fact_refs",
+                "evidence_ids",
+                "checked_empty_units",
+                "blocker_code"
+            ])
+        );
+        assert_eq!(result["additionalProperties"], false);
+        assert_eq!(
+            result["properties"]["business_disposition"]["enum"],
+            serde_json::json!(["found", "checked_empty", "blocked"])
+        );
+
+        let generic = barrier_tool_definition(false);
+        assert_eq!(generic.parameters["properties"]["result"]["type"], "string");
     }
 
     #[test]

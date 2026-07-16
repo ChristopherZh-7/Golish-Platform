@@ -6,6 +6,489 @@
 
 ---
 
+#### 2026-07-16 · EAS successor-Turn CLI 续跑闭环（完成）
+
+- **本轮目标**：修复 GUI-owned EAS operation 在中断、safe reconciliation 和首轮 Gate BLOCK 后无法继续的问题；按用户要求
+  不运行 `init.sh`、不依赖 GUI 手工复测，必须用原实体 CLI 一直跑到确定性 Gate、数据库和 transcript 全部闭环。
+- **已完成**：在用户明确回复“同意迁移”后新增 additive Operation Turn / Company Controller successor-Turn 合同。exact claim
+  在同一事务关闭 prior Turn、创建 successor Turn，并通过 `stage_team_controller_turn_resumes` authority 恢复原
+  plan/unit/leader/Controller WorkerRun/message chain；历史 gap 保持 immutable，migration-time legacy no-gap Controller 只能使用
+  冻结 checkpoint hash witness。runtime 还会为每轮普通 Controller BLOCK 持久化 gap，并把普通 BLOCK、operator recovery、
+  aggregate-token unavailable 都限制在当前 request，下一条独立 Turn 才重置 re-entry guard。CLI 共享 GUI source + open-Turn CAS，
+  不创建 replacement Task/Operation/Agent。
+- **运行过的验证**：
+  - `backend/target/debug/golish /Users/christopherzheng/golish-platform/Test1 --stage-run-resume a8029de1-9f37-4450-b7e9-f08f7ba4c371 --resume-to external_attack_surface --expect-session f25b79a2-3d9e-49ba-9666-55b50fca109a --expect-task a8029de1-9f37-4450-b7e9-f08f7ba4c371 --expect-operation a8029de1-9f37-4450-b7e9-f08f7ba4c371 --expect-org f1ff0c02-4661-4e90-94a9-975a44f1f6bd --expect-stage external_attack_surface --auto-approve --db-smoke-summary --verbose -e '继续'` → exit 0；EAS `PASS`，最终报告生成。
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --db --full` → exit 0。
+  - `cd backend && cargo nextest run -p golish-db --no-fail-fast --status-level fail` → run
+    `dc1a8644-890c-469e-8f49-bde1d29bbc41`，576/576 passed。
+  - focused RED/GREEN：legacy no-gap RED 精确返回 `stage_team_controller_turn_resume_legacy_gap_missing`；GREEN exact Controller
+    run `70e734c1-2ba2-4a8f-9947-1c9733a06402` 1/1，operation Turn + Controller run
+    `853b9339-773d-450c-8bc4-9313b304d9f9` 2/2，runtime Company Controller 22/22，app resume 5/5。
+  - `just precommit` → exit 0：fmt 3s、check-fe 10s、test-fe 20s、lint-rust 63s、test-rust-all 443s、check-types 3s；
+    最终打印 `━━━ OK ━━━`。每个 Cargo build/test 前均运行 `just space-guard`；始终未运行 `init.sh`。
+- **已记录证据**：migration `20260716000001` / `20260716000002` 均 applied。operation
+  `a8029de1-9f37-4450-b7e9-f08f7ba4c371` 只有一个 Task且终态 `finished`；Turn 1-6 均 `interrupted`，Turn 7
+  `db8d9944-c3bd-4bb4-bda9-26b030700f4f` 唯一且 `completed`。authority
+  `8c5065e9-4db7-5bdd-8914-5b517652d985` 为 `applied`，精确绑定 Turn 6→7；stage execution
+  `346b4899-9a9d-4268-afdc-d611fd5aa091`、plan `e909f6e1-7cf7-5e89-87ee-5f9a7c5669ef`、unit
+  `82dd46cf-9c72-43d2-9960-71c572221b8e`、leader item `393b3a80-627b-536e-8dcf-bf143e80fe8d`、Controller
+  `cde3c089-510c-431c-a083-f0dd7e3eab54` 和 chain `c52509e3-b469-4ffc-90b3-e075ec89c9d6` 均未替换；Controller
+  attempt 3→4并终态 `passed`。final Gate 72/72 cells、73 evidence refs、`PASS/findings=0`；
+  `manifest.json` status completed，`timeline.jsonl:544` 为最终 PASS，`run.log:19957-20015` 记录四项 gate PASS、主提交
+  accepted 与 Turn complete。重复 Turn/authority/submission/gap、orphan refs、hash/identity mismatch、nonterminal worker/item、
+  unmatched tool request 和残留 Golish/WhatWeb/Nmap/Naabu/Httpx 进程均为 0。
+- **提交记录**：`fix: close EAS CLI resume loop`（本记录与全部相关改动随该提交落库）；按用户要求提交，不 push。
+- **已知风险或未解决问题**：本次 EAS 续跑缺陷没有残余 blocker。全库诊断仍会报告一条 2026-06-26 的旧
+  `organization_id=NULL` target，与 Test1/本 operation 无关；一条 `building` repair generation 是 hash 完整、无 active lease 的
+  schema-valid fuel witness，不是 orphan。父 feature 仍因独立的 broader Candidate/Verification DoD 保持唯一 `in_progress`，不假报整体
+  passing。
+- **下一步最佳动作**：本 EAS operation 不再需要 GUI 重试或人工补救；后续继续父 feature 时，从独立的
+  Candidate/Verification recovery verification 清单推进，不再改写本次 Turn7、authority 或历史 gap。工作树在下述提交后应干净。
+
+#### 2026-07-16 · EAS safe-reconcile 后 child 未被 runtime drain（进行中）
+
+- **本轮目标**：用户要求检查最后一次 EAS “继续”失败，修复中断续跑，并由真实 CLI 反复中断/续跑直到闭环；明确不运行
+  `init.sh`，不再依赖用户打开 GUI 手工复测。
+- **新鲜现场证据**：workspace `/Users/christopherzheng/golish-platform/Test1`、session
+  `pentest-chat-1784179823492-1`、operation `a8029de1-9f37-4450-b7e9-f08f7ba4c371`。15:46 continue 已把
+  interrupted `eas_fingerprint_services` tool 封存为 failed，并将 exact WorkItem
+  `24d552d5-6986-5a48-b17a-6119924e23fc`、Worker `8fbe6711-f121-4183-8be3-a7663f37792d`、chain
+  `121d81ed-e78b-42b5-a2c7-ce8990f708f0`重排为 queued；但 runtime 随即两次返回
+  `COMPANY_CONTROLLER_FAILED: Company Controller is waiting but no runnable child WorkItem remains`。child transcript没有新 Turn，
+  证明 reconciliation成功而生产 scheduler没有 claim它。task仍 running，operation Turns 1-4 interrupted、Turn 5 running。
+- **精确代码根因**：`execute_company_controller_unit` 在`claim_stage_team_leader=None`后直接返回 waiting error，未调用已存在的
+  `drain_company_controller_children`。现有DB integration由测试代码手工 claim child，掩盖了真实runtime漏口。另一个闭环缺口是
+  CLI仍拒绝`pentest-chat-*`且走独立 waiting-to-running SQL，没有复用GUI的 source + open-Turn CAS。
+- **设计 / 计划**：新增`docs/design/2026-07-16-eas-reconciled-child-cli-continuation.md`与对应实现计划；下一步按
+  runtime RED→GREEN、same-worker budget、CLI shared Turn claim、当前operation真实CLI接管的顺序执行。
+- **验证边界**：已实际运行`run_tree.py --full --db`与只读DB查询；尚未改生产代码或运行Cargo。按用户明确要求不运行
+  `init.sh`；未commit/stage/push。
+- **已完成实现 / TDD**：runtime leader-none 现在按 barrier 优先保留 operator recovery，否则 drain live/retry child；queued
+  same-worker claim 在 distinct-worker lifetime cap 已满时仍复用原 WorkerRun/chain；CLI 接受 exact `pentest-chat-*`
+  session，并与 GUI 共用 source + open-Turn CAS。后续真实 run 暴露的历史 seed replay 也已修复：immutable static WorkItem
+  保留创建 epoch，dynamic/gate-repair item 回查各自 authority。RED run
+  `6545784b-9f26-4c19-ae2f-28d63a987c93` 精确复现 `stage_team_work_item_replay_mismatch`；GREEN runs
+  `f3e3d450-bbfc-44f0-8ce9-b06ab9261069`、`29bcd88b-7cd4-48a3-8513-f63d46c86eca` 各 1/1；组合 DB run
+  `fc8777e7-6a9d-41db-a219-2c5cb10c8b42` 5/5。普通 Controller Gate BLOCK 也新增 typed
+  `company_controller_blocked` request halt；focused runtime `company_controller_` 21/21 passed，headless 模型只完成一次且
+  同 batch 后续工具未执行。
+- **真实 CLI 实体续跑证据**：当前 binary 接管同一 session/operation 后，Turn 5=`interrupted`、Turn 6=`running`；原 child
+  WorkItem `24d552d5-6986-5a48-b17a-6119924e23fc` / Worker
+  `8fbe6711-f121-4183-8be3-a7663f37792d` / chain
+  `121d81ed-e78b-42b5-a2c7-ce8990f708f0` 在 epoch 2 passed，原 Controller Worker
+  `cde3c089-510c-431c-a083-f0dd7e3eab54` / chain
+  `c52509e3-b469-4ffc-90b3-e075ec89c9d6` 在 epoch 3继续。第一轮四个 service gap 已写 evidence
+  `28715/28718/28721/28724`；第二轮 authoritative Gate 收敛为 70/72，只余
+  `http://123.6.40.244:8088`、`http://150.138.234.105:8000`、`https://150.138.234.105:8443`。
+- **当前精确 blocker / 需要授权**：这条历史 run 已是 plan epoch 1 closed、leader WorkItem `superseded`、Controller/Unit
+  `gate_blocked`。尝试在 successor Turn 复用同一 Controller 的 RED test 被 PostgreSQL trigger 以
+  `STAGE_TEAM_REQUEST_EPOCH_CANNOT_REOPEN` 拒绝；work-item trigger也不允许 `superseded -> runnable`，且
+  `stage_team_unit_gaps.source_aggregator_worker_run_id` 为 UNIQUE，使稳定 Controller只能写一轮 gap。应用层绕过会破坏
+  evidence/epoch fence；按 AGENTS.md 必须先取得用户对 additive forward migration 的明确同意。拟议 migration 只增加 exact
+  Turn-bound resume authority、受权的 plan/leader reopen与多轮 immutable gap索引，不放宽 Gate、不换 Agent/chain、不删历史。
+- **状态 / 收尾边界**：当前 task/operation保持 running，Turn 6 因人工停止 CLI 仍是 orphan running；父 feature保持唯一
+  `in_progress`。未运行`init.sh`，未commit/stage/push；在用户授权 schema/migration 前不再写迁移或碰 live row。
+- **暂停前 fresh verification**：每个 Cargo 前均实际运行`just space-guard`。DB continuation/replay 聚焦 nextest run
+  `c12ee325-d86c-4e5e-8e0a-ab981028b025` → 4/4 passed、572 skipped；runtime
+  `cargo test -p golish-agent-runtime company_controller_ --lib -- --nocapture` → 21/21 passed，包含普通 Gate halt、same-batch
+  suppression、leader-none child drain、operator recovery与headless单 completion；`cargo fmt --all -- --check`、`jq empty
+  feature_list.json`、唯一`in_progress`断言和`git diff --check`均exit 0。仍未运行`init.sh`或全仓`just precommit`。
+
+#### 2026-07-16 · EAS 中断 wrapper 同链恢复 + Gate BLOCK 完成语义修复
+
+- **本轮目标 / 最新现场**：用户再次看到“继续”后 EAS 卡片显示`1 阻塞`，同时 UI 却渲染
+  `Step complete: External Attack Surface Mapping`，最终文案又说“Send a message to resume”。精确复核 workspace
+  `/Users/christopherzheng/golish-platform/Test1`、session `pentest-chat-1784179823492-1`、operation
+  `a8029de1-9f37-4450-b7e9-f08f7ba4c371`的`run.log`与embedded PG：进程没有panic；上一轮terminal request control已生效，
+  `stage_run` ToolResult后没有第二次model completion或旁路工具。真实阻塞是EAS child Worker
+  `8fbe6711-f121-4183-8be3-a7663f37792d`在原chain
+  `121d81ed-e78b-42b5-a2c7-ce8990f708f0`上运行`eas_fingerprint_services`时中断，active tool仍`running`且lease过期，
+  startup将其正确park为`recovery_required`；旧closed policy只允许Enumeration crawler，所以每次continue都原地BLOCK。
+- **实现**：
+  - `runtime_memory_tx`的closed safe-reconcile policy扩展到四个backend-owned、bounded、exact-scope EAS wrapper：
+    `eas_probe_http_liveness`、`eas_discover_ports`、`eas_fingerprint_services`、`eas_fingerprint_web_stack`。claim事务先把旧tool
+    CAS封存为unknown/failed，再重排同一WorkItem/WorkerRun/message chain；下一claim只递增`attempt_epoch`，不创建新Agent、
+    不直接重放旧args。Enumeration crawler保持同一合同，未知/高风险工具仍需operator recovery；
+  - runtime从server checkpoint读取exact interrupted tool name，给同链新Turn注入worklist-first指令：先
+    `stage_worklist_status`，再`stage_worklist_next(prefer=[pending,error,partial])`，保留terminal cells，只在current exact gap仍要求
+    该capability时才重调对应wrapper；
+  - TaskOrchestrator现在先读取`StageFlowOutcome`，仅`gate_allowed=true`才发`SubtaskCompleted`并追加`completed_results`；BLOCK
+    只进入resumable pause，不再显示“Step complete”。pause文案明确stage未完成、durable progress已保留，并说明自动恢复受closed
+    policy约束，不再无条件承诺“发消息即可恢复”。
+- **TDD / CLI-headless证据**（先运行`just space-guard`；按用户要求未运行`init.sh`、未打开GUI）：
+  - RED：DB nextest run `cf54a291-1b3f-4953-86f8-c0a372f1fe7b` → 0/2，policy返回None且same-chain identity断言失败；
+    runtime run `21130e72-aba4-42c6-b84a-82edf9fdd625` → 0/1，EAS marker无恢复指令；orchestrator runs
+    `096e7125-18e0-44fc-9d78-26b3af3d4677`与`1ea3ee05-3006-4865-88d4-ccbefe1c86fa`分别证明旧pause承诺和BLOCK完成标记错误；
+  - GREEN核心：DB `0679cee9-b89b-4151-8aa8-eed927ad4615` 3/3、runtime
+    `524299da-feac-4808-8fdf-d0408c5f1638` 2/2、orchestrator
+    `70800fcc-174d-46e5-bdca-1966cb94ee2b` 3/3；
+  - exact Company Controller现场形态：`f3d22aad-a525-4845-83bc-22cb905220ce` 2/2，Controller保持park，原EAS child以相同
+    WorkItem/WorkerRun/chain重领且epoch+1；扩大DB recovery run `f9a23c79-17a3-4623-bb0f-6cff3289078e` 5/5；
+  - headless顶层闭环run `26c7bb5a-7092-4edf-bba3-49c71fc4cada` 5/5：BLOCK request只调用一次`stage_run`，无第二model
+    turn；orchestrator regression `453e3a66-aac2-4608-9ca5-68f58daf9a24` 3/3；
+  - `cargo build -p golish` → exit 0；`cargo fmt -p golish-db -p golish-agent-runtime -p golish-agent-kit -- --check` → exit 0；
+    三package all-target Clippy `-D warnings` → exit 0。
+- **live CLI边界 / DB安全**：新CLI binary带session/task/operation/org/stage exact断言尝试恢复原任务；第一次用GUI chat key在claim前
+  fail closed（只接受`stage-run-*` key），第二次用operation UUID仍在claim前fail closed（DB session不是stage-run owned）。两次均未调用模型/
+  扫描器。随后重读live DB确认task仍`waiting/external_attack_surface`，原Worker仍`recovery_required`、原chain/tool identity完整；
+  `--stage-run-resume`暂不能接管GUI task是现有CLI/GUI selector边界，未在本修复中放宽。
+- **状态 / 下一步**：代码与共享CLI内核验证已完成，但父feature继续唯一`in_progress`：未跑全仓`just precommit`，且原GUI operation尚未由
+  新binary live claim。重开应用后发送“继续”应直接在DB claim处封存旧fingerprint tool，并沿原Prober chain从worklist缺口继续；若遇到不在
+  closed policy的工具才会继续要求operator recovery。未commit/stage/push，共享dirty tree其余改动均保留。
+
+#### 2026-07-16 · `stage_run` operator BLOCK 后终止当前 Agent request
+
+- **本轮目标 / 精确根因**：用户要求修复最后一次“继续”并由CLI/headless自行验收，不再依赖GUI。现场session
+  `pentest-chat-1784179823492-1`、operation `a8029de1-9f37-4450-b7e9-f08f7ba4c371`在forced first turn正确调用
+  `stage_run`，并从DB读到`eas_fingerprint_services` outcome-unknown的
+  `STAGE_TEAM_OPERATOR_RECOVERY_REQUIRED`；但该ToolResult使用正确的`success=true, passed=false`后，agent loop只会熔断后续
+  `stage_run`/orchestrator reflector，不会结束当前model loop。外层模型因此又调用coverage/worklist/plan/target查询、尝试
+  `submit_stage_deliverable`，最后再次调用`stage_run`才命中reentry guard。工具边界挡住了真实旁路，但请求没有在权威BLOCK处终止。
+- **设计 / 已完成**：新增`docs/design/2026-07-16-stage-run-terminal-request-control.md`与对应实现计划。Company Controller
+  operator-recovery和same-request reentry结果现在携带closed
+  `runtime_control={kind:halt_current_request,reason:<closed enum>}`；dispatch只在tool name、control、
+  `passed=false`、retry/recovery或reentry字段及Company Controller scheduler tuple全部精确匹配时，翻译为typed
+  `ToolDispatchHaltReason`。同一assistant batch中位于该`stage_run`之后的调用收到paired synthetic ToolResult且绝不执行；原始
+  blocker ToolResult落入history/transcript后，`turn::run_turn_loop`立即结束，不再请求第二次completion。scheduler read仍为
+  `success=true`，不会触发direct-tool fallback；下一条独立用户request仍重置request-local guard并沿同operation/Worker/chain继续。
+- **TDD / CLI-headless已记录证据**（所有Cargo build/test前均运行`just space-guard`；未启动GUI、未调用外部LLM/扫描器、未跑
+  `init.sh`）：
+  - RED：`cargo test -p golish-agent-runtime headless_stage_run_operator_recovery --lib -- --nocapture` → exit 101；scripted
+    model实际被调用3次而非1次，准确复现BLOCK后继续查coverage/改plan/submit；
+  - GREEN：同一headless agent-loop test → 1/1 passed；model `call_count=1`，custom executor调用序列严格为
+    `[stage_run]`，第二轮三个post-block工具均未执行；
+  - focused request-control nextest run `3c81a580-39d1-4f75-a0dd-2472876aab04` → 6/6 passed、427 skipped，覆盖closed
+    discriminator、same-batch barrier、loop terminal、Company Controller operator recovery与reentry；
+  - 用户再次要求自行复验后，在后台Tauri dev占用正式DB的情况下未并发触碰live DB；同一隔离headless test再次1/1 passed，随后
+    focused nextest run `23f411a2-64f7-486b-a056-eae2af747bef`再次6/6 passed，未启动GUI操作、未执行第二轮工具或真实扫描；
+  - 全`golish-agent-runtime` nextest run `cdd73edb-7959-4585-af48-42a5058d2948` → 433/433 passed；
+  - outer request/retry integration nextest run `957b4e35-ae25-4435-9191-d12c4c55bb75` → 3/3 passed、1133 skipped，覆盖
+    Bridge request owner只重置一次、同请求耗尽不再自动Gate repair、独立用户continuation恢复新预算；
+  - `cargo clippy -p golish-agent-runtime --all-targets -- -D warnings`、全backend rustfmt check、`jq empty feature_list.json`、
+    唯一`in_progress`断言与`git diff --check`均exit 0。
+- **提交记录 / 边界**：未commit、未stage、未push；未改DB/schema/migration/IPC/frontend，未替用户选择
+  retry/abandon/accept-known-outcome，也未自动重放当前Nmap fingerprint工具。按用户明确要求未运行`init.sh`；本轮亦未跑全仓
+  `just precommit`，因此父feature保持唯一`in_progress`，不虚报整个Candidate/Verification DoD完成。
+- **已知风险 / 下一步最佳动作**：这次修复保证“继续”先调用`stage_run`且一旦返回operator recovery就原地结束，外层Agent不会再
+  自己查coverage、改plan或提交。它不把真实outcome-unknown fingerprint伪造成成功，所以现场stage仍会安全BLOCK，直到通过
+  DB-backed operator recovery明确作出决定；缺少该产品处置入口仍是独立未完成项。后续可以直接用本轮scripted CLI回归验收，不需再让
+  用户开GUI试错；若要让该live Gate继续，下一项应实现operator recovery CLI/UI并由用户选择exact outcome，而不是放宽Gate。
+- **本轮修改但未提交文件**：`backend/crates/golish-agent-runtime/src/agentic_loop/{tool_dispatch.rs,turn/executor.rs,
+  tool_execution/direct/stage_run_call.rs}`、`backend/crates/golish-agent-runtime/src/test_utils_tests.rs`、本轮design/plan、
+  `docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/INDEX.md`、`feature_list.json`与本日志。共享dirty tree其余
+  既有文件均保留，未回滚或覆盖。
+
+#### 2026-07-16 · Stage Team child 输出协议与重试卡片修复
+
+- **本轮目标 / 精确根因**：用户在session
+  `pentest-chat-1784179823492-1`看到Prober #1完成后才出现Prober #2，怀疑队列或无法并行。`run_tree.py --full --db`
+  与embedded PG truth确认只有一个dispatch、一个WorkItem
+  `24d552d5-6986-5a48-b17a-6119924e23fc`；#1/#2是同一WorkItem的generation 0/1，不是两个sibling。generation 0的
+  port/HTTP/Nmap/WhatWeb工具和evidence均成功，但generic `submit_result` schema/prompt要求自由文本，child最终提交Markdown；generic
+  executor先发`SubAgentCompleted`，durable scheduler随后以
+  `STAGE_TEAM_WORKER_OUTPUT_INVALID: stage child did not return the required single JSON object`拒绝并自动创建generation 1，造成
+  UI“已完成后又启动一个Agent”的假象。
+- **已完成**：
+  - ordinary durable Stage Team child通过trusted bound context识别；`submit_result.result`改为exact
+    `stage_worker_output.v1` object schema，completion prompt同步禁止Markdown/prose wrapper，barrier把object序列化为单一JSON对象；普通
+    sub-agent、Company Controller与Candidate verifier原协议保持不变；
+  - deterministic output/provider failure在调用`retry_stage_worker`前，按该generation exact parent request id发
+    `SubAgentError`，覆盖generic executor过早发出的completed状态并展示failure code/detail；
+  - `SubAgentDetailView`按durable `created_work_item_id`归并WorkerRun generations：一个WorkItem只保留一张主卡，主卡指向最新代，
+    下方显示被拒绝的旧代与当前自动重试次数；不同WorkItem sibling仍独立显示；中英文文案与模块卡已同步。
+- **TDD / 聚焦验证证据**（所有Cargo命令前先`just space-guard`；按用户既有边界未跑`init.sh`、`just precommit`或广域套件）：
+  - RED：`cargo test -p golish-sub-agents stage_team_child_barrier_requires_a_typed_worker_output_object --lib` → exit 101（缺typed
+    schema/helper）；`pnpm exec vitest run frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 1 failed/65 passed（同一
+    WorkItem错误渲染2张assignment）；
+  - GREEN：两个`golish-sub-agents`定向测试各1/1 passed；`cargo test -p golish-agent-runtime stage_child --lib` → 5/5 passed；
+    `cargo check -p golish-agent-runtime --tests`与
+    `cargo clippy -p golish-sub-agents -p golish-agent-runtime --tests -- -D warnings`均exit 0；
+  - 前端定向Vitest → 66/66 passed；`pnpm typecheck`、四文件Biome check、五个Rust文件rustfmt check均exit 0。
+- **状态 / 边界**：feature继续`in_progress`；无schema/migration/generated IPC改动，未commit/stage/push。已经启动的旧generation使用的是
+  旧provider请求，不能被代码倒推改写；后端新binary启动后的新child/retry才会收到typed barrier。前端可对已捕获的同WorkItem generations
+  立即按一张卡归并，并对新失败事件显示精确原因。下一步最佳动作是重启到新binary后启动一个新的Stage Team child，live确认
+  `submit_result.result`为object且无无谓retry。
+- **未提交文件**：本轮改动位于
+  `backend/crates/golish-sub-agents/src/{executor_types.rs,executor/{tool_setup.rs,prompt_assembly.rs,response_parsing.rs}}`、
+  `backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`、
+  `frontend/components/SubAgentDetailView/{SubAgentDetailView.tsx,stripAgentXmlTags.test.ts}`、
+  `frontend/lib/i18n/{en.json,zh-CN.json}`、`docs/modules/{INDEX.md,backend/golish-sub-agents/executor.md,backend/golish-agent-runtime/agentic_loop.md,frontend/components.md}`
+  与本进度日志；均未commit。共享working tree其余既有修改/未跟踪文件不属于本轮，已原样保留。
+
+#### 2026-07-16 · 中途停机 crawler 的 worklist-first 同链恢复
+
+- **本轮目标 / 根因**：用户要求解决“工具执行中应用停掉，继续后永远过不了 Gate”，并要求用 CLI 测试、不要运行
+  `init.sh`。现场仍是operation `10b57d9a-e6db-4a4b-805c-b3bc3bd6749f`、Enumeration Team
+  `f58755ab-f28e-45e3-8de0-51ad5c49a128`、Worker
+  `18703fb0-77fe-42a4-ae23-a7c51cb11b5c`、chain
+  `32586839-dd1e-47c3-b5bc-73e1fd691143`：`enum_crawl_same_origin_urls`启动Katana后应用退出，tool row停在
+  `running`且没有结果。旧operator resolution会把该WorkItem终结为`exhausted/blocked`，Controller barrier虽能结束，
+  Enumeration coverage cells却再也没有执行者，Gate因而永久BLOCK。官方Codex手册只确认SubAgent有独立thread及follow-up
+  routing，没有公开中断tool的内部恢复算法；本实现采用可审计的durable truth reconciliation，不猜测内部机制。
+- **设计 / 安全边界**：新增
+  `docs/design/2026-07-16-stage-team-interrupted-tool-reconciliation.md`与对应实现计划，部分取代旧same-chain设计中
+  “所有outcome-unknown工具一律人工处置”的边界。closed server policy首期只允许
+  `enum_crawl_same_origin_urls`：该wrapper重新验证workspace/org/in-scope exact origin，Katana固定前台/60秒有界，输出仅为
+  browser seed且不是Gate authority。旧args不会被DB或runtime直接重放；其他network/write/browser/route/vuln/attack工具仍
+  `recovery_required`，attempt fuel耗尽也不自动恢复。无migration、无IPC/generated type改动、事务内无外部I/O。
+- **已完成**：
+  - `runtime_memory_tx`在claim前锁exact plan/item/worker/tool；对中断crawler把旧tool CAS为
+    `failed(stage_team_interrupted_tool_reconciled)`，在Worker checkpoint写
+    `stage_team_interrupted_tool_recovery.v1`，清旧active tool/lease并把同一Worker/WorkItem重排为queued；下一claim复用同一
+    WorkerRun/message chain且`attempt_epoch+1`，不创建replacement Agent，也不伪造operator decision；
+  - `stage_run_call`识别server marker并把host-owned恢复指令追加到同链新Turn：先
+    `stage_worklist_status`，再`stage_worklist_next(prefer=[pending,error,partial])`，保留terminal cells、只补当前缺口，
+    `ready_to_submit=true`后才提交；
+  - Company Controller真实路径覆盖“Controller parked + dynamic child中断”：Controller继续时先reconcile child但仍等待，
+    scheduler随后claim原child同Worker/chain继续；非白名单operator CAS及typed reentry blocker保持原语义。
+- **TDD / CLI验证证据**（所有Cargo命令前均运行`just space-guard`；未运行`init.sh`、GUI或真实扫描）：
+  - RED nextest run `aa745b9b-5c50-41f3-96e3-bf5fe486de18` → exit 100，旧scheduler跳到另一个queued WorkItem，原
+    crawler recovery child未被claim；
+  - 首轮GREEN run `88952062-97b1-40a4-bb19-bfbecb7eba60` → 2/2 passed，覆盖closed policy与same-chain DB恢复；
+  - DB+runtime核心run `50c825eb-2479-444b-af81-ee5919b8902b` → 5/5 passed；Company Controller现场形态run
+    `ba5fbb29-ae01-4487-a95e-0560ba3bae2f` → 1/1 passed；
+  - 扩大回归run `8a342774-85d4-470e-af31-d5421b66aab8` → 11/11 passed、993 skipped，覆盖startup park、同链
+    Controller/child、local terminal fence、manual active-tool CAS、worklist-first directive和三条typed operator blocker；
+  - `cargo clippy -p golish-db -p golish-agent-runtime --tests -- -D warnings` → exit 0；最终
+    `cargo fmt --all -- --check`、`jq empty feature_list.json`、唯一`in_progress`断言与`git diff --check`均exit 0。
+- **状态 / 下一步**：feature保持`in_progress`。新binary尚未在原GUI operation上live验收；正常重启后再次发送“继续”应先
+  自动封存旧crawler并恢复原Enumerator chain，由它检查worklist后补缺口。若后续遇到另一个不在closed policy的未知工具，
+  仍会返回`STAGE_TEAM_OPERATOR_RECOVERY_REQUIRED`，不会自动重放。未commit/stage/push，共享dirty tree完整保留。
+
+#### 2026-07-16 · Continue 的 Stage Team operator-recovery 透传修复
+
+- **本轮目标 / 最新现场**：用户再次反馈仍有问题。精确复核session
+  `pentest-chat-1784168572533-1`、`run.log`、`run_tree.py --full --db`与transcript。新binary已成功恢复原operation
+  `10b57d9a-e6db-4a4b-805c-b3bc3bd6749f`、原Enumeration execution
+  `2eafc4e9-1279-4199-90c5-3a648d9f3175`及原Team Unit
+  `f58755ab-f28e-45e3-8de0-51ad5c49a128`，前两次ownership/canonical replay修复均已live越过。
+- **真实阻塞**：`2026-07-16T04:26:51Z`与`04:27:24Z`两次`stage_run`均把已park的Controller报成
+  `COMPANY_CONTROLLER_FAILED: Company Controller is waiting but no runnable child WorkItem remains`。DB truth实际是Enumerator
+  Worker `18703fb0-77fe-42a4-ae23-a7c51cb11b5c`处于`recovery_required`，其旧
+  `enum_crawl_same_origin_urls` active tool outcome未知；因此Controller正确地不能claim，但scheduler错误地把“有durable
+  recovery blocker”退化为“没有runnable child”。主Agent随后误试`sub_agent_pentester`、3个`web_fetch`与6个
+  `run_pty_cmd`，均被stage tool boundary挡下。
+- **已完成**：
+  - Controller claim返回None时先读取exact Team barrier；`recovery_required_workers>0`转换为typed
+    `CompanyControllerOperatorRecoveryRequired`，不再使用generic no-runnable error；
+  - scheduler输出`STAGE_TEAM_OPERATOR_RECOVERY_REQUIRED`、count、明确`next_action`，并设置
+    `operator_recovery_required=true`与`retry_budget_exhausted=true`；工具本身返回success=true而业务`passed=false`，表示
+    scheduler成功读到阻塞状态，不诱导模型把它当能力不可用；
+  - 同时关闭本顶层请求的`StageRunReentryGuard`，阻止自动reflector/重复`stage_run`；下一次独立用户请求仍可在operator
+    recovery完成后恢复同一WorkerRun/message chain。
+- **TDD / 验证证据**（未跑init；Cargo前先`just space-guard`）：
+  - RED：`cargo test -p golish-agent-runtime company_controller_recovery_gap_requires_operator_and_stops_request_reentry --lib`
+    → exit 101，旧结果被断言为失败tool call；
+  - GREEN：同命令→exit 0，1/1 passed；聚焦nextest run
+    `98666172-212c-4973-a2fa-c25126130f94`→4/4 passed；
+  - 扩展Controller/Stage Team run `efe975af-88fb-46f0-b040-ece75c1fce9a`→16/16 passed，410 skipped；
+    leader自身recovery conflict与child barrier统一路径run `d14d2e6c-6fc3-455d-98ad-451fd2aa8a08`→5/5 passed；
+    `cargo clippy -p golish-agent-runtime --tests -- -D warnings`→exit 0；新增import首次fmt check只报告排序，按输出修正后
+    `cargo fmt --all -- --check`、`jq empty feature_list.json`、唯一`in_progress`断言与`git diff --check`均exit 0。
+  - 用户要求后续无需GUI即可复验；执行四package的CLI定向`cargo nextest run`，覆盖prompt入口、headless exact-resume
+    authority、Worker/message chain、Controller ownership与operator-recovery透传；run
+    `4cd15344-2b9c-4c57-8d2d-8191c034e063`→14/14 passed，1680 skipped，exit 0。该轮无外部LLM/API请求。
+- **安全边界 / 状态**：未改写live recovery row、未自动重放主动工具、未替用户选择operator outcome。随后执行
+  `pnpm tauri dev`完成正常重启（未跑`init`）：Vite ready、Rust编译成功、DB migrations完成且数据库进入ready状态；
+  用户随后在原task发送“继续”，`2026-07-16T05:02:37.906981Z`已live验证返回
+  `STAGE_TEAM_OPERATOR_RECOVERY_REQUIRED`、`operator_recovery_required=true`，且未重新dispatch specialist；同一顶层请求后续两次
+  `stage_run`仅命中reentry guard，未执行工具。进一步对齐历史日志：该Worker于`2026-07-16T02:57:45Z`启动
+  `katana`后没有任何完成记录，应用于`03:07:14Z`重新bootstrap，当前亦无残留Katana进程，因此其结果确实未知。
+  当前剩余产品缺口是GUI没有DB-backed operator-recovery处置入口；“继续”只能恢复到该安全屏障，不能代替用户选择
+  retry/abandon/accept-known-outcome。UI中的“Retry Budget Exhausted”仅指本顶层请求熔断，worker barrier实际是`0 retry / 1 recovery`。
+  feature继续`in_progress`，未commit/stage/push，共享dirty tree其它改动完整保留。
+
+#### 2026-07-16 · Continue 后 Stage Team dynamic child 回放校验修复
+
+- **本轮目标 / 最新现场**：用户在修复ownership后再次发送“继续”。session
+  `pentest-chat-1784168572533-1`于`2026-07-16T04:13:31Z`成功进入原operation
+  `10b57d9a-e6db-4a4b-805c-b3bc3bd6749f`并追加durable Turn，证明顶层继续和Controller ownership已越过；随后
+  forced `stage_run`在seed existing Team时返回
+  `runtime memory identity mismatch: stage_team_dynamic_work_item_authority_mismatch`。主Agent误把seed失败理解成
+  specialist unavailable，后续`web_fetch`、裸sub-agent与PTY fallback均被现有工具边界正确拦截。
+- **根因 / DB truth**：不是历史数据损坏。`request_stage_worker`写Company Controller动态child时，hash使用request
+  envelope解析后的`objective`，`input_refs`使用`stage_team_controller_assignment.v1`包装；replay validator却用完整
+  `reason_code` JSON与原始`bounded_subject_refs`重算。当前Enumeration三条动态child及既有EAS child全部符合writer的
+  canonical格式，因此只需修validator/writer共享canonicalization，不能改写live rows。
+- **已完成**：新增`stage_team_dynamic_work_item_authority_material`作为accepted dynamic WorkItem首次写入与回放校验的
+  唯一材料生成函数；Controller继续使用assignment包装，普通dynamic child保持raw refs。既有Controller端到端测试在
+  child accepted后立即重seed原Team，证明同plan可回放且原dynamic WorkItem仍保留，随后仍复用同一Controller
+  WorkerRun/message chain完成park→child→resume。
+- **TDD / 验证证据**（未跑init；Cargo前先`just space-guard`）：
+  - RED nextest run `5ee9f128-a1c5-43ef-a996-4f8f947894a8` → exit 100，1/1在现场同一
+    `stage_team_dynamic_work_item_authority_mismatch`失败；
+  - GREEN run `b1b680be-44d5-439e-91f2-6992aa1daf2d` → exit 0，1/1 passed；
+  - recovery聚焦 run `0624b27e-dd8a-491e-9291-acffedfa56fc` → exit 0，5/5 passed，覆盖普通dynamic replay、
+    Controller replay/同chain恢复、过期lease恢复与active-tool exact operator CAS；
+  - `cargo clippy -p golish-db -p golish-agent-app --tests -- -D warnings` → exit 0。首次fmt check仅报告本轮两处
+    rustfmt布局差异；按输出修正后`cargo fmt --all -- --check`、`jq empty feature_list.json`、唯一
+    `in_progress`断言与`git diff --check`均exit 0。
+- **安全边界 / 下一步**：没有重写live DB、没有自动重放扫描、没有伪造operator decision。修复后的下一次continue会
+  越过Team seed replay；之后仍可能遇到Enumerator `18703fb0-77fe-42a4-ae23-a7c51cb11b5c`的真实
+  `recovery_required` active-tool边界，必须由用户显式选择outcome后才能继续同一chain。最终进程核对未发现正在运行的
+  Golish/Tauri/Vite app进程，因此本次代码尚未进入live binary；下一次验收先按正常开发启动路径重启（不跑init），再在
+  原task发送“继续”。
+- **提交 / 约束**：未commit、未stage、未push；按用户要求未运行`init.sh`或broad precommit。共享dirty tree其它改动
+  完整保留。
+
+#### 2026-07-16 · Continue 的 Company Controller ownership 假阳性修复
+
+- **本轮目标**：修复用户在原task再次发送“继续”后出现
+  `Worker dfdcbc27-... chain crossed session/task/agent ownership`，并核对真实live chain是否损坏。
+- **精确运行 / DB证据**：session `pentest-chat-1784168572533-1`、operation
+  `10b57d9a-e6db-4a4b-805c-b3bc3bd6749f`。`run.log`证明该Controller曾从chain
+  `11022fdc-6af3-4bd3-b786-b0de103201fc`正常恢复并写入11条messages。live DB逐列复核Worker、chain、
+  session `10332e01-c26e-4a60-994d-2954dea470e8`、task与persisted agent=`pentester`全部一致；假阳性来自
+  `message_chains::list_exact_resume_bound_chains`的closed CASE漏了`company_stage_controller`，因此LEFT JOIN
+  人为返回`exact_chain_id=NULL`。不是历史chain损坏，也不是用户跨session续错任务。
+- **已完成**：
+  - DB exact-resume ownership mapping新增`company_stage_controller -> pentester`；
+  - app `PgChainPersistence`使用相同closed mapping，避免创建/读取边界再次分叉；
+  - 新增integration regression，真实seed并claim一个Controller，再证明exact resume返回相同chain body；既有
+    persistence mapping测试也纳入Controller；unknown role与真实session/task/agent漂移仍fail closed；
+  - 修正后的live read-only join核对当前Enumeration 4个Worker全部`ownership_ok=true`，mismatch=`0`。
+- **TDD / 验证证据**（Cargo前先`just space-guard`）：
+  - RED nextest run `647a7e94-39cf-48b7-8e86-412c7af6a2b5` → exit 100，2/2按预期失败：
+    app报unsupported Controller agent，DB回归得到`exact_chain_id=None`；
+  - GREEN run `5d7f7027-2a34-4803-9306-5b3bc896eb84` → exit 0，2/2 passed；
+  - 所有exact-resume相关聚焦 run `6ba93034-7b27-49d9-b3a4-f65da96a5167` → exit 0，6/6 passed，
+    976 skipped；`cargo clippy -p golish-db -p golish-agent-app --tests -- -D warnings` → exit 0。
+- **安全边界 / 下一步**：当前run另有一个Enumerator Worker
+  `18703fb0-77fe-42a4-ae23-a7c51cb11b5c`处于`recovery_required`，其
+  `enum_crawl_same_origin_urls` tool row仍是`running`且无result；ownership修复后不得自动重放这个
+  outcome-unknown主动工具。用户再次“继续”应先越过本次假阳性，若随后出现recovery提示，需要显式operator
+  decision后才能继续同一chain。未替用户写recovery decision、未触发外部扫描。
+- **提交 / 约束**：未commit、未stage、未push；按用户要求未运行`init.sh`或broad precommit。
+- **以下本轮文件已修改但未提交**：`backend/crates/golish-db/src/repo/message_chains.rs`、
+  `backend/crates/golish-db/tests/runtime_memory_worker_transactions.rs`、
+  `backend/crates/golish-agent-app/src/ai/tracking_bridge/chain.rs`、
+  `docs/modules/backend/golish-db/repo.md`、`docs/modules/backend/golish-agent-app/ai.md`、
+  `docs/modules/INDEX.md`与本记录。共享dirty tree其它改动完整保留。
+
+#### 2026-07-16 · Codex 式 Agent Thread / Turn 恢复（进行中）
+
+- **本轮目标**：按用户“开干”授权，把顶层 Operation、Company Controller和每个动态 child从“失败后重建
+  Agent/chain”改为“同一 Thread追加新 Turn”；应用重启后立即可继续，不再等待一小时 reaper。
+- **设计 / 计划**：新增`docs/design/2026-07-16-codex-style-agent-thread-resume.md`与
+  `docs/superpowers/plans/2026-07-16-codex-style-agent-thread-resume.md`。稳定identity映射为
+  Operation/WorkItem/WorkerRun/message chain，顶层Turn使用durable`operation_turns`，worker Turn使用
+  `attempt_epoch`；unknown active tool继续operator recovery且绝不自动重放。
+- **用户约束**：用户在基线运行中明确要求“不要跑init哈”；已立即SIGINT停止`init.sh`。后续不再运行
+  `init.sh`或broad precommit，只做改动相关定向测试、scoped check与diff hygiene。
+- **基线已发生的证据**：停止前`fmt`、`check-fe`、`test-fe`、`lint-rust`已通过；`test-rust-all`刚开始即
+  按用户要求中断，`init.sh`最终exit 1仅表示SIGINT，不是代码基线失败。`git status`前后没有新增生成文件diff。
+- **已完成**：
+  - 新增向前migration `20260716000001_operation_turn_resume.sql`：稳定`tasks.id == operation_id`下保存
+    `operation_turns`，fresh operation原子写ordinal 1，task waiting/finished/failed由trigger同步open Turn；
+  - exact resume source接受`running|waiting`且继续要求result-null、完整whole-record source、无live Worker lease；
+    claim以`expected source + exact open_turn_id`作双CAS witness，在同一SQL关闭旧Turn并追加下一ordinal；
+  - startup/request-time clean lease recovery统一复用同一transition，普通child、Controller、Aggregator与retry-safe
+    本地provider fence都保留WorkItem/WorkerRun/message chain，只增加`attempt_epoch`；
+  - active tool仍进入`recovery_required`，网络/副作用操作没有新增自动重放路径；稳定worker identity让现有前端卡片、
+    transcript和drill-in timeline自然复用，不需要新增IPC或生产前端分叉；
+  - 同步设计、实现计划、`golish-db/repo`、`golish-agent-app/ai`与模块INDEX。
+- **TDD RED证据**（Cargo前均运行`just space-guard`）：
+  - nextest run `72efa204-f15c-4e04-88ab-924d2cb84476`：3/3按预期失败，证明旧selector/claim仅接受
+    waiting，expired child返回了新Worker UUID；
+  - nextest run `f144f383-f6ec-4fb7-a013-4ac28f18ea33`：1/1按预期失败，Postgres `42P01`证明fresh
+    operation尚无`operation_turns`。
+- **当前GREEN证据**：
+  - child同Worker/chain：run `8d51e484-8635-4771-a447-54bd32a8b0ac`，1/1 passed；fresh首Turn：
+    `82a2076b-6883-4c49-9676-a07689670448`，1/1 passed；SQL shape + fresh Turn：
+    `0eb67c0a-f1cb-4727-b700-ae408fb71b35`，3/3 passed；
+  - open-Turn并发CAS：`5cbbbcd3-635a-45c1-be7c-2cc6d7058b8b`，1/1 passed；Team recovery聚焦8项：
+    `e000c3d7-d2be-43a5-832e-d9cb9fb3e19f`，8/8 passed；running V2立即继续：
+    `bf061565-0cea-4f3b-8e41-7d4284d46171`，1/1 passed；
+  - `golish-sub-agents` exact history restore/missing fail-closed/byte-stable compaction：
+    `668d669a-8221-4b90-86f3-63b566ff3300`，3/3 passed；
+  - `cargo check -p golish-db -p golish-agent-app --tests` → exit 0；首次scoped fmt check → exit 1，仅报告本轮测试
+    文件格式差异，执行package-scoped `cargo fmt`后复查 → exit 0；
+  - `cargo clippy -p golish-db -p golish-agent-app --tests -- -D warnings` → exit 0；Clippy先暴露2处
+    `explicit_auto_deref`，修正后重跑全绿；
+  - 最终恢复聚焦组 nextest run `5158b5c1-38a7-4508-a4b3-6f6e8cf8ac69` → exit 0，11/11 passed，
+    561 skipped；覆盖running exact resume、Turn并发CAS、clean/active-tool/exhausted/local-provider/Aggregator recovery；
+  - `cargo fmt --manifest-path backend/Cargo.toml -p golish-db -p golish-agent-app -- --check`、
+    `jq empty feature_list.json`、唯一`in_progress`断言、`git diff --check` → exit 0。
+- **状态 / 下一步**：实现与定向验证已收敛；按用户约束未运行`init.sh`或broad precommit。feature保持
+  `in_progress`，因为fresh live app restart/rerun与更宽Candidate recovery DoD尚未完成。未commit/stage/push；
+  新migration会在backend下一次启动时应用。现有共享dirty tree中的前端/agent-runtime改动均保留，未回滚或接管。
+- **已知风险 / 下一步最佳动作**：本轮没有重启正在运行的backend，所以尚无真实旧session经新migration恢复的live
+  acceptance；下一步应重启backend让migration生效，复制一个无active tool的中断run，立即发送“继续”，再用
+  `run_tree.py --full --db`核对operation id不变、Turn ordinal增加、child Worker/chain不变。active-tool case仍必须走
+  operator recovery，不能拿普通continue验收。标准启动路径与broad suite因用户约束未核验，不伪装为通过。
+- **提交记录**：未commit、未stage、未push。
+- **以下本轮文件已修改但未提交**：`backend/crates/golish-db/migrations/20260716000001_operation_turn_resume.sql`、
+  `backend/crates/golish-db/src/repo/operation_turns.rs`、`backend/crates/golish-db/src/repo/mod.rs`、
+  `backend/crates/golish-db/src/repo/tasks.rs`、`backend/crates/golish-db/src/repo/stage_teams.rs`、
+  `backend/crates/golish-db/src/repo/runtime_memory_tx.rs`、
+  `backend/crates/golish-db/tests/runtime_memory_worker_transactions.rs`、
+  `backend/crates/golish-agent-app/src/ai/commands/core/operation_resume.rs`、
+  `backend/crates/golish-agent-app/src/ai/commands/core/chat.rs`、
+  `docs/design/2026-07-16-codex-style-agent-thread-resume.md`、
+  `docs/superpowers/plans/2026-07-16-codex-style-agent-thread-resume.md`、
+  `docs/modules/backend/golish-db/repo.md`、`docs/modules/backend/golish-agent-app/ai.md`、
+  `docs/modules/INDEX.md`、`feature_list.json`与本记录。共享working tree中其它既有frontend/agent-runtime修改不属
+  本轮，已完整保留。
+
+#### 2026-07-16 · Stage Team sibling SubAgent 独立卡片与 transcript identity 修复
+
+- **本轮目标**：修复 Company Controller 明确派发 3 个 Enumerator，但详情只显示 1 张卡、点击后多个 sibling 的 Thought 混进同一运行流的问题；同时让尚未启动的 accepted assignment 可见。
+- **精确运行证据 / 根因**：复核最新 session `pentest-chat-1784168572533-1`、Controller transcript 与 DB truth。`stage_team_dispatch_workers` request `14497516-81f4-46c3-9730-0baa3b473e1c` 的参数和结果包含 3 个不同 `dedupe_key`、3 个 accepted request 和 3 个 WorkItem；观察时真实状态是 1 completed / 1 running / 1 queued，并非三个同时 active。三个 durable WorkerRun 却共享同一个 `parent_request_id=14497516-...`，runtime 又直接把这个 shared dispatch id 当作 child UI/transcript identity，导致磁盘只有 `subagents/enumerator-14497516-.../transcript.json` 一条合并流；该文件在一个 child 已 `sub_agent_completed` 后仍继续写入其他 worker reasoning，证明不是单纯前端少画卡。
+- **已完成**：
+  - runtime 即使读到 shared durable dispatch parent，也强制派生 `${dispatch_tool_request_id}::worker:<worker_run_id>`；fallback Team parent 同样追加 WorkerRun suffix，新的 sibling 各自拥有独立事件链、transcript 与前端 identity；
+  - Controller 详情从一次 dispatch 的 `workers + requests` 立即建立完整 assignment 列表，3 个 accepted 请求固定显示 3 张带 `#1/#2/#3`、role 与 objective 的卡；
+  - 已启动 child 通过 durable `created_work_item_id` 精确关联后可点击，未 claim/未启动 child 使用同款分支卡显示“排队中”，不再凭 agentName 或时间合并；历史单 child exact tool id 继续兼容。
+- **TDD / 验证证据**（Cargo 前先 `just space-guard`）：
+  - backend RED：新增 sibling identity 回归测试后因 `stage_team_child_parent_request_id` 不存在而编译失败；实现后 `cargo test -p golish-agent-runtime stage_team_claimed_siblings_keep_the_dispatch_parent_but_split_by_worker_run --lib` → exit 0，1/1 passed；
+  - frontend RED：`pnpm exec vitest run frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 1 failed / 64 passed，旧 UI 没有任何 `stage-team-dispatch-assignment`；GREEN：同命令 → exit 0，65/65 passed，覆盖 3 张 assignment、2 个 active 可点击 child 与 1 个 queued placeholder；
+  - `cargo fmt -p golish-agent-runtime -- --check` → exit 0；`cargo check -p golish-agent-runtime --tests` → exit 0；
+  - scoped Biome 4 files → exit 0；`pnpm typecheck`（含 `generate:models` + `tsc --noEmit`）→ exit 0，生成模型文件无工作树 diff。
+  - `git diff --check`、`jq empty feature_list.json` 与唯一 `in_progress` 断言 → exit 0；active feature 仍为 `stage-team-scheduler-verification-recovery-2026-07-14`。
+- **边界 / 风险 / 下一步最佳动作**：用户已明确授权“修”，知悉 Rust dev hot reload 可能中断当前 Enumeration。已经混写完成的历史 transcript 无法可靠逆向拆成三个 child；本修复保证 backend 重载后的新派发/重跑使用独立 identity，旧 run 若要得到干净三路详情需重新运行该阶段。未改 schema/migration/generated IPC，未跑 `init.sh`、`just precommit` 或 broad suites，active feature 继续 `in_progress`。
+- **提交记录**：未 commit、未 stage、未 push。
+- **以下文件已修改但未提交**：`backend/crates/golish-agent-runtime/src/agentic_loop/tool_execution/direct/stage_run_call.rs`、`frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`、`frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`、`frontend/lib/i18n/en.json`、`frontend/lib/i18n/zh-CN.json`、`docs/modules/backend/golish-agent-runtime/agentic_loop.md`、`docs/modules/frontend/components.md`、`docs/modules/INDEX.md`、本记录。共享 dirty tree其它既有修改未回滚、未接管。
+
+#### 2026-07-16 · Company Controller 终态计划收敛
+
+- **本轮目标**：修复 Company Controller 已提交 deliverable、Unit/Gate 已通过，但详情页“当前计划”仍停在 3/4、最后一步持续转圈的问题。
+- **运行证据 / 根因**：精确复核 session `pentest-chat-1784167462934-1` 的 `run_tree.py --full --db`、Controller chain `2bf05dbe-f767-4357-ab2e-c749de4a6c38` 与 DB truth：Target Intel Unit 已 `passed`、final submission 已落库；但 Controller 最后一次真实 `update_plan` 只把第 4 步标成 `in_progress`，随后直接调用 `stage_team_prepare_final_submission`，恢复后完成 `submit_stage_deliverable`，整条 transcript 没有 4/4 plan call。前端又只解析旧 `::org::<org>` parent id，不认识当前 `::team::<org>::lead:<worker>`，因此拿不到同一 row 的 `passed` 终态。
+- **已完成**：
+  - `parseStageRunOrgRequestId` 支持 exact Company Controller Team lead/worker identity，并剥离 worker suffix 后解析 stage-run request 与 organization；
+  - detail 按 exact agent request id、再按 organization id 关联同一 StageRun row；
+  - 只有 row status=`passed` 时对最新有效计划做 display-only 收敛：计数变为 N/N、所有步骤显示 completed、标题显示“计划已完成”；原始 tool args/transcript 不改写；
+  - blocked/stopped/error 或未知终态不会被伪装成完成，仍展示真实 pending/in_progress。
+- **验证证据**：
+  - RED：`pnpm exec vitest run frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 2 failed / 60 passed，分别证明 Team lead identity 解析缺失、passed 后计划仍停在 1/3；
+  - GREEN：同命令 → exit 0，64/64 passed，覆盖 exact Team identity、passed-only 计划收敛与 non-passed 不收敛；
+  - `pnpm exec biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0，2 files checked / no fixes；
+  - `pnpm typecheck`（含 `generate:models` + `tsc --noEmit`）→ exit 0，生成模型文件无工作树 diff；
+  - `git diff --check` → exit 0。
+- **提交记录**：未 commit、未 stage、未 push。
+- **边界 / 风险 / 下一步最佳动作**：仅修改前端 display projection 与测试；没有把 Gate truth 写回 agent plan、没有改 backend/schema/migration/generated IPC。当前 dev app 热更新后，历史 Target Intel Controller 详情应直接显示 4/4；若 row 尚未收到 `passed` refresh，则保持原快照而不是猜完成。沿用 active Stage Team feature 边界，不跑 `init.sh`、`just precommit` 或 broad suites。
+- **以下文件已修改但未提交**：`frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`、`frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`、`docs/modules/frontend/components.md`、`docs/modules/INDEX.md`、本记录。
+
+#### 2026-07-16 · Company Controller 可见 SubAgent 钻取
+
+- **本轮目标**：修复 Company Controller 详情里看不出是否真正调用了 SubAgent、也无法像 Codex 一样点进 child 运行流的问题。
+- **根因 / 运行证据**：当前 EAS run 中 Controller 的派发调用是 `stage_team_dispatch_workers`，child Prober 的 `parent_request_id` 精确等于该 dispatch tool request id；但 `SubAgentDetailView` 只把名称以 `sub_agent_` 开头的工具识别为 child 节点，因此真实派发被渲染成普通工具卡。Controller 又复用了 `Prober` executor name，header 进一步误显示成 `Prober`。
+- **已完成**：
+  - exact `::lead:<worker_run_id>` 详情固定显示 `Company Controller`，不再暴露通用 executor identity；
+  - `stage_team_dispatch_workers` 按 exact tool request id 关联 child，时间线和无 entry fallback 都用可点击 SubAgent 卡替换普通工具行；点击沿现有 detail stack 进入 child，返回回到 Controller；
+  - Controller 事件已 completed、但派出的 child 仍 running 时，header 保持运行中；
+  - child 入口改为 Golish 运行流分支节点样式：左侧树状连接线、Agent identity 槽、两行任务摘要、状态 badge、进入箭头与独立 live thinking strip，和普通工具卡形成清晰层级；
+  - 新增回归测试覆盖 Controller identity、Prober child 可见、点击后的 stack identity、child Thought 与返回入口。
+- **验证证据**：
+  - RED：`pnpm exec vitest run frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → 1 failed / 59 passed，旧实现找不到 `Company Controller`；
+  - GREEN：同命令 → exit 0，60/60 passed；
+  - `pnpm exec biome check frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts` → exit 0，2 files checked / no fixes；
+  - `pnpm typecheck`（含 `generate:models` + `tsc --noEmit`）→ exit 0；生成模型文件无工作树 diff；
+  - `git diff --check` → exit 0。
+- **视觉验收边界**：已按 Computer Use 流程尝试读取当前 Golish 窗口；`pnpm tauri dev`、Vite 与 `backend/target/debug/golish` 均在运行，但开发态 Tauri 窗口没有注册到 macOS 可控 app 列表，无法自动执行真实点击截图，因此本轮以组件交互测试验证钻取链路，未虚构 live UI 通过。
+- **边界 / 状态**：这是当前唯一 `in_progress` Stage Team feature 内的窄前端修复；未改 backend、schema/migration 或 generated IPC，未运行 `init.sh`、`just precommit` 或 broad suites，未 commit/stage/push，feature 继续 `in_progress`。
+- **提交记录**：未 commit、未 stage、未 push。
+- **风险 / 下一步最佳动作**：当前功能与交互测试已收敛；用户可在正在热更新的 Controller 详情里继续观察 running/completed/error 三态及窄窗口布局。若还要调整视觉密度，只改 `NestedSubAgentCard`，不要改变 exact parent request identity 或把 child 重新降级为普通工具卡。
+- **以下文件已修改但未提交**：`frontend/components/SubAgentDetailView/SubAgentDetailView.tsx`、`frontend/components/SubAgentDetailView/stripAgentXmlTags.test.ts`、`docs/modules/frontend/components.md`、`docs/modules/INDEX.md`、本记录。
+
 #### 2026-07-16 · 组织级联删除 Memory invalidation dead-letter 修复
 
 - **本轮目标**：修复 Target 页面删除组织时 two-phase job 永久停在

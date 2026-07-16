@@ -570,7 +570,7 @@ fn exact_resumable_runtime_source_sql() -> String {
              FROM tasks
              JOIN operation_state os ON os.operation_id=tasks.id
             WHERE tasks.id=$1 AND tasks.session_id=$2
-              AND tasks.status='waiting' AND tasks.result IS NULL
+              AND tasks.status IN ('running','waiting') AND tasks.result IS NULL
               AND NOT EXISTS (
                   SELECT 1 FROM stage_worker_runs live_worker
                    WHERE live_worker.operation_id=tasks.id
@@ -604,23 +604,42 @@ pub async fn exact_resumable_runtime_source(
 }
 
 /// Atomically claim the exact idle task after the caller has decoded the
-/// selected whole-record source. The source is rebuilt inside the UPDATE and
-/// must still equal `expected_source`; two concurrent resume callers can
-/// therefore never both cross the waiting -> running boundary.
+/// selected whole-record source. The source is rebuilt inside the statement,
+/// the caller's exact open Turn is closed, and one successor Turn is appended.
+/// Two concurrent resume callers holding the same prior Turn witness can never
+/// both advance the operation even though the abandoned task may still say
+/// `running`.
 fn claim_exact_resumable_runtime_source_sql() -> String {
     let selected_source = exact_resumable_runtime_source_sql();
     format!(
         r#"WITH exact_source AS (
                {selected_source}
+           ), closed_turn AS (
+               UPDATE operation_turns
+                  SET status='interrupted', terminal_at=NOW()
+                 FROM exact_source
+                WHERE operation_turns.id=$4
+                  AND operation_turns.operation_id=$1
+                  AND operation_turns.status IN ('running','waiting')
+                  AND exact_source.source=$3
+               RETURNING operation_turns.ordinal
+           ), next_turn AS (
+               INSERT INTO operation_turns(
+                   id,operation_id,ordinal,trigger_input,status
+               )
+               SELECT $5,$1,closed_turn.ordinal+1,$6,'running'
+                 FROM closed_turn
+               RETURNING operation_id
            )
            UPDATE tasks
               SET status='running', updated_at=NOW()
-             FROM exact_source
+             FROM exact_source,next_turn
             WHERE tasks.id=$1
               AND tasks.session_id=$2
-              AND tasks.status='waiting'
+              AND tasks.status IN ('running','waiting')
               AND tasks.result IS NULL
               AND exact_source.source=$3
+              AND next_turn.operation_id=tasks.id
            RETURNING exact_source.source"#
     )
 }
@@ -630,23 +649,53 @@ pub async fn claim_exact_resumable_runtime_source(
     task_id: Uuid,
     session_id: Uuid,
     expected_source: super::runtime_memory_tx::RuntimeMemoryRecordSource,
+    expected_open_turn_id: Uuid,
+    next_turn_id: Uuid,
+    trigger_input: &str,
 ) -> Result<bool> {
     use super::runtime_memory_tx::RuntimeMemoryRecordSource;
 
-    let expected_source = match expected_source {
+    let expected_source_name = match expected_source {
         RuntimeMemoryRecordSource::Legacy => "legacy",
         RuntimeMemoryRecordSource::V2 => "v2",
         RuntimeMemoryRecordSource::LegacyFallback => "legacy_fallback",
     };
+    let mut tx = pool.begin().await?;
+    let operation_exists = sqlx::query_scalar::<_, Uuid>(
+        "SELECT operation_id FROM operation_state WHERE operation_id=$1 FOR UPDATE",
+    )
+    .bind(task_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some();
+    if !operation_exists {
+        tx.rollback().await?;
+        return Ok(false);
+    }
     let claimed =
         sqlx::query_scalar::<_, Option<String>>(&claim_exact_resumable_runtime_source_sql())
             .bind(task_id)
             .bind(session_id)
-            .bind(expected_source)
-            .fetch_optional(pool)
+            .bind(expected_source_name)
+            .bind(expected_open_turn_id)
+            .bind(next_turn_id)
+            .bind(trigger_input)
+            .fetch_optional(&mut *tx)
             .await?
             .flatten();
-    Ok(claimed.as_deref() == Some(expected_source))
+    let claimed = claimed.as_deref() == Some(expected_source_name);
+    if claimed && expected_source == RuntimeMemoryRecordSource::V2 {
+        super::runtime_memory_tx::resume_company_controllers_for_successor_turn_in_transaction(
+            &mut tx,
+            task_id,
+            expected_open_turn_id,
+            next_turn_id,
+        )
+        .await
+        .map_err(|error| crate::DbError::Other(anyhow::Error::new(error)))?;
+    }
+    tx.commit().await?;
+    Ok(claimed)
 }
 
 const V2_LIVE_LEASE_SQL: &str = r#"os.runtime_memory_contract IN (
@@ -827,19 +876,29 @@ mod tests {
         assert!(sql.contains(V2_RELATIONAL_RECOVERABLE_SQL), "sql={sql}");
         assert!(sql.contains(LEGACY_GRAPH_RESUME_SQL), "sql={sql}");
         assert!(sql.contains("tasks.id=$1 AND tasks.session_id=$2"));
-        assert!(sql.contains("tasks.status='waiting' AND tasks.result IS NULL"));
+        assert!(
+            sql.contains("tasks.status IN ('running','waiting') AND tasks.result IS NULL"),
+            "a checkpointed running task from a dead request must be immediately resumable: {sql}"
+        );
         assert!(sql.contains("live_worker.lease_expires_at>NOW()"));
     }
 
     #[test]
-    fn exact_resume_source_claim_is_one_atomic_waiting_to_running_cas() {
+    fn exact_resume_source_claim_is_one_atomic_open_turn_to_running_cas() {
         let sql = claim_exact_resumable_runtime_source_sql();
         assert!(sql.contains("WITH exact_source AS"), "sql={sql}");
+        assert!(sql.contains("closed_turn AS"), "sql={sql}");
+        assert!(sql.contains("next_turn AS"), "sql={sql}");
         assert!(sql.contains("UPDATE tasks"), "sql={sql}");
         assert!(sql.contains("SET status='running'"), "sql={sql}");
-        assert!(sql.contains("tasks.status='waiting'"), "sql={sql}");
+        assert!(
+            sql.contains("tasks.status IN ('running','waiting')"),
+            "sql={sql}"
+        );
         assert!(sql.contains("tasks.result IS NULL"), "sql={sql}");
         assert!(sql.contains("exact_source.source=$3"), "sql={sql}");
+        assert!(sql.contains("operation_turns.id=$4"), "sql={sql}");
+        assert!(sql.contains("SELECT $5,$1,closed_turn.ordinal+1,$6,'running'"));
         assert!(sql.contains("RETURNING exact_source.source"), "sql={sql}");
     }
 

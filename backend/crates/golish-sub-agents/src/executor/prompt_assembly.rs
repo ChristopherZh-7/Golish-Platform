@@ -57,15 +57,37 @@ where
 
     inject_matched_skills(agent_id, task, ctx, &mut effective).await;
 
-    effective.push_str(&format!(
-        "\n\n## COMPLETION REQUIREMENT\n\n\
-         When your task is complete, you MUST call the `{}` tool to submit your result. \
-         Do NOT end with a plain text message — always use `{}` with:\n\
-         - `result`: your full findings, outputs, or deliverables\n\
-         - `success`: true if the task was completed, false if it failed\n\
-         - `summary`: a one-line summary of what was accomplished",
-        BARRIER_TOOL_NAME, BARRIER_TOOL_NAME
-    ));
+    if ctx
+        .bound_worker_chain
+        .as_ref()
+        .is_some_and(|bound| bound.is_stage_team_child())
+    {
+        effective.push_str(&format!(
+            "\n\n## COMPLETION REQUIREMENT\n\n\
+             When your task is complete, you MUST call the `{}` tool. Do NOT end with a plain \
+             text message. Its `result` argument MUST be the stage_worker_output.v1 object itself, \
+             never a JSON string, Markdown report, code fence, or prose wrapper. Include exactly:\n\
+             - `business_disposition`: `found`, `checked_empty`, or `blocked`\n\
+             - `summary`: a concise evidence-grounded summary\n\
+             - `fact_refs`: an array of typed fact-reference objects (or `[]`)\n\
+             - `evidence_ids`: an array of already-booked positive evidence IDs (or `[]`)\n\
+             - `checked_empty_units`: an array of exact checked-empty subunit objects (or `[]`)\n\
+             - `blocker_code`: a stable string for blocked outcomes, otherwise `null`\n\
+             Also set outer `success` and one-line outer `summary`. Do not claim evidence that \
+             was not durably booked.",
+            BARRIER_TOOL_NAME
+        ));
+    } else {
+        effective.push_str(&format!(
+            "\n\n## COMPLETION REQUIREMENT\n\n\
+             When your task is complete, you MUST call the `{}` tool to submit your result. \
+             Do NOT end with a plain text message — always use `{}` with:\n\
+             - `result`: your full findings, outputs, or deliverables\n\
+             - `success`: true if the task was completed, false if it failed\n\
+             - `summary`: a one-line summary of what was accomplished",
+            BARRIER_TOOL_NAME, BARRIER_TOOL_NAME
+        ));
+    }
 
     // Observability aid: a sub-agent's fully-assembled system prompt is otherwise
     // NOT captured anywhere (its per-sub-agent transcript logs only tool

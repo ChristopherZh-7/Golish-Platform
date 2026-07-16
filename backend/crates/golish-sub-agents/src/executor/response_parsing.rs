@@ -2326,6 +2326,23 @@ fn background_failure_runtime_correction(
     ))
 }
 
+/// Preserve the typed Stage Team child output across the generic sub-agent
+/// barrier. Generic sub-agents still submit a string; durable stage children
+/// submit an object that must reach the scheduler as one pure JSON object.
+fn submit_result_barrier_response(args: &serde_json::Value) -> String {
+    match args.get("result") {
+        Some(serde_json::Value::String(result)) if !result.is_empty() => result.clone(),
+        Some(result @ serde_json::Value::Object(_)) => {
+            serde_json::to_string(result).unwrap_or_default()
+        }
+        _ => args
+            .get("summary")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    }
+}
+
 /// Dispatch and execute a batch of tool calls from a sub-agent iteration.
 ///
 /// Handles three categories of tool calls:
@@ -2540,11 +2557,7 @@ where
                 continue;
             }
             let args = &tool_call.function.arguments;
-            let result_text = args
-                .get("result")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let result_text = submit_result_barrier_response(args);
             let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
             tracing::info!(
@@ -3432,11 +3445,34 @@ mod tests {
         stage_team_leader_router_barrier_response, structured_storage_hook_payload,
         submit_coverage_gap_repair_mode_from_reasons, submit_needs_fix_runtime_correction,
         submit_repair_mode_from_submit_result, submit_repair_update,
-        submit_repair_update_after_tool_result, tool_result_for_history,
-        update_submit_repair_mode_in_batch, use_sub_agent_outer_tool_timeout,
-        SubmitRepairModeUpdate, MAX_ROUTE_PROBE_MODEL_BATCH_BYTES,
-        MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
+        submit_repair_update_after_tool_result, submit_result_barrier_response,
+        tool_result_for_history, update_submit_repair_mode_in_batch,
+        use_sub_agent_outer_tool_timeout, SubmitRepairModeUpdate,
+        MAX_ROUTE_PROBE_MODEL_BATCH_BYTES, MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
     };
+
+    #[test]
+    fn submit_result_barrier_serializes_a_typed_result_object() {
+        let result = serde_json::json!({
+            "business_disposition": "found",
+            "summary": "Surface evidence booked",
+            "fact_refs": [],
+            "evidence_ids": [41],
+            "checked_empty_units": [],
+            "blocker_code": null
+        });
+        let args = serde_json::json!({
+            "result": result,
+            "success": true,
+            "summary": "Surface evidence booked"
+        });
+
+        let response = submit_result_barrier_response(&args);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&response).unwrap(),
+            result
+        );
+    }
 
     #[test]
     fn bound_worker_lifecycle_uses_the_same_event_request_id_as_tool_context() {

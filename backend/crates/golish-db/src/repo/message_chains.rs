@@ -204,7 +204,7 @@ pub async fn list_exact_resume_bound_chains(
               AND chain.agent=(CASE
                     WHEN worker.specialist='reporter' THEN 'reporter'::agent_type
                     WHEN worker.specialist IN (
-                        'recon','prober','enumerator','vuln_scanner',
+                        'company_stage_controller','recon','prober','enumerator','vuln_scanner',
                         'attack_analyst','candidate_verifier','pentester'
                     ) THEN 'pentester'::agent_type
                     ELSE NULL

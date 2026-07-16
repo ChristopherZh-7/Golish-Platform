@@ -800,8 +800,14 @@
       "promptGenerating": "正在生成 system prompt...",
       "promptGenerated": "System prompt 已生成",
       "promptFailed": "Prompt 生成失败",
+      "retry": {
+        "active": "自动重试中 · 第 {{attempt}} 次尝试正在运行",
+        "completed": "第 {{attempt}} 次尝试后完成",
+        "previousRejected": "上一次输出未通过持久化 Worker 契约校验"
+      },
       "status": {
         "running": "运行中",
+        "queued": "排队中",
         "backgrounded": "后台运行中",
         "completed": "已完成",
         "error": "出错",

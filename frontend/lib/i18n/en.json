@@ -800,8 +800,14 @@
       "promptGenerating": "Generating system prompt...",
       "promptGenerated": "System prompt generated",
       "promptFailed": "Prompt generation failed",
+      "retry": {
+        "active": "Automatic retry · attempt {{attempt}} is running",
+        "completed": "Completed after {{attempt}} attempts",
+        "previousRejected": "Previous output was rejected by the durable worker contract"
+      },
       "status": {
         "running": "Running",
+        "queued": "Queued",
         "backgrounded": "Backgrounded",
         "completed": "Completed",
         "error": "Error",

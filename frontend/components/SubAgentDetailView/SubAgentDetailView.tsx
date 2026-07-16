@@ -112,6 +112,19 @@ export interface SubAgentPlanSnapshot {
   totalCount: number;
 }
 
+export function projectSubAgentPlanForPassedStage(
+  plan: SubAgentPlanSnapshot,
+  parentStagePassed: boolean
+): SubAgentPlanSnapshot {
+  if (!parentStagePassed || plan.completedCount === plan.totalCount) return plan;
+  return {
+    ...plan,
+    completedCount: plan.totalCount,
+    inProgressCount: 0,
+    steps: plan.steps.map((step) => ({ ...step, status: "completed" })),
+  };
+}
+
 export function parseSubAgentUpdatePlanArgs(args: unknown): SubAgentPlanSnapshot | null {
   if (!isRecord(args) || !Array.isArray(args.plan)) return null;
   if (args.plan.length < 1 || args.plan.length > 12) return null;
@@ -883,21 +896,26 @@ const ToolResultDisplay = memo(function ToolResultDisplay({ result }: { result: 
 
 export function SubAgentUpdatePlanCard({
   tool,
+  parentStagePassed = false,
   parentStageStopped = false,
   visualRelation = "standalone",
 }: {
   tool: SubAgentToolCall;
+  parentStagePassed?: boolean;
   parentStageStopped?: boolean;
   visualRelation?: SubAgentToolCallVisualRelation;
 }) {
-  const plan = parseSubAgentUpdatePlanArgs(tool.args);
-  if (!plan) return null;
+  const parsedPlan = parseSubAgentUpdatePlanArgs(tool.args);
+  if (!parsedPlan) return null;
+  const plan = projectSubAgentPlanForPassedStage(parsedPlan, parentStagePassed);
 
-  const status = getSubAgentToolDisplayStatus(tool, { parentStageStopped });
+  const status = parentStagePassed
+    ? "completed"
+    : getSubAgentToolDisplayStatus(tool, { parentStageStopped });
   const isLive = isLiveToolStatus(status);
   const isAttachedToNarrative = visualRelation === "after_narrative";
   const isStackedTool = visualRelation === "stacked";
-  const statusLabel = isLive ? "正在规划" : "当前计划";
+  const statusLabel = parentStagePassed ? "计划已完成" : isLive ? "正在规划" : "当前计划";
 
   return (
     <div
@@ -1189,10 +1207,12 @@ const DefaultAgentToolCallBlock = memo(function DefaultAgentToolCallBlock({
 
 const AgentToolCallBlock = memo(function AgentToolCallBlock({
   tool,
+  parentStagePassed = false,
   parentStageStopped = false,
   visualRelation = "standalone",
 }: {
   tool: SubAgentToolCall;
+  parentStagePassed?: boolean;
   parentStageStopped?: boolean;
   visualRelation?: SubAgentToolCallVisualRelation;
 }) {
@@ -1200,6 +1220,7 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({
     if (!parseSubAgentUpdatePlanArgs(tool.args)) return null;
     return (
       <SubAgentUpdatePlanCard
+        parentStagePassed={parentStagePassed}
         parentStageStopped={parentStageStopped}
         tool={tool}
         visualRelation={visualRelation}
@@ -1218,11 +1239,15 @@ const AgentToolCallBlock = memo(function AgentToolCallBlock({
 
 const NestedSubAgentCard = memo(function NestedSubAgentCard({
   agent,
+  instanceLabel,
   sessionId,
+  taskOverride,
   onOpen,
 }: {
   agent: ActiveSubAgent;
+  instanceLabel?: string;
   sessionId: string;
+  taskOverride?: string;
   onOpen: (parentRequestId: string) => void;
 }) {
   const { t } = useTranslation();
@@ -1236,51 +1261,201 @@ const NestedSubAgentCard = memo(function NestedSubAgentCard({
         : agent.status === "interrupted"
           ? "interrupted"
           : "running";
+  const statusLabel = t(`ai.subAgentDetail.status.${status}`);
 
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(agent.parentRequestId)}
-      className={cn(
-        "group mx-3 my-2 w-[calc(100%-1.5rem)] rounded-lg border border-border/30 bg-card/80 px-3 py-2.5 text-left shadow-sm transition-colors hover:border-accent/40 hover:bg-accent/10",
-        status === "running" && "border-l-2 border-l-accent",
-        status === "error" && "border-l-2 border-l-destructive/70"
-      )}
-      style={status === "running" ? { borderLeftColor: color } : undefined}
-    >
-      <div className="flex min-w-0 items-center gap-2">
-        <StatusIcon status={status} size="sm" />
-        <Icon className="h-3.5 w-3.5 flex-shrink-0" style={{ color }} />
-        <span className="text-[11px] text-muted-foreground/65">{t("ai.subAgent.delegateTo")}</span>
-        <span className="truncate text-[12px] font-semibold text-foreground/85">
-          {agent.agentName || agent.agentId}
-        </span>
-        <AnchorChip sessionId={sessionId} requestId={agent.parentRequestId} />
-        <span className="min-w-0 flex-1" />
-        {agent.durationMs != null && (
-          <span className="flex-shrink-0 text-[10px] text-muted-foreground/60 tabular-nums">
-            {formatDurationShort(agent.durationMs)}
-          </span>
+    <div className="relative mx-4 my-2.5 pl-5">
+      <div
+        aria-hidden="true"
+        className="absolute -top-2 left-1.5 h-[calc(50%+0.5rem)] w-3.5 rounded-bl-md border-b border-l border-[var(--ansi-magenta)]/25"
+      />
+      <button
+        type="button"
+        onClick={() => onOpen(agent.parentRequestId)}
+        title={t("ai.subAgent.viewMore")}
+        className={cn(
+          "group relative w-full overflow-hidden rounded-lg border bg-card/55 text-left shadow-[0_1px_0_rgb(255_255_255/0.025)] transition-all duration-150",
+          "border-border/25 hover:-translate-y-px hover:border-[var(--ansi-cyan)]/35 hover:bg-card/80 hover:shadow-md",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ansi-cyan)]/45",
+          status === "running" && "border-[var(--ansi-blue)]/25 bg-[var(--ansi-blue)]/[0.035]",
+          status === "error" && "border-destructive/30 bg-destructive/[0.035]"
         )}
-        <ChevronRight className="h-3 w-3 flex-shrink-0 text-muted-foreground/45 transition-colors group-hover:text-accent/70" />
+      >
+        <span
+          aria-hidden="true"
+          className="absolute inset-y-0 left-0 w-0.5 opacity-70 transition-opacity group-hover:opacity-100"
+          style={{ backgroundColor: status === "error" ? "var(--destructive)" : color }}
+        />
+
+        <div className="flex min-w-0 items-center gap-3 px-3 py-2.5">
+          <span
+            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border border-border/25 bg-background/55 shadow-inner"
+            style={{ borderColor: `color-mix(in srgb, ${color} 35%, transparent)` }}
+          >
+            <Icon className="h-4 w-4" style={{ color }} />
+          </span>
+
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/55">
+                SubAgent
+              </span>
+              <span className="text-[10px] text-muted-foreground/45">
+                {t("ai.subAgent.delegateTo")}
+              </span>
+              <span className="truncate text-[12px] font-semibold text-foreground/90">
+                {agent.agentName || agent.agentId}
+              </span>
+              {instanceLabel && (
+                <span className="rounded border border-border/25 bg-background/45 px-1 py-0.5 text-[9px] font-medium tabular-nums text-muted-foreground/65">
+                  {instanceLabel}
+                </span>
+              )}
+              <AnchorChip sessionId={sessionId} requestId={agent.parentRequestId} />
+            </span>
+            {(taskOverride || agent.task) && (
+              <span className="line-clamp-2 text-[11px] leading-[1.45] text-muted-foreground/70">
+                {taskOverride || agent.task}
+              </span>
+            )}
+          </span>
+
+          <span className="flex flex-shrink-0 items-center gap-2">
+            {agent.durationMs != null && (
+              <span className="text-[10px] tabular-nums text-muted-foreground/55">
+                {formatDurationShort(agent.durationMs)}
+              </span>
+            )}
+            <span
+              className={cn(
+                "inline-flex h-5 items-center gap-1 rounded-full border px-1.5 text-[9px] font-medium",
+                status === "running" &&
+                  "border-[var(--ansi-blue)]/35 bg-[var(--ansi-blue)]/10 text-[var(--ansi-blue)]",
+                status === "completed" &&
+                  "border-[var(--success)]/25 bg-[var(--success-dim)] text-[var(--success)]",
+                status === "error" && "border-destructive/30 bg-destructive/10 text-destructive",
+                status === "interrupted" && "border-yellow-400/25 bg-yellow-500/10 text-yellow-400"
+              )}
+            >
+              <StatusIcon status={status} size="sm" />
+              {statusLabel}
+            </span>
+            <span className="flex h-6 w-6 items-center justify-center rounded-md border border-border/20 bg-background/35 text-muted-foreground/45 transition-colors group-hover:border-[var(--ansi-cyan)]/25 group-hover:text-[var(--ansi-cyan)]/80">
+              <ChevronRight className="h-3.5 w-3.5" />
+            </span>
+          </span>
+        </div>
+
+        {agent.thinking && status === "running" && (
+          <div className="flex min-w-0 items-center gap-2 border-t border-[var(--ansi-blue)]/10 bg-[var(--ansi-blue)]/[0.025] px-3 py-1.5 pl-14">
+            <Loader2
+              className={cn(SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS, "text-[var(--ansi-blue)]/75")}
+            />
+            <span className="min-w-0 flex-1 truncate text-[10px] text-[var(--ansi-blue)]/75">
+              {agent.thinking}
+            </span>
+          </div>
+        )}
+      </button>
+    </div>
+  );
+});
+
+interface StageTeamDispatchAssignment {
+  agent: ActiveSubAgent | null;
+  attempts: ActiveSubAgent[];
+  decision: string | null;
+  dedupeKey: string | null;
+  key: string;
+  objective: string;
+  ordinal: number;
+  role: string;
+  workItemId: string | null;
+}
+
+const PendingStageTeamDispatchCard = memo(function PendingStageTeamDispatchCard({
+  assignment,
+  toolStatus,
+}: {
+  assignment: StageTeamDispatchAssignment;
+  toolStatus: SubAgentToolCall["status"];
+}) {
+  const { t } = useTranslation();
+  const roleName = humanizeDirectiveToken(assignment.role) || "SubAgent";
+  const Icon = getAgentIcon(roleName);
+  const color = getAgentColor(roleName);
+  const rejected = Boolean(assignment.decision && assignment.decision !== "accepted");
+  const status = rejected ? "error" : isLiveToolStatus(toolStatus) ? "running" : "queued";
+  const statusLabel = t(`ai.subAgentDetail.status.${status}`);
+
+  return (
+    <div className="relative mx-4 my-2.5 pl-5">
+      <div
+        aria-hidden="true"
+        className="absolute -top-2 left-1.5 h-[calc(50%+0.5rem)] w-3.5 rounded-bl-md border-b border-l border-[var(--ansi-magenta)]/25"
+      />
+      <div
+        className={cn(
+          "relative w-full overflow-hidden rounded-lg border bg-card/45 text-left shadow-[0_1px_0_rgb(255_255_255/0.02)]",
+          status === "queued" && "border-border/20",
+          status === "running" && "border-[var(--ansi-blue)]/25 bg-[var(--ansi-blue)]/[0.03]",
+          status === "error" && "border-destructive/30 bg-destructive/[0.035]"
+        )}
+      >
+        <span
+          aria-hidden="true"
+          className="absolute inset-y-0 left-0 w-0.5 opacity-45"
+          style={{ backgroundColor: status === "error" ? "var(--destructive)" : color }}
+        />
+        <div className="flex min-w-0 items-center gap-3 px-3 py-2.5">
+          <span
+            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border border-border/20 bg-background/45 opacity-75 shadow-inner"
+            style={{ borderColor: `color-mix(in srgb, ${color} 25%, transparent)` }}
+          >
+            <Icon className="h-4 w-4" style={{ color }} />
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/45">
+                SubAgent
+              </span>
+              <span className="text-[10px] text-muted-foreground/40">
+                {t("ai.subAgent.delegateTo")}
+              </span>
+              <span className="truncate text-[12px] font-semibold text-foreground/75">
+                {roleName}
+              </span>
+              <span className="rounded border border-border/20 bg-background/35 px-1 py-0.5 text-[9px] font-medium tabular-nums text-muted-foreground/55">
+                #{assignment.ordinal}
+              </span>
+            </span>
+            {assignment.objective && (
+              <span className="line-clamp-2 text-[11px] leading-[1.45] text-muted-foreground/60">
+                {assignment.objective}
+              </span>
+            )}
+          </span>
+          <span
+            className={cn(
+              "inline-flex h-5 flex-shrink-0 items-center gap-1 rounded-full border px-1.5 text-[9px] font-medium",
+              status === "queued" && "border-border/25 bg-background/35 text-muted-foreground/60",
+              status === "running" &&
+                "border-[var(--ansi-blue)]/35 bg-[var(--ansi-blue)]/10 text-[var(--ansi-blue)]",
+              status === "error" && "border-destructive/30 bg-destructive/10 text-destructive"
+            )}
+          >
+            {status === "running" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : status === "error" ? (
+              <XCircle className="h-3 w-3" />
+            ) : (
+              <Clock className="h-3 w-3" />
+            )}
+            {statusLabel}
+          </span>
+        </div>
       </div>
-      {agent.task && (
-        <div className="mt-1.5 flex min-w-0 items-center gap-2 pl-5">
-          <span className="h-px w-3 flex-shrink-0 bg-border/50" />
-          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/65">
-            {agent.task}
-          </span>
-        </div>
-      )}
-      {agent.thinking && status === "running" && (
-        <div className="mt-1.5 flex min-w-0 items-center gap-2 pl-5">
-          <Loader2 className={cn(SUB_AGENT_DETAIL_RUNNING_SPINNER_CLASS, "text-accent/70")} />
-          <span className="min-w-0 flex-1 truncate text-[10px] text-accent/70">
-            {agent.thinking}
-          </span>
-        </div>
-      )}
-    </button>
+    </div>
   );
 });
 
@@ -1317,19 +1492,294 @@ interface StageCoverageContext {
   stageLabel: string;
 }
 
+export function isCompanyControllerAgentRequestId(
+  parentRequestId: string | null | undefined
+): boolean {
+  return Boolean(parentRequestId && /::lead:[^:]+$/.test(parentRequestId));
+}
+
+export function getSubAgentDisplayName(
+  agent: Pick<ActiveSubAgent, "agentId" | "agentName" | "parentRequestId">
+): string {
+  if (isCompanyControllerAgentRequestId(agent.parentRequestId)) {
+    return "Company Controller";
+  }
+  return agent.agentName || agent.agentId;
+}
+
+function nestedSubAgentsForTool(
+  tool: SubAgentToolCall,
+  subAgents: readonly ActiveSubAgent[]
+): ActiveSubAgent[] {
+  if (!tool.name.startsWith("sub_agent_") && tool.name !== "stage_team_dispatch_workers") {
+    return [];
+  }
+  return subAgents.filter(
+    (agent) =>
+      agent.parentRequestId === tool.id || agent.parentRequestId.startsWith(`${tool.id}::worker:`)
+  );
+}
+
+function stageTeamDispatchResultRecord(result: unknown): Record<string, unknown> | null {
+  if (!isRecord(result)) return null;
+  if (Array.isArray(result.requests)) return result;
+  if (typeof result.response !== "string") return result;
+  try {
+    const parsed = JSON.parse(result.response) as unknown;
+    return isRecord(parsed) ? parsed : result;
+  } catch {
+    return result;
+  }
+}
+
+function optionalStringField(
+  value: Record<string, unknown> | undefined,
+  field: string
+): string | null {
+  const candidate = value?.[field];
+  return typeof candidate === "string" && candidate.trim() ? candidate.trim() : null;
+}
+
+function durableWorkItemIdForAgent(agent: ActiveSubAgent): string | null {
+  return agent.task.match(/Durable work_item_id:\s*([^;\s]+)/i)?.[1] ?? null;
+}
+
+function sortWorkerAttempts(attempts: ActiveSubAgent[]): ActiveSubAgent[] {
+  return attempts.sort((left, right) => {
+    const startedAtDelta = new Date(left.startedAt).getTime() - new Date(right.startedAt).getTime();
+    return startedAtDelta || left.parentRequestId.localeCompare(right.parentRequestId);
+  });
+}
+
+function stageTeamDispatchAssignmentsForTool(
+  tool: SubAgentToolCall,
+  subAgents: readonly ActiveSubAgent[]
+): StageTeamDispatchAssignment[] {
+  if (tool.name !== "stage_team_dispatch_workers") return [];
+
+  const nestedAgents = nestedSubAgentsForTool(tool, subAgents);
+  const workers = Array.isArray(tool.args.workers) ? tool.args.workers.filter(isRecord) : [];
+  const result = stageTeamDispatchResultRecord(tool.result);
+  const requests = Array.isArray(result?.requests) ? result.requests.filter(isRecord) : [];
+
+  if (workers.length === 0) {
+    const groups = new Map<string, ActiveSubAgent[]>();
+    for (const agent of nestedAgents) {
+      const key = durableWorkItemIdForAgent(agent) ?? agent.parentRequestId;
+      groups.set(key, [...(groups.get(key) ?? []), agent]);
+    }
+    return Array.from(groups.entries()).map(([key, groupedAgents], index) => {
+      const attempts = sortWorkerAttempts(groupedAgents);
+      const agent = attempts[attempts.length - 1] ?? null;
+      return {
+        agent,
+        attempts,
+        decision: null,
+        dedupeKey: null,
+        key,
+        objective: agent?.task ?? "",
+        ordinal: index + 1,
+        role: agent?.agentName || agent?.agentId || "sub_agent",
+        workItemId: durableWorkItemIdForAgent(attempts[0]),
+      };
+    });
+  }
+
+  const assignments = workers.map((worker, index): StageTeamDispatchAssignment => {
+    const dedupeKey = optionalStringField(worker, "dedupe_key");
+    const request =
+      requests.find((candidate) => optionalStringField(candidate, "dedupe_key") === dedupeKey) ??
+      requests[index];
+    const workItemId = optionalStringField(request, "created_work_item_id");
+    return {
+      agent: null,
+      attempts: [],
+      decision: optionalStringField(request, "decision"),
+      dedupeKey,
+      key: workItemId ?? dedupeKey ?? `${tool.id}:assignment:${index + 1}`,
+      objective: optionalStringField(worker, "objective") ?? "",
+      ordinal: index + 1,
+      role: optionalStringField(worker, "role") ?? "sub_agent",
+      workItemId,
+    };
+  });
+
+  const usedAgentIds = new Set<string>();
+  for (const assignment of assignments) {
+    if (!assignment.workItemId) continue;
+    const exactAttempts = sortWorkerAttempts(
+      nestedAgents.filter(
+        (agent) =>
+          !usedAgentIds.has(agent.parentRequestId) &&
+          durableWorkItemIdForAgent(agent) === assignment.workItemId
+      )
+    );
+    if (exactAttempts.length === 0) continue;
+    assignment.attempts = exactAttempts;
+    assignment.agent = exactAttempts[exactAttempts.length - 1] ?? null;
+    for (const attempt of exactAttempts) usedAgentIds.add(attempt.parentRequestId);
+  }
+
+  for (const assignment of assignments) {
+    if (assignment.agent) continue;
+    const fallbackAgent = nestedAgents.find((agent) => !usedAgentIds.has(agent.parentRequestId));
+    if (!fallbackAgent) continue;
+    const fallbackWorkItemId = durableWorkItemIdForAgent(fallbackAgent);
+    const fallbackAttempts = sortWorkerAttempts(
+      fallbackWorkItemId
+        ? nestedAgents.filter(
+            (agent) =>
+              !usedAgentIds.has(agent.parentRequestId) &&
+              durableWorkItemIdForAgent(agent) === fallbackWorkItemId
+          )
+        : [fallbackAgent]
+    );
+    assignment.attempts = fallbackAttempts;
+    assignment.agent = fallbackAttempts[fallbackAttempts.length - 1] ?? null;
+    for (const attempt of fallbackAttempts) usedAgentIds.add(attempt.parentRequestId);
+  }
+
+  const unmatchedAgents = nestedAgents.filter((agent) => !usedAgentIds.has(agent.parentRequestId));
+  const unmatchedGroups = new Map<string, ActiveSubAgent[]>();
+  for (const agent of unmatchedAgents) {
+    const key = durableWorkItemIdForAgent(agent) ?? agent.parentRequestId;
+    unmatchedGroups.set(key, [...(unmatchedGroups.get(key) ?? []), agent]);
+  }
+  return [
+    ...assignments,
+    ...Array.from(unmatchedGroups.entries()).map(
+      ([key, groupedAgents], index): StageTeamDispatchAssignment => {
+        const attempts = sortWorkerAttempts(groupedAgents);
+        const agent = attempts[attempts.length - 1] ?? null;
+        return {
+          agent,
+          attempts,
+          decision: null,
+          dedupeKey: null,
+          key,
+          objective: agent?.task ?? "",
+          ordinal: assignments.length + index + 1,
+          role: agent?.agentName || agent?.agentId || "sub_agent",
+          workItemId: durableWorkItemIdForAgent(attempts[0]),
+        };
+      }
+    ),
+  ];
+}
+
+function StageTeamDispatchAssignmentList({
+  assignments,
+  sessionId,
+  toolStatus,
+  onOpen,
+}: {
+  assignments: StageTeamDispatchAssignment[];
+  sessionId: string;
+  toolStatus: SubAgentToolCall["status"];
+  onOpen: (parentRequestId: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div>
+      {assignments.map((assignment) => (
+        <div data-testid="stage-team-dispatch-assignment" key={assignment.key}>
+          {assignment.agent ? (
+            <NestedSubAgentCard
+              agent={assignment.agent}
+              instanceLabel={`#${assignment.ordinal}`}
+              sessionId={sessionId}
+              taskOverride={assignment.objective}
+              onOpen={onOpen}
+            />
+          ) : (
+            <PendingStageTeamDispatchCard assignment={assignment} toolStatus={toolStatus} />
+          )}
+          {assignment.attempts.length > 1 && (
+            <div
+              className="mx-9 -mt-1.5 mb-3 rounded-md border border-amber-400/15 bg-amber-400/[0.035] px-3 py-2"
+              data-testid="stage-team-dispatch-retry"
+            >
+              <div className="flex items-center gap-1.5 text-[10px] font-medium text-amber-300/85">
+                {assignment.agent?.status === "running" ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Clock className="h-3 w-3" />
+                )}
+                <span>
+                  {t(
+                    assignment.agent?.status === "running"
+                      ? "ai.subAgentDetail.retry.active"
+                      : "ai.subAgentDetail.retry.completed",
+                    { attempt: assignment.attempts.length }
+                  )}
+                </span>
+              </div>
+              <div className="mt-1.5 space-y-1 border-l border-amber-400/15 pl-2.5">
+                {assignment.attempts.slice(0, -1).map((attempt, index) => (
+                  <div
+                    className="flex min-w-0 items-center gap-2 text-[9px] text-muted-foreground/60"
+                    key={attempt.parentRequestId}
+                  >
+                    <span className="flex-shrink-0 tabular-nums">#{index + 1}</span>
+                    <XCircle className="h-2.5 w-2.5 flex-shrink-0 text-amber-300/65" />
+                    <span className="truncate">
+                      {attempt.error || t("ai.subAgentDetail.retry.previousRejected")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function parseStageRunOrgRequestId(
   parentRequestId: string | null | undefined
 ): { stageRunRequestId: string; organizationId: string } | null {
   if (!parentRequestId) return null;
-  const marker = "::org::";
-  const idx = parentRequestId.indexOf(marker);
-  if (idx <= 0) return null;
-  const organizationId = parentRequestId.slice(idx + marker.length).trim();
+  const legacyMarker = "::org::";
+  const legacyIndex = parentRequestId.indexOf(legacyMarker);
+  if (legacyIndex > 0) {
+    const organizationId = parentRequestId.slice(legacyIndex + legacyMarker.length).trim();
+    if (!organizationId) return null;
+    return {
+      stageRunRequestId: parentRequestId.slice(0, legacyIndex),
+      organizationId,
+    };
+  }
+
+  const teamMarker = "::team::";
+  const teamIndex = parentRequestId.indexOf(teamMarker);
+  if (teamIndex <= 0) return null;
+  const teamTail = parentRequestId.slice(teamIndex + teamMarker.length);
+  const workerMarkerIndex = teamTail.search(/::(?:lead|worker):/);
+  if (workerMarkerIndex <= 0) return null;
+  const organizationId = teamTail.slice(0, workerMarkerIndex).trim();
   if (!organizationId) return null;
   return {
-    stageRunRequestId: parentRequestId.slice(0, idx),
+    stageRunRequestId: parentRequestId.slice(0, teamIndex),
     organizationId,
   };
+}
+
+export function resolveParentStageRunStatusForSubAgent(
+  parentRequestId: string | null | undefined,
+  stageRuns: Record<string, SessionStageRun> | undefined,
+  fallbackStageRun: SessionStageRun | null | undefined
+): string | null {
+  const parsed = parseStageRunOrgRequestId(parentRequestId);
+  if (!parsed) return null;
+  const stageRun =
+    stageRuns?.[parsed.stageRunRequestId] ??
+    (fallbackStageRun?.requestId === parsed.stageRunRequestId ? fallbackStageRun : null);
+  if (!stageRun) return null;
+  const row =
+    stageRun.rows.find((candidate) => candidate.agentRequestId === parentRequestId) ??
+    stageRun.rows.find((candidate) => candidate.id === parsed.organizationId);
+  return row?.status ?? null;
 }
 
 function stageKeyFromLabel(stageLabel: string, coverageAxis: string[]): string | null {
@@ -1419,6 +1869,12 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
       resolveStageCoverageContextForSubAgent(targetRequestId, sessionStageRuns, sessionStageRun),
     [targetRequestId, sessionStageRuns, sessionStageRun]
   );
+  const parentStageRunStatus = useMemo(
+    () =>
+      resolveParentStageRunStatusForSubAgent(targetRequestId, sessionStageRuns, sessionStageRun),
+    [targetRequestId, sessionStageRuns, sessionStageRun]
+  );
+  const parentStagePassed = parentStageRunStatus === "passed";
   const parentStageRunToolStatus = useStore((s) => {
     const parsed = parseStageRunOrgRequestId(targetRequestId);
     if (!parsed) return null;
@@ -1608,9 +2064,18 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
     );
   }
 
-  const AgentIcon = getAgentIcon(subAgent.agentName);
-  const agentColor = getAgentColor(subAgent.agentName);
-  const headerDisplayStatus = getSubAgentHeaderDisplayStatus(subAgent, { parentStageStopped });
+  const displayAgentName = getSubAgentDisplayName(subAgent);
+  const AgentIcon = getAgentIcon(displayAgentName);
+  const agentColor = getAgentColor(displayAgentName);
+  const delegatedSubAgents = subAgent.toolCalls.flatMap((tool) =>
+    nestedSubAgentsForTool(tool, subAgents)
+  );
+  const ownHeaderDisplayStatus = getSubAgentHeaderDisplayStatus(subAgent, { parentStageStopped });
+  const headerDisplayStatus =
+    ownHeaderDisplayStatus === "completed" &&
+    delegatedSubAgents.some((agent) => agent.status === "running")
+      ? "running"
+      : ownHeaderDisplayStatus;
   const headerStatus = SUB_AGENT_HEADER_STATUS_BADGE_STYLES[headerDisplayStatus];
   const isHeaderLive = headerDisplayStatus === "running" || headerDisplayStatus === "backgrounded";
   const stageAssetWorkItems = summarizeSubAgentAssetWork(subAgent.toolCalls, {
@@ -1618,7 +2083,6 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   });
   const showCoverageView = Boolean(stageCoverageContext && activeDetailTab === "coverage");
   const toolMap = new Map(subAgent.toolCalls.map((tc) => [tc.id, tc]));
-  const subAgentMap = new Map(subAgents.map((agent) => [agent.parentRequestId, agent]));
   const hasEntries = detailEntries.length > 0;
   const backgroundedToolCount = subAgent.toolCalls.filter(
     (tool) => getSubAgentToolDisplayStatus(tool, { parentStageStopped }) === "backgrounded"
@@ -1640,7 +2104,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
         </button>
         <div className="w-px h-4 bg-[var(--border-subtle)]" />
         <AgentIcon className="w-4 h-4 flex-shrink-0" style={{ color: agentColor }} />
-        <span className="text-sm font-medium truncate">{subAgent.agentName}</span>
+        <span className="text-sm font-medium truncate">{displayAgentName}</span>
         <AnchorChip sessionId={sessionId} requestId={subAgent.parentRequestId} />
         <Badge
           variant="outline"
@@ -1833,15 +2297,34 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                       if (tool?.name === "update_plan" && tool.id !== currentPlanToolId) {
                         return null;
                       }
-                      if (tool?.name.startsWith("sub_agent_")) {
-                        const nestedAgent = subAgentMap.get(tool.id);
-                        if (nestedAgent) {
+                      if (tool) {
+                        const dispatchAssignments = stageTeamDispatchAssignmentsForTool(
+                          tool,
+                          subAgents
+                        );
+                        if (dispatchAssignments.length > 0) {
                           return (
-                            <NestedSubAgentCard
-                              agent={nestedAgent}
+                            <StageTeamDispatchAssignmentList
+                              assignments={dispatchAssignments}
                               sessionId={sessionId}
+                              toolStatus={tool.status}
                               onOpen={openSubAgent}
                             />
+                          );
+                        }
+                        const nestedAgents = nestedSubAgentsForTool(tool, subAgents);
+                        if (nestedAgents.length > 0) {
+                          return (
+                            <div>
+                              {nestedAgents.map((nestedAgent) => (
+                                <NestedSubAgentCard
+                                  key={nestedAgent.parentRequestId}
+                                  agent={nestedAgent}
+                                  sessionId={sessionId}
+                                  onOpen={openSubAgent}
+                                />
+                              ))}
+                            </div>
                           );
                         }
                       }
@@ -1849,6 +2332,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                         return (
                           <AgentToolCallBlock
                             tool={tool}
+                            parentStagePassed={parentStagePassed}
                             parentStageStopped={parentStageStopped}
                             visualRelation={getSubAgentToolCallVisualRelation(previous)}
                           />
@@ -1865,15 +2349,44 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                   );
                 })
               : subAgent.toolCalls.length > 0
-                ? subAgent.toolCalls.map((tool) =>
-                    tool.name === "update_plan" && tool.id !== currentPlanToolId ? null : (
+                ? subAgent.toolCalls.map((tool) => {
+                    if (tool.name === "update_plan" && tool.id !== currentPlanToolId) return null;
+                    const dispatchAssignments = stageTeamDispatchAssignmentsForTool(
+                      tool,
+                      subAgents
+                    );
+                    if (dispatchAssignments.length > 0) {
+                      return (
+                        <StageTeamDispatchAssignmentList
+                          assignments={dispatchAssignments}
+                          key={tool.id}
+                          sessionId={sessionId}
+                          toolStatus={tool.status}
+                          onOpen={openSubAgent}
+                        />
+                      );
+                    }
+                    const nestedAgents = nestedSubAgentsForTool(tool, subAgents);
+                    return nestedAgents.length > 0 ? (
+                      <div key={tool.id}>
+                        {nestedAgents.map((nestedAgent) => (
+                          <NestedSubAgentCard
+                            key={nestedAgent.parentRequestId}
+                            agent={nestedAgent}
+                            sessionId={sessionId}
+                            onOpen={openSubAgent}
+                          />
+                        ))}
+                      </div>
+                    ) : (
                       <AgentToolCallBlock
                         key={tool.id}
                         tool={tool}
+                        parentStagePassed={parentStagePassed}
                         parentStageStopped={parentStageStopped}
                       />
-                    )
-                  )
+                    );
+                  })
                 : null}
           </div>
 

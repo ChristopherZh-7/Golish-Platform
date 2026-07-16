@@ -52,7 +52,13 @@ fn persistence_agent_type(agent_id: &str) -> anyhow::Result<AgentType> {
         "installer" => Ok(AgentType::Installer),
         // Stage specialists are server-owned pentest workers even when their
         // prompt-level ids are more specific than the persisted DB enum.
-        "pentester" | "recon" | "prober" | "enumerator" | "vuln_scanner" | "attack_analyst"
+        "pentester"
+        | "company_stage_controller"
+        | "recon"
+        | "prober"
+        | "enumerator"
+        | "vuln_scanner"
+        | "attack_analyst"
         | "candidate_verifier" => Ok(AgentType::Pentester),
         other => anyhow::bail!("unsupported bound-worker persistence agent '{other}'"),
     }
@@ -272,6 +278,7 @@ mod tests {
     #[test]
     fn chain_bound_worker_maps_stage_specialists_to_persisted_pentester_type() {
         for specialist in [
+            "company_stage_controller",
             "recon",
             "prober",
             "enumerator",

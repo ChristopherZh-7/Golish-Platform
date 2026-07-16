@@ -2010,29 +2010,39 @@ impl TaskOrchestrator {
             .await;
         exec_ctx.harness_forced_tool = None;
 
-        self.emit(AiEvent::SubtaskCompleted {
-            task_id: task_id.to_string(),
-            subtask_id: String::new(),
-            title: planned.title.clone(),
-            result: truncate(&result_text, 500),
-            stage_kind: Some(stage.as_str().to_string()),
-        });
-        exec_ctx
-            .completed_results
-            .push(super::super::types::SubtaskResult {
-                title: planned.title.clone(),
-                result: result_text,
-                token_usage: None,
-            });
-
         // S1 · a projected stage that produced no gated deliverable must not
         // vacuously PASS — default to BLOCK so the engine interrupts here instead
         // of advancing on nothing (the old vacuous `pass_with_progress` is exactly
         // what let scoping/target_intel slip through). After synthesis + the
         // fail-closed gate this is only a defensive fallback (acc is normally Some).
-        self.stage_outcome_acc
+        let outcome = self
+            .stage_outcome_acc
             .take()
-            .unwrap_or_else(crate::harness::operation_flow::StageFlowOutcome::blocked)
+            .unwrap_or_else(crate::harness::operation_flow::StageFlowOutcome::blocked);
+        if should_emit_subtask_completed(&outcome) {
+            self.emit(AiEvent::SubtaskCompleted {
+                task_id: task_id.to_string(),
+                subtask_id: String::new(),
+                title: planned.title.clone(),
+                result: truncate(&result_text, 500),
+                stage_kind: Some(stage.as_str().to_string()),
+            });
+            exec_ctx
+                .completed_results
+                .push(super::super::types::SubtaskResult {
+                    title: planned.title.clone(),
+                    result: result_text,
+                    token_usage: None,
+                });
+        } else {
+            tracing::info!(
+                target: "harness::hook",
+                operation_id = %task_id,
+                stage = %stage.as_str(),
+                "stage subtask remains blocked; suppressing completion marker"
+            );
+        }
+        outcome
     }
 
     /// 两级模型 · graph-flow 路径的「跨大阶段审批」闸（设计 2026-06-03）。
@@ -4694,10 +4704,18 @@ fn paused_disposition(
             resume_from,
             ..
         }) => Some(format!(
-            "Operation paused at stage '{resume_from}' ({reason}). Send a message to resume."
+            "Operation paused at stage '{resume_from}' ({reason}). This stage is not complete; \
+             durable progress was preserved. Resume continues from the saved stage when automatic \
+             recovery is permitted; otherwise explicit operator recovery is required."
         )),
         _ => None,
     }
+}
+
+fn should_emit_subtask_completed(
+    outcome: &crate::harness::operation_flow::StageFlowOutcome,
+) -> bool {
+    outcome.gate_allowed
 }
 
 /// Resolve the input exposed to agents for this top-level execution without
@@ -5320,6 +5338,10 @@ mod dag_driven_helper_tests {
             p.contains("enumeration"),
             "summary must name the resume-from stage: {p}"
         );
+        assert!(
+            !p.contains("Send a message to resume"),
+            "a generic gate pause must not promise that another message alone resolves every recovery blocker: {p}"
+        );
 
         let completed: GraphResult<RunOutcome<OperationFlowState>> =
             Ok(RunOutcome::Completed(OperationFlowState::default()));
@@ -5337,6 +5359,16 @@ mod dag_driven_helper_tests {
             paused_disposition(&failed).is_none(),
             "failed must NOT be treated as a resumable pause"
         );
+    }
+
+    #[test]
+    fn subtask_completion_marker_requires_gate_pass() {
+        use crate::harness::operation_flow::StageFlowOutcome;
+
+        assert!(should_emit_subtask_completed(
+            &StageFlowOutcome::pass_with_progress()
+        ));
+        assert!(!should_emit_subtask_completed(&StageFlowOutcome::blocked()));
     }
 }
 
