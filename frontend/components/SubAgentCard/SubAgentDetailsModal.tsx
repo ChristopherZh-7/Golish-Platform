@@ -68,8 +68,7 @@ function StatusIcon({
 /** Individual tool call row with expandable details */
 function ToolCallRow({ tool }: { tool: SubAgentToolCall }) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const status =
-    tool.status === "completed" ? "completed" : tool.status === "error" ? "error" : "running";
+  const status = getSubAgentToolDisplayStatus(tool.status);
 
   // Get primary argument for display
   const primaryArg = (() => {
@@ -129,6 +128,13 @@ function ToolCallRow({ tool }: { tool: SubAgentToolCall }) {
       </CollapsibleContent>
     </Collapsible>
   );
+}
+
+export function getSubAgentToolDisplayStatus(
+  status: SubAgentToolCall["status"]
+): "running" | "completed" | "error" | "interrupted" {
+  if (status === "completed" || status === "error" || status === "interrupted") return status;
+  return "running";
 }
 
 interface SubAgentDetailsModalProps {

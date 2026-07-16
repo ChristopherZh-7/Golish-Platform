@@ -33,6 +33,7 @@
 `scroll-stickiness.ts` 是 live detail / thinking panes 的贴底判定：向上滚动是用户接管信号，必须暂停 auto-follow；只有滚回底部阈值内才重新启用。
 `ai/streaming-buffer.ts` 按 session + WorkerRun 级 `parent_request_id` 聚合 sub-agent reasoning，保留 batch 首末到达时间，并在工具/生命周期边界前 flush；Stage Team sibling worker 不得复用组织级 parent id，否则并发 Thought 会被拼成一条时间线。
 `conversation-db-sync.ts` 的 autosave 指纹必须覆盖 timeline block 内容变化，而不只看 block 数量/最后一块 id；`sub_agent_activity.entries/toolCalls/result/thinking`、`ai_tool_execution.streamingOutput/result` 和 `Session.stageRuns[requestId]` 都是恢复 stage_run 历史详情所需状态，关窗前必须能触发 DB 保存。`terminal_state.stage_run_json` 允许 v2 包 `{ current, byRequestId }`，恢复端仍兼容旧的单个 `SessionStageRun` JSON。
+`terminal-restore.ts` 对进程丢失时持久化为 running 的 sub-agent、running/backgrounded tool 与 generating prompt 一律收敛为 interrupted/failed 投影；后台 job registry 不随 terminal 持久化，因此不能把旧外部工具伪装成仍在运行。后续 durable worker 以相同 `parent_request_id` 真正续跑时，store 的 started 边界只恢复父 Agent；旧 tool 保持 interrupted，新请求才显示 running，历史 entries/tool ids 不丢失。
 
 ## 依赖
 

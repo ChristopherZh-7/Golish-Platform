@@ -39,9 +39,10 @@ function lastToolCallEntryIndex(entries: SubAgentEntry[]): number {
 
 function latestEntryIndexSinceLastToolCall(
   entries: SubAgentEntry[],
-  kind: "text" | "thinking"
+  kind: "text" | "thinking",
+  attemptEntryStart = 0
 ): number {
-  const floor = lastToolCallEntryIndex(entries);
+  const floor = Math.max(lastToolCallEntryIndex(entries), attemptEntryStart - 1);
   for (let i = entries.length - 1; i > floor; i--) {
     if (entries[i].kind === kind) return i;
   }
@@ -52,9 +53,10 @@ function updateAccumulatedEntry(
   entries: SubAgentEntry[],
   kind: "text" | "thinking",
   text: string,
-  fallbackEntry: SubAgentEntry
+  fallbackEntry: SubAgentEntry,
+  attemptEntryStart?: number
 ): boolean {
-  const idx = latestEntryIndexSinceLastToolCall(entries, kind);
+  const idx = latestEntryIndexSinceLastToolCall(entries, kind, attemptEntryStart);
   if (idx < 0) return false;
 
   const existing = entries[idx].text ?? "";
@@ -190,10 +192,27 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
             )
           : undefined;
         if (existing) {
+          const isResume = existing.status !== "running";
           existing.agentId = agent.agentId;
           existing.agentName = agent.agentName;
           existing.task = agent.task;
           existing.depth = agent.depth;
+          // Durable stage workers resume with the same parent request identity.
+          // A restored timeline deliberately projects an in-flight worker as
+          // interrupted, so the next authoritative started event must revive
+          // that exact card without discarding its checkpointed history.
+          existing.status = "running";
+          if (isResume) {
+            existing.attemptEntryStart = existing.entries.length;
+            delete existing.error;
+            delete existing.response;
+            delete existing.completedAt;
+            delete existing.durationMs;
+            delete existing.streamingText;
+            delete existing.thinking;
+            delete existing.thinkingStartedAt;
+            delete existing.thinkingEndedAt;
+          }
         } else {
           const newAgent: ActiveSubAgent = {
             agentId: agent.agentId,
@@ -315,7 +334,9 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         if (!agents) return;
         for (const agent of agents) {
           const tool = agent.toolCalls.find((candidate) => {
-            if ((candidate.status as string) !== "backgrounded") return false;
+            if (candidate.status !== "backgrounded" && candidate.status !== "interrupted") {
+              return false;
+            }
             return backgroundJobIdFromResult(candidate.result) === jobId;
           });
           if (!tool) continue;
@@ -376,7 +397,15 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
         const agent = agents.find((a) => a.parentRequestId === parentRequestId);
         if (agent) {
           agent.streamingText = text;
-          if (!updateAccumulatedEntry(agent.entries, "text", text, { kind: "text", text })) {
+          if (
+            !updateAccumulatedEntry(
+              agent.entries,
+              "text",
+              text,
+              { kind: "text", text },
+              agent.attemptEntryStart
+            )
+          ) {
             agent.entries.push({ kind: "text", text });
           }
         }
@@ -403,12 +432,18 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
           agent.thinkingStartedAt ??= startedAt;
           agent.thinkingEndedAt = endedAt;
           if (
-            !updateAccumulatedEntry(agent.entries, "thinking", text, {
-              kind: "thinking",
+            !updateAccumulatedEntry(
+              agent.entries,
+              "thinking",
               text,
-              startedAt,
-              endedAt,
-            })
+              {
+                kind: "thinking",
+                text,
+                startedAt,
+                endedAt,
+              },
+              agent.attemptEntryStart
+            )
           ) {
             agent.entries.push({
               kind: "thinking",

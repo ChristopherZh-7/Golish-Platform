@@ -135,8 +135,9 @@ struct ChecksumRepairAllowance {
 /// values after the corresponding schema postcondition has been audited.
 ///
 /// These entries repair only the audited local drift chain. Higher forward
-/// migrations install every differing postcondition; the last pair changes
-/// only new-install idempotence after its schema was already proven identical.
+/// migrations install every differing postcondition; the third pair changes
+/// only new-install idempotence, and the last pair removes one trailing blank
+/// line after its schema and SQL bytes were proven otherwise identical.
 const CHECKSUM_REPAIR_ALLOWLIST: &[ChecksumRepairAllowance] = &[ChecksumRepairAllowance {
     version: 20260714000002,
     description: "candidate verification recovery",
@@ -152,6 +153,11 @@ const CHECKSUM_REPAIR_ALLOWLIST: &[ChecksumRepairAllowance] = &[ChecksumRepairAl
     description: "stage team scheduler forward fix",
     old_checksum: b"\x3b\xb2\x27\x41\xf6\x85\xba\x68\xde\xe9\x9e\xe9\xd7\x0f\x3a\xe7\x46\x7a\x83\x0b\xdb\xba\x49\x46\xcc\xf6\xc3\x92\x8e\x56\x9a\xa1\xce\xfa\xa1\x6f\xf1\x2c\x59\x6a\xf1\x0d\xce\x25\x0d\x95\x02\x2e",
     new_checksum: b"\x80\x3c\xa6\x24\x66\xb5\x7c\xf8\x6d\x29\x15\x61\x76\xa2\x85\x3a\x36\xe9\xf0\x23\x9c\x3f\xc7\xeb\x47\xa2\xfa\x41\x92\xe0\x0d\x15\xa6\xc2\xc3\xe2\x55\x7e\x5f\xd5\x04\x77\x4b\xbb\xf7\xa3\x6c\x3d",
+}, ChecksumRepairAllowance {
+    version: 20260716000001,
+    description: "operation turn resume",
+    old_checksum: b"\x65\xda\x58\xcb\xb7\xe3\x21\x81\x26\x37\x7c\x76\xf5\x0a\x17\x14\x45\xb7\xc5\x19\x6e\x68\x62\x64\x0a\xd5\x7d\xf6\xd3\x16\x14\x21\xbd\x99\xf6\xab\xe4\x97\x29\x3e\x10\xc9\xf1\x0e\xfa\xe8\x39\xe1",
+    new_checksum: b"\x7d\x2e\x22\x4c\x84\xe9\x3f\x19\xc6\xe9\xd4\xd9\x46\xd6\xf2\x2d\x42\xcf\x73\x7b\xba\x06\x89\xfe\x42\xd0\xa4\x14\xf9\x74\x9c\x03\x54\xb0\x59\x27\x2a\xe7\x0f\x67\x79\x8e\x71\x8c\xde\x1a\xf5\xcf",
 }];
 
 /// Plan only migration-specific checksum repairs whose exact old/new SHA-384
@@ -534,6 +540,38 @@ mod tests {
 
         let repairs = plan_checksum_repairs(&records, &migrator)
             .expect("the audited idempotence-only drift must be exactly repairable");
+
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].version, applied.version);
+        assert_eq!(repairs[0].description, applied.description);
+        assert_eq!(repairs[0].old_checksum, old_checksum);
+        assert_eq!(repairs[0].new_checksum, applied.checksum.as_ref());
+    }
+
+    #[test]
+    fn operation_turn_resume_trailing_newline_checksum_drift_is_exactly_repairable() {
+        let migrator = sqlx::migrate!("./migrations");
+        let applied = migrator
+            .iter()
+            .find(|migration| migration.version == 20260716000001)
+            .expect("operation turn resume migration must exist");
+        let old_checksum = b"\x65\xda\x58\xcb\xb7\xe3\x21\x81\x26\x37\x7c\x76\xf5\x0a\x17\x14\x45\xb7\xc5\x19\x6e\x68\x62\x64\x0a\xd5\x7d\xf6\xd3\x16\x14\x21\xbd\x99\xf6\xab\xe4\x97\x29\x3e\x10\xc9\xf1\x0e\xfa\xe8\x39\xe1";
+        let prior = Migration::new(
+            applied.version,
+            Cow::Owned(applied.description.to_string()),
+            MigrationType::Simple,
+            Cow::Owned(format!("{}\n", applied.sql)),
+            false,
+        );
+        assert_eq!(
+            prior.checksum.as_ref(),
+            old_checksum,
+            "the allowlisted old checksum must differ by exactly one trailing LF"
+        );
+        let records = vec![metadata(applied, true, old_checksum)];
+
+        let repairs = plan_checksum_repairs(&records, &migrator)
+            .expect("the audited trailing-newline drift must be exactly repairable");
 
         assert_eq!(repairs.len(), 1);
         assert_eq!(repairs[0].version, applied.version);

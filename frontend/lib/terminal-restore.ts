@@ -126,8 +126,22 @@ function restoreTimelineBlocks(
       if (sanitized.type === "ai_tool_execution" && sanitized.data?.status === "running") {
         sanitized.data = { ...sanitized.data, status: "interrupted" };
       }
-      if (sanitized.type === "sub_agent_activity" && sanitized.data?.status === "running") {
-        sanitized.data = { ...sanitized.data, status: "interrupted" };
+      if (sanitized.type === "sub_agent_activity" && sanitized.data) {
+        sanitized.data = {
+          ...sanitized.data,
+          status: sanitized.data.status === "running" ? "interrupted" : sanitized.data.status,
+          toolCalls: Array.isArray(sanitized.data.toolCalls)
+            ? sanitized.data.toolCalls.map((tool: Record<string, unknown>) =>
+                tool.status === "running" || tool.status === "backgrounded"
+                  ? { ...tool, status: "interrupted" }
+                  : tool
+              )
+            : sanitized.data.toolCalls,
+          promptGeneration:
+            sanitized.data.promptGeneration?.status === "generating"
+              ? { ...sanitized.data.promptGeneration, status: "failed" }
+              : sanitized.data.promptGeneration,
+        };
       }
       if (sanitized.type === "command") {
         sanitized.data = { ...sanitized.data, sessionId: targetSessionId };

@@ -588,6 +588,128 @@ describe("Store Workflow Actions — sub-agent streaming entries", () => {
     });
   });
 
+  it("reactivates an interrupted durable sub-agent when the same request identity resumes", () => {
+    const store = useStore.getState();
+    store.updateSubAgentThinking(sessionId, parentRequestId, "Previous turn checkpointed.");
+    store.addSubAgentToolCall(sessionId, parentRequestId, {
+      id: "tool-before-restart",
+      name: "eas_discover_ports",
+      args: { targets: ["101.42.9.109"] },
+    });
+
+    useStore.setState((state) => {
+      const agent = state.activeSubAgents[sessionId][0];
+      agent.status = "interrupted";
+      agent.error = "runtime restarted";
+      agent.response = "stale terminal response";
+      agent.completedAt = "2026-07-16T12:23:59.000Z";
+      agent.durationMs = 12_000;
+
+      const block = state.timelines[sessionId].find(
+        (candidate) => candidate.type === "sub_agent_activity"
+      );
+      if (block?.type === "sub_agent_activity") {
+        block.data = { ...agent };
+      }
+    });
+
+    store.startSubAgent(sessionId, {
+      agentId: "prober",
+      agentName: "Prober",
+      parentRequestId,
+      task: "resume the exact durable worker",
+      depth: 1,
+    });
+
+    const resumed = useStore.getState().activeSubAgents[sessionId][0];
+    expect(resumed.status).toBe("running");
+    expect(resumed.error).toBeUndefined();
+    expect(resumed.response).toBeUndefined();
+    expect(resumed.completedAt).toBeUndefined();
+    expect(resumed.durationMs).toBeUndefined();
+    expect(resumed.entries).toEqual([
+      expect.objectContaining({ kind: "thinking", text: "Previous turn checkpointed." }),
+      { kind: "tool_call", toolCallId: "tool-before-restart" },
+    ]);
+    expect(resumed.toolCalls).toEqual([
+      expect.objectContaining({ id: "tool-before-restart", name: "eas_discover_ports" }),
+    ]);
+
+    const timelineAgent = useStore
+      .getState()
+      .timelines[sessionId].find((block) => block.type === "sub_agent_activity");
+    expect(timelineAgent?.type).toBe("sub_agent_activity");
+    if (timelineAgent?.type === "sub_agent_activity") {
+      expect(timelineAgent.data.status).toBe("running");
+      expect(timelineAgent.data.parentRequestId).toBe(parentRequestId);
+    }
+  });
+
+  it("starts a new accumulated-response boundary when a durable sub-agent resumes", () => {
+    const store = useStore.getState();
+    store.addSubAgentToolCall(sessionId, parentRequestId, {
+      id: "tool-before-interruption",
+      name: "eas_discover_ports",
+      args: {},
+    });
+    store.updateSubAgentThinking(sessionId, parentRequestId, "Shared reasoning prefix");
+    store.updateSubAgentStreamingText(sessionId, parentRequestId, "Shared answer prefix");
+
+    useStore.setState((state) => {
+      state.activeSubAgents[sessionId][0].status = "interrupted";
+    });
+
+    store.startSubAgent(sessionId, {
+      agentId: "prober",
+      agentName: "Prober",
+      parentRequestId,
+      task: "resume without rewriting the prior response",
+      depth: 1,
+    });
+    store.updateSubAgentThinking(
+      sessionId,
+      parentRequestId,
+      "Shared reasoning prefix from the resumed attempt"
+    );
+    store.updateSubAgentStreamingText(
+      sessionId,
+      parentRequestId,
+      "Shared answer prefix from the resumed attempt"
+    );
+
+    const entries = useStore.getState().activeSubAgents[sessionId][0].entries;
+    expect(entries.filter((entry) => entry.kind === "thinking").map((entry) => entry.text)).toEqual([
+      "Shared reasoning prefix",
+      "Shared reasoning prefix from the resumed attempt",
+    ]);
+    expect(entries.filter((entry) => entry.kind === "text").map((entry) => entry.text)).toEqual([
+      "Shared answer prefix",
+      "Shared answer prefix from the resumed attempt",
+    ]);
+  });
+
+  it("keeps a duplicate started event idempotent while the same sub-agent is live", () => {
+    const store = useStore.getState();
+    store.updateSubAgentThinking(sessionId, parentRequestId, "Current live reasoning");
+    store.updateSubAgentStreamingText(sessionId, parentRequestId, "Current live answer");
+    const before = useStore.getState().activeSubAgents[sessionId][0];
+
+    store.startSubAgent(sessionId, {
+      agentId: "prober",
+      agentName: "Prober",
+      parentRequestId,
+      task: "duplicate delivery of the same started event",
+      depth: 1,
+    });
+
+    const after = useStore.getState().activeSubAgents[sessionId][0];
+    expect(after.status).toBe("running");
+    expect(after.thinking).toBe("Current live reasoning");
+    expect(after.streamingText).toBe("Current live answer");
+    expect(after.entries).toEqual(before.entries);
+    expect(after.attemptEntryStart).toBe(before.attemptEntryStart);
+  });
+
   it("updates the current text response across interleaved thinking instead of duplicating prefixes", () => {
     const store = useStore.getState();
 

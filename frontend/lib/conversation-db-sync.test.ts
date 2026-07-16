@@ -149,7 +149,7 @@ describe("isPersistableMessage", () => {
 });
 
 describe("timelineBlocksFingerprint", () => {
-  it("changes when an existing sub-agent block receives tool output", () => {
+  it("changes when an existing sub-agent block receives tool output or a resume boundary", () => {
     const blocks: UnifiedBlock[] = [
       {
         id: "sub-agent-stage-run::org::org-1",
@@ -197,7 +197,11 @@ describe("timelineBlocksFingerprint", () => {
     subAgentBlock.data.toolCalls[0].result = { stdout: "mapped 12 assets" };
     subAgentBlock.data.toolCalls[0].status = "completed";
 
-    expect(timelineBlocksFingerprint(blocks)).not.toBe(before);
+    const afterToolOutput = timelineBlocksFingerprint(blocks);
+    expect(afterToolOutput).not.toBe(before);
+
+    subAgentBlock.data.attemptEntryStart = 1;
+    expect(timelineBlocksFingerprint(blocks)).not.toBe(afterToolOutput);
   });
 
   it("changes when a non-last tool execution appends streaming output", () => {

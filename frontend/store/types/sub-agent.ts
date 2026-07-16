@@ -2,7 +2,7 @@ export interface SubAgentToolCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
-  status: "running" | "backgrounded" | "completed" | "error";
+  status: "running" | "backgrounded" | "completed" | "error" | "interrupted";
   result?: unknown;
   streamingOutput?: string;
   startedAt: string;
@@ -26,6 +26,8 @@ export interface ActiveSubAgent {
   status: "running" | "completed" | "error" | "interrupted";
   toolCalls: SubAgentToolCall[];
   entries: SubAgentEntry[];
+  /** First entry index owned by the current durable execution attempt. */
+  attemptEntryStart?: number;
   response?: string;
   error?: string;
   streamingText?: string;

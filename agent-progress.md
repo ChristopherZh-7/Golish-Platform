@@ -6,6 +6,62 @@
 
 ---
 
+#### 2026-07-16 · EAS 同实体续跑 UI / DB 冷启动闭环（完成）
+
+- **本轮目标**：处理上一轮提交后的两个现场回归：Target 页面因数据库 migration checksum drift 无法启动，以及
+  GUI 中已真实续跑的 EAS Prober 仍显示“已中断”。按用户要求不运行 `init.sh`，必须用原 operation 的真实 CLI 实体一直跑到
+  Company Controller / Gate 终态，完成验证后提交但不 push。
+- **已完成**：
+  - `golish-db` 启动只允许 repair `20260716000001 operation turn resume` 经审计的 exact old→new SHA-384 pair；测试从
+    `current SQL + "\n"` 重建旧 checksum，证明漂移仅为删除一个末尾空行。metadata 更新仍走 old-checksum CAS，未知、dirty、
+    description mismatch 或其他 drift 继续 fail closed，不重跑 migration SQL；真实冷启动后用户已确认 Target 页面恢复。
+  - 前端把 exact `parentRequestId` 作为 durable WorkerRun UI identity：冷恢复先把失联的 Agent、running/backgrounded tool
+    投影为 interrupted，并把 generating prompt 收敛为 failed；后端重发同 identity `sub_agent_started` 时，原卡恢复 running、
+    清理旧 terminal/live 字段，同时保留 entries/tool history。`attemptEntryStart` 隔开新旧 accumulated response，防续跑首帧
+    覆盖上次 thinking/text；重复 live started 保持幂等。若 backend job 仍活着，exact `job_id` 的晚到完成事件仍可把 restored
+    interrupted tool 收敛为 completed/error；legacy modal 也不再把 interrupted tool 画成旋转中的 running。
+  - 对共享改动完成独立只读 code review；两项 P2（attempt 边界、background job authority）及 generating spinner 均已补
+    RED→GREEN，复审无剩余 blocker。相关 frontend store/lib/components 与 `golish-db` 模块卡、主索引已同步。
+- **运行过的验证**：
+  - checksum repair targeted RED→GREEN，随后 `cd backend && cargo nextest run -p golish-db --no-fail-fast --status-level fail`
+    → run `55c18039-8704-4c48-9a56-3a3ff9dacbff`，577/577 passed；真实 embedded PG repair/readback 与 GUI cold start
+    均成功，Target `organization_list` 可读。
+  - `cd backend && cargo nextest run -p golish-db --test runtime_memory_worker_transactions -E
+    'test(company_controller_continue_reclaims_interrupted_eas_child_on_same_chain)' --status-level fail` → run
+    `3a3f3519-d06e-4d79-8cf6-7c7eb5f70f23`，1/1 passed、41 skipped；证明 continuation 复用同一 EAS
+    WorkItem/WorkerRun/message chain 与 attempt epoch。
+  - frontend RED 分别复现 same-identity card 保持 interrupted、nested running/backgrounded tool 假运行、续跑共享前缀覆盖旧
+    response、晚到 background completion 被忽略、autosave 指纹遗漏 attempt boundary；GREEN
+    `pnpm exec vitest run frontend/lib/conversation-db-sync.test.ts frontend/lib/terminal-restore.test.ts
+    frontend/store/workflow.test.ts frontend/components/SubAgentCard/SubAgentDetailsModal.test.ts` → 4 files、54/54 passed；
+    `just check-fe && just test-fe` → exit 0。
+  - 原实体 CLI：`backend/target/debug/golish /Users/christopherzheng/golish-platform/Test1 --stage-run-resume
+    cf19a772-6f80-47f2-b0b2-d5a91ed05e37 --resume-to external_attack_surface --expect-session
+    031d00a8-2eca-47f9-89a6-07303cfa21b1 --expect-task cf19a772-6f80-47f2-b0b2-d5a91ed05e37
+    --expect-operation cf19a772-6f80-47f2-b0b2-d5a91ed05e37 --expect-org b26d27db-890e-4442-ae42-736c7d7a825b
+    --expect-stage external_attack_surface --auto-approve --db-smoke-summary --verbose -e '继续'` → exit 0、EAS Gate PASS、
+    最终报告生成。
+  - `python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/Test1 --db --full
+    pentest-chat-1784203617653-1` → exit 0；`git diff --check`、`jq empty feature_list.json`、唯一 `in_progress` 断言均通过。
+  - `just space-guard` 后 `just precommit` → exit 0：fmt 3s、check-fe 10s、test-fe 20s、lint-rust 4s、
+    test-rust-all 235s、check-types 2s，最终打印 `━━━ OK ━━━`。始终未运行 `init.sh`。
+- **已记录证据**：现场 session `pentest-chat-1784203617653-1`、DB session
+  `031d00a8-2eca-47f9-89a6-07303cfa21b1`、operation/task `cf19a772-6f80-47f2-b0b2-d5a91ed05e37`、EAS execution
+  `f47763c3-edb1-456b-b528-190b76373e84`。CLI 续跑后 exact Prober
+  `dc2d374b-8870-49ed-9864-5ca45e28bbf5` / chain `53a3b107-2408-4884-853c-919f65ff8300` 与
+  `9843b945-3501-4a84-a49d-b63d46de1699` / chain `68bceacb-4af8-4f16-a746-9585f18fa25e` 均在 epoch 3
+  `passed`；原 Controller `03fba92b-e7c6-4b59-9e24-c255bdfe521c` / chain
+  `b76f46f7-1772-4172-97e8-e85751a5d06f` 同链恢复并 `passed`。首轮 deterministic Gate 只剩
+  `101.42.9.109`、`43.144.255.182` 两个 Web fingerprint cell，Controller 原链自动 repair 后，最终对 18 assets 合并
+  78 facts，`PASS/findings=0`；execution `completed`，children terminal 2/2、live/retry/recovery 0、所有 WorkItem completed，
+  无残留 Golish/Nmap/WhatWeb/Naabu/Httpx 进程。migration checksum old=`65da58cb…39e1`、new=`7d2e224c…f5cf`。
+- **提交记录**：`fix: stabilize EAS restart recovery`（本记录与本轮 DB/UI 修复随该提交落库）；按用户要求不 push。
+- **已知风险或未解决问题**：本次 Target 冷启动、same-identity UI 状态与真实 EAS continuation 均无残余 blocker。全库仍有一条
+  2026-06-26 的旧 `organization_id=NULL` target，与 Test1/本 operation 无关；父 feature 因独立的 broader
+  Candidate/Verification DoD 继续保持唯一 `in_progress`，不假报整体 passing。
+- **下一步最佳动作**：无需用户再次打开 GUI 试错；后续继续父 feature 时，直接从 Candidate/Verification recovery 验证清单推进，
+  不再改写本次 completed EAS execution、Controller/Prober identity 或历史 evidence。
+
 #### 2026-07-16 · EAS successor-Turn CLI 续跑闭环（完成）
 
 - **本轮目标**：修复 GUI-owned EAS operation 在中断、safe reconciliation 和首轮 Gate BLOCK 后无法继续的问题；按用户要求

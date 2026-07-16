@@ -228,6 +228,7 @@ function feedTimelineBlockData(feed: (s: string) => void, block: UnifiedBlock): 
     feedTextFingerprint(feed, d.thinking);
     feed(String(d.thinkingStartedAt ?? ""));
     feed(String(d.thinkingEndedAt ?? ""));
+    feed(String(d.attemptEntryStart ?? ""));
     feed(d.promptGeneration?.status ?? "");
     feedTextFingerprint(feed, d.promptGeneration?.generatedPrompt);
 
