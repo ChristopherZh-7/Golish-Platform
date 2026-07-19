@@ -460,12 +460,95 @@ pub async fn list_latest_final_sealed_for_sources(
                 SELECT DISTINCT ON (from_stage_kind) *
                   FROM final_seals
                  ORDER BY from_stage_kind,gate_passed_at DESC,id DESC"#;
-    Ok(sqlx::query_as::<_, FinalSealedStageHandoffRow>(sql)
+    let mut rows = sqlx::query_as::<_, FinalSealedStageHandoffRow>(sql)
         .bind(operation_id)
         .bind(organization_id)
         .bind(source_stage_kinds)
         .fetch_all(pool)
-        .await?)
+        .await?;
+    let current_stages = rows
+        .iter()
+        .map(|row| row.from_stage_kind.as_str())
+        .collect::<BTreeSet<_>>();
+    let missing = source_stage_kinds
+        .iter()
+        .filter(|stage| !current_stages.contains(stage.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        let fork_sql = r#"SELECT COALESCE(input.source_handoff_id,input.id) AS id,
+                   input.operation_id,input.organization_id,
+                   input.target_scope_snapshot_id AS scope_snapshot_id,
+                   input.source_stage_kind AS from_stage_kind,
+                   input.source_stage_execution_id AS stage_execution_id,
+                   input.source_stage_run_unit_id,
+                   input.source_deliverable_submission_id AS deliverable_submission_id,
+                   'stage_fork_final_seal'::TEXT AS authority_kind,
+                   input.source_scope_hash AS scope_hash,
+                   input.source_payload AS payload,
+                   input.source_payload_sha256 AS payload_sha256,
+                   input.source_evidence_ids AS evidence_ids,
+                   input.source_coverage_watermark AS coverage_watermark,
+                   input.source_unit_gate_decision_hash AS unit_gate_decision_hash,
+                   input.source_aggregate_pass_token_hash AS aggregate_pass_token_hash,
+                   input.source_gate_passed_at AS gate_passed_at,
+                   input.schema_version
+              FROM operation_stage_fork_inputs AS input
+              JOIN operation_stage_forks AS fork
+                ON fork.operation_id=input.operation_id
+               AND fork.source_operation_id=input.source_operation_id
+              JOIN operation_state AS source_operation
+                ON source_operation.operation_id=input.source_operation_id
+               AND source_operation.superseded_by IS NULL
+         LEFT JOIN stage_handoffs AS handoff
+                ON handoff.id=input.source_handoff_id
+               AND handoff.operation_id=input.source_operation_id
+               AND handoff.scope_snapshot_id=input.source_scope_snapshot_id
+               AND handoff.organization_id=input.organization_id
+               AND handoff.from_stage_kind=input.source_stage_kind
+               AND handoff.stage_execution_id=input.source_stage_execution_id
+               AND handoff.source_stage_run_unit_id=input.source_stage_run_unit_id
+               AND handoff.deliverable_submission_id=input.source_deliverable_submission_id
+               AND handoff.scope_hash=input.source_scope_hash
+               AND handoff.payload=input.source_payload
+               AND handoff.payload_sha256=input.source_payload_sha256
+               AND handoff.evidence_ids=input.source_evidence_ids
+               AND handoff.coverage_watermark=input.source_coverage_watermark
+               AND handoff.unit_gate_decision_hash=input.source_unit_gate_decision_hash
+               AND handoff.aggregate_pass_token_hash IS NOT DISTINCT FROM input.source_aggregate_pass_token_hash
+               AND handoff.gate_passed_at=input.source_gate_passed_at
+               AND handoff.invalidated_at IS NULL
+         LEFT JOIN operation_org_scope_snapshots AS source_scope
+                ON source_scope.id=input.source_scope_snapshot_id
+               AND source_scope.operation_id=input.source_operation_id
+               AND source_scope.root_organization_id=input.organization_id
+               AND source_scope.scope_hash=input.source_scope_hash
+               AND source_scope.sealed_at=input.source_gate_passed_at
+             WHERE input.operation_id=$1
+               AND input.organization_id=$2
+               AND input.source_stage_kind=ANY($3)
+               AND (
+                    (
+                        input.source_stage_kind='scoping'
+                        AND input.source_handoff_id IS NULL
+                        AND source_scope.id IS NOT NULL
+                    )
+                    OR (
+                        input.source_stage_kind<>'scoping'
+                        AND handoff.id IS NOT NULL
+                    )
+               )
+             ORDER BY operation_stage_fork_stage_rank(input.source_stage_kind)"#;
+        let inherited = sqlx::query_as::<_, FinalSealedStageHandoffRow>(fork_sql)
+            .bind(operation_id)
+            .bind(organization_id)
+            .bind(&missing)
+            .fetch_all(pool)
+            .await?;
+        rows.extend(inherited);
+    }
+    rows.sort_by(|left, right| left.from_stage_kind.cmp(&right.from_stage_kind));
+    Ok(rows)
 }
 
 /// Canonical exact-origin surface inherited from the immutable, final-sealed

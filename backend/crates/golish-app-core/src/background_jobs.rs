@@ -588,6 +588,24 @@ impl BackgroundJobManager {
         })
     }
 
+    /// Await the exact job's terminal state. Terminal publication occurs only
+    /// after `start_kill`/`wait` and both output pumps have drained, so callers
+    /// may safely persist timeout/cancellation truth after this returns.
+    pub async fn wait_terminal(&self, job_id: &str) -> Option<JobSnapshot> {
+        let mut completions = self.subscribe_completions();
+        loop {
+            let snapshot = self.snapshot(job_id)?;
+            if snapshot.finished {
+                return Some(snapshot);
+            }
+            match completions.recv().await {
+                Ok(completion) if completion.job_id == job_id => {}
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return self.snapshot(job_id),
+            }
+        }
+    }
+
     /// Snapshot of the jobs still `Running` that were attributed to `session_id`,
     /// newest activity irrelevant (caller-order). Finished/killed jobs and jobs
     /// from other sessions are excluded. Used by the closeout reconciliation

@@ -36,6 +36,64 @@ export {
 import { convertToolSource } from "@/lib/ai/tool-source";
 
 const SIGNAL_COOLDOWN_MS = 3000;
+const MAX_PENDING_AI_SESSION_BUCKETS = 32;
+const MAX_PENDING_AI_EVENTS_PER_SESSION = 512;
+const pendingSessionEvents = new Map<string, AiEvent[]>();
+
+type AiEventRoutingState = ReturnType<typeof useStore.getState>;
+
+export function clearPendingAiSessionEvents(): void {
+  pendingSessionEvents.clear();
+}
+
+export function getPendingAiSessionEventCount(sessionId?: string): number {
+  if (sessionId) return pendingSessionEvents.get(sessionId)?.length ?? 0;
+  let total = 0;
+  for (const events of pendingSessionEvents.values()) total += events.length;
+  return total;
+}
+
+function resolveAiEventSessionId(rawSessionId: string, state: AiEventRoutingState): string | null {
+  if (state.sessions[rawSessionId]) return rawSessionId;
+
+  const conv = state.getConversationBySessionId(rawSessionId);
+  if (conv) {
+    const termId = state.conversationTerminals[conv.id]?.[0];
+    if (termId && state.sessions[termId]) return termId;
+  }
+
+  const activeConvId = state.activeConversationId;
+  const activeConv = activeConvId ? state.conversations[activeConvId] : null;
+  if (activeConv?.aiSessionId !== rawSessionId) return null;
+  const activeTermId = state.conversationTerminals[activeConvId!]?.[0];
+  return activeTermId && state.sessions[activeTermId] ? activeTermId : null;
+}
+
+function bufferPendingAiEvent(sessionId: string, event: AiEvent): void {
+  let events = pendingSessionEvents.get(sessionId);
+  if (!events) {
+    if (pendingSessionEvents.size >= MAX_PENDING_AI_SESSION_BUCKETS) {
+      const oldestSessionId = pendingSessionEvents.keys().next().value;
+      if (typeof oldestSessionId === "string") {
+        pendingSessionEvents.delete(oldestSessionId);
+        logger.warn("Dropping oldest pending AI session event bucket after capacity limit:", {
+          sessionId: oldestSessionId,
+        });
+      }
+    }
+    events = [];
+    pendingSessionEvents.set(sessionId, events);
+  }
+
+  if (events.length >= MAX_PENDING_AI_EVENTS_PER_SESSION) {
+    events.shift();
+    logger.warn("Dropping oldest pending AI event after per-session capacity limit:", {
+      sessionId,
+      eventType: event.type,
+    });
+  }
+  events.push(event);
+}
 
 /**
  * Hook to subscribe to AI events from the Tauri backend
@@ -83,69 +141,10 @@ export function useAiEvents() {
       scheduleTextBatchFlush();
     };
 
-    const handleEvent = (event: AiEvent) => {
-      // Get the session ID from the event for proper routing
-      const state = useStore.getState();
-      let sessionId = event.session_id;
-
-      if (isTitleGenSessionId(sessionId)) {
-        logger.debug("Ignoring title-generation AI event:", {
-          sessionId,
-          eventType: event.type,
-        });
-        return;
-      }
-
-      // Fall back to activeSessionId if session_id is unknown (shouldn't happen in normal operation)
-      if (!sessionId || sessionId === "unknown") {
-        logger.warn("AI event received with unknown session_id, falling back to activeSessionId");
-        const fallbackId = state.activeSessionId;
-        if (!fallbackId) return;
-        sessionId = fallbackId;
-      }
-
-      // Verify the session exists in the store.
-      // For conversation-mode AI sessions (e.g. pentest chat), the session_id is the
-      // AI session ID which differs from the PTY session ID. Resolve via conversations.
-      if (!state.sessions[sessionId]) {
-        let resolved = false;
-        const conv = state.getConversationBySessionId(sessionId);
-        if (conv) {
-          const termIds = state.conversationTerminals[conv.id];
-          const termId = termIds?.[0];
-          if (termId && state.sessions[termId]) {
-            sessionId = termId;
-            resolved = true;
-          }
-        }
-
-        // Fallback: if the active conversation's aiSessionId matches this event,
-        // route to the active session's terminal. This handles cases where the
-        // conversation lookup fails (e.g. after DB restore or state reset).
-        if (!resolved) {
-          const activeConvId = state.activeConversationId;
-          const activeConv = activeConvId ? state.conversations[activeConvId] : null;
-          if (activeConv?.aiSessionId === sessionId) {
-            const termIds = state.conversationTerminals[activeConvId!];
-            const termId = termIds?.[0];
-            if (termId && state.sessions[termId]) {
-              sessionId = termId;
-              resolved = true;
-            }
-          }
-        }
-
-        if (!resolved) {
-          logger.warn("AI event dropped for unknown session:", {
-            sessionId,
-            eventType: event.type,
-            activeSessionId: state.activeSessionId,
-          });
-          return;
-        }
-      }
-
-      // Deduplication: check sequence number if present
+    const dispatchResolvedEvent = (event: AiEvent, sessionId: string) => {
+      // Deduplication: check sequence number if present. Pending restore events
+      // only reach this point after a real terminal session has been resolved,
+      // so buffering never consumes a sequence before it can be replayed.
       if (event.seq !== undefined) {
         const lastSeq = getLastSeenSequence(sessionId);
 
@@ -189,6 +188,57 @@ export function useAiEvents() {
       }
     };
 
+    let drainingPendingEvents = false;
+    const drainPendingSessionEvents = () => {
+      if (drainingPendingEvents || pendingSessionEvents.size === 0) return;
+      drainingPendingEvents = true;
+      try {
+        for (const [rawSessionId, events] of Array.from(pendingSessionEvents.entries())) {
+          const sessionId = resolveAiEventSessionId(rawSessionId, useStore.getState());
+          if (!sessionId) continue;
+          pendingSessionEvents.delete(rawSessionId);
+          for (const event of events) dispatchResolvedEvent(event, sessionId);
+        }
+      } finally {
+        drainingPendingEvents = false;
+      }
+    };
+
+    const handleEvent = (event: AiEvent) => {
+      const state = useStore.getState();
+      let rawSessionId = event.session_id;
+
+      if (isTitleGenSessionId(rawSessionId)) {
+        logger.debug("Ignoring title-generation AI event:", {
+          sessionId: rawSessionId,
+          eventType: event.type,
+        });
+        return;
+      }
+
+      // Fall back to activeSessionId if session_id is unknown (shouldn't happen in normal operation)
+      if (!rawSessionId || rawSessionId === "unknown") {
+        logger.warn("AI event received with unknown session_id, falling back to activeSessionId");
+        const fallbackId = state.activeSessionId;
+        if (!fallbackId) return;
+        rawSessionId = fallbackId;
+      }
+
+      const sessionId = resolveAiEventSessionId(rawSessionId, state);
+      if (!sessionId) {
+        bufferPendingAiEvent(rawSessionId, event);
+        logger.warn("AI event buffered while its session is restoring:", {
+          sessionId: rawSessionId,
+          eventType: event.type,
+          activeSessionId: state.activeSessionId,
+        });
+        return;
+      }
+      dispatchResolvedEvent(event, sessionId);
+    };
+
+    const unsubscribeStore = useStore.subscribe(drainPendingSessionEvents);
+
     // Only set up listener once - the handler uses getState() to access current values
     const setupListener = async () => {
       try {
@@ -209,6 +259,7 @@ export function useAiEvents() {
               logger.debug("Failed to signal frontend ready:", err);
             });
           }
+          drainPendingSessionEvents();
         } else {
           // We were unmounted before setup completed - clean up immediately
           unlisten();
@@ -227,6 +278,7 @@ export function useAiEvents() {
         unlistenRef.current();
         unlistenRef.current = null;
       }
+      unsubscribeStore();
       if (scheduledTextBatchFlush) {
         clearTimeout(scheduledTextBatchFlush);
       }

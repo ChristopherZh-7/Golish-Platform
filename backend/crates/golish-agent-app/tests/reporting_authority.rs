@@ -363,7 +363,7 @@ async fn insert_technique_outcome(
     .await
     .expect("insert canonical technique outcome");
     let content: Value = sqlx::query_scalar(
-        "SELECT to_jsonb(outcome) FROM technique_outcomes AS outcome WHERE id=$1",
+        "SELECT to_jsonb(outcome.*) FROM technique_outcomes AS outcome WHERE id=$1",
     )
     .bind(outcome_id)
     .fetch_one(db.pool())
@@ -372,12 +372,106 @@ async fn insert_technique_outcome(
     (outcome_id, sha256(&content))
 }
 
+#[derive(sqlx::FromRow)]
+struct OutcomeSetFixtureRow {
+    organization_id: Uuid,
+    run_id: String,
+    asset: String,
+    technique: String,
+    outcome: String,
+    observed_at: chrono::DateTime<chrono::Utc>,
+    evidence_ids: Vec<i64>,
+    content: Value,
+}
+
+async fn insert_technique_outcome_set(
+    db: &GolishDb,
+    scope: FrozenScope,
+    evidence_id: i64,
+) -> CanonicalFactRef {
+    for asset_index in 0..36 {
+        for technique_index in 0..10 {
+            sqlx::query(
+                r#"INSERT INTO technique_outcomes(
+                       organization_id,run_id,asset,technique,outcome,source,query,
+                       result_count,confidence,evidence_ids,seq,collected_at
+                   ) VALUES($1,$2,$3,$4,'blocked','report-set-fixture',
+                            'bounded fixture',0,1.0,$5,$6,NOW())"#,
+            )
+            .bind(scope.organization_id)
+            .bind(scope.operation_id.to_string())
+            .bind(format!("https://host-{asset_index:03}.example"))
+            .bind(format!("GOLISH-VULN-{technique_index:02}"))
+            .bind(vec![evidence_id])
+            .bind(i64::from(asset_index * 10 + technique_index + 1))
+            .execute(db.pool())
+            .await
+            .expect("insert aggregate technique outcome member");
+        }
+    }
+    let rows = sqlx::query_as::<_, OutcomeSetFixtureRow>(
+        r#"SELECT organization_id,run_id,asset,technique,outcome,
+                  collected_at AS observed_at,evidence_ids,to_jsonb(outcome.*) AS content
+             FROM technique_outcomes AS outcome
+            WHERE organization_id=$1 AND run_id=$2
+            ORDER BY asset,technique"#,
+    )
+    .bind(scope.organization_id)
+    .bind(scope.operation_id.to_string())
+    .fetch_all(db.pool())
+    .await
+    .expect("load aggregate technique outcome members");
+    let members = rows
+        .into_iter()
+        .map(
+            |row| golish_db::repo::canonical_fact_refs::TechniqueOutcomeSetMember {
+                organization_id: row.organization_id,
+                run_id: row.run_id,
+                asset: row.asset,
+                technique: row.technique,
+                outcome: row.outcome,
+                observed_at: row.observed_at,
+                evidence_ids: row.evidence_ids,
+                content: row.content,
+            },
+        )
+        .collect::<Vec<_>>();
+    let attestation = golish_db::repo::canonical_fact_refs::technique_outcome_set_attestation(
+        "vuln_triage",
+        scope.organization_id,
+        &scope.operation_id.to_string(),
+        &members,
+    )
+    .expect("attest aggregate technique outcome fixture");
+    CanonicalFactRef {
+        key: CanonicalFactKey::TechniqueOutcomeSet {
+            organization_id: scope.organization_id,
+            run_id: scope.operation_id.to_string(),
+            stage: "vuln_triage".to_string(),
+            terminal_cell_count: attestation.terminal_cell_count,
+            outcome_set_sha256: attestation.outcome_set_sha256,
+        },
+        organization_id: scope.organization_id,
+        observed_at: attestation.observed_at,
+        content_sha256: attestation.content_sha256,
+        evidence_ids: attestation.evidence_ids,
+    }
+}
+
 async fn insert_final_handoff(
     db: &GolishDb,
     scope: FrozenScope,
     refs: Vec<CanonicalFactRef>,
     evidence_ids: Vec<i64>,
 ) -> Uuid {
+    let stage_kind = if refs
+        .iter()
+        .any(|reference| matches!(&reference.key, CanonicalFactKey::TechniqueOutcomeSet { .. }))
+    {
+        "vuln_triage"
+    } else {
+        "enumeration"
+    };
     let session_id: Uuid = sqlx::query_scalar("SELECT session_id FROM tasks WHERE id=$1")
         .bind(scope.operation_id)
         .fetch_one(db.pool())
@@ -392,10 +486,11 @@ async fn insert_final_handoff(
     let lease_token = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO stage_runs(id,operation_id,stage_kind,status,completed_at) \
-         VALUES($1,$2,'enumeration','completed',NOW())",
+         VALUES($1,$2,$3,'completed',NOW())",
     )
     .bind(stage_execution_id)
     .bind(scope.operation_id)
+    .bind(stage_kind)
     .execute(db.pool())
     .await
     .expect("insert final-seal stage run");
@@ -403,15 +498,16 @@ async fn insert_final_handoff(
         r#"INSERT INTO stage_run_units(
                id,operation_id,stage_execution_id,scope_snapshot_id,
                organization_id,stage_kind,generation,specialist,status,
-               terminal_at,pass_watermark
-           ) VALUES($1,$2,$3,$4,$5,'enumeration',0,'report-fixture','passed',
-                    NOW(),$6)"#,
+               started_at,terminal_at,pass_watermark
+           ) VALUES($1,$2,$3,$4,$5,$6,0,'report-fixture','passed',
+                    NOW()-INTERVAL '1 minute',NOW(),$7)"#,
     )
     .bind(stage_run_unit_id)
     .bind(scope.operation_id)
     .bind(stage_execution_id)
     .bind(scope.scope_snapshot_id)
     .bind(scope.organization_id)
+    .bind(stage_kind)
     .bind(json!({"final_gate_passed": true, "deliverable_submission_id": submission_id}))
     .execute(db.pool())
     .await
@@ -462,7 +558,7 @@ async fn insert_final_handoff(
                id,operation_id,stage_execution_id,stage_run_unit_id,worker_run_id,
                organization_id,tool_call_record_id,tool_request_id,stage_kind,
                attempt_epoch,lease_token,payload,payload_sha256
-           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'enumeration',0,$9,$10,$11)"#,
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,0,$10,$11,$12)"#,
     )
     .bind(submission_id)
     .bind(scope.operation_id)
@@ -472,6 +568,7 @@ async fn insert_final_handoff(
     .bind(scope.organization_id)
     .bind(tool_call_id)
     .bind(format!("report-fixture-{submission_id}"))
+    .bind(stage_kind)
     .bind(lease_token)
     .bind(json!({"schema_version": 1}))
     .bind(format!("sha256:{submission_id}"))
@@ -491,12 +588,13 @@ async fn insert_final_handoff(
                stage_execution_id,source_stage_run_unit_id,deliverable_submission_id,
                scope_hash,payload,payload_sha256,evidence_ids,
                unit_gate_decision_hash,gate_passed_at
-           ) VALUES($1,$2,$3,$4,'enumeration',$5,$6,$7,$8,$9,$10,$11,$12,NOW())"#,
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())"#,
     )
     .bind(handoff_id)
     .bind(scope.operation_id)
     .bind(scope.organization_id)
     .bind(scope.scope_snapshot_id)
+    .bind(stage_kind)
     .bind(stage_execution_id)
     .bind(stage_run_unit_id)
     .bind(submission_id)
@@ -1304,6 +1402,34 @@ async fn blocked_residual_is_projected_only_from_the_retained_operator_decision(
         .await
         .expect_err("finalize must revalidate exact blocked-decision citations");
     assert_eq!(error.code(), "report_revision_not_validated");
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn aggregate_technique_outcome_set_expands_to_all_report_sources() {
+    let (mut db, _data_dir) = fixture().await;
+    let scope = frozen_scope(&db, "/fixture/reporting-technique-outcome-set").await;
+    let evidence_id = insert_evidence(&db, scope, "aggregate outcome set").await;
+    let set_ref = insert_technique_outcome_set(&db, scope, evidence_id).await;
+    let handoff_id = insert_final_handoff(&db, scope, vec![set_ref], vec![evidence_id]).await;
+
+    let snapshot = current_reportable_source_snapshot(db.pool(), scope.operation_id)
+        .await
+        .expect("aggregate set expands to exact outcome rows");
+    assert_eq!(
+        snapshot
+            .ordered_sources
+            .iter()
+            .filter(|source| source.kind == ReportSourceKind::TechniqueOutcome)
+            .count(),
+        360
+    );
+    assert!(snapshot.ordered_sources.iter().any(|source| {
+        source.kind == ReportSourceKind::StageHandoff
+            && source.id == CanonicalRowId::Uuid(handoff_id)
+    }));
 
     db.stop().await;
 }

@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { EmptyInline, Metric, Section } from "../SurfaceParts";
 import type { NetworkEndpointVM, WebOriginContentRef, WebOriginVM } from "../surfaceHierarchy";
+import { WhatWebAssessmentBadge } from "../WhatWebAssessmentBadge";
+import type { WhatWebAssessment } from "../whatWebAssessment";
 import { FingerprintList } from "./FingerprintList";
 import { SitemapTab } from "./SitemapTab";
 
@@ -470,6 +472,7 @@ export function WebOriginsTab({
   selectedOriginId,
   onSelectOrigin,
   projectPath,
+  assessmentByOrigin,
 }: {
   webOrigins: WebOriginVM[];
   endpoints: NetworkEndpointVM[];
@@ -477,6 +480,7 @@ export function WebOriginsTab({
   selectedOriginId: string | null;
   onSelectOrigin: (id: string) => void;
   projectPath: string | null;
+  assessmentByOrigin: ReadonlyMap<string, WhatWebAssessment>;
 }) {
   const endpointsById = useMemo(
     () => new Map(endpoints.map((endpoint) => [endpoint.id, endpoint])),
@@ -505,10 +509,11 @@ export function WebOriginsTab({
           />
         ) : (
           <div className="overflow-x-auto rounded border border-border/25">
-            <table className="min-w-[1080px] w-full text-[11px]">
+            <table className="min-w-[1180px] w-full text-[11px]">
               <thead className="border-b border-border/25 bg-muted/10 text-muted-foreground">
                 <tr>
                   <th className="px-2 py-1.5 text-left font-medium">Origin</th>
+                  <th className="px-2 py-1.5 text-left font-medium">WhatWeb</th>
                   <th className="px-2 py-1.5 text-left font-medium">Scheme</th>
                   <th className="px-2 py-1.5 text-left font-medium">Host</th>
                   <th className="px-2 py-1.5 text-left font-medium">Host Type</th>
@@ -547,6 +552,9 @@ export function WebOriginsTab({
                             {origin.origin}
                           </span>
                         </div>
+                      </td>
+                      <td className="px-2 py-2">
+                        <WhatWebAssessmentBadge assessment={assessmentByOrigin.get(origin.id)} />
                       </td>
                       <td className="px-2 py-2 text-muted-foreground">{origin.scheme}</td>
                       <td className="max-w-[180px] px-2 py-2">

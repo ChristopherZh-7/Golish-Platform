@@ -1061,6 +1061,19 @@ pub async fn evaluate_org_stage_gate(
             Some(session_id),
         ) {
             Ok((assets, typed)) => {
+                if stage == StageKind::VulnTriage {
+                    match trusted_vuln_surface_not_applicable_from_snapshot(&snapshot) {
+                        Ok(cells) => not_applicable_coverage.extend(cells),
+                        Err(error) => {
+                            return GateResult::block(
+                                vec![format!(
+                                    "vuln_triage surface applicability snapshot is invalid: {error}"
+                                )],
+                                Default::default(),
+                            )
+                        }
+                    }
+                }
                 authoritative_coverage_axis = true;
                 in_scope_assets = assets;
                 typed_assets = typed;
@@ -1406,6 +1419,71 @@ pub fn validated_exact_web_origin_axis_from_coverage_snapshot(
     Ok(exact_web_origin_axis_from_coverage_snapshot(snapshot))
 }
 
+/// Extract only server-generated deterministic N/A cells from the trusted Vuln
+/// coverage snapshot. Model-authored deliverables and ordinary outcome rows do
+/// not carry this source+details authority pair.
+pub fn trusted_vuln_surface_not_applicable_from_snapshot(
+    snapshot: &serde_json::Value,
+) -> Result<Vec<(String, String)>, &'static str> {
+    let mut cells = Vec::new();
+    for row in snapshot
+        .get("assets")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if row
+            .get("exact_web_origin")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            continue;
+        }
+        let value = row
+            .get("value")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let Some(origin) = golish_pentest_domain::canonical_web_origin(value) else {
+            return Err("surface applicability row is not a canonical exact origin");
+        };
+        for cell in row
+            .get("coverage")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if cell.get("state").and_then(serde_json::Value::as_str) != Some("not_applicable")
+                || cell.get("source").and_then(serde_json::Value::as_str)
+                    != Some("enumeration_surface_manifest")
+            {
+                continue;
+            }
+            let technique = cell
+                .get("technique")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("surface applicability cell has no technique")?;
+            if !matches!(
+                technique,
+                "WSTG-INPV-05" | "WSTG-INPV-01" | "WSTG-INPV-12" | "WSTG-ATHN-04" | "GOLISH-NDAY"
+            ) {
+                return Err("surface applicability source used for an unsupported technique");
+            }
+            if cell
+                .get("details")
+                .and_then(|details| details.get("authority"))
+                .and_then(serde_json::Value::as_str)
+                != Some("enumeration_surface_manifest")
+            {
+                return Err("surface applicability cell is missing backend authority details");
+            }
+            cells.push((origin.key.clone(), technique.to_string()));
+        }
+    }
+    cells.sort();
+    cells.dedup();
+    Ok(cells)
+}
+
 /// Validate the trusted Enumeration snapshot envelope before deriving its exact
 /// origin axis. Submit preview and final per-org gate must reject the same
 /// stage/org/session mismatch or malformed assets payload.
@@ -1728,6 +1806,50 @@ mod tests {
             "exact-origin Nuclei outcomes should close the final Vuln gate: {:?}",
             result.reasons
         );
+    }
+
+    #[test]
+    fn vuln_surface_snapshot_only_trusts_backend_applicability_cells() {
+        let snapshot = serde_json::json!({
+            "assets": [{
+                "value": "https://app.example.com:443",
+                "exact_web_origin": true,
+                "coverage": [{
+                    "technique": "WSTG-INPV-05",
+                    "state": "not_applicable",
+                    "source": "enumeration_surface_manifest",
+                    "details": {"authority": "enumeration_surface_manifest"}
+                }, {
+                    "technique": "WSTG-INPV-01",
+                    "state": "not_applicable",
+                    "source": "model_claim",
+                    "details": {"authority": "enumeration_surface_manifest"}
+                }]
+            }]
+        });
+
+        assert_eq!(
+            trusted_vuln_surface_not_applicable_from_snapshot(&snapshot)
+                .expect("trusted backend cell"),
+            vec![(
+                "https://app.example.com:443".to_string(),
+                "WSTG-INPV-05".to_string()
+            )]
+        );
+
+        let forged = serde_json::json!({
+            "assets": [{
+                "value": "https://app.example.com:443",
+                "exact_web_origin": true,
+                "coverage": [{
+                    "technique": "WSTG-INPV-05",
+                    "state": "not_applicable",
+                    "source": "enumeration_surface_manifest",
+                    "details": {}
+                }]
+            }]
+        });
+        assert!(trusted_vuln_surface_not_applicable_from_snapshot(&forged).is_err());
     }
 
     #[test]

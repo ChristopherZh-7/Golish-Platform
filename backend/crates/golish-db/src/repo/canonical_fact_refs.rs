@@ -66,6 +66,13 @@ pub enum CanonicalFactKey {
         asset: String,
         technique: String,
     },
+    TechniqueOutcomeSet {
+        organization_id: Uuid,
+        run_id: String,
+        stage: String,
+        terminal_cell_count: u32,
+        outcome_set_sha256: String,
+    },
     AttackCandidateWorkItem {
         work_item_id: Uuid,
     },
@@ -94,6 +101,39 @@ pub struct CanonicalFactProjectionRow {
     pub evidence_ids: Vec<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TechniqueOutcomeSetMember {
+    pub organization_id: Uuid,
+    pub run_id: String,
+    pub asset: String,
+    pub technique: String,
+    pub outcome: String,
+    pub observed_at: DateTime<Utc>,
+    pub evidence_ids: Vec<i64>,
+    pub content: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TechniqueOutcomeSetAttestation {
+    pub terminal_cell_count: u32,
+    pub outcome_set_sha256: String,
+    pub content_sha256: String,
+    pub observed_at: DateTime<Utc>,
+    pub evidence_ids: Vec<i64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct TechniqueOutcomeSetRawRow {
+    organization_id: Uuid,
+    run_id: String,
+    asset: String,
+    technique: String,
+    outcome: String,
+    observed_at: DateTime<Utc>,
+    evidence_ids: Vec<i64>,
+    content: Value,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CanonicalFactRefError {
     #[error("canonical fact rejected: {code}")]
@@ -104,16 +144,242 @@ pub enum CanonicalFactRefError {
 
 type RawProjection = (Value, Uuid, DateTime<Utc>, Vec<i64>);
 
+fn sha256_canonical(value: &Value) -> String {
+    Sha256::digest(super::operation_scope_decisions::canonical_json(value).as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn normalized_terminal_outcome(outcome: &str) -> Option<&'static str> {
+    match outcome {
+        "found" => Some("found"),
+        "empty" => Some("checked_empty"),
+        "blocked" => Some("blocked"),
+        "not_applicable" => Some("not_applicable"),
+        _ => None,
+    }
+}
+
+pub fn technique_outcome_set_attestation(
+    stage: &str,
+    organization_id: Uuid,
+    run_id: &str,
+    members: &[TechniqueOutcomeSetMember],
+) -> Result<TechniqueOutcomeSetAttestation, CanonicalFactRefError> {
+    technique_outcome_set_attestation_at(stage, organization_id, run_id, members, None)
+}
+
+pub fn technique_outcome_set_attestation_at(
+    stage: &str,
+    organization_id: Uuid,
+    run_id: &str,
+    members: &[TechniqueOutcomeSetMember],
+    empty_observed_at: Option<DateTime<Utc>>,
+) -> Result<TechniqueOutcomeSetAttestation, CanonicalFactRefError> {
+    if stage != "vuln_triage"
+        || run_id.trim().is_empty()
+        || (members.is_empty() && empty_observed_at.is_none())
+    {
+        return Err(CanonicalFactRefError::Rejected {
+            code: "technique_outcome_set_identity_invalid",
+        });
+    }
+    let mut ordered = members.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        left.asset
+            .cmp(&right.asset)
+            .then_with(|| left.technique.cmp(&right.technique))
+    });
+    let mut identity_cells = Vec::with_capacity(ordered.len());
+    let mut contents = Vec::with_capacity(ordered.len());
+    let mut evidence_ids = std::collections::BTreeSet::new();
+    let mut observed_at = None;
+    let mut previous_key: Option<(&str, &str)> = None;
+    for member in ordered {
+        let normalized = normalized_terminal_outcome(&member.outcome).ok_or(
+            CanonicalFactRefError::Rejected {
+                code: "technique_outcome_set_non_terminal",
+            },
+        )?;
+        let key = (member.asset.as_str(), member.technique.as_str());
+        if member.organization_id != organization_id
+            || member.run_id != run_id
+            || member.asset.trim().is_empty()
+            || member.technique.trim().is_empty()
+        {
+            return Err(CanonicalFactRefError::Rejected {
+                code: "technique_outcome_set_member_identity_invalid",
+            });
+        }
+        if member.evidence_ids.is_empty()
+            || member.evidence_ids.iter().any(|id| *id <= 0)
+            || member
+                .evidence_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != member.evidence_ids.len()
+        {
+            return Err(CanonicalFactRefError::Rejected {
+                code: "technique_outcome_set_member_evidence_invalid",
+            });
+        }
+        if !member.content.is_object() {
+            return Err(CanonicalFactRefError::Rejected {
+                code: "technique_outcome_set_member_content_invalid",
+            });
+        }
+        if previous_key == Some(key) {
+            return Err(CanonicalFactRefError::Rejected {
+                code: "technique_outcome_set_duplicate_cell",
+            });
+        }
+        previous_key = Some(key);
+        evidence_ids.extend(member.evidence_ids.iter().copied());
+        observed_at = Some(
+            observed_at
+                .map(|current: DateTime<Utc>| current.max(member.observed_at))
+                .unwrap_or(member.observed_at),
+        );
+        identity_cells.push(serde_json::json!({
+            "asset": member.asset,
+            "technique": member.technique,
+            "state": normalized,
+        }));
+        contents.push(member.content.clone());
+    }
+    let terminal_cell_count =
+        u32::try_from(identity_cells.len()).map_err(|_| CanonicalFactRefError::Rejected {
+            code: "technique_outcome_set_too_large",
+        })?;
+    let outcome_set_sha256 = sha256_canonical(&serde_json::json!({
+        "schema": "technique_outcome_identity_set_v1",
+        "stage": stage,
+        "organization_id": organization_id,
+        "run_id": run_id,
+        "cells": identity_cells,
+    }));
+    let content_sha256 = sha256_canonical(&serde_json::json!({
+        "schema": "technique_outcome_content_set_v1",
+        "stage": stage,
+        "organization_id": organization_id,
+        "run_id": run_id,
+        "outcomes": contents,
+    }));
+    Ok(TechniqueOutcomeSetAttestation {
+        terminal_cell_count,
+        outcome_set_sha256,
+        content_sha256,
+        observed_at: observed_at
+            .or(empty_observed_at)
+            .expect("outcome set has a member or explicit empty-set observation time"),
+        evidence_ids: evidence_ids.into_iter().collect(),
+    })
+}
+
+async fn resolve_technique_outcome_set_at(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+    expected_organization_id: Uuid,
+    project_path_at_freeze: &str,
+    freshness_floor: DateTime<Utc>,
+    observation_ceiling: DateTime<Utc>,
+    key: &CanonicalFactKey,
+) -> Result<Option<CanonicalFactProjectionRow>, CanonicalFactRefError> {
+    let CanonicalFactKey::TechniqueOutcomeSet {
+        organization_id,
+        run_id,
+        stage,
+        terminal_cell_count,
+        outcome_set_sha256,
+    } = key
+    else {
+        return Err(CanonicalFactRefError::Rejected {
+            code: "technique_outcome_set_key_required",
+        });
+    };
+    if *organization_id != expected_organization_id {
+        return Err(CanonicalFactRefError::Rejected {
+            code: "canonical_fact_foreign_organization",
+        });
+    }
+    if run_id != &operation_id.to_string() || stage != "vuln_triage" {
+        return Err(CanonicalFactRefError::Rejected {
+            code: "canonical_fact_foreign_operation",
+        });
+    }
+    if observation_ceiling < freshness_floor {
+        return Err(CanonicalFactRefError::Rejected {
+            code: "technique_outcome_set_time_window_invalid",
+        });
+    }
+    let rows = sqlx::query_as::<_, TechniqueOutcomeSetRawRow>(
+        r#"SELECT outcome.organization_id, outcome.run_id, outcome.asset,
+                  outcome.technique, outcome.outcome,
+                  outcome.collected_at AS observed_at, outcome.evidence_ids,
+                  to_jsonb(outcome.*) AS content
+             FROM technique_outcomes AS outcome
+             JOIN organizations AS org ON org.id=outcome.organization_id
+            WHERE outcome.organization_id=$1 AND outcome.run_id=$2
+              AND org.project_path=$3
+              AND outcome.collected_at >= $4
+              AND outcome.collected_at <= $5
+              AND outcome.updated_at <= $5
+            ORDER BY outcome.asset, outcome.technique
+            FOR SHARE OF outcome, org"#,
+    )
+    .bind(organization_id)
+    .bind(run_id)
+    .bind(project_path_at_freeze)
+    .bind(freshness_floor)
+    .bind(observation_ceiling)
+    .fetch_all(&mut *connection)
+    .await?;
+    let members = rows
+        .into_iter()
+        .map(|row| TechniqueOutcomeSetMember {
+            organization_id: row.organization_id,
+            run_id: row.run_id,
+            asset: row.asset,
+            technique: row.technique,
+            outcome: row.outcome,
+            observed_at: row.observed_at,
+            evidence_ids: row.evidence_ids,
+            content: row.content,
+        })
+        .collect::<Vec<_>>();
+    let attestation = technique_outcome_set_attestation_at(
+        stage,
+        expected_organization_id,
+        run_id,
+        &members,
+        Some(observation_ceiling),
+    )?;
+    if attestation.terminal_cell_count != *terminal_cell_count
+        || attestation.outcome_set_sha256 != *outcome_set_sha256
+        || attestation.evidence_ids.len() > MAX_EVIDENCE_IDS
+    {
+        return Err(CanonicalFactRefError::Rejected {
+            code: "technique_outcome_set_attestation_mismatch",
+        });
+    }
+    Ok(Some(CanonicalFactProjectionRow {
+        source_table: "technique_outcomes".to_string(),
+        source_key: serde_json::to_value(key).expect("canonical fact key is serializable"),
+        organization_id: expected_organization_id,
+        observed_at: attestation.observed_at,
+        content_sha256: attestation.content_sha256,
+        evidence_ids: attestation.evidence_ids,
+    }))
+}
+
 fn projection(
     key: &CanonicalFactKey,
     source_table: &'static str,
     (content, organization_id, observed_at, evidence_ids): RawProjection,
 ) -> CanonicalFactProjectionRow {
-    let content_sha256 =
-        Sha256::digest(super::operation_scope_decisions::canonical_json(&content).as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+    let content_sha256 = sha256_canonical(&content);
     CanonicalFactProjectionRow {
         source_table: source_table.to_string(),
         source_key: serde_json::to_value(key).expect("canonical fact key is serializable"),
@@ -130,6 +396,7 @@ async fn resolve_one(
     operation_chat_session_key: Option<&str>,
     expected_organization_id: Uuid,
     project_path_at_freeze: &str,
+    technique_outcome_set_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
     key: &CanonicalFactKey,
 ) -> Result<Option<CanonicalFactProjectionRow>, CanonicalFactRefError> {
     let row = match key {
@@ -298,7 +565,7 @@ async fn resolve_one(
                 });
             }
             sqlx::query_as::<_, RawProjection>(
-                r#"SELECT to_jsonb(outcome), outcome.organization_id,
+                r#"SELECT to_jsonb(outcome.*), outcome.organization_id,
                           outcome.collected_at, outcome.evidence_ids
                      FROM technique_outcomes AS outcome
                      JOIN organizations AS org ON org.id=outcome.organization_id
@@ -316,6 +583,25 @@ async fn resolve_one(
             .await?
             .map(|row| projection(key, "technique_outcomes", row))
         }
+        CanonicalFactKey::TechniqueOutcomeSet { .. } => match technique_outcome_set_window {
+            Some((freshness_floor, observation_ceiling)) => {
+                resolve_technique_outcome_set_at(
+                    connection,
+                    operation_id,
+                    expected_organization_id,
+                    project_path_at_freeze,
+                    freshness_floor,
+                    observation_ceiling,
+                    key,
+                )
+                .await?
+            }
+            None => {
+                return Err(CanonicalFactRefError::Rejected {
+                    code: "technique_outcome_set_final_seal_only",
+                });
+            }
+        },
         CanonicalFactKey::AttackCandidateWorkItem { work_item_id } => {
             sqlx::query_as::<_, RawProjection>(
                 r#"SELECT jsonb_build_object(
@@ -450,6 +736,11 @@ pub async fn resolve_for_fact_delta(
             code: "fact_delta_kind_unsupported",
         });
     }
+    if matches!(key, CanonicalFactKey::TechniqueOutcomeSet { .. }) {
+        return Err(CanonicalFactRefError::Rejected {
+            code: "technique_outcome_set_not_fact_delta_subject",
+        });
+    }
     let operation_chat_session_key = if matches!(key, CanonicalFactKey::TechniqueOutcome { .. }) {
         load_operation_chat_session_key(connection, operation_id).await?
     } else {
@@ -461,6 +752,7 @@ pub async fn resolve_for_fact_delta(
         operation_chat_session_key.as_deref(),
         expected_organization_id,
         project_path_at_freeze,
+        None,
         key,
     )
     .await?
@@ -501,6 +793,50 @@ pub async fn resolve_for_handoff(
     freshness_floor: DateTime<Utc>,
     keys: &[CanonicalFactKey],
 ) -> Result<Vec<CanonicalFactRef>, CanonicalFactRefError> {
+    resolve_for_handoff_with_set_window(
+        connection,
+        operation_id,
+        expected_organization_id,
+        project_path_at_freeze,
+        freshness_floor,
+        None,
+        keys,
+    )
+    .await
+}
+
+/// Final-seal-only resolver. Aggregate outcome sets require an explicit,
+/// transaction-stable upper bound so response-loss replay sees the same set.
+pub async fn resolve_for_final_seal(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+    expected_organization_id: Uuid,
+    project_path_at_freeze: &str,
+    freshness_floor: DateTime<Utc>,
+    observation_ceiling: DateTime<Utc>,
+    keys: &[CanonicalFactKey],
+) -> Result<Vec<CanonicalFactRef>, CanonicalFactRefError> {
+    resolve_for_handoff_with_set_window(
+        connection,
+        operation_id,
+        expected_organization_id,
+        project_path_at_freeze,
+        freshness_floor,
+        Some((freshness_floor, observation_ceiling)),
+        keys,
+    )
+    .await
+}
+
+async fn resolve_for_handoff_with_set_window(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+    expected_organization_id: Uuid,
+    project_path_at_freeze: &str,
+    freshness_floor: DateTime<Utc>,
+    technique_outcome_set_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    keys: &[CanonicalFactKey],
+) -> Result<Vec<CanonicalFactRef>, CanonicalFactRefError> {
     if keys.len() > MAX_CANONICAL_REFS {
         return Err(CanonicalFactRefError::Rejected {
             code: "canonical_fact_ref_limit_exceeded",
@@ -531,6 +867,7 @@ pub async fn resolve_for_handoff(
             operation_chat_session_key.as_deref(),
             expected_organization_id,
             project_path_at_freeze,
+            technique_outcome_set_window,
             key,
         )
         .await?
@@ -570,6 +907,55 @@ pub async fn resolve_for_handoff(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn technique_outcome_set_attestation_is_complete_and_order_independent() {
+        let organization_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4().to_string();
+        let observed_at = Utc::now();
+        let members = (0..36)
+            .flat_map(|asset_index| {
+                let run_id = run_id.clone();
+                (0..10).map(move |technique_index| {
+                    let asset = format!("https://host-{asset_index}.example:443");
+                    let technique = format!("TECH-{technique_index}");
+                    let evidence_id = i64::from(asset_index * 10 + technique_index + 1);
+                    TechniqueOutcomeSetMember {
+                        organization_id,
+                        run_id: run_id.clone(),
+                        asset: asset.clone(),
+                        technique: technique.clone(),
+                        outcome: "blocked".to_string(),
+                        observed_at,
+                        evidence_ids: vec![evidence_id],
+                        content: serde_json::json!({
+                            "organization_id": organization_id,
+                            "run_id": run_id,
+                            "asset": asset,
+                            "technique": technique,
+                            "outcome": "blocked",
+                            "evidence_ids": [evidence_id],
+                        }),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let expected =
+            technique_outcome_set_attestation("vuln_triage", organization_id, &run_id, &members)
+                .expect("complete set attestation");
+        let mut reversed = members;
+        reversed.reverse();
+        let actual =
+            technique_outcome_set_attestation("vuln_triage", organization_id, &run_id, &reversed)
+                .expect("reversed set attestation");
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.terminal_cell_count, 360);
+        assert_eq!(actual.evidence_ids.len(), 360);
+        assert_eq!(actual.outcome_set_sha256.len(), 64);
+        assert_eq!(actual.content_sha256.len(), 64);
+    }
 
     #[test]
     fn runtime_memory_repo_contract_canonical_catalog_is_closed_and_bounded() {

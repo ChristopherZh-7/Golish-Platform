@@ -90,6 +90,9 @@ pub struct StageTeamSchedulerPolicy {
     /// includes the Lead itself as well as its active children (K).
     #[serde(deserialize_with = "deserialize_nonzero_u32")]
     pub max_workers: u32,
+    /// Frozen compatibility metadata for existing TeamPlan hashes. Company
+    /// Controller admission does not enforce this lifetime count; exact scope,
+    /// request epoch, replay, live K and per-WorkItem attempts are authoritative.
     #[serde(default)]
     pub max_dynamic_requests: u32,
     /// Closed server allowlist for model-proposed sibling WorkItem kinds.

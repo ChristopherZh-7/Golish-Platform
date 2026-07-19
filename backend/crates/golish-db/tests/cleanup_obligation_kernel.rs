@@ -1773,26 +1773,13 @@ async fn deletion_request_freezes_targets_before_external_cleanup_and_hard_delet
     let principal = operator_principals::current_local(db.pool())
         .await
         .expect("load trusted deletion principal");
-    let organization_id = Uuid::new_v4();
+    let job_id = Uuid::new_v4();
+    let project_path = format!("/fixture/two-phase-delete-{job_id}");
+    let scope = frozen_scope(&db, &project_path, "two-phase-delete").await;
+    let organization_id = scope.organization_id;
     let child_organization_id = Uuid::new_v4();
     let target_id = Uuid::new_v4();
     let external_organization_id = Uuid::new_v4();
-    let job_id = Uuid::new_v4();
-    let project_path = format!("/fixture/two-phase-delete-{job_id}");
-    project_scopes::register_first_open(
-        db.pool(),
-        &project_path,
-        &format!("two-phase-delete-{job_id}-path-sha"),
-    )
-    .await
-    .expect("register deletion project scope");
-    sqlx::query("INSERT INTO organizations(id,project_path,name) VALUES($1,$2,$3)")
-        .bind(organization_id)
-        .bind(&project_path)
-        .bind("two phase delete")
-        .execute(db.pool())
-        .await
-        .expect("insert deletion organization");
     sqlx::query("INSERT INTO organizations(id,project_path,name,parent_id) VALUES($1,$2,$3,$4)")
         .bind(child_organization_id)
         .bind(&project_path)
@@ -1819,6 +1806,102 @@ async fn deletion_request_freezes_targets_before_external_cleanup_and_hard_delet
     .execute(db.pool())
     .await
     .expect("insert deletion target");
+
+    let web_origin_id = Uuid::new_v4();
+    let fingerprint_id = Uuid::new_v4();
+    let endpoint_id = Uuid::new_v4();
+    let fingerprint_observation_id = Uuid::new_v4();
+    let endpoint_observation_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO web_origins(
+               id,organization_id,project_path,scheme,host,host_type,port,origin,source
+           ) VALUES(
+               $1,$2,$3,'https','delete.example.test','domain',443,
+               'https://delete.example.test:443','cleanup-test'
+           )"#,
+    )
+    .bind(web_origin_id)
+    .bind(organization_id)
+    .bind(&project_path)
+    .execute(db.pool())
+    .await
+    .expect("insert deletion manifest origin");
+    sqlx::query(
+        r#"INSERT INTO web_origin_observations(
+               organization_id,project_path,web_origin_id,target_id,status_code,source
+           ) VALUES($1,$2,$3,$4,200,'cleanup-test')"#,
+    )
+    .bind(organization_id)
+    .bind(&project_path)
+    .bind(web_origin_id)
+    .bind(target_id)
+    .execute(db.pool())
+    .await
+    .expect("link deletion Target to its exact origin");
+    sqlx::query(
+        r#"INSERT INTO fingerprints(
+               id,target_id,project_path,category,name,version,source
+           ) VALUES($1,$2,$3,'technology','Delete Fixture','1.0','cleanup-test')"#,
+    )
+    .bind(fingerprint_id)
+    .bind(target_id)
+    .bind(&project_path)
+    .execute(db.pool())
+    .await
+    .expect("insert deletion fingerprint");
+    sqlx::query(
+        r#"INSERT INTO api_endpoints(
+               id,target_id,project_path,url,method,path,source
+           ) VALUES(
+               $1,$2,$3,'https://delete.example.test:443/api/search?term=fixture',
+               'GET','/api/search','cleanup-test'
+           )"#,
+    )
+    .bind(endpoint_id)
+    .bind(target_id)
+    .bind(&project_path)
+    .execute(db.pool())
+    .await
+    .expect("insert deletion endpoint");
+    sqlx::query(
+        r#"INSERT INTO fingerprint_origin_observations(
+               id,fingerprint_id,web_origin_id,organization_id,target_id,project_path,source
+           ) VALUES($1,$2,$3,$4,$5,$6,'cleanup-test')"#,
+    )
+    .bind(fingerprint_observation_id)
+    .bind(fingerprint_id)
+    .bind(web_origin_id)
+    .bind(organization_id)
+    .bind(target_id)
+    .bind(&project_path)
+    .execute(db.pool())
+    .await
+    .expect("publish deletion fingerprint-origin observation");
+    sqlx::query(
+        r#"INSERT INTO enumeration_endpoint_observations(
+               id,operation_id,organization_id,target_id,web_origin_id,
+               endpoint_id,project_path,source
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,'cleanup-test')"#,
+    )
+    .bind(endpoint_observation_id)
+    .bind(scope.operation_id)
+    .bind(organization_id)
+    .bind(target_id)
+    .bind(web_origin_id)
+    .bind(endpoint_id)
+    .bind(&project_path)
+    .execute(db.pool())
+    .await
+    .expect("publish deletion endpoint observation");
+    sqlx::query(
+        r#"INSERT INTO enumeration_endpoint_parameters(
+               endpoint_observation_id,name,location,value_type,source
+           ) VALUES($1,'term','query','string','cleanup-test')"#,
+    )
+    .bind(endpoint_observation_id)
+    .execute(db.pool())
+    .await
+    .expect("publish deletion endpoint parameter");
 
     let requested = organization_deletion_jobs::request(
         db.pool(),
@@ -1913,13 +1996,52 @@ async fn deletion_request_freezes_targets_before_external_cleanup_and_hard_delet
         .await
         .expect("commit independent hard delete");
     assert_eq!(committed.state, "hard_delete_committed");
-    let live_org: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM organizations WHERE id=$1)")
-            .bind(organization_id)
-            .fetch_one(db.pool())
-            .await
-            .expect("read live organization after hard delete");
-    assert!(!live_org);
+    let live_orgs: (bool, bool, bool) = sqlx::query_as(
+        r#"SELECT
+               EXISTS(SELECT 1 FROM organizations WHERE id=$1),
+               EXISTS(SELECT 1 FROM organizations WHERE id=$2),
+               EXISTS(SELECT 1 FROM organizations WHERE id=$3)"#,
+    )
+    .bind(organization_id)
+    .bind(child_organization_id)
+    .bind(external_organization_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read organization identities after hard delete");
+    assert!(!live_orgs.0);
+    assert!(!live_orgs.1);
+    assert!(
+        live_orgs.2,
+        "organization outside the frozen subtree remains"
+    );
+    let live_target: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM targets WHERE id=$1)")
+        .bind(target_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("read Target after hard delete");
+    assert!(!live_target);
+    let manifest_rows: (i64, i64) = sqlx::query_as(
+        r#"SELECT
+               (SELECT COUNT(*) FROM fingerprint_origin_observations WHERE id=$1),
+               (SELECT COUNT(*) FROM enumeration_endpoint_observations WHERE id=$2)"#,
+    )
+    .bind(fingerprint_observation_id)
+    .bind(endpoint_observation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count deleted manifest observations");
+    assert_eq!(manifest_rows, (0, 0));
+    let retained_target_snapshot: (Uuid, Option<Uuid>) = sqlx::query_as(
+        r#"SELECT target_id_at_time,live_target_id
+             FROM organization_deletion_job_targets
+            WHERE job_id=$1 AND target_id_at_time=$2"#,
+    )
+    .bind(job_id)
+    .bind(target_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load retained deletion Target snapshot");
+    assert_eq!(retained_target_snapshot, (target_id, None));
     db.stop().await;
 }
 

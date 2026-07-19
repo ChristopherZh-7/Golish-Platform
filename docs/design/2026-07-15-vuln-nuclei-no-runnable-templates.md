@@ -1,5 +1,9 @@
 # Vuln Nuclei 无可运行受信模板的终态设计
 
+> Superseded by `docs/design/2026-07-17-vuln-nuclei-local-http-template-policy.md` for
+> template-loading policy. The narrow `Blocked` parser/landing semantics in this document remain
+> valid as a fail-closed fallback.
+
 ## 背景
 
 “广州有创网络科技有限公司”真实 `Scoping → Attack Candidate` CLI 验收在

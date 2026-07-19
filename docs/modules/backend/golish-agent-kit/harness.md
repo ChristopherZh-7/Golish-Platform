@@ -36,6 +36,7 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 | `attack_execution::*` | Candidate V2 纯领域契约：observation/hash 冻结的 exact manifest decision classifier、immutable execution plan/hash/risk、bounded acceptance、8 态 Attempt 状态机、closed `FactDeltaKind(created|updated|refuted|new_surface)`、terminal result validator，以及 legacy/V2 whole-record shadow read selector |
 | `ReportingGateTruth` / `validate_reporting_gate_truth` | C9 Reporting 的 DB-free Gate contract：current validated revision、完整 source-set、citation/attestation 与 Cleanup closeout |
 | `StageRuntimeContract` / `RuntimeUnitIdentity` / `RuntimeScopeSource` | `StageSpec.runtime_memory` 的 closed typed contract；当前仅 `target_intel` / `external_attack_surface` / `enumeration` / `vuln_triage` 精确声明 schema v2、`stage_execution_organization`、`frozen_operation_snapshot`、worker lease 与 final-seal handoff |
+| `CanonicalFactKey::TechniqueOutcomeSet` / `technique_outcome_set_identity` | Vuln final-seal-only 集合 authority：对完整排序后的 `(asset, technique, normalized_state)` 生成稳定 count/hash；不采样、不替代底层 row，也不能作为 FactDelta subject |
 | `render_context_pack_data` | 将已授权 ContextPack 渲染为 escaped、data-only、带 provenance/evidence 的 prompt block |
 
 ## 关键文件
@@ -51,6 +52,7 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 | `chain_wave.rs` | Legacy/dual attack_candidate⇄verification 兼容循环的纯决策函数 `decide_chain_wave`（去重+燃料+链深收敛）；V2Only 的游标、fuel 与收敛只认 DB consolidation，不能复用这里的进程内状态 |
 | `attack_execution/` | Candidate V2 的 DB-free manifest/draft/acceptance DTO、exact-key completeness validator、bounded server classifier、foreground-only状态机、DB snapshot-only review barrier，以及 `selector.rs` 的 whole-record legacy/V2 semantic comparison；不拥有 lease/checkpoint/Wave cursor |
 | `reporting_gate.rs` | Reporting current-revision/source/citation/validation/Cleanup 的纯确定性 Gate；不读取模型 prose、RAG/KG 或 artifact publication |
+| `handoff_catalog.rs` | bounded canonical handoff catalog；Vuln outcome 高基数通过一个虚拟 set key 封存，保留现有 key/payload 上限，DB 在 commit/replay 时重算全部成员 |
 | `evidence_facts.rs` | 从工具命令/输出派生 coverage facts（passive intel + EAS） |
 | `stage_capability.rs` | stage capability registry：把 coverage technique 映射到人类能力 id、runner kind、允许工具、风险与批量 hint；Candidate V2 对模型只暴露 ordinal wrapper，classifier recipe ids 留在后端，四个 Post-Exploit stage 各映射一个 backend wrapper |
 | `intent_classifier.rs` / `nl_slice.rs` / `sprint_contract.rs` / `pre_action_authorizer.rs` | 分类 / 终态 / 契约 / authz |
@@ -70,7 +72,7 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 - `review_barrier::decide_review_barrier` 只消费一次 exact DB snapshot；open/pending/dispatching/stale/resumed/terminal 分支均不读进程内 wake flag。TaskOrchestrator 必须先解析投影 DAG 的真实 successor：`--to attack_candidate` 没有 successor，直接结束且不得读取 review barrier；只有真实的 Candidate→Verification crossing 才进入下面的判断。operation-frozen runtime/attack contract **同时**为 `v2_only` 时才回读并阻塞于该 seam；dual-write 仍合成/镜像 V2 shadow，但绝不读取 barrier、hold 主流程或派发 `candidate_verifier`。exact V2Only 下只有 `resumed|terminal` 才能进入 verification，读失败或 snapshot 不一致一律 hold。
 - Candidate 对 evidence outcome 必须按字面解释：`blocked` 只表示检查未完成，不等于阴性，也不能推断为 WAF、限流或目标抵抗；只有本轮可信 evidence 明确给出原因时才能写该原因。`not_applicable` 也只约束 exact technique/producer，不能外推为目标安全。共享 methodology 与 `list_recent_evidence` contract 同时承载这条语义，避免模型把工具/模板配置缺口改写成目标侧结论。
 - `target_intel` 的 6 个 `GOLISH-INTEL-*` 覆盖列仍必核，但阶段不再暴露任何 scan-tool selector（`allowed_tool_types=[]`）：found 只能来自 `recon_map_assets` / `recon_lookup_whois` 等 registry/provider 工具落库后的 DB truth；缺 provider、无结果或不适用要走 `blocked` / `checked_empty` / `not_applicable` 终态，不能切 CLI fallback。
-- `target_intel` / `external_attack_surface` / `enumeration` / `vuln_triage` 的 `team_scheduler` 统一为 Company Controller 模式：每个公司只 seed 一个 `leader:primary`，role 为 `company_stage_controller`，之后的 WorkItem 必须由 Controller 按需提出并由 server allowlist/fence 落成 durable sibling SubAgent；不存在静态 fixed-shard 初始化，也不存在独立的 final 汇总 Agent。四个阶段的冻结 specialist 分别为 `recon` / `prober` / `enumerator` / `vuln_scanner`，Controller 和子 Worker 均只能解析到本阶段冻结 specialist，跨阶段 role 复用 fail closed。`max_company_units_active`（C）限制并发公司 Unit，`global_provider_cap`（G）限制跨公司所有模型 provider 并发，`max_workers`（K）限制单公司 live WorkerRun 且包含 Controller；三者反序列化时均要求非零。`max_dynamic_requests` 另行限制单公司生命周期内可接受的动态 child 总量。Candidate/Verification 与 Post-Exploit/Reporting/Cleanup 仍使用各自 typed scheduler，不会因这个普通公司阶段合同而切换。
+- `target_intel` / `external_attack_surface` / `enumeration` / `vuln_triage` 的 `team_scheduler` 统一为 Company Controller 模式：每个公司只 seed 一个 `leader:primary`，role 为 `company_stage_controller`，之后的 WorkItem 必须由 Controller 按需提出并由 server allowlist/fence 落成 durable sibling SubAgent；不存在静态 fixed-shard 初始化，也不存在独立的 final 汇总 Agent。四个阶段的冻结 specialist 分别为 `recon` / `prober` / `enumerator` / `vuln_scanner`，Controller 和子 Worker 均只能解析到本阶段冻结 specialist，跨阶段 role 复用 fail closed。`max_company_units_active`（C）限制并发公司 Unit，`global_provider_cap`（G）限制跨公司所有模型 provider 并发，`max_workers`（K）限制单公司 live WorkerRun 且包含 Controller；三者反序列化时均要求非零。`max_dynamic_requests` 及 TeamPlan `max_workers_total` 只为旧冻结 plan hash/restart replay 保留，不再作为 Company Controller lifetime admission；合法 child 数由 exact scope/open epoch/dedupe 与当前 worklist 决定，live 并发仍由 C/G/K、单 WorkItem retry 仍由 attempt policy 限制。Candidate/Verification 与 Post-Exploit/Reporting/Cleanup 仍使用各自 typed scheduler，不会因这个普通公司阶段合同而切换。
 - 当前无 migration 的 Team schema 对稳定 Controller WorkerRun 只支持一条 durable Gate gap source，因此 runtime 冻结 `max_controller_gate_repairs=1`；这不是 Gate 放宽，而是在第二次 gap 写入冲突前 fail closed。如需多轮 Controller Gate repair，必须先做显式向前 migration。
 - `StageTeamSchedulerPolicy.aggregator_kind` / `aggregator_role` 以及 runtime-memory 的 `is_aggregator`、`stage_unit_aggregate` 等名称是既有持久化/wire 兼容槽位；当前 `aggregator_role` 的值是 `company_stage_controller`，语义是“唯一 Controller 兼任最终提交者”，不能据字段名恢复成第二个 Agent 或旧静态分片流程。
 - Scoping 不执行 DNS/WHOIS/HTTP/端口工作，也不暴露 `manage_targets`。可信 UI/CLI
@@ -128,6 +130,11 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 - Reporting 的 `report_revision_validated` 只消费应用层重读的 `ReportingGateTruth`：revision 必须 current+validated，publication 只允许 `unpublished|final`，完整 source hash、claim/citation、validation attestation 与 Cleanup closeout 任一漂移即 BLOCK。Gate PASS 不等于 final publication，artifact/finalize 不在 stage seam。
 - Verification capability metadata 的 `writes` 是 server-owned terminal business effects（Attempt evidence/result、Finding lineage、FactDelta），不是模型 SQL grant；action journal 属于执行 wrapper，Finding/lineage 仍只由 compound terminalizer 写。
 - 设计见 `docs/design/2026-05-26-*` 与 `docs/design/2026-07-02-attack-stage-formulaic-candidate-exploit.md`；内层 harness 当前 deferred（见 AGENTS.md §6）。
+
+## Vuln 动态适用性（2026-07-17）
+
+- Vuln 固定 technique universe 不再等于每个 origin 的必扫分母。backend 只信 `source=enumeration_surface_manifest` 且带 authority marker 的固定条件 technique N/A：无 GET query 参数时 SQLi/XSS/命令注入 N/A；无 endpoint 时 anonymous N/A；无 exact-origin fingerprint 时 N-day N/A。
+- 这些 N/A 由 coverage snapshot 注入，并由 final org gate 和 submit preview 使用同一可信过滤器；模型提交的同名 `not_applicable` 不能替代 backend authority。baseline HTTP/security-header/TLS 等 technique 仍按 origin 适用。
 
 ## 测试入口
 

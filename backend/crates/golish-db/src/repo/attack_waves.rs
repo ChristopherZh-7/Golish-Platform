@@ -34,6 +34,9 @@ pub enum AttackWaveEntry {
     FactDeltaConsolidation {
         consolidation_id: Uuid,
     },
+    ForkedVulnHandoff {
+        stage_fork_input_id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +140,7 @@ struct AttackWaveUnitDbRow {
     entry_deliverable_submission_id: Option<Uuid>,
     entry_stage_kind: Option<String>,
     entry_consolidation_id: Option<Uuid>,
+    entry_stage_fork_input_id: Option<Uuid>,
     ordinal: i32,
     status: String,
     review_closed: bool,
@@ -174,6 +178,19 @@ struct InitialEntryAuthorityRow {
     deliverable_submission_id: Uuid,
     handoff_id: Uuid,
     evidence_ids: Vec<i64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ForkInitialEntryAuthorityRow {
+    organization_id: Uuid,
+    ordinal: i32,
+    stage_fork_input_id: Uuid,
+    source_stage_execution_id: Uuid,
+    source_stage_run_unit_id: Uuid,
+    source_deliverable_submission_id: Uuid,
+    source_handoff_id: Uuid,
+    source_generation: i32,
+    source_evidence_ids: Vec<i64>,
 }
 
 fn authority_conflict(code: &'static str) -> crate::DbError {
@@ -216,6 +233,7 @@ fn decode_wave_unit(row: AttackWaveUnitDbRow) -> crate::Result<AttackWaveUnitRow
         row.entry_deliverable_submission_id,
         row.entry_stage_kind.as_deref(),
         row.entry_consolidation_id,
+        row.entry_stage_fork_input_id,
     ) {
         (
             Some(stage_execution_id),
@@ -223,13 +241,19 @@ fn decode_wave_unit(row: AttackWaveUnitDbRow) -> crate::Result<AttackWaveUnitRow
             Some(deliverable_submission_id),
             Some("vuln_triage"),
             None,
+            None,
         ) => AttackWaveEntry::VulnTriageHandoff {
             stage_execution_id,
             stage_run_unit_id,
             deliverable_submission_id,
         },
-        (None, None, None, None, Some(consolidation_id)) => {
+        (None, None, None, None, Some(consolidation_id), None) => {
             AttackWaveEntry::FactDeltaConsolidation { consolidation_id }
+        }
+        (None, None, None, None, None, Some(stage_fork_input_id)) => {
+            AttackWaveEntry::ForkedVulnHandoff {
+                stage_fork_input_id,
+            }
         }
         _ => {
             return Err(crate::DbError::Other(anyhow::anyhow!(
@@ -279,12 +303,31 @@ pub struct OpenAttackWaveUnit {
     pub max_attempts_total: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct OpenAttackWaveForkUnit {
+    pub wave_run_id: Uuid,
+    pub wave_unit_id: Uuid,
+    pub operation_id: Uuid,
+    pub scope_snapshot_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_fork_input_id: Uuid,
+    pub generation: i32,
+    pub ordinal: i32,
+    pub policy_snapshot: serde_json::Value,
+    pub policy_hash: String,
+    pub max_waves: i32,
+    pub max_candidates_total: i32,
+    pub max_chain_depth: i32,
+    pub max_attempts_total: i32,
+}
+
 const WAVE_COLUMNS: &str = "id,operation_id,scope_snapshot_id,generation,status,policy_snapshot,\
     policy_hash,max_waves,max_candidates_total,max_chain_depth,max_attempts_total,row_version,\
     created_at,updated_at,terminal_at";
 const UNIT_COLUMNS: &str = "id,wave_run_id,operation_id,scope_snapshot_id,organization_id,\
     entry_stage_execution_id,entry_stage_run_unit_id,entry_deliverable_submission_id,\
     entry_stage_kind,entry_consolidation_id,ordinal,status,review_closed,verification_closed,\
+    entry_stage_fork_input_id,\
     consolidation_status,manifest_hash,manifest_count,manifest_frozen_at,row_version,\
     created_at,updated_at,terminal_at";
 
@@ -505,6 +548,15 @@ async fn load_initial_authority(
     scope_snapshot_id: Uuid,
     scope_units: &[FrozenScopeUnitRow],
 ) -> crate::Result<AttackWaveAuthority> {
+    let is_candidate_fork: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operation_stage_forks WHERE operation_id=$1 AND entry_stage='attack_candidate')",
+    )
+    .bind(operation_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if is_candidate_fork {
+        return load_fork_initial_authority(tx, operation_id, scope_snapshot_id, scope_units).await;
+    }
     let entries = sqlx::query_as::<_, InitialEntryAuthorityRow>(
         r#"SELECT scope_unit.organization_id,scope_unit.ordinal,unit.generation,
                   unit.stage_execution_id,unit.id AS stage_run_unit_id,
@@ -572,6 +624,109 @@ async fn load_initial_authority(
             handoff_id: entry.handoff_id,
             evidence_ids: entry.evidence_ids,
         });
+    }
+    Ok(AttackWaveAuthority::Initial(InitialAttackWaveAuthority {
+        operation_id,
+        scope_snapshot_id,
+        generation: 0,
+        predecessor_stage_execution_id,
+        predecessor_generation,
+        units,
+    }))
+}
+
+async fn load_fork_initial_authority(
+    tx: &mut Transaction<'_, Postgres>,
+    operation_id: Uuid,
+    scope_snapshot_id: Uuid,
+    scope_units: &[FrozenScopeUnitRow],
+) -> crate::Result<AttackWaveAuthority> {
+    let entries = sqlx::query_as::<_, ForkInitialEntryAuthorityRow>(
+        r#"SELECT scope_unit.organization_id,scope_unit.ordinal,
+                  input.id AS stage_fork_input_id,
+                  input.source_stage_execution_id,
+                  input.source_stage_run_unit_id,
+                  input.source_deliverable_submission_id,
+                  input.source_handoff_id,
+                  source_unit.generation AS source_generation,
+                  input.source_evidence_ids
+             FROM operation_org_scope_units AS scope_unit
+             JOIN operation_stage_fork_inputs AS input
+               ON input.operation_id=$1
+              AND input.target_scope_snapshot_id=scope_unit.snapshot_id
+              AND input.organization_id=scope_unit.organization_id
+              AND input.source_stage_kind='vuln_triage'
+             JOIN operation_stage_fork_inputs AS enumeration_input
+               ON enumeration_input.operation_id=input.operation_id
+              AND enumeration_input.source_operation_id=input.source_operation_id
+              AND enumeration_input.organization_id=input.organization_id
+              AND enumeration_input.source_stage_kind='enumeration'
+             JOIN operation_state AS source_operation
+               ON source_operation.operation_id=input.source_operation_id
+              AND source_operation.superseded_by IS NULL
+             JOIN stage_run_units AS source_unit
+               ON source_unit.id=input.source_stage_run_unit_id
+              AND source_unit.operation_id=input.source_operation_id
+              AND source_unit.stage_execution_id=input.source_stage_execution_id
+              AND source_unit.organization_id=input.organization_id
+              AND source_unit.stage_kind='vuln_triage'
+              AND source_unit.status='passed'
+              AND source_unit.terminal_at IS NOT NULL
+             JOIN stage_handoffs AS source_handoff
+               ON source_handoff.id=input.source_handoff_id
+              AND source_handoff.operation_id=input.source_operation_id
+              AND source_handoff.invalidated_at IS NULL
+             JOIN stage_handoffs AS enumeration_handoff
+               ON enumeration_handoff.id=enumeration_input.source_handoff_id
+              AND enumeration_handoff.operation_id=enumeration_input.source_operation_id
+              AND enumeration_handoff.invalidated_at IS NULL
+            WHERE scope_unit.snapshot_id=$2
+            ORDER BY scope_unit.ordinal,scope_unit.organization_id
+            FOR SHARE OF input,enumeration_input,source_operation,source_unit,
+                         source_handoff,enumeration_handoff"#,
+    )
+    .bind(operation_id)
+    .bind(scope_snapshot_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    if entries.len() != scope_units.len() {
+        return Err(authority_conflict(
+            "attack_wave_fork_predecessor_scope_mismatch",
+        ));
+    }
+    let predecessor_stage_execution_id = entries
+        .first()
+        .map(|entry| entry.source_stage_execution_id)
+        .ok_or_else(|| authority_conflict("attack_wave_fork_predecessor_missing"))?;
+    let predecessor_generation = entries
+        .first()
+        .map(|entry| entry.source_generation)
+        .ok_or_else(|| authority_conflict("attack_wave_fork_predecessor_missing"))?;
+    let mut units = Vec::with_capacity(entries.len());
+    for (scope_unit, entry) in scope_units.iter().zip(entries) {
+        if entry.organization_id != scope_unit.organization_id
+            || entry.ordinal != scope_unit.ordinal
+            || entry.source_generation != predecessor_generation
+            || entry.source_stage_execution_id != predecessor_stage_execution_id
+            || entry.source_evidence_ids.is_empty()
+        {
+            return Err(authority_conflict("attack_wave_fork_predecessor_mismatch"));
+        }
+        units.push(InitialAttackWaveUnitAuthority {
+            operation_id,
+            scope_snapshot_id,
+            organization_id: entry.organization_id,
+            ordinal: entry.ordinal,
+            entry: AttackWaveEntry::ForkedVulnHandoff {
+                stage_fork_input_id: entry.stage_fork_input_id,
+            },
+            handoff_id: entry.source_handoff_id,
+            evidence_ids: entry.source_evidence_ids,
+        });
+        let _ = (
+            entry.source_stage_run_unit_id,
+            entry.source_deliverable_submission_id,
+        );
     }
     Ok(AttackWaveAuthority::Initial(InitialAttackWaveAuthority {
         operation_id,
@@ -718,6 +873,17 @@ fn current_unit_state(unit: &AttackWaveUnitRow) -> crate::Result<CurrentAttackWa
             None,
             None,
             AttackWaveEntry::VulnTriageHandoff { .. },
+        )
+        | (
+            "open",
+            false,
+            false,
+            "pending",
+            None,
+            None,
+            None,
+            None,
+            AttackWaveEntry::ForkedVulnHandoff { .. },
         ) => Ok(CurrentAttackWaveUnitState::AwaitingManifest),
         (
             "open" | "reasoning" | "review" | "verification",
@@ -882,6 +1048,109 @@ pub async fn open_from_vuln_triage_handoff(
         return Err(crate::DbError::Other(anyhow::anyhow!(
             "attack wave-unit replay drift"
         )));
+    }
+    Ok((wave, unit))
+}
+
+pub async fn open_from_stage_fork_input(
+    tx: &mut Transaction<'_, Postgres>,
+    input: &OpenAttackWaveForkUnit,
+) -> crate::Result<(AttackWaveRunRow, AttackWaveUnitRow)> {
+    if input.generation != 0
+        || input.ordinal < 0
+        || input.policy_hash.trim().is_empty()
+        || !input.policy_snapshot.is_object()
+    {
+        return Err(authority_conflict("invalid_attack_wave_fork_entry_request"));
+    }
+    let wave_insert = format!(
+        "INSERT INTO attack_wave_runs(
+             id,operation_id,scope_snapshot_id,generation,status,policy_snapshot,policy_hash,
+             max_waves,max_candidates_total,max_chain_depth,max_attempts_total)
+         VALUES($1,$2,$3,$4,'open',$5,$6,$7,$8,$9,$10)
+         ON CONFLICT(operation_id,generation) DO NOTHING RETURNING {WAVE_COLUMNS}"
+    );
+    let inserted_wave = sqlx::query_as::<_, AttackWaveRunRow>(&wave_insert)
+        .bind(input.wave_run_id)
+        .bind(input.operation_id)
+        .bind(input.scope_snapshot_id)
+        .bind(input.generation)
+        .bind(&input.policy_snapshot)
+        .bind(&input.policy_hash)
+        .bind(input.max_waves)
+        .bind(input.max_candidates_total)
+        .bind(input.max_chain_depth)
+        .bind(input.max_attempts_total)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let wave = match inserted_wave {
+        Some(row) => row,
+        None => {
+            let sql = format!(
+                "SELECT {WAVE_COLUMNS} FROM attack_wave_runs
+                 WHERE operation_id=$1 AND generation=$2 FOR UPDATE"
+            );
+            sqlx::query_as(&sql)
+                .bind(input.operation_id)
+                .bind(input.generation)
+                .fetch_one(&mut **tx)
+                .await?
+        }
+    };
+    if wave.id != input.wave_run_id
+        || wave.scope_snapshot_id != input.scope_snapshot_id
+        || wave.policy_snapshot != input.policy_snapshot
+        || wave.policy_hash != input.policy_hash
+        || wave.max_waves != input.max_waves
+        || wave.max_candidates_total != input.max_candidates_total
+        || wave.max_chain_depth != input.max_chain_depth
+        || wave.max_attempts_total != input.max_attempts_total
+    {
+        return Err(authority_conflict("attack_wave_fork_replay_drift"));
+    }
+    let unit_insert = format!(
+        "INSERT INTO attack_wave_units(
+             id,wave_run_id,operation_id,scope_snapshot_id,organization_id,
+             entry_stage_fork_input_id,ordinal,status)
+         VALUES($1,$2,$3,$4,$5,$6,$7,'open')
+         ON CONFLICT(wave_run_id,organization_id) DO NOTHING RETURNING {UNIT_COLUMNS}"
+    );
+    let inserted_unit = sqlx::query_as::<_, AttackWaveUnitDbRow>(&unit_insert)
+        .bind(input.wave_unit_id)
+        .bind(input.wave_run_id)
+        .bind(input.operation_id)
+        .bind(input.scope_snapshot_id)
+        .bind(input.organization_id)
+        .bind(input.stage_fork_input_id)
+        .bind(input.ordinal)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let unit = match inserted_unit {
+        Some(row) => decode_wave_unit(row)?,
+        None => {
+            let sql = format!(
+                "SELECT {UNIT_COLUMNS} FROM attack_wave_units
+                 WHERE wave_run_id=$1 AND organization_id=$2 FOR UPDATE"
+            );
+            decode_wave_unit(
+                sqlx::query_as::<_, AttackWaveUnitDbRow>(&sql)
+                    .bind(input.wave_run_id)
+                    .bind(input.organization_id)
+                    .fetch_one(&mut **tx)
+                    .await?,
+            )?
+        }
+    };
+    let expected_entry = AttackWaveEntry::ForkedVulnHandoff {
+        stage_fork_input_id: input.stage_fork_input_id,
+    };
+    if unit.id != input.wave_unit_id
+        || unit.operation_id != input.operation_id
+        || unit.scope_snapshot_id != input.scope_snapshot_id
+        || unit.entry != expected_entry
+        || unit.ordinal != input.ordinal
+    {
+        return Err(authority_conflict("attack_wave_fork_unit_replay_drift"));
     }
     Ok((wave, unit))
 }

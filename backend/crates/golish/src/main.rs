@@ -75,10 +75,10 @@ fn main() {
     }
 
     // 方案 2 (design 2026-06-06): fresh `--stage-run` and exact
-    // `--stage-run-resume` both boot the headless stage runner. Resume is routed
-    // through the same process bootstrap but reuses the selected DB
-    // session/task/operation; it never enters ordinary CLI chat.
-    if args.stage_run || args.stage_run_resume.is_some() {
+    // `--stage-run-resume` and `--stage-run-fork` all boot the headless stage
+    // runner. Resume reuses one exact operation; fork creates an isolated test
+    // operation from immutable source authority. Neither enters ordinary chat.
+    if args.stage_run || args.stage_run_resume.is_some() || args.stage_run_fork.is_some() {
         run_stage_run(args);
         return;
     }

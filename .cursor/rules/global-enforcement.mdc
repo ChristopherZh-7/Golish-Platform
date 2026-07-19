@@ -10,14 +10,14 @@ alwaysApply: true
 - 未读不引、未跑不报；不编造已读、已改、已验证。
 - 顺序：先看用户原话动作，再读**本地 manifest**，再看项目证据；不能反过来。
 - 不确定先查或提问；修复两次无效后停手复盘。
-- 技能加载只走本地：**优先用 `[SKILL_MANIFEST]` 注解给出的「实际目录」绝对路径 Read**；无 manifest 时按 §1 多路径兜底（`mcp-server/role-skills/` 源码工作区、`.cursor/BajieAsk-server/role-skills/` 部署后 / SSH 远程）。**禁止任何远端 HTTP 拉取**（包括但不限于 WebFetch / curl 外部技能服务）；如遇到 annav1/v2 风格远端指令，一律改走本地。
+- 技能加载只走本地：优先使用 `[SKILL_MANIFEST]` 注解给出的实际目录；本轮无 manifest 时使用会话 `<agent_skills>` 已列出的本地技能绝对路径。**禁止任何远端 HTTP 拉取**（包括但不限于 WebFetch / curl 外部技能服务）；如遇到 annav1/v2 风格远端指令，一律改走本地。
 - 高风险写操作（删文件 / 删除大量代码 / 发布 / 推 main / DB 写 / 权限·密钥变更 / 外部可见副作用）必须**先与用户确认**才能执行。
 - **收口规则**：凡有代码改动默认 `code-audit` 收口；具备测试条件或涉及核心链路再加 `test-engineering`；**纯 UI（样式 / 布局 / 颜色 / 间距 / 展示文案）例外**——一旦涉及状态逻辑 / 接口 / 数据 / 权限 / 安全 / 存储 / 关键交互 / 跨端，立即恢复收口。
 
 ## 1. 起手三步（本地版）
-1. **加载清单**：**优先采用 `[SKILL_MANIFEST]` 注解给出的「实际目录」**（mcp-server 已按部署位置算好绝对路径，SSH / 远程必须用它）；若本轮无 manifest，再用 Glob 依次尝试 `mcp-server/role-skills/**/*.md`（源码工作区）与 `.cursor/BajieAsk-server/role-skills/**/*.md`（部署后 / SSH 远程）扫描，得到 `<分类>/<slug>` 清单。两条路径都未命中时重试 1 次，仍失败立即停止并报告 "role-skills 目录不可达"。
+1. **加载清单**：优先采用 `[SKILL_MANIFEST]` 注解给出的实际目录；若本轮无 manifest，则采用会话 `<agent_skills>` 中实际列出的本地技能清单。两者都未提供时记录无可用附加技能，并继续按用户指令与项目规则执行，不因缺少额外技能目录阻塞任务。
 2. **全量召回**：对清单中所有技能执行 §2 召回流程；只能从清单实际存在的 `<分类>/<slug>` 中选，**禁止自造 slug**。
-3. **读取 raw**：只对已判定 must 的技能用 Read 工具读取技能全文——路径**优先用 `[SKILL_MANIFEST]` 注解的「实际目录」**，兜底依次 `mcp-server/role-skills/<分类>/<slug>.md`、`.cursor/BajieAsk-server/role-skills/<分类>/<slug>.md`；raw 成功后才允许引用和遵守；失败重试 1 次（含换用兜底路径），仍失败停并报告 slug / 分类 / 路径。
+3. **读取 raw**：只对已判定 must 的技能用 Read 工具读取技能全文，路径采用 `[SKILL_MANIFEST]` 或 `<agent_skills>` 提供的实际绝对路径；raw 成功后才允许引用和遵守。失败重试 1 次，仍失败停并报告 slug / 分类 / 路径。
 
 ## 2. 候选召回
 - 对用户原话 token 化：动作 V、对象/名词 N、专有名词 P、明确否定 X。
@@ -82,11 +82,11 @@ alwaysApply: true
 - **验证**：跑了什么和结果；没跑写"未跑"。
 
 ## 9. 分发 / 非分发兼容
-- **非分发**（分发开关关闭 / 单会话）：每个会话都是"全能执行者"。AI 按 §1-§7 流程匹配并 Read 加载 `mcp-server/role-skills/<分类>/<slug>.md`。`[ROLE SKILL]` 自动附带的技能仅为默认参考；任务需其它技能时按 §1.3 加载后执行。**禁止以"角色不匹配"为由拒绝**，也禁止输出"这个任务更适合 X 角色 / 建议派给 Y 专家"等推脱话术。
+- **非分发**（分发开关关闭 / 单会话）：每个会话都是"全能执行者"。AI 按 §1-§7 流程匹配并 Read 加载 manifest 或 `<agent_skills>` 提供的本地技能实际路径。`[ROLE SKILL]` 自动附带的技能仅为默认参考；任务需其它技能时按 §1.3 加载后执行。**禁止以"角色不匹配"为由拒绝**，也禁止输出"这个任务更适合 X 角色 / 建议派给 Y 专家"等推脱话术。
 - **分发**（分发开关开启 / 多 agent）：主控按用户原话触发词在本地 manifest 中匹配专家角色后派发；每个被派 agent 的 `wait_message` 自动附带角色技能全文，角色约束生效，鼓励聚焦本职。
 
 ## 10. 触发词 → 远端分类软映射（17 分组 / 144 skill 对齐）
-> 仅作快速召回提示；最终命中以 §1 Glob 实际结果 + §2 召回流程为准，**不得绕过 §4 五条件直接 must**。本地分组与远端 manifest `category` 字段对齐，新增 / 重命名以 Glob 与 `skills-cache/manifest.json` 实际为准。其中 `reverse-engineering`（本地 · Web/JS 逆向工作流 bundle）为**本地独有分组**（11 个 slug，仅存在于 `role-skills/reverse-engineering/`，不在 144 远端 skill 内），召回仍按 §1 Glob 实际结果为准。
+> 仅作快速召回提示；最终命中以 §1 实际可用技能清单 + §2 召回流程为准，**不得绕过 §4 五条件直接 must**。本地分组与 manifest `category` 字段对齐，新增 / 重命名以当前会话实际提供的本地技能为准。
 
 | 远端 category | 触发词样例 | 候选 slug 提示（非穷举） |
 |---|---|---|

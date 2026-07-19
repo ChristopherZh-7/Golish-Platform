@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { StageAssetCoverageSnapshot } from "@/lib/api/stage-coverage";
 import type { StageTeamReadModel } from "@/lib/api/stage-team";
 import { type StageTeamReadApi, StageTeamRunView } from "./StageTeamRunView";
 
@@ -176,6 +177,161 @@ function addCompanyController(
 }
 
 describe("StageTeamRunView", () => {
+  it("shows DB-authoritative Vuln coverage and separates failed, retry, and operator lanes", async () => {
+    const vuln = model();
+    vuln.stageKind = "vuln_triage";
+    vuln.units[0].stageKind = "vuln_triage";
+    vuln.units[0].specialist = "vuln_scanner";
+    addCompanyController(vuln);
+    const child = vuln.units[0].plan!.workItems[1];
+    const historical = {
+      ...child.workers[0],
+      workerRunId: "worker-history",
+      status: "failed" as const,
+      hasActiveTool: false,
+      activeToolCallId: null,
+      recoveryState: "none",
+      terminalAt: "2026-07-14T00:00:04Z",
+    };
+    child.status = "retry_pending";
+    child.workers[0].generation = 2;
+    child.workers[0].attemptEpoch = 2;
+    child.workers.unshift(historical);
+    vuln.units[0].plan!.workItems.push({
+      ...child,
+      workItemId: "item-recovery",
+      stableKey: "vuln:recovery",
+      status: "recovery_required",
+      workers: [
+        {
+          ...child.workers[1],
+          workerRunId: "worker-recovery",
+          status: "recovery_required",
+          recoveryState: "manual_required",
+        },
+      ],
+    });
+    const coverage: StageAssetCoverageSnapshot = {
+      stage: "vuln_triage",
+      organization_id: "org-1",
+      session_id: "operation-1",
+      summary: {
+        total_assets: 1,
+        seed_assets: 1,
+        new_assets: 0,
+        done_assets: 0,
+        pending_assets: 1,
+        blocked_assets: 0,
+      },
+      assets: [
+        {
+          target_id: "target-1",
+          value: "https://example.test:443",
+          target_type: "url",
+          real_ip: "",
+          source: "enumeration",
+          discovered_phase: "enumeration",
+          created_at: "2026-07-14T00:00:00Z",
+          parent_id: null,
+          coverage: Array.from({ length: 360 }, (_, index) => ({
+            technique: `TECH-${index}`,
+            label: `Technique ${index}`,
+            state: index < 340 ? "checked_empty" : index < 350 ? "partial" : "error",
+            source: "vuln_nuclei_general",
+            evidence_refs: [index + 1],
+            note: null,
+            suggested_tools: [],
+          })),
+        },
+      ],
+    };
+    const api: StageTeamReadApi = {
+      getReadModel: vi.fn().mockResolvedValue(vuln),
+      getCoverage: vi.fn().mockResolvedValue(coverage),
+      resolveRecovery: vi.fn(),
+    };
+
+    render(
+      <StageTeamRunView
+        operationId="operation-1"
+        stageExecutionId="execution-1"
+        api={api}
+      />
+    );
+
+    expect(await screen.findByText("历史 attempt 失败 20 cells")).toBeInTheDocument();
+    expect(screen.getByText("340/360 cells 终态 · 剩余 20")).toBeInTheDocument();
+    expect(screen.getByText("340/360 cells · 剩余 20")).toBeInTheDocument();
+    expect(screen.getByText("当前 retry 1")).toBeInTheDocument();
+    expect(screen.getByText("operator recovery 1")).toBeInTheDocument();
+    expect(api.getCoverage).toHaveBeenCalledWith({
+      operationId: "operation-1",
+      organizationId: "org-1",
+      stage: "vuln_triage",
+      stageStartedAt: "2026-07-14T00:00:00Z",
+    });
+  });
+
+  it("renders Vuln worklist loading, error, and empty states separately", async () => {
+    const vuln = model();
+    vuln.stageKind = "vuln_triage";
+    vuln.units[0].stageKind = "vuln_triage";
+    addCompanyController(vuln);
+    const pending = render(
+      <StageTeamRunView
+        operationId="operation-1"
+        stageExecutionId="execution-1"
+        api={{
+          getReadModel: vi.fn().mockResolvedValue(vuln),
+          getCoverage: vi.fn().mockReturnValue(new Promise(() => undefined)),
+          resolveRecovery: vi.fn(),
+        }}
+      />
+    );
+    expect(await screen.findByText("正在读取 DB worklist")).toBeInTheDocument();
+    pending.unmount();
+
+    const failed = render(
+      <StageTeamRunView
+        operationId="operation-1"
+        stageExecutionId="execution-1"
+        api={{
+          getReadModel: vi.fn().mockResolvedValue(vuln),
+          getCoverage: vi.fn().mockRejectedValue(new Error("coverage unavailable")),
+          resolveRecovery: vi.fn(),
+        }}
+      />
+    );
+    expect(await screen.findByText("worklist 读取失败：coverage unavailable")).toBeInTheDocument();
+    failed.unmount();
+
+    render(
+      <StageTeamRunView
+        operationId="operation-1"
+        stageExecutionId="execution-1"
+        api={{
+          getReadModel: vi.fn().mockResolvedValue(vuln),
+          getCoverage: vi.fn().mockResolvedValue({
+            stage: "vuln_triage",
+            organization_id: "org-1",
+            session_id: "operation-1",
+            summary: {
+              total_assets: 0,
+              seed_assets: 0,
+              new_assets: 0,
+              done_assets: 0,
+              pending_assets: 0,
+              blocked_assets: 0,
+            },
+            assets: [],
+          }),
+          resolveRecovery: vi.fn(),
+        }}
+      />
+    );
+    expect(await screen.findByText("DB worklist 暂无 cells")).toBeInTheDocument();
+  });
+
   it("renders Unit to Plan to WorkItem to Worker and Request/Barrier from DB truth", async () => {
     const controllerModel = model();
     addCompanyController(controllerModel);
@@ -201,6 +357,8 @@ describe("StageTeamRunView", () => {
     expect(screen.queryByText(/schema stage_worker_output.v1/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "展开调度详情" }));
     expect(screen.getByText("Plan v1")).toBeInTheDocument();
+    expect(screen.getByText("2 active workers max")).toBeInTheDocument();
+    expect(screen.queryByText("2 active / 4 total")).not.toBeInTheDocument();
     expect(screen.getByText("intel_provider")).toBeInTheDocument();
     expect(screen.getByText(/Worker worker-1/)).toBeInTheDocument();
     expect(screen.getByText(/Barrier waiting/)).toBeInTheDocument();

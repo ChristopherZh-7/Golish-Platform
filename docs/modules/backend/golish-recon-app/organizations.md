@@ -43,6 +43,7 @@
 - `grp` 字符串分级（§S1）兼容保留作回退；新 target 直接关联 `organization_id`。
 - 树形 `parent_id` 自引用：删/移组织注意级联与环检测。
 - `organization_delete` 只经 Cleanup `OrganizationDeletionPort` 提交 active workspace witness 与 DB precheck/invalidation job；DB 从 server-owned project scope 冻结 canonical root，不信 target snapshot/caller path。不再直接删文件或 live rows。`DbBackedOrganizationArtifactCleaner` 对 canonical root/namespace/host dir 做 symlink-escape 检查，只消费 committed frozen snapshot；sitemap prune 使用 project-scoped JSON CAS 防并发丢数据，hard delete 由 DB-global Cleanup worker 的后续事务完成。
+- Cleanup 返回 active stage-fork conflict 时，`organization_delete` 必须映射成 `GolishError::OrganizationDeletionActiveStageFork`；其它 Cleanup 错误仍保持内部错误边界，不能靠解析错误文本分支。
 - **不变量 I2**：组织 CRUD 验所有权（IDOR）。
 - `OrganizationCandidate.id` 是 wire 必填；已有 direct child 会在 `organization_candidates_list` 中合成为 `existing-org:<uuid>`，并显式携带 `organization_id`。editable name 不能用于恢复或重算身份。
 

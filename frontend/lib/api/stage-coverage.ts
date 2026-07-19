@@ -6,6 +6,7 @@ export type { StageAssetCoverageSnapshot } from "@/lib/generated/StageAssetCover
 export interface GetStageAssetCoverageArgs {
   organizationId: string;
   stage: string;
+  operationId?: string | null;
   sessionId?: string | null;
   stageStartedAt?: string | null;
 }
@@ -13,12 +14,14 @@ export interface GetStageAssetCoverageArgs {
 export async function getStageAssetCoverage({
   organizationId,
   stage,
+  operationId,
   sessionId,
   stageStartedAt,
 }: GetStageAssetCoverageArgs): Promise<StageAssetCoverageSnapshot> {
   return invoke<StageAssetCoverageSnapshot>("ai_get_stage_asset_coverage", {
     organizationId,
     stage,
+    operationId: operationId ?? null,
     sessionId: sessionId ?? null,
     stageStartedAt: stageStartedAt ?? null,
   });

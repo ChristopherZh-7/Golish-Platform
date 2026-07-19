@@ -474,6 +474,179 @@ async fn exact_execution_decision_uses_ordered_stable_ids_and_ignores_cross_oper
 
 #[tokio::test]
 #[serial]
+async fn scoping_passive_recon_authorization_and_scope_derivation_follow_latest_same_root_choice() {
+    let mut fixture = ScopeFixture::start("latest-choice").await;
+    fixture
+        .install_included_lifecycle("cand-child", fixture.child_id)
+        .await;
+
+    assert!(
+        operation_scope_decisions::scoping_passive_recon_organization_authorized(
+            fixture.db.pool(),
+            fixture.operation_id,
+            fixture.stage_execution_id,
+            fixture.root_id,
+        )
+        .await
+        .expect("query included-choice passive recon authorization"),
+        "the exact included choice authorizes passive subsidiary evidence for its root"
+    );
+    assert!(
+        !operation_scope_decisions::scoping_passive_recon_organization_authorized(
+            fixture.db.pool(),
+            fixture.operation_id,
+            fixture.stage_execution_id,
+            fixture.foreign_root_id,
+        )
+        .await
+        .expect("query foreign-root passive recon authorization"),
+        "a model-supplied foreign root must never inherit the exact choice"
+    );
+
+    let latest_choice = fixture
+        .insert_call(
+            fixture.operation_id,
+            fixture.stage_execution_id,
+            fixture.session_id,
+            50,
+            "ask_human",
+            serde_json::json!({
+                "input_type": "choice",
+                "context": serde_json::json!({
+                    "decision": "subsidiary_scope",
+                    "organization_id": fixture.root_id
+                }).to_string()
+            }),
+            serde_json::json!({"response":"root only","skipped":false}),
+        )
+        .await;
+
+    assert!(
+        !operation_scope_decisions::scoping_passive_recon_organization_authorized(
+            fixture.db.pool(),
+            fixture.operation_id,
+            fixture.stage_execution_id,
+            fixture.root_id,
+        )
+        .await
+        .expect("query latest root-only passive recon authorization"),
+        "the latest explicit root-only choice revokes passive subsidiary discovery authorization"
+    );
+    let decision =
+        operation_scope_decisions::derive_exact(fixture.db.pool(), &decision_input(&fixture))
+            .await
+            .expect("latest same-root choice should deterministically derive scope");
+    assert_eq!(
+        decision.mode,
+        operation_scope_decisions::ScopeDecisionMode::RootOnly
+    );
+    assert_eq!(decision.choice_tool_call_id, Some(latest_choice));
+    assert_eq!(
+        decision
+            .units
+            .iter()
+            .map(|unit| unit.organization_id)
+            .collect::<Vec<_>>(),
+        vec![fixture.root_id]
+    );
+
+    fixture.db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn included_choice_with_empty_current_protocol_review_derives_checked_empty_root_unit_set() {
+    let mut fixture = ScopeFixture::start("empty-included").await;
+    let choice = fixture
+        .insert_call(
+            fixture.operation_id,
+            fixture.stage_execution_id,
+            fixture.session_id,
+            10,
+            "ask_human",
+            serde_json::json!({
+                "input_type": "choice",
+                "context": serde_json::json!({
+                    "decision": "subsidiary_scope",
+                    "organization_id": fixture.root_id
+                }).to_string()
+            }),
+            serde_json::json!({"response":"include subsidiaries","skipped":false}),
+        )
+        .await;
+    let proposal = fixture
+        .insert_call(
+            fixture.operation_id,
+            fixture.stage_execution_id,
+            fixture.session_id,
+            20,
+            "manage_organizations",
+            serde_json::json!({
+                "action": "propose_candidates",
+                "organization_id": fixture.root_id,
+                "candidates": []
+            }),
+            serde_json::json!({
+                "action":"propose_candidates",
+                "organization_id":fixture.root_id,
+                "recorded":0
+            }),
+        )
+        .await;
+    let review = fixture
+        .insert_call(
+            fixture.operation_id,
+            fixture.stage_execution_id,
+            fixture.session_id,
+            30,
+            "ask_human",
+            serde_json::json!({
+                "input_type":"unit_review",
+                "context":serde_json::json!({"organization_id":fixture.root_id}).to_string()
+            }),
+            serde_json::json!({
+                "response": serde_json::json!({"rows":[]}).to_string(),
+                "skipped": false
+            }),
+        )
+        .await;
+
+    assert!(
+        operation_scope_decisions::scoping_passive_recon_organization_authorized(
+            fixture.db.pool(),
+            fixture.operation_id,
+            fixture.stage_execution_id,
+            fixture.root_id,
+        )
+        .await
+        .expect("query exact empty subsidiary discovery authorization")
+    );
+    let decision =
+        operation_scope_decisions::derive_exact(fixture.db.pool(), &decision_input(&fixture))
+            .await
+            .expect("derive an included-but-checked-empty scope decision");
+    assert_eq!(
+        decision.mode,
+        operation_scope_decisions::ScopeDecisionMode::Included
+    );
+    assert_eq!(decision.choice_tool_call_id, Some(choice));
+    assert_eq!(decision.proposal_tool_call_id, Some(proposal));
+    assert_eq!(decision.review_tool_call_id, Some(review));
+    assert_eq!(
+        decision
+            .units
+            .iter()
+            .map(|unit| unit.organization_id)
+            .collect::<Vec<_>>(),
+        vec![fixture.root_id],
+        "zero qualifying subsidiaries is checked-empty, not an absent review"
+    );
+
+    fixture.db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn candidate_and_foreign_organization_rebinding_fail_without_snapshot() {
     for (label, candidate_id, mapped_organization) in [
         ("foreign-candidate", "cand-from-another-root", None),

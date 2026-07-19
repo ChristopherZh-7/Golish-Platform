@@ -4,6 +4,7 @@ import type { AuditRow, TimelineEntry } from "@/lib/security-analysis";
 import { EmptyInline, Section } from "../SurfaceParts";
 import { parseWebOrigin, type SurfaceHierarchyVM, type WebOriginVM } from "../surfaceHierarchy";
 import { formatTime } from "../surfaceModel";
+import { parseWhatWebTransportEvidence } from "../whatWebAssessment";
 
 function stringDetail(detail: Record<string, unknown>, keys: string[]): string | null {
   for (const key of keys) {
@@ -11,57 +12,6 @@ function stringDetail(detail: Record<string, unknown>, keys: string[]): string |
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return null;
-}
-
-type WhatWebTransportEvidence = {
-  attempt: number;
-  failureClass: string;
-  producerOutcome: "error" | "blocked";
-  independentlyConfirmed: boolean;
-  subject: string | null;
-};
-
-function recordValue(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function whatWebTransportEvidence(
-  detail: Record<string, unknown>
-): WhatWebTransportEvidence | null {
-  if (detail.kind !== "eas.fingerprint_web_stack" || typeof detail.raw_output !== "string") {
-    return null;
-  }
-
-  let raw: Record<string, unknown> | null = null;
-  try {
-    raw = recordValue(JSON.parse(detail.raw_output));
-  } catch {
-    return null;
-  }
-  if (!raw) return null;
-
-  const failureClass = stringDetail(raw, ["failure_class"]);
-  const producerOutcome = stringDetail(raw, ["producer_outcome"]);
-  const attempt = raw.attempt;
-  if (
-    !failureClass ||
-    (producerOutcome !== "error" && producerOutcome !== "blocked") ||
-    typeof attempt !== "number" ||
-    !Number.isInteger(attempt) ||
-    attempt < 1
-  ) {
-    return null;
-  }
-
-  return {
-    attempt,
-    failureClass,
-    producerOutcome,
-    independentlyConfirmed: raw.independently_confirmed === true,
-    subject: stringDetail(detail, ["subject"]),
-  };
 }
 
 function originFromCapturePath(
@@ -105,7 +55,7 @@ function evidenceOrigin(
 }
 
 function WhatWebTransportStatus({ detail }: { detail: Record<string, unknown> }) {
-  const evidence = whatWebTransportEvidence(detail);
+  const evidence = parseWhatWebTransportEvidence(detail);
   if (!evidence) return null;
 
   const stopped = evidence.producerOutcome === "blocked" && evidence.attempt >= 3;
@@ -132,9 +82,10 @@ function WhatWebTransportStatus({ detail }: { detail: Record<string, unknown> })
           {evidence.failureClass}
         </span>
       </div>
-      {stopped && evidence.independentlyConfirmed && evidence.subject && (
+      {stopped && evidence.independentlyConfirmed && (
         <p className="mt-1 font-mono text-[9px] text-amber-200">
-          Excluded exact origin from Enumeration: {evidence.subject}
+          Independent transport check also blocked: {evidence.origin}. Enumeration revalidates
+          exact-origin eligibility before exclusion.
         </p>
       )}
     </div>

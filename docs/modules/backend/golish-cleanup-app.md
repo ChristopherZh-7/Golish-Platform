@@ -46,6 +46,7 @@
 - exact replay 不得追加 evidence 或改变 resource/strategy/deadline。
 - Cleanup Tool 只接受 obligation id；execute/absence 在没有 typed executor/verifier 时 fail closed，waiver tool 只能建议。
 - 组织删除固定为 invalidation deliveries → artifact cleanup lease → 独立 hard-delete transaction；不得在 request transaction 做文件 I/O。每个 invalidation 冻结 event-catalog projector manifest，manifest 外后来新增的 pending projector 不得反向阻塞；artifact/hard-delete 失败写 durable retry-not-before，claim 只选已到期 job 并按 requested time 公平排序，不能让最老失败 job hot-loop 饿死其它 ready job。
+- `OrganizationDeletionPort::request_organization_deletion` 会把 DB 的 active stage-fork admission conflict 保留为 typed `CleanupError`；上层可直接指导用户先终止阶段任务，不能先创建 deletion job、清理 artifact 后才依赖 hard-delete trigger 失败。
 - P2 repo 暂保留兼容字段 `target_live_id`；migration trigger 原子双写 authoritative `target_id_at_time` / nullable `live_target_id` / canonical snapshot，并用约束保证两个 live alias 只能指向同一 at-time target。
 
 ## 测试入口

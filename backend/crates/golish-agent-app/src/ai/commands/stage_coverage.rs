@@ -163,6 +163,12 @@ struct TechniqueOutcomeProjectionRow {
 }
 
 #[derive(Debug, FromRow)]
+struct VulnAttemptEvidenceDetailRow {
+    id: i64,
+    raw_output: String,
+}
+
+#[derive(Debug, FromRow)]
 struct SourceQueryProjectionRow {
     source: String,
     target: String,
@@ -229,6 +235,7 @@ pub async fn ai_get_stage_asset_coverage(
     state: State<'_, AgentState>,
     organization_id: String,
     stage: String,
+    operation_id: Option<String>,
     session_id: Option<String>,
     stage_started_at: Option<String>,
 ) -> Result<StageAssetCoverageSnapshot, GolishError> {
@@ -236,6 +243,39 @@ pub async fn ai_get_stage_asset_coverage(
         .map_err(|e| GolishError::Validation(format!("invalid organization_id: {e}")))?;
     let stage_kind = StageKind::try_parse(&stage)
         .ok_or_else(|| GolishError::Validation(format!("unknown stage: {stage}")))?;
+    let operation_id = operation_id
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|e| GolishError::Validation(format!("invalid operation_id: {e}")))?;
+    if let Some(operation_id) = operation_id {
+        let authorized: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                 SELECT 1
+                 FROM operation_state AS operation
+                 JOIN operation_org_scope_snapshots AS snapshot
+                   ON snapshot.operation_id=operation.operation_id
+                  AND snapshot.sealed_at IS NOT NULL
+                 JOIN operation_org_scope_units AS unit
+                   ON unit.snapshot_id=snapshot.id
+                  AND unit.organization_id=$2
+                 WHERE operation.operation_id=$1
+                   AND operation.superseded_by IS NULL
+                   AND operation.current_stage=$3
+               )"#,
+        )
+        .bind(operation_id)
+        .bind(org_id)
+        .bind(stage_kind.as_str())
+        .fetch_one(state.db_pool.as_ref())
+        .await
+        .map_err(GolishError::from)?;
+        if !authorized {
+            return Err(GolishError::Validation(
+                "operation is not the active exact stage/org authority".to_string(),
+            ));
+        }
+    }
     let run_start = parse_rfc3339_utc(stage_started_at.as_deref());
 
     stage_asset_coverage_snapshot(
@@ -247,7 +287,7 @@ pub async fn ai_get_stage_asset_coverage(
         None,
         None,
         ui_allows_latest_outcome_fallback(stage_kind, session_id.as_deref()),
-        None,
+        operation_id,
     )
     .await
     .map_err(GolishError::from)
@@ -364,6 +404,27 @@ pub(crate) async fn stage_asset_coverage_snapshot(
             &inherited_origins,
         )?;
     }
+    let vuln_surface_summaries = if stage_kind == StageKind::VulnTriage {
+        let operation_id = operation_id.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Vuln coverage requires an exact active operation identity; latest-run fallback is forbidden"
+            )
+        })?;
+        golish_db::repo::enumeration_surface_manifest::summarize_operation_surfaces(
+            pool,
+            operation_id,
+            org_id,
+        )
+        .await?
+        .into_iter()
+        .filter_map(|row| {
+            golish_pentest_domain::canonical_web_origin(&row.origin)
+                .map(|origin| (origin.key, row.summary()))
+        })
+        .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
     let current_assets: Vec<&TargetCoverageRow> = assets
         .iter()
         .filter(|asset| {
@@ -438,6 +499,11 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         allow_latest_outcome_fallback,
     )
     .await?;
+    let vuln_attempt_details = if stage_kind == StageKind::VulnTriage {
+        load_vuln_attempt_evidence_details(pool, &outcomes).await?
+    } else {
+        BTreeMap::new()
+    };
     let eas_web_origins = if stage_kind == StageKind::ExternalAttackSurface {
         load_eas_web_origin_coverage(
             pool,
@@ -485,6 +551,23 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         };
         if !next_wave {
             apply_eas_web_origin_details(stage_kind, &asset, &mut coverage, &eas_web_origins);
+            if stage_kind == StageKind::VulnTriage {
+                let origin = golish_pentest_domain::canonical_web_origin(&asset.value)
+                    .map(|origin| origin.key)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Vuln surface row is not a canonical exact origin: {}",
+                            asset.value
+                        )
+                    })?;
+                let summary = vuln_surface_summaries.get(&origin).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "final-sealed Enumeration origin {origin} has no owned surface identity row"
+                    )
+                })?;
+                apply_vuln_surface_applicability(&mut coverage, summary);
+                apply_vuln_attempt_evidence_details(&mut coverage, &vuln_attempt_details);
+            }
         }
         if next_wave && counts_as_asset {
             if current_wave.is_none() {
@@ -543,6 +626,45 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         assets: rows,
         eas_transport_excluded_origins,
     })
+}
+
+fn apply_vuln_surface_applicability(
+    cells: &mut [StageAssetCoverageCell],
+    summary: &golish_db::repo::enumeration_surface_manifest::OriginSurfaceSummary,
+) {
+    for cell in cells {
+        let reason = match cell.technique.as_str() {
+            "WSTG-INPV-05" | "WSTG-INPV-01" | "WSTG-INPV-12"
+                if summary.executable_query_endpoint_count == 0
+                    || summary.query_parameter_count == 0 =>
+            {
+                Some("Enumeration found no executable GET query parameter on this exact origin")
+            }
+            "WSTG-ATHN-04" if summary.endpoint_count == 0 => {
+                Some("Enumeration published no HTTP endpoint for anonymous-access review on this exact origin")
+            }
+            "GOLISH-NDAY" if summary.fingerprint_count == 0 => {
+                Some("EAS published no fingerprint bound to this exact origin")
+            }
+            _ => None,
+        };
+        let Some(reason) = reason else {
+            continue;
+        };
+        cell.state = "not_applicable".to_string();
+        cell.source = Some("enumeration_surface_manifest".to_string());
+        cell.evidence_refs.clear();
+        cell.note = Some(reason.to_string());
+        cell.suggested_capabilities.clear();
+        cell.suggested_tools.clear();
+        cell.details = serde_json::json!({
+            "authority": "enumeration_surface_manifest",
+            "endpoint_count": summary.endpoint_count,
+            "executable_query_endpoint_count": summary.executable_query_endpoint_count,
+            "query_parameter_count": summary.query_parameter_count,
+            "fingerprint_count": summary.fingerprint_count,
+        });
+    }
 }
 
 async fn load_eas_web_origin_coverage(
@@ -1186,6 +1308,68 @@ async fn latest_technique_outcomes(
             .fetch_all(pool)
             .await?,
     )
+}
+
+async fn load_vuln_attempt_evidence_details(
+    pool: &sqlx::PgPool,
+    outcomes: &BTreeMap<(String, String), OutcomeProjection>,
+) -> anyhow::Result<BTreeMap<i64, serde_json::Value>> {
+    let mut evidence_ids = outcomes
+        .values()
+        .flat_map(|outcome| outcome.evidence_refs.iter().copied())
+        .filter(|id| *id > 0)
+        .collect::<Vec<_>>();
+    evidence_ids.sort_unstable();
+    evidence_ids.dedup();
+    if evidence_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let rows = sqlx::query_as::<_, VulnAttemptEvidenceDetailRow>(
+        r#"SELECT id, detail->>'raw_output' AS raw_output
+           FROM audit_log
+           WHERE audit_role='evidence' AND id = ANY($1::bigint[])
+             AND tool_name IN ('vuln_nuclei_general','vuln_nuclei_fingerprint_targeted')
+             AND detail->>'raw_output' IS NOT NULL"#,
+    )
+    .bind(&evidence_ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let raw = serde_json::from_str::<serde_json::Value>(&row.raw_output).ok()?;
+            Some((
+                row.id,
+                serde_json::json!({
+                    "attempt_generation": raw.get("attempt_generation"),
+                    "attempt_ordinal": raw.get("attempt_ordinal"),
+                    "automatic_retry_allowed": raw.get("automatic_retry_allowed"),
+                    "failure_owner": raw.get("failure_owner"),
+                    "failure_class": raw.get("failure_class"),
+                }),
+            ))
+        })
+        .collect())
+}
+
+fn apply_vuln_attempt_evidence_details(
+    coverage: &mut [StageAssetCoverageCell],
+    details_by_evidence: &BTreeMap<i64, serde_json::Value>,
+) {
+    for cell in coverage {
+        if !matches!(cell.state.as_str(), "partial" | "error" | "blocked") {
+            continue;
+        }
+        let Some(details) = cell
+            .evidence_refs
+            .iter()
+            .rev()
+            .find_map(|evidence_id| details_by_evidence.get(evidence_id))
+        else {
+            continue;
+        };
+        cell.details = details.clone();
+    }
 }
 
 async fn latest_source_query_rows(
@@ -3054,6 +3238,55 @@ mod tests {
                 golish_db::repo::coverage_truth::TECH_ENUM_JS,
             ),
             "https://app.example.com:443"
+        );
+    }
+
+    #[test]
+    fn vuln_surface_manifest_marks_only_inapplicable_surface_classes() {
+        let mut cells = techniques_for_stage(StageKind::VulnTriage)
+            .into_iter()
+            .map(|technique| cell(technique, "pending", None, Vec::new(), None))
+            .collect::<Vec<_>>();
+        apply_vuln_surface_applicability(
+            &mut cells,
+            &golish_db::repo::enumeration_surface_manifest::OriginSurfaceSummary {
+                endpoint_count: 3,
+                executable_query_endpoint_count: 0,
+                query_parameter_count: 0,
+                fingerprint_count: 0,
+            },
+        );
+
+        for technique in [
+            "WSTG-INPV-05",
+            "WSTG-INPV-01",
+            "WSTG-INPV-12",
+            "GOLISH-NDAY",
+        ] {
+            let cell = cells
+                .iter()
+                .find(|cell| cell.technique == technique)
+                .expect("Vuln technique cell");
+            assert_eq!(cell.state, "not_applicable");
+            assert_eq!(cell.source.as_deref(), Some("enumeration_surface_manifest"));
+        }
+        assert_eq!(
+            cells
+                .iter()
+                .find(|cell| cell.technique == "WSTG-ATHN-04")
+                .expect("anonymous cell")
+                .state,
+            "pending",
+            "published endpoints keep anonymous review applicable"
+        );
+        assert_eq!(
+            cells
+                .iter()
+                .find(|cell| cell.technique == "WSTG-CONF-05")
+                .expect("baseline cell")
+                .state,
+            "pending",
+            "root-origin baseline techniques remain applicable"
         );
     }
 

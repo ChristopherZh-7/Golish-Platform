@@ -24,7 +24,7 @@ Nuclei 的执行、解析与 evidence landing 由 `golish-pentest-app` 的 stage
 | 符号 | 说明 |
 |---|---|
 | `run_whatweb` / `WhatWebOptions` | WhatWeb 指纹 |
-| `select_nuclei_templates_for_target` | current-owner fingerprint → 安全、去重的 Nuclei template 选择（只读） |
+| `select_nuclei_templates_for_origin` | current-owner + exact-origin fingerprint → 安全、去重的 Nuclei template 选择（只读） |
 | `NucleiTemplateSelection` / `NucleiTemplateRationale` | template id 与具体 fingerprint/PoC 选择理由 |
 | `run_feroxbuster` / `FeroxScanOptions` | 目录爆破 |
 | `authorize_scan_target` / `AuthorizedScanTarget` | legacy GUI scan 的 current-owner + exact-origin 启动授权快照 |
@@ -55,7 +55,7 @@ Nuclei 的执行、解析与 evidence landing 由 `golish-pentest-app` 的 stage
 - `run_whatweb` / `run_feroxbuster` 只接受 `AuthorizedScanTarget`，不能重新引入裸 target id/project。调用方预授权后，runner 完成 tool lookup/参数准备，再在 guarded audit 前复核一次、每次 command spawn 紧前再复核同一个 raw witness；任一 target org/project/scope/name/value/ports 漂移必须 0 spawn。
 - 输出也沿用 launch guard：WhatWeb fingerprint batch、ferox directory entry+敏感 finding、started→completed/failed scan audit 都在各自短事务先锁 target；scanner 输出 URL 必须仍是同 exact origin。非零退出、exit=0 但 stderr 有 runtime/network failure都不能变成 clean empty/success。
 - caller process override 面 fail-closed：WhatWeb 拒绝 proxy/extra_args，并固定 `--follow-redirect=never --max-redirects=0`，避免已授权 origin 用 30x 让真实请求越界；ferox absolute/network-path base 不能跨 origin，自定义 wordlist 仅允许 canonical `workspace/1.txt` 或 `workspace/.golish/wordlists/**` regular file。
-- `select_nuclei_templates_for_target` 只读 `list_by_current_target_owner`，选择前后复核同一 `TargetWriteGuard`；不 backfill、不开进程、不写 Finding。只接受本地 KB 中 `poc_type=nuclei`、`source=nuclei_template`、strict CVE id 与 `cve` tag 同时成立，且明确为 HTTP/legacy requests/SSL、不混入 code/headless/file/network/DNS/workflow 等协议的记录；template id 必须等于 CVE id，限 ASCII `[A-Za-z0-9._-]`、1..=128 bytes，并按 id 去重。fingerprint name/version、combined escaped regex、PoC、selection（与 adapter 同为 256）及 rationale 均有硬上限，超限报错而非静默截断。Nuclei 真正执行只能走 stage-owned adapter。
+- `select_nuclei_templates_for_origin` 先解析 current target guard 和 exact `web_origin_id`，只读 `fingerprint_origin_observations` 关联的 fingerprint；选择前后复核同一 `TargetWriteGuard`，不允许 target-global fallback。它不 backfill、不开进程、不写 Finding。只接受本地 KB 中 `poc_type=nuclei`、`source=nuclei_template`、strict CVE id 与 `cve` tag 同时成立，且明确为 HTTP/legacy requests/SSL、不混入 code/headless/file/network/DNS/workflow 等协议的记录；template id 必须等于 CVE id，限 ASCII `[A-Za-z0-9._-]`、1..=128 bytes，并按 id 去重。fingerprint name/version、combined escaped regex、PoC、selection（与 adapter 同为 256）及 rationale 均有硬上限，超限报错而非静默截断。Nuclei 真正执行只能走 stage-owned adapter。
 - 相关：`docs/superpowers/plans/scan-workflow-implementation.md`。
 
 ## 测试入口

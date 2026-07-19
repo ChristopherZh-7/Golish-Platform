@@ -55,8 +55,10 @@
 ## 注意事项 / 坑
 
 - **不变量 I1**：`GolishError` 带 `code` 字段，前端按 map 翻译，不靠 HTTP status。
+- `ORGANIZATION_DELETE_ACTIVE_STAGE_FORK` 是组织删除 admission 的稳定错误码；payload message 保留 exact operation/stage/task status 供日志追踪，前端用 code 映射可操作提示。
 - **不变量 I2**：`scoping` 是 IDOR 守卫，所有 CRUD 验所有权（含批量）。
 - **不变量 I5**：`domain` DTO 用 `ts_rs::TS` 同步前端，不要手写第二份。
+- foreground PTY 在 task-local tool cancellation 下必须由 manager执行 kill，然后 `wait_terminal` 等待 child wait与 stdout/stderr drain完成，再 remove job并返回 typed cancelled/timeout；不能在 kill signal 后立刻丢弃 wrapper future。`ForegroundOnly` 保留 tool attribution但不加入 session background-close barrier。
 - `TrustedOperatorPrincipal` 不实现 `Serialize` / `Deserialize` 且字段私有；Candidate review、Cleanup waiver、Report finalize 必须从服务端 provider 解析当前 principal，绝不能接受 request 中的 `actor_id` / `decided_by` / `finalized_by`。
 - **禁止向上依赖 `golish`**（会成环）；巨石 `AppState` 故意留在 `golish` crate。
 - `run_pty_cmd` / `pentest_run` 的 `background:true` 不是零等待返回：`pty_interactive` 会先做一个短启动确认窗口，窗口内的参数/运行时错误必须同步返回给 agent；只有确认仍在运行后才返回 `status:"backgrounded"`。调用方仍可用 foreground-only 模式禁用后台化：超时会 kill 并把 stdout/stderr 作为当前 tool result 返回，不产生后台 job handle，适合需要先确认参数/输出形态的 bounded 工具。

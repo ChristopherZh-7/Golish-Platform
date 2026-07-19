@@ -39,7 +39,8 @@ const ANONYMOUS_ACCESS_TECHNIQUE: &str = "WSTG-ATHN-04";
 const ANONYMOUS_ACCESS_KIND: &str = "vuln.anonymous_access_observation";
 const ANONYMOUS_ACCESS_BATCH_SCHEMA: &str = "anonymous_access_batch_v1";
 const ANONYMOUS_ACCESS_OBSERVATION_SCHEMA: &str = "anonymous_access_v1";
-const DIRECTORY_ENTRY_OBSERVATION_SCHEMA: &str = "directory_entry_observation_v1";
+const DIRECTORY_ENTRY_SET_OBSERVATION_SCHEMA: &str = "directory_entry_set_v1";
+const MAX_DIRECTORY_ENTRY_SET_PREVIEW: usize = 32;
 type CandidateSeedProjection = (
     String,
     serde_json::Value,
@@ -97,6 +98,15 @@ struct EnumerationDirectoryEntryRow {
     content_type: Option<String>,
     source_tool: String,
     created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct DirectoryEntrySetMember {
+    source_evidence_id: i64,
+    directory_entry_id: Uuid,
+    target_id: Uuid,
+    url: String,
+    row_projection: serde_json::Value,
 }
 
 fn merge_exact_enumeration_support(
@@ -167,7 +177,7 @@ fn merge_exact_enumeration_support(
         );
     }
 
-    let mut directory_items = BTreeMap::<String, SeedAttackObservation>::new();
+    let mut directory_members_by_origin = BTreeMap::<String, Vec<DirectoryEntrySetMember>>::new();
     for row in directory_entries {
         let Some(source) = admitted_evidence.get(&row.source_evidence_id).copied() else {
             continue;
@@ -211,30 +221,88 @@ fn merge_exact_enumeration_support(
             "tool": row.source_tool,
             "url": row.url,
         });
-        let directory_entry_row_sha256 =
-            sha256_prefixed(serde_json::to_vec(&row_projection)?.as_slice());
+        directory_members_by_origin
+            .entry(directory_origin.key)
+            .or_default()
+            .push(DirectoryEntrySetMember {
+                source_evidence_id: row.source_evidence_id,
+                directory_entry_id: row.directory_entry_id,
+                target_id: row.target_id,
+                url: row.url.clone(),
+                row_projection,
+            });
+    }
+
+    let mut directory_items = BTreeMap::<String, SeedAttackObservation>::new();
+    for (origin, mut members) in directory_members_by_origin {
+        members.sort_by(|left, right| {
+            left.url
+                .cmp(&right.url)
+                .then_with(|| left.directory_entry_id.cmp(&right.directory_entry_id))
+        });
+        let target_ids = members
+            .iter()
+            .map(|member| member.target_id)
+            .collect::<BTreeSet<_>>();
+        anyhow::ensure!(
+            target_ids.len() == 1,
+            "directory entry set resolves to ambiguous target identity"
+        );
+        let target_id = *target_ids
+            .first()
+            .expect("non-empty directory entry group has one target");
+        let evidence_ids = members
+            .iter()
+            .map(|member| member.source_evidence_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            evidence_ids.len() <= MAX_ATTACK_OBSERVATION_EVIDENCE_IDS,
+            "directory entry set exceeds the Candidate evidence bound"
+        );
+        let entry_set_projection = members
+            .iter()
+            .map(|member| &member.row_projection)
+            .collect::<Vec<_>>();
+        let entry_set_sha256 =
+            sha256_prefixed(serde_json::to_vec(&entry_set_projection)?.as_slice());
+        let mut preview_members = members.iter().collect::<Vec<_>>();
+        preview_members.sort_by(|left, right| {
+            directory_entry_preview_rank(&left.url)
+                .cmp(&directory_entry_preview_rank(&right.url))
+                .then_with(|| left.url.cmp(&right.url))
+                .then_with(|| left.directory_entry_id.cmp(&right.directory_entry_id))
+        });
+        let entries_preview = preview_members
+            .into_iter()
+            .take(MAX_DIRECTORY_ENTRY_SET_PREVIEW)
+            .map(|member| member.row_projection.clone())
+            .collect::<Vec<_>>();
+        let entry_count = members.len();
+        let preview_count = entries_preview.len();
+        let (target_type_at_time, target_value_at_time, target_identity_hash) =
+            frozen_target_snapshot(&origin);
         let observation = serde_json::json!({
-            "schema": DIRECTORY_ENTRY_OBSERVATION_SCHEMA,
-            "target_id": row.target_id,
-            "directory_entry_id": row.directory_entry_id,
-            "directory_entry_row_sha256": directory_entry_row_sha256,
-            "url": row.url,
-            "status_code": row.status_code,
-            "content_length": content_length,
+            "schema": DIRECTORY_ENTRY_SET_OBSERVATION_SCHEMA,
+            "target_id": target_id,
+            "origin": target_value_at_time,
+            "entry_count": entry_count,
+            "entry_set_sha256": entry_set_sha256,
+            "entries_preview": entries_preview,
+            "preview_count": preview_count,
+            "preview_truncated": preview_count < entry_count,
             "method": "GET",
-            "content_type": content_type,
-            "source_tool": row.source_tool,
-            "source_evidence_id": row.source_evidence_id,
+            "source_tool": "route_probe",
+            "source_evidence_ids": evidence_ids,
             "network_attempted": true,
             "authority_current_after": true,
         });
         let observation_hash = sha256_prefixed(serde_json::to_vec(&observation)?.as_slice());
-        let work_item_key = format!("directory_entry:{directory_entry_row_sha256}");
-        let (target_type_at_time, target_value_at_time, target_identity_hash) =
-            frozen_target_snapshot(&directory_origin.key);
+        let work_item_key = format!("directory_entry_set:{target_identity_hash}");
         let item = SeedAttackObservation {
             work_item_key: work_item_key.clone(),
-            target_live_id: Some(row.target_id),
+            target_live_id: Some(target_id),
             target_type_at_time,
             target_value_at_time,
             target_identity_hash,
@@ -243,10 +311,10 @@ fn merge_exact_enumeration_support(
             observation_hash,
             source_fact_delta_id: None,
             delta_kind: None,
-            observation_kind: DIRECTORY_ENTRY_OBSERVATION_SCHEMA.to_string(),
+            observation_kind: DIRECTORY_ENTRY_SET_OBSERVATION_SCHEMA.to_string(),
             allowed_techniques: vec!["WSTG-INFO".to_string()],
             enrichment_required: false,
-            evidence_ids: vec![row.source_evidence_id],
+            evidence_ids: evidence_ids.clone(),
         };
         if let Some(existing) = directory_items.get(&work_item_key) {
             anyhow::ensure!(
@@ -257,7 +325,7 @@ fn merge_exact_enumeration_support(
         } else {
             directory_items.insert(work_item_key.clone(), item);
         }
-        support_by_work_item.insert(work_item_key, vec![row.source_evidence_id]);
+        support_by_work_item.insert(work_item_key, evidence_ids);
     }
     observations.extend(directory_items.into_values());
     observations.sort_by(|left, right| left.work_item_key.cmp(&right.work_item_key));
@@ -270,6 +338,30 @@ fn merge_exact_enumeration_support(
         "typed Candidate manifest exceeds the frozen Wave policy"
     );
     Ok(support_by_work_item)
+}
+
+fn directory_entry_preview_rank(url: &str) -> u8 {
+    let path = url
+        .split_once("://")
+        .and_then(|(_, remainder)| remainder.find('/').map(|index| &remainder[index..]))
+        .unwrap_or(url)
+        .to_ascii_lowercase();
+    if [
+        ".env", ".git", "actuator", "admin", "backup", "config", "debug", "graphql", "openapi",
+        "swagger",
+    ]
+    .iter()
+    .any(|marker| path.contains(marker))
+    {
+        0
+    } else if ["api", "auth", "login", "upload"]
+        .iter()
+        .any(|marker| path.contains(marker))
+    {
+        1
+    } else {
+        2
+    }
 }
 
 fn http_url_path_is_root(value: &str) -> bool {
@@ -321,7 +413,9 @@ struct FormulaicHandoffAuthority {
     scope_snapshot_id: Uuid,
     source_generation: i32,
     evidence_ids: Vec<i64>,
+    payload: serde_json::Value,
     coverage_watermark: serde_json::Value,
+    source_started_at: DateTime<Utc>,
     gate_passed_at: DateTime<Utc>,
     enumeration_handoff_id: Uuid,
     enumeration_stage_execution_id: Uuid,
@@ -332,8 +426,17 @@ struct FormulaicHandoffAuthority {
     project_path: String,
 }
 
+#[derive(Debug, Clone, Copy, sqlx::FromRow)]
+struct CandidateStageForkAuthority {
+    stage_fork_input_id: Uuid,
+    source_operation_id: Uuid,
+    source_scope_snapshot_id: Uuid,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct FormulaicOutcomeRow {
+    organization_id: Uuid,
+    run_id: String,
     asset: String,
     technique: String,
     outcome: String,
@@ -343,6 +446,7 @@ struct FormulaicOutcomeRow {
     confidence: Option<f32>,
     evidence_ids: Vec<i64>,
     collected_at: DateTime<Utc>,
+    content: serde_json::Value,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1030,6 +1134,11 @@ fn attest_formulaic_outcomes(
     authority: &FormulaicHandoffAuthority,
     outcomes: &[FormulaicOutcomeRow],
 ) -> anyhow::Result<()> {
+    use super::canonical_fact_refs::{
+        technique_outcome_set_attestation, CanonicalFactKey, CanonicalFactRef,
+        TechniqueOutcomeSetMember,
+    };
+
     let watermark = &authority.coverage_watermark;
     anyhow::ensure!(
         watermark.get("kind").and_then(serde_json::Value::as_str)
@@ -1061,11 +1170,86 @@ fn attest_formulaic_outcomes(
     }
     let terminal_cells = watermark_usize(watermark, "terminal_cells")?;
     anyhow::ensure!(
-        terminal_cells == outcomes.len()
-            && terminal_cells > 0
-            && terminal_cells <= MAX_ATTACK_MANIFEST_ITEMS
-            && watermark_usize(watermark, "canonical_ref_total")? == terminal_cells,
+        terminal_cells == outcomes.len() && terminal_cells > 0,
         "vuln_triage terminal-cell attestation mismatch"
+    );
+    let canonical_refs = authority
+        .payload
+        .get("canonical_fact_refs")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("vuln_triage handoff has no canonical fact refs"))
+        .and_then(|value| {
+            serde_json::from_value::<Vec<CanonicalFactRef>>(value).map_err(Into::into)
+        })?;
+    anyhow::ensure!(
+        watermark_usize(watermark, "canonical_ref_total")? == canonical_refs.len(),
+        "vuln_triage canonical ref watermark mismatch"
+    );
+    let outcome_set_refs = canonical_refs
+        .iter()
+        .filter(|canonical_ref| {
+            matches!(
+                &canonical_ref.key,
+                CanonicalFactKey::TechniqueOutcomeSet { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        outcome_set_refs.len() == 1
+            && !canonical_refs.iter().any(|canonical_ref| matches!(
+                &canonical_ref.key,
+                CanonicalFactKey::TechniqueOutcome { .. }
+            )),
+        "vuln_triage handoff must contain one aggregate outcome-set authority"
+    );
+    let outcome_set_ref = outcome_set_refs[0];
+    let CanonicalFactKey::TechniqueOutcomeSet {
+        organization_id: set_organization_id,
+        run_id,
+        stage,
+        terminal_cell_count,
+        outcome_set_sha256,
+    } = &outcome_set_ref.key
+    else {
+        unreachable!("filtered outcome-set reference")
+    };
+    let members = outcomes
+        .iter()
+        .map(|row| TechniqueOutcomeSetMember {
+            organization_id: row.organization_id,
+            run_id: row.run_id.clone(),
+            asset: row.asset.clone(),
+            technique: row.technique.clone(),
+            outcome: row.outcome.clone(),
+            observed_at: row.collected_at,
+            evidence_ids: row.evidence_ids.clone(),
+            content: row.content.clone(),
+        })
+        .collect::<Vec<_>>();
+    let attestation = technique_outcome_set_attestation(stage, organization_id, run_id, &members)?;
+    let mut ref_evidence_ids = outcome_set_ref.evidence_ids.clone();
+    ref_evidence_ids.sort_unstable();
+    ref_evidence_ids.dedup();
+    anyhow::ensure!(
+        *set_organization_id == organization_id
+            && stage == "vuln_triage"
+            && *terminal_cell_count == attestation.terminal_cell_count
+            && outcome_set_sha256 == &attestation.outcome_set_sha256
+            && outcome_set_ref.organization_id == organization_id
+            && outcome_set_ref.observed_at == attestation.observed_at
+            && outcome_set_ref.content_sha256 == attestation.content_sha256
+            && ref_evidence_ids == attestation.evidence_ids
+            && watermark
+                .get("canonical_outcome_mode")
+                .and_then(serde_json::Value::as_str)
+                == Some("technique_outcome_set_v1")
+            && watermark_usize(watermark, "canonical_outcome_cells")?
+                == usize::try_from(attestation.terminal_cell_count)?
+            && watermark
+                .get("canonical_outcome_set_sha256")
+                .and_then(serde_json::Value::as_str)
+                == Some(attestation.outcome_set_sha256.as_str()),
+        "vuln_triage aggregate outcome-set attestation mismatch"
     );
     let actual_assets = outcomes
         .iter()
@@ -1092,12 +1276,18 @@ fn attest_formulaic_outcomes(
         .collect::<BTreeSet<_>>();
     anyhow::ensure!(
         authority.scope_snapshot_id != Uuid::nil()
+            && authority.source_started_at <= authority.gate_passed_at
             && authority.gate_passed_at <= Utc::now()
             && outcomes.iter().all(|row| {
-                matches!(
-                    row.outcome.as_str(),
-                    "found" | "empty" | "blocked" | "not_applicable"
-                ) && !row.evidence_ids.is_empty()
+                row.organization_id == organization_id
+                    && row.run_id == *run_id
+                    && row.collected_at >= authority.source_started_at
+                    && row.collected_at <= authority.gate_passed_at
+                    && matches!(
+                        row.outcome.as_str(),
+                        "found" | "empty" | "blocked" | "not_applicable"
+                    )
+                    && !row.evidence_ids.is_empty()
                     && row.evidence_ids.len() <= MAX_ATTACK_OBSERVATION_EVIDENCE_IDS
                     && row
                         .evidence_ids
@@ -1201,6 +1391,7 @@ struct FrozenEntryEvidenceAuthority {
     manifest_count: Option<i32>,
     manifest_frozen_at: Option<DateTime<Utc>>,
     entry_consolidation_id: Option<Uuid>,
+    entry_stage_fork_input_id: Option<Uuid>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1673,11 +1864,121 @@ pub async fn seed_from_final_vuln_triage_handoff(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| invalid("attack_candidate StageRunUnit identity mismatch"))?;
-    let authorities = sqlx::query_as::<_, FormulaicHandoffAuthority>(
-        r#"SELECT handoff.stage_execution_id,handoff.source_stage_run_unit_id,
+    let stage_fork_authority = sqlx::query_as::<_, CandidateStageForkAuthority>(
+        r#"SELECT input.id AS stage_fork_input_id,input.source_operation_id,
+                  input.source_scope_snapshot_id
+             FROM operation_stage_fork_inputs AS input
+             JOIN operation_stage_forks AS fork
+               ON fork.operation_id=input.operation_id
+              AND fork.source_operation_id=input.source_operation_id
+              AND fork.entry_stage='attack_candidate'
+             JOIN operation_state AS source_operation
+               ON source_operation.operation_id=input.source_operation_id
+              AND source_operation.superseded_by IS NULL
+             JOIN stage_handoffs AS handoff
+               ON handoff.id=input.source_handoff_id
+              AND handoff.operation_id=input.source_operation_id
+              AND handoff.invalidated_at IS NULL
+            WHERE input.operation_id=$1
+              AND input.target_scope_snapshot_id=$2
+              AND input.organization_id=$3
+              AND input.source_stage_kind='vuln_triage'
+            FOR SHARE OF input,fork,source_operation,handoff"#,
+    )
+    .bind(operation_id)
+    .bind(unit.0)
+    .bind(organization_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let authority_operation_id = stage_fork_authority
+        .map(|fork| fork.source_operation_id)
+        .unwrap_or(operation_id);
+    let authority_scope_snapshot_id = stage_fork_authority
+        .map(|fork| fork.source_scope_snapshot_id)
+        .unwrap_or(unit.0);
+    let authorities = if stage_fork_authority.is_some() {
+        sqlx::query_as::<_, FormulaicHandoffAuthority>(
+            r#"SELECT vuln_input.source_stage_execution_id AS stage_execution_id,
+                  vuln_input.source_stage_run_unit_id,
+                  vuln_input.source_deliverable_submission_id AS deliverable_submission_id,
+                  vuln_input.source_scope_snapshot_id AS scope_snapshot_id,
+                  source_unit.generation AS source_generation,
+                  vuln_input.source_evidence_ids AS evidence_ids,
+                  vuln_input.source_payload AS payload,
+                  vuln_input.source_coverage_watermark AS coverage_watermark,
+                  source_unit.started_at AS source_started_at,
+                  vuln_input.source_gate_passed_at AS gate_passed_at,
+                  enumeration_input.source_handoff_id AS enumeration_handoff_id,
+                  enumeration_input.source_stage_execution_id AS enumeration_stage_execution_id,
+                  enumeration_input.source_stage_run_unit_id AS enumeration_source_stage_run_unit_id,
+                  enumeration_input.source_evidence_ids AS enumeration_evidence_ids,
+                  enumeration_run.started_at AS enumeration_started_at,
+                  enumeration_input.source_gate_passed_at AS enumeration_gate_passed_at,
+                  source_scope.project_path_at_freeze AS project_path
+             FROM operation_stage_fork_inputs AS vuln_input
+             JOIN stage_run_units AS source_unit
+               ON source_unit.id=vuln_input.source_stage_run_unit_id
+              AND source_unit.operation_id=vuln_input.source_operation_id
+              AND source_unit.stage_execution_id=vuln_input.source_stage_execution_id
+              AND source_unit.scope_snapshot_id=vuln_input.source_scope_snapshot_id
+              AND source_unit.organization_id=vuln_input.organization_id
+              AND source_unit.stage_kind='vuln_triage'
+              AND source_unit.status='passed' AND source_unit.terminal_at IS NOT NULL
+             JOIN stage_runs AS vuln_run
+               ON vuln_run.id=vuln_input.source_stage_execution_id
+              AND vuln_run.operation_id=vuln_input.source_operation_id
+              AND vuln_run.stage_kind='vuln_triage'
+              AND vuln_run.status='completed' AND vuln_run.completed_at IS NOT NULL
+             JOIN stage_runs AS candidate_run
+               ON candidate_run.id=$4
+              AND candidate_run.operation_id=$1
+              AND candidate_run.stage_kind='attack_candidate'
+              AND candidate_run.status IN ('started','completed')
+             JOIN operation_stage_fork_inputs AS enumeration_input
+               ON enumeration_input.operation_id=vuln_input.operation_id
+              AND enumeration_input.source_operation_id=vuln_input.source_operation_id
+              AND enumeration_input.organization_id=vuln_input.organization_id
+              AND enumeration_input.source_stage_kind='enumeration'
+             JOIN stage_runs AS enumeration_run
+               ON enumeration_run.id=enumeration_input.source_stage_execution_id
+              AND enumeration_run.operation_id=enumeration_input.source_operation_id
+              AND enumeration_run.stage_kind='enumeration'
+              AND enumeration_run.status='completed'
+              AND enumeration_run.completed_at=vuln_run.started_at
+             JOIN stage_handoffs AS vuln_handoff
+               ON vuln_handoff.id=vuln_input.source_handoff_id
+              AND vuln_handoff.operation_id=vuln_input.source_operation_id
+              AND vuln_handoff.invalidated_at IS NULL
+             JOIN stage_handoffs AS enumeration_handoff
+               ON enumeration_handoff.id=enumeration_input.source_handoff_id
+              AND enumeration_handoff.operation_id=enumeration_input.source_operation_id
+              AND enumeration_handoff.invalidated_at IS NULL
+             JOIN operation_org_scope_snapshots AS source_scope
+               ON source_scope.id=vuln_input.source_scope_snapshot_id
+              AND source_scope.operation_id=vuln_input.source_operation_id
+              AND source_scope.sealed_at IS NOT NULL
+            WHERE vuln_input.operation_id=$1
+              AND vuln_input.target_scope_snapshot_id=$3
+              AND vuln_input.organization_id=$2
+              AND vuln_input.source_stage_kind='vuln_triage'
+            ORDER BY vuln_input.id,enumeration_input.id
+            FOR SHARE OF vuln_input,source_unit,vuln_run,candidate_run,
+                         enumeration_input,enumeration_run,vuln_handoff,
+                         enumeration_handoff,source_scope"#,
+        )
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(unit.0)
+        .bind(unit.2)
+        .fetch_all(&mut *tx)
+        .await?
+    } else {
+        sqlx::query_as::<_, FormulaicHandoffAuthority>(
+            r#"SELECT handoff.stage_execution_id,handoff.source_stage_run_unit_id,
                   handoff.deliverable_submission_id,handoff.scope_snapshot_id,
                   source_unit.generation AS source_generation,handoff.evidence_ids,
-                  handoff.coverage_watermark,handoff.gate_passed_at,
+                  handoff.payload,handoff.coverage_watermark,
+                  source_unit.started_at AS source_started_at,handoff.gate_passed_at,
                   enumeration_handoff.id AS enumeration_handoff_id,
                   enumeration_handoff.stage_execution_id AS enumeration_stage_execution_id,
                   enumeration_handoff.source_stage_run_unit_id
@@ -1739,15 +2040,16 @@ pub async fn seed_from_final_vuln_triage_handoff(
             ORDER BY handoff.id,enumeration_handoff.id
             FOR SHARE OF handoff,source_unit,vuln_run,candidate_run,enumeration_run,
                          enumeration_handoff,enumeration_unit,scope_snapshot"#,
-    )
-    .bind(operation_id)
-    .bind(organization_id)
-    .bind(unit.0)
-    .bind(unit.2)
-    .fetch_all(&mut *tx)
-    .await?;
+        )
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(unit.0)
+        .bind(unit.2)
+        .fetch_all(&mut *tx)
+        .await?
+    };
     let authority = require_exact_predecessor(&authorities).map_err(crate::DbError::Other)?;
-    if authority.scope_snapshot_id != unit.0
+    if authority.scope_snapshot_id != authority_scope_snapshot_id
         || authority.source_generation < 0
         || unit.1 != 0
         || authority.evidence_ids.is_empty()
@@ -1766,20 +2068,21 @@ pub async fn seed_from_final_vuln_triage_handoff(
     .fetch_one(&mut *tx)
     .await?;
     let outcomes = sqlx::query_as::<_, FormulaicOutcomeRow>(
-        r#"SELECT asset,technique,outcome,source,query,result_count,confidence,
-                  evidence_ids,collected_at
+        r#"SELECT organization_id,run_id,asset,technique,outcome,source,query,
+                  result_count,confidence,evidence_ids,collected_at,
+                  to_jsonb(technique_outcomes.*) AS content
              FROM technique_outcomes
             WHERE organization_id=$1 AND run_id=$2
               AND technique=ANY($3)
-              AND outcome IN ('found','empty','blocked','not_applicable')
-              AND collected_at IS NOT NULL AND collected_at<=$4
-              AND updated_at<=$4
+              AND collected_at IS NOT NULL AND collected_at>=$4 AND collected_at<=$5
+              AND updated_at<=$5
             ORDER BY asset,technique
             FOR SHARE"#,
     )
     .bind(organization_id)
-    .bind(operation_id.to_string())
+    .bind(authority_operation_id.to_string())
     .bind(FORMULAIC_TECHNIQUES)
+    .bind(authority.source_started_at)
     .bind(authority.gate_passed_at)
     .fetch_all(&mut *tx)
     .await?;
@@ -1812,8 +2115,8 @@ pub async fn seed_from_final_vuln_triage_handoff(
             FOR SHARE OF evidence,scope_snapshot"#,
     )
     .bind(organization_id)
-    .bind(unit.0)
-    .bind(operation_id)
+    .bind(authority_scope_snapshot_id)
+    .bind(authority_operation_id)
     .bind(&outcome_evidence_ids)
     .bind(authority.gate_passed_at)
     .fetch_all(&mut *tx)
@@ -1868,8 +2171,8 @@ pub async fn seed_from_final_vuln_triage_handoff(
             FOR SHARE OF enumeration_handoff,scope_snapshot,evidence,current_target"#,
     )
     .bind(authority.enumeration_handoff_id)
-    .bind(operation_id)
-    .bind(unit.0)
+    .bind(authority_operation_id)
+    .bind(authority_scope_snapshot_id)
     .bind(organization_id)
     .bind(authority.enumeration_stage_execution_id)
     .bind(authority.enumeration_source_stage_run_unit_id)
@@ -1912,16 +2215,16 @@ pub async fn seed_from_final_vuln_triage_handoff(
             FOR SHARE OF evidence,scope_snapshot,current_target,entry"#,
     )
     .bind(&support_evidence_ids)
-    .bind(unit.0)
-    .bind(operation_id)
+    .bind(authority_scope_snapshot_id)
+    .bind(authority_operation_id)
     .bind(organization_id)
     .bind(authority.enumeration_started_at)
     .fetch_all(&mut *tx)
     .await?;
     let support_by_work_item = merge_exact_enumeration_support(
         &ExactEnumerationLineage {
-            operation_id,
-            scope_snapshot_id: unit.0,
+            operation_id: authority_operation_id,
+            scope_snapshot_id: authority_scope_snapshot_id,
             organization_id,
             handoff_id: authority.enumeration_handoff_id,
             stage_execution_id: authority.enumeration_stage_execution_id,
@@ -1939,28 +2242,51 @@ pub async fn seed_from_final_vuln_triage_handoff(
     let wave_unit_id =
         attack_waves::deterministic_initial_wave_unit_id(wave_run_id, organization_id);
     let (policy_snapshot, policy_hash) = attack_waves::deterministic_initial_policy()?;
-    attack_waves::open_from_vuln_triage_handoff(
-        &mut tx,
-        &attack_waves::OpenAttackWaveUnit {
-            wave_run_id,
-            wave_unit_id,
-            operation_id,
-            scope_snapshot_id: unit.0,
-            organization_id,
-            entry_stage_execution_id: authority.stage_execution_id,
-            entry_stage_run_unit_id: authority.source_stage_run_unit_id,
-            entry_deliverable_submission_id: authority.deliverable_submission_id,
-            generation: unit.1,
-            ordinal,
-            policy_snapshot,
-            policy_hash,
-            max_waves: 3,
-            max_candidates_total: 100,
-            max_chain_depth: 3,
-            max_attempts_total: 200,
-        },
-    )
-    .await?;
+    if let Some(stage_fork) = stage_fork_authority {
+        attack_waves::open_from_stage_fork_input(
+            &mut tx,
+            &attack_waves::OpenAttackWaveForkUnit {
+                wave_run_id,
+                wave_unit_id,
+                operation_id,
+                scope_snapshot_id: unit.0,
+                organization_id,
+                stage_fork_input_id: stage_fork.stage_fork_input_id,
+                generation: unit.1,
+                ordinal,
+                policy_snapshot,
+                policy_hash,
+                max_waves: 3,
+                max_candidates_total: 100,
+                max_chain_depth: 3,
+                max_attempts_total: 200,
+            },
+        )
+        .await?;
+    } else {
+        attack_waves::open_from_vuln_triage_handoff(
+            &mut tx,
+            &attack_waves::OpenAttackWaveUnit {
+                wave_run_id,
+                wave_unit_id,
+                operation_id,
+                scope_snapshot_id: unit.0,
+                organization_id,
+                entry_stage_execution_id: authority.stage_execution_id,
+                entry_stage_run_unit_id: authority.source_stage_run_unit_id,
+                entry_deliverable_submission_id: authority.deliverable_submission_id,
+                generation: unit.1,
+                ordinal,
+                policy_snapshot,
+                policy_hash,
+                max_waves: 3,
+                max_candidates_total: 100,
+                max_chain_depth: 3,
+                max_attempts_total: 200,
+            },
+        )
+        .await?;
+    }
     seed_wave_work_items_with_support(
         &mut tx,
         SeedAttackWorkItems {
@@ -2131,7 +2457,8 @@ pub async fn load_frozen_entry_evidence_ids_with_connection(
 ) -> crate::Result<Vec<i64>> {
     let authority = sqlx::query_as::<_, FrozenEntryEvidenceAuthority>(
         r#"SELECT wave_unit.manifest_hash,wave_unit.manifest_count,
-                  wave_unit.manifest_frozen_at,wave_unit.entry_consolidation_id
+                  wave_unit.manifest_frozen_at,wave_unit.entry_consolidation_id,
+                  wave_unit.entry_stage_fork_input_id
              FROM attack_wave_units AS wave_unit
              JOIN attack_wave_runs AS wave
                ON wave.id=wave_unit.wave_run_id
@@ -2152,6 +2479,25 @@ pub async fn load_frozen_entry_evidence_ids_with_connection(
     .fetch_optional(&mut *connection)
     .await?
     .ok_or_else(|| invalid("attack candidate entry authority mismatch"))?;
+    let fork_evidence_operation_id = match authority.entry_stage_fork_input_id {
+        Some(stage_fork_input_id) => Some(
+            sqlx::query_scalar::<_, Uuid>(
+                r#"SELECT source_operation_id
+                     FROM operation_stage_fork_inputs
+                    WHERE id=$1 AND operation_id=$2
+                      AND target_scope_snapshot_id=$3
+                      AND organization_id=$4
+                      AND source_stage_kind='vuln_triage'"#,
+            )
+            .bind(stage_fork_input_id)
+            .bind(operation_id)
+            .bind(scope_snapshot_id)
+            .bind(organization_id)
+            .fetch_one(&mut *connection)
+            .await?,
+        ),
+        None => None,
+    };
     let (entry_evidence_ids, initial_role_authority): FrozenEntryEvidenceAuthoritySets =
         if let Some(consolidation_id) = authority.entry_consolidation_id {
             (
@@ -2188,6 +2534,55 @@ pub async fn load_frozen_entry_evidence_ids_with_connection(
                 .fetch_all(&mut *connection)
                 .await?,
                 None,
+            )
+        } else if let Some(stage_fork_input_id) = authority.entry_stage_fork_input_id {
+            let predecessor_evidence = sqlx::query_as::<_, (Vec<i64>, Vec<i64>)>(
+                r#"SELECT vuln_input.source_evidence_ids,
+                          enumeration_input.source_evidence_ids
+                     FROM operation_stage_fork_inputs AS vuln_input
+                     JOIN operation_stage_fork_inputs AS enumeration_input
+                       ON enumeration_input.operation_id=vuln_input.operation_id
+                      AND enumeration_input.source_operation_id=vuln_input.source_operation_id
+                      AND enumeration_input.organization_id=vuln_input.organization_id
+                      AND enumeration_input.source_stage_kind='enumeration'
+                     JOIN operation_state AS source_operation
+                       ON source_operation.operation_id=vuln_input.source_operation_id
+                      AND source_operation.superseded_by IS NULL
+                     JOIN stage_handoffs AS vuln_handoff
+                       ON vuln_handoff.id=vuln_input.source_handoff_id
+                      AND vuln_handoff.operation_id=vuln_input.source_operation_id
+                      AND vuln_handoff.invalidated_at IS NULL
+                     JOIN stage_handoffs AS enumeration_handoff
+                       ON enumeration_handoff.id=enumeration_input.source_handoff_id
+                      AND enumeration_handoff.operation_id=enumeration_input.source_operation_id
+                      AND enumeration_handoff.invalidated_at IS NULL
+                    WHERE vuln_input.id=$1
+                      AND vuln_input.operation_id=$2
+                      AND vuln_input.target_scope_snapshot_id=$3
+                      AND vuln_input.organization_id=$4
+                      AND vuln_input.source_stage_kind='vuln_triage'
+                    FOR SHARE OF vuln_input,enumeration_input,source_operation,
+                                 vuln_handoff,enumeration_handoff"#,
+            )
+            .bind(stage_fork_input_id)
+            .bind(operation_id)
+            .bind(scope_snapshot_id)
+            .bind(organization_id)
+            .fetch_all(&mut *connection)
+            .await?;
+            let (entry, enumeration) =
+                require_exact_predecessor(&predecessor_evidence).map_err(crate::DbError::Other)?;
+            let entry = entry.iter().copied().collect::<BTreeSet<_>>();
+            let enumeration = enumeration.iter().copied().collect::<BTreeSet<_>>();
+            (
+                entry
+                    .iter()
+                    .chain(&enumeration)
+                    .copied()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+                Some((entry, enumeration)),
             )
         } else {
             let predecessor_evidence = sqlx::query_as::<_, (Vec<i64>, Vec<i64>)>(
@@ -2371,7 +2766,7 @@ pub async fn load_frozen_entry_evidence_ids_with_connection(
         if role_rows.is_empty()
             || role_evidence_ids != evidence_ids
             || role_rows.iter().any(|row| {
-                row.evidence_run_id != Some(operation_id)
+                row.evidence_run_id != Some(fork_evidence_operation_id.unwrap_or(operation_id))
                     || row.producer_organization_id.as_deref() != Some(exact_org.as_str())
                     || row.evidence_project_path != row.project_path_at_freeze
                     || match row.role.as_str() {
@@ -2644,26 +3039,48 @@ mod tests {
         })
     }
 
-    fn outcomes(count: usize) -> Vec<FormulaicOutcomeRow> {
+    fn outcomes(organization_id: Uuid, count: usize) -> Vec<FormulaicOutcomeRow> {
+        let run_id = Uuid::from_u128(1).to_string();
         (0..count)
-            .map(|index| FormulaicOutcomeRow {
-                asset: format!(
+            .map(|index| {
+                let asset = format!(
                     "https://app-{}.example.test",
                     index / FORMULAIC_TECHNIQUES.len()
-                ),
-                technique: FORMULAIC_TECHNIQUES[index % FORMULAIC_TECHNIQUES.len()].to_string(),
-                outcome: if index % 2 == 0 { "found" } else { "empty" }.to_string(),
-                source: Some("formulaic_sweep".to_string()),
-                query: None,
-                result_count: Some(i32::from(index % 2 == 0)),
-                confidence: Some(1.0),
-                evidence_ids: vec![index as i64 + 1],
-                collected_at: Utc::now() - chrono::Duration::seconds(1),
+                );
+                let technique =
+                    FORMULAIC_TECHNIQUES[index % FORMULAIC_TECHNIQUES.len()].to_string();
+                let outcome = if index % 2 == 0 { "found" } else { "empty" }.to_string();
+                let evidence_ids = vec![index as i64 + 1];
+                FormulaicOutcomeRow {
+                    organization_id,
+                    run_id: run_id.clone(),
+                    asset: asset.clone(),
+                    technique: technique.clone(),
+                    outcome: outcome.clone(),
+                    source: Some("formulaic_sweep".to_string()),
+                    query: None,
+                    result_count: Some(i32::from(index % 2 == 0)),
+                    confidence: Some(1.0),
+                    evidence_ids: evidence_ids.clone(),
+                    collected_at: Utc::now() - chrono::Duration::seconds(1),
+                    content: serde_json::json!({
+                        "organization_id": organization_id,
+                        "run_id": run_id,
+                        "asset": asset,
+                        "technique": technique,
+                        "outcome": outcome,
+                        "evidence_ids": evidence_ids,
+                    }),
+                }
             })
             .collect()
     }
 
     fn authority(organization_id: Uuid, rows: &[FormulaicOutcomeRow]) -> FormulaicHandoffAuthority {
+        use crate::repo::canonical_fact_refs::{
+            technique_outcome_set_attestation, CanonicalFactKey, CanonicalFactRef,
+            TechniqueOutcomeSetMember,
+        };
         let assets = rows
             .iter()
             .map(|row| row.asset.clone())
@@ -2672,6 +3089,42 @@ mod tests {
             .iter()
             .map(|row| row.technique.clone())
             .collect::<BTreeSet<_>>();
+        let members = rows
+            .iter()
+            .map(|row| TechniqueOutcomeSetMember {
+                organization_id: row.organization_id,
+                run_id: row.run_id.clone(),
+                asset: row.asset.clone(),
+                technique: row.technique.clone(),
+                outcome: row.outcome.clone(),
+                observed_at: row.collected_at,
+                evidence_ids: row.evidence_ids.clone(),
+                content: row.content.clone(),
+            })
+            .collect::<Vec<_>>();
+        let run_id = rows[0].run_id.clone();
+        let attestation =
+            technique_outcome_set_attestation("vuln_triage", organization_id, &run_id, &members)
+                .expect("fixture outcome-set attestation");
+        let canonical_ref = CanonicalFactRef {
+            key: CanonicalFactKey::TechniqueOutcomeSet {
+                organization_id,
+                run_id,
+                stage: "vuln_triage".to_string(),
+                terminal_cell_count: attestation.terminal_cell_count,
+                outcome_set_sha256: attestation.outcome_set_sha256.clone(),
+            },
+            organization_id,
+            observed_at: attestation.observed_at,
+            content_sha256: attestation.content_sha256,
+            evidence_ids: attestation.evidence_ids.clone(),
+        };
+        let source_started_at = rows
+            .iter()
+            .map(|row| row.collected_at)
+            .min()
+            .expect("fixture has rows")
+            - chrono::Duration::seconds(1);
         FormulaicHandoffAuthority {
             stage_execution_id: Uuid::new_v4(),
             source_stage_run_unit_id: Uuid::new_v4(),
@@ -2682,20 +3135,25 @@ mod tests {
                 .iter()
                 .flat_map(|row| row.evidence_ids.iter().copied())
                 .collect(),
+            payload: serde_json::json!({"canonical_fact_refs": [canonical_ref]}),
             coverage_watermark: serde_json::json!({
                 "kind": "information_coverage_v1",
                 "stage": "vuln_triage",
                 "organization_id": organization_id,
                 "terminal_cells": rows.len(),
-                "canonical_ref_total": rows.len(),
-                "canonical_ref_included": rows.len(),
+                "canonical_ref_total": 1,
+                "canonical_ref_included": 1,
                 "canonical_ref_truncated": false,
                 "evidence_id_total": rows.len(),
                 "evidence_id_included": rows.len(),
                 "evidence_id_truncated": false,
                 "assets": assets,
                 "techniques": techniques,
+                "canonical_outcome_mode": "technique_outcome_set_v1",
+                "canonical_outcome_cells": rows.len(),
+                "canonical_outcome_set_sha256": attestation.outcome_set_sha256,
             }),
+            source_started_at,
             gate_passed_at: Utc::now(),
             enumeration_handoff_id: Uuid::new_v4(),
             enumeration_stage_execution_id: Uuid::new_v4(),
@@ -2710,7 +3168,7 @@ mod tests {
     #[test]
     fn exact_formulaic_watermark_passes_but_truncation_fails_closed() {
         let organization_id = Uuid::new_v4();
-        let rows = outcomes(FORMULAIC_TECHNIQUES.len());
+        let rows = outcomes(organization_id, FORMULAIC_TECHNIQUES.len());
         let mut exact = authority(organization_id, &rows);
         attest_formulaic_outcomes(organization_id, &exact, &rows)
             .expect("exact canonical formulaic cells");
@@ -2720,11 +3178,12 @@ mod tests {
     }
 
     #[test]
-    fn formulaic_manifest_over_policy_limit_fails_before_seeding() {
+    fn formulaic_raw_cells_over_manifest_limit_remain_eligible_for_aggregation() {
         let organization_id = Uuid::new_v4();
-        let rows = outcomes(MAX_ATTACK_MANIFEST_ITEMS + 1);
+        let rows = outcomes(organization_id, MAX_ATTACK_MANIFEST_ITEMS + 1);
         let exact = authority(organization_id, &rows);
-        assert!(attest_formulaic_outcomes(organization_id, &exact, &rows).is_err());
+        attest_formulaic_outcomes(organization_id, &exact, &rows)
+            .expect("raw formulaic cells are bounded only after aggregation");
     }
 
     #[test]
@@ -2742,6 +3201,8 @@ mod tests {
         let asset = "https://app.example.test:443";
         let technique = "WSTG-INPV-05";
         let rows = vec![FormulaicOutcomeRow {
+            organization_id,
+            run_id: "fixture".to_string(),
             asset: asset.to_string(),
             technique: technique.to_string(),
             outcome: "found".to_string(),
@@ -2751,6 +3212,7 @@ mod tests {
             confidence: None,
             evidence_ids: vec![41],
             collected_at: Utc::now() - chrono::Duration::seconds(1),
+            content: serde_json::json!({}),
         }];
         let evidence = vec![typed_evidence(
             organization_id,
@@ -2798,6 +3260,8 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, outcome)| FormulaicOutcomeRow {
+                organization_id,
+                run_id: "fixture".to_string(),
                 asset: asset.to_string(),
                 technique: FORMULAIC_TECHNIQUES[index].to_string(),
                 outcome: outcome.to_string(),
@@ -2807,6 +3271,7 @@ mod tests {
                 confidence: None,
                 evidence_ids: vec![index as i64 + 1],
                 collected_at: Utc::now() - chrono::Duration::seconds(1),
+                content: serde_json::json!({}),
             })
             .collect::<Vec<_>>();
         let evidence = rows
@@ -2851,6 +3316,8 @@ mod tests {
         let asset = "https://app.example.test:443";
         let technique = "GOLISH-NDAY";
         let rows = vec![FormulaicOutcomeRow {
+            organization_id,
+            run_id: "fixture".to_string(),
             asset: asset.to_string(),
             technique: technique.to_string(),
             outcome: "found".to_string(),
@@ -2860,6 +3327,7 @@ mod tests {
             confidence: None,
             evidence_ids: vec![77],
             collected_at: Utc::now() - chrono::Duration::seconds(1),
+            content: serde_json::json!({}),
         }];
         let mut evidence = typed_evidence(
             organization_id,
@@ -2884,6 +3352,8 @@ mod tests {
         let asset = "https://app.example.test:443";
         let technique = "WSTG-INPV-05";
         let rows = vec![FormulaicOutcomeRow {
+            organization_id,
+            run_id: "fixture".to_string(),
             asset: asset.to_string(),
             technique: technique.to_string(),
             outcome: "found".to_string(),
@@ -2893,6 +3363,7 @@ mod tests {
             confidence: None,
             evidence_ids: vec![79],
             collected_at: Utc::now() - chrono::Duration::seconds(1),
+            content: serde_json::json!({}),
         }];
         let evidence = typed_evidence(
             organization_id,
@@ -2920,6 +3391,8 @@ mod tests {
             .map(|verdict| anonymous_observation(Uuid::new_v4(), verdict))
             .collect::<Vec<_>>();
         let rows = vec![FormulaicOutcomeRow {
+            organization_id,
+            run_id: "fixture".to_string(),
             asset: asset.to_string(),
             technique: "WSTG-ATHN-04".to_string(),
             outcome: "found".to_string(),
@@ -2929,6 +3402,7 @@ mod tests {
             confidence: None,
             evidence_ids: vec![88],
             collected_at: Utc::now() - chrono::Duration::seconds(1),
+            content: serde_json::json!({}),
         }];
         let evidence = vec![anonymous_access_evidence(
             organization_id,
@@ -3121,7 +3595,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_enumeration_support_is_frozen_on_surface_and_typed_directory_item() {
+    fn exact_enumeration_support_is_frozen_on_surface_and_typed_directory_set() {
         let (lineage, evidence, directory, surface) = enumeration_support_fixture();
         let surface_key = surface.work_item_key.clone();
         let mut observations = vec![surface];
@@ -3136,23 +3610,106 @@ mod tests {
 
         assert_eq!(observations.len(), 2);
         assert_eq!(support.get(&surface_key), Some(&vec![20]));
-        assert!(observations[0].evidence_ids.contains(&20));
+        let surface_item = observations
+            .iter()
+            .find(|item| item.work_item_key == surface_key)
+            .expect("surface observation remains present");
+        assert!(surface_item.evidence_ids.contains(&20));
         let directory_item = observations
             .iter()
-            .find(|item| item.observation_kind == DIRECTORY_ENTRY_OBSERVATION_SCHEMA)
-            .expect("2xx non-root directory observation");
+            .find(|item| item.observation_kind == DIRECTORY_ENTRY_SET_OBSERVATION_SCHEMA)
+            .expect("2xx non-root exact-origin directory observation set");
         assert_eq!(support.get(&directory_item.work_item_key), Some(&vec![20]));
         assert_eq!(directory_item.technique, "WSTG-INFO");
         assert_eq!(directory_item.allowed_techniques, vec!["WSTG-INFO"]);
         assert_eq!(directory_item.target_live_id, Some(directory.target_id));
+        assert_eq!(directory_item.observation["entry_count"], 1);
         assert_eq!(
-            directory_item.observation["directory_entry_id"],
+            directory_item.observation["source_evidence_ids"],
+            serde_json::json!([20])
+        );
+        assert_eq!(
+            directory_item.observation["entries_preview"][0]["id"],
             directory.directory_entry_id.to_string()
         );
-        assert_eq!(directory_item.observation["source_evidence_id"], 20);
-        assert!(directory_item.observation["directory_entry_row_sha256"]
+        assert!(directory_item.observation["entry_set_sha256"]
             .as_str()
             .is_some_and(|value| value.starts_with("sha256:")));
+    }
+
+    #[test]
+    fn directory_rows_over_manifest_limit_collapse_to_one_exact_origin_set() {
+        let (lineage, evidence, directory, surface) = enumeration_support_fixture();
+        let directories = (0..=MAX_ATTACK_MANIFEST_ITEMS)
+            .map(|index| {
+                let mut row = directory.clone();
+                row.directory_entry_id = Uuid::new_v4();
+                row.url = format!("https://example.test/path-{index}");
+                row
+            })
+            .collect::<Vec<_>>();
+        let mut observations = vec![surface];
+
+        let support =
+            merge_exact_enumeration_support(&lineage, &[evidence], &directories, &mut observations)
+                .expect("same-origin directory rows must aggregate before the manifest bound");
+
+        assert_eq!(observations.len(), 2);
+        let directory_set = observations
+            .iter()
+            .find(|item| item.observation_kind == "directory_entry_set_v1")
+            .expect("one exact-origin directory entry set");
+        assert_eq!(directory_set.observation["entry_count"], 101);
+        assert_eq!(directory_set.observation["preview_count"], 32);
+        assert_eq!(directory_set.observation["preview_truncated"], true);
+        assert!(directory_set.observation["entry_set_sha256"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:")));
+        assert_eq!(support.get(&directory_set.work_item_key), Some(&vec![20]));
+    }
+
+    #[test]
+    fn directory_entry_set_digest_is_order_independent_and_member_sensitive() {
+        let (lineage, evidence, directory, surface) = enumeration_support_fixture();
+        let mut second = directory.clone();
+        second.directory_entry_id = Uuid::new_v4();
+        second.url = "https://example.test/admin".to_string();
+        let rows = vec![directory, second];
+
+        let materialize = |rows: &[EnumerationDirectoryEntryRow]| {
+            let mut observations = vec![surface.clone()];
+            merge_exact_enumeration_support(
+                &lineage,
+                std::slice::from_ref(&evidence),
+                rows,
+                &mut observations,
+            )
+            .expect("exact directory set materializes");
+            observations
+                .into_iter()
+                .find(|item| item.observation_kind == DIRECTORY_ENTRY_SET_OBSERVATION_SCHEMA)
+                .expect("directory set observation")
+        };
+
+        let forward = materialize(&rows);
+        let mut reversed_rows = rows.clone();
+        reversed_rows.reverse();
+        let reversed = materialize(&reversed_rows);
+        assert_eq!(
+            forward.observation["entry_set_sha256"],
+            reversed.observation["entry_set_sha256"]
+        );
+        assert_eq!(forward.observation_hash, reversed.observation_hash);
+
+        let mut drifted_rows = rows;
+        drifted_rows[1].content_length = Some(513);
+        let drifted = materialize(&drifted_rows);
+        assert_ne!(
+            forward.observation["entry_set_sha256"],
+            drifted.observation["entry_set_sha256"]
+        );
+        assert_ne!(forward.observation_hash, drifted.observation_hash);
+        assert_eq!(forward.work_item_key, drifted.work_item_key);
     }
 
     #[test]

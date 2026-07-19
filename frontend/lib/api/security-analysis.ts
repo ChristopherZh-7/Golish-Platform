@@ -14,6 +14,10 @@ export interface AuditRow {
   toolName: string | null;
   status: string;
   detail: Record<string, unknown>;
+  auditRole?: string | null;
+  evidenceTechnique?: string | null;
+  evidenceOutcome?: string | null;
+  evidenceAsset?: string | null;
   createdAt: number;
 }
 
@@ -499,6 +503,10 @@ function normalizeAuditRow(value: unknown): AuditRow {
     toolName: nullableStringField(row, "toolName", "tool_name"),
     status: stringField(row, "status"),
     detail: recordField(row, "detail"),
+    auditRole: nullableStringField(row, "auditRole", "audit_role"),
+    evidenceTechnique: nullableStringField(row, "evidenceTechnique", "evidence_technique"),
+    evidenceOutcome: nullableStringField(row, "evidenceOutcome", "evidence_outcome"),
+    evidenceAsset: nullableStringField(row, "evidenceAsset", "evidence_asset"),
     createdAt: nullableNumberField(row, "createdAt", "created_at") ?? 0,
   };
 }

@@ -37,7 +37,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-db | PostgreSQL 持久化层（runtime/attack V2 rollout + durable Stage Team/repair + Company Controller exact-Worker lease recovery + bounded crawler中断同链reconcile + Candidate TerminalIntent/recovery + typed FactDelta direct/pending route + hash-consistent Memory source invalidation） | [→](backend/golish-db.md) | ✅ |
+| golish-db | PostgreSQL 持久化层（runtime/attack V2 rollout + immutable operation stage fork + plan-first reset/deletion + durable Stage Team/Candidate/Memory authority） | [→](backend/golish-db.md) | ✅ |
 | golish-graphiti | legacy GraphClient + scoped temporal node/edge Assertion-lineage graph（attested generation rebuild，旧 API 兼容） | [→](backend/golish-graphiti.md) | ✅ |
 | golish-indexer | 代码索引基座（IndexerBackend + vtcode 后端 + git 工具） | [→](backend/golish-indexer.md) | ✅ |
 | golish-artifacts | 自动维护项目文档提案（README/CLAUDE，未集成） | [→](backend/golish-artifacts.md) | ✅ |
@@ -79,7 +79,7 @@
 | golish-pentest-mcp | MCP server 二进制（把 pentest 工具作为 MCP 工具暴露） | [→](backend/golish-pentest-mcp.md) | ✅ |
 | golish-vuln-intel-domain | 漏洞情报领域层（纯类型 + I/O 边界 trait，无 I/O 依赖） | [→](backend/golish-vuln-intel-domain.md) | ✅ |
 | golish-vuln-intel | 漏洞情报引擎（NVD/CISA/RSS 摄取 + GitHub PoC + Nuclei 发现） | [→](backend/golish-vuln-intel.md) | ✅ |
-| golish-scan-runner | guarded Recon runner（WhatWeb/ferox）+ current-owner Nuclei 安全 template selector | [→](backend/golish-scan-runner.md) | ✅ |
+| golish-scan-runner | guarded Recon runner（WhatWeb/ferox）+ current-owner exact-origin Nuclei 安全 template selector | [→](backend/golish-scan-runner.md) | ✅ |
 | golish-projects | 项目配置存储 + `{project}/.golish/` 文件管理 + Unix dirfd / Windows capability-handle report storage（无 Tauri 依赖） | [→](backend/golish-projects.md) | ✅ |
 | golish-memory-domain | Memory Fabric 纯领域契约（typed source/Episode/Assertion/event catalog + ContextPack values/layers + 1536 维 schema） | [→](backend/golish-memory-domain.md) | ✅ |
 | golish-post-exploit-domain | Post-Exploit V2 纯领域契约（Foothold/Internal Asset/Attack Path/Action/Approval） | [→](backend/golish-post-exploit-domain.md) | ✅ |
@@ -90,8 +90,8 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-agent-kit | agent runtime 底层构件（typed stage/runtime contracts + org-bound evidence seam + trusted-target active-recon barrier + runtime tool owner fence + Candidate/whole-source resume selector） | [→](backend/golish-agent-kit.md) | ✅ |
-| golish-agent-runtime | 高层 agent runtime（流式 loop + source-pinned worker restore + 每公司持久 Company Controller + 动态 sibling SubAgent + 中断crawler的worklist-first同链恢复 + 同 Controller Gate repair/final turn + Candidate submit-only/terminal recovery） | [→](backend/golish-agent-runtime.md) | ✅ |
+| golish-agent-kit | agent runtime 底层构件（typed stage/runtime/stage-fork contracts + Vuln gate + org-bound evidence + runtime tool owner fence + Candidate/whole-source resume selector） | [→](backend/golish-agent-kit.md) | ✅ |
+| golish-agent-runtime | 高层 agent runtime（流式 loop + source-pinned restore + shared stage-fork Candidate Wave + 每公司持久 Company Controller + exact-gap repair/continuation） | [→](backend/golish-agent-runtime.md) | ✅ |
 | golish-agent-bridge | app↔runtime 桥接层（stable request owner + request-local resume source + trusted lease/runtime-memory/UoW/ContextPack 注入） | [→](backend/golish-agent-bridge.md) | ✅ |
 | golish-sub-agents | sub-agent 系统（source-pinned V2 lifecycle + trusted Company Controller plan/dispatch controls + foreground Nuclei specialist + Wave-read-only analyst + opaque Attempt verifier） | [→](backend/golish-sub-agents.md) | ✅ |
 
@@ -101,8 +101,8 @@
 |---|---|---|---|
 | golish-app-core | 应用边界共享类型（L5：GolishError/DbState/scoping/runtime + opaque trusted operator + exact trusted-target promotion + generation-guarded recon ports） | [→](backend/golish-app-core.md) | ✅ |
 | golish-cleanup-app | Cleanup P7b exact terminal truth、backoff/fair DB-global worker、Gate/residual 与可恢复两阶段组织删除 | [→](backend/golish-cleanup-app.md) | ✅ |
-| golish-agent-app | agent 服务命令面（GUI/CLI shared task-operation kernel + Stage Team read/operator recovery + Candidate Verification/pending-enrichment queue + Memory/Cleanup/Reporting authority） | [→](backend/golish-agent-app.md) | ✅ |
-| golish-pentest-app | pentest 服务命令面（AI 工具桥 + operation-bound EAS/Enumeration/Vuln guarded producers + deterministic JS/API contextual promotion + lease-fenced Post-Exploit/Cleanup wrappers） | [→](backend/golish-pentest-app.md) | ✅ |
+| golish-agent-app | agent 服务命令面（GUI/CLI shared task-operation/stage-fork kernel + Enumeration-manifest Vuln coverage + Stage Team/Candidate/Memory/Cleanup/Reporting authority） | [→](backend/golish-agent-app.md) | ✅ |
+| golish-pentest-app | pentest 服务命令面（operation-bound Enumeration producers + parameter-aware Nuclei DAST + 7-day adysec freshness/operation-pinned N-day proof + guarded EAS/Vuln producers + typed evidence landing） | [→](backend/golish-pentest-app.md) | ✅ |
 | golish-recon-app | recon 服务命令面（stable candidate/unit-review ts-rs contracts + existing-child identity projection + exact-target transaction dedup/query-seed 分层 asset-intel landing） | [→](backend/golish-recon-app.md) | ✅ |
 | golish-vuln-app | vuln-intel 服务命令面（feed/搜索/匹配/PoC·Nuclei 富化 + wiki） | [→](backend/golish-vuln-app.md) | ✅ |
 | golish-platform-app | platform 服务命令面（vault/audit/notes/recordings） | [→](backend/golish-platform-app.md) | ✅ |
@@ -115,7 +115,7 @@
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
 | golish | 组合根 + Tauri 桌面应用（DB-ready lifecycle + AppState + ~300 命令 + typed-provider/typed-HITL CLI） | [→](backend/golish.md) | ✅ |
-| golish / stage_run | headless 单/区间实跑 + whole-source exact claim/recovery + per-invocation direct-active target authority + Company Controller/AI-call/runtime/attack DB diagnostics | [→](backend/golish/stage_run.md) | ✅ |
+| golish / stage_run | headless 单/区间实跑 + shared-DB immutable-source stage fork + whole-source exact recovery + Company Controller/runtime/attack diagnostics | [→](backend/golish/stage_run.md) | ✅ |
 | rig-anthropic-vertex | rig fork：Claude on Vertex AI（CompletionModel + GCP 认证 + server tools） | [→](backend/rig-anthropic-vertex.md) | ✅ |
 | rig-gemini-vertex | rig fork：Gemini on Vertex AI（CompletionModel + GCP 认证 + 流式） | [→](backend/rig-gemini-vertex.md) | ✅ |
 | rig-openai-responses | rig fork：OpenAI Responses API（显式 reasoning 事件，o1/o3/gpt-5.x） | [→](backend/rig-openai-responses.md) | ✅ |
@@ -125,7 +125,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| components | React UI 组件（fail-closed Task/Profile commit + DB-backed Stage Team/Candidate recovery；trace 仅触发 exact refresh） | [→](frontend/components.md) | ✅ |
+| components | React UI 组件（fail-closed Task/Profile commit + DB-backed Stage Team/Candidate recovery + evidence-backed Target origin status；trace 仅触发 exact refresh） | [→](frontend/components.md) | ✅ |
 | hooks | React hooks（Tauri 事件订阅/终端/补全/主题/键盘等） | [→](frontend/hooks.md) | ✅ |
 | lib | 非-UI 基础设施（typed Stage Team + Candidate Verification/recovery/pending-enrichment API + generated safe wire） | [→](frontend/lib.md) | ✅ |
 | pages | 独立页面（ComponentTestbed；主 shell 在 App.tsx） | [→](frontend/pages.md) | ✅ |
@@ -145,6 +145,12 @@
 - 一致性：0 个 ⬜ 残留（backend + frontend 全 ✅）；卡间链接 0 broken。后续维护见 AGENTS.md §2.4/§4（改模块同步更新卡 + 本索引）。
 
 ## Card synchronization notes
+
+- `golish-agent-kit/task_orchestrator`, `golish/cli`, and `golish/stage_run` are current as of 2026-07-18 for Scoping-only routine human confirmation: typed target-scope and Candidate review barriers remain fail-closed, while later ordinary Gate-PASS stage crossings auto-advance without a generic phase confirmation card; the CLI phase-boundary flag remains accepted only for compatibility. Statuses remain ✅.
+- `golish-agent-runtime/agentic_loop` is current as of 2026-07-18 for Stage Team child evidence-manifest landing recovery: exact unknown/foreign evidence authority failures discard the invalid submission and requeue the stable WorkItem within its frozen attempt budget, while lease/fence/version/storage/internal-hash failures remain fail-closed system errors. Status remains ✅.
+- `golish-db` and `golish-db/repo` are current as of 2026-07-18 for plan-first V2 Company-stage reset, exact active-tool unknown-outcome closure, narrow reset-marker resume admission, and target-snapshot-first organization hard-delete convergence across Enumeration manifest RESTRICT edges; statuses remain ✅.
+
+- `frontend/hooks`, `frontend/lib`, and `frontend/components` are current as of 2026-07-17 for restore-window AI event buffering and DB-authoritative recovery of Company Controller dispatch cards whose historical parent tool event was lost; recovered cards are inserted at the durable Request time instead of remaining a timeline footer. Statuses remain ✅.
 
 - `frontend/components` is current as of 2026-07-14 for persistent AIChatPanel context-compaction visibility; its module status remains unchanged.
 - `frontend/components` is current as of 2026-07-15 for fail-closed AIChatPanel execution-profile commit/send/restore semantics; its module status remains ✅.
@@ -178,3 +184,21 @@
 - `golish-db/repo` and `golish-agent-runtime/agentic_loop` are current as of 2026-07-16 for reconciled-child CLI continuation closure: seed replay preserves historical WorkItem epochs while validating dynamic/gate-repair authority; ordinary Company Controller Gate BLOCK and aggregate-token unavailability close only the current request; an authorized successor-Turn authority atomically restores the same plan/unit/leader/Controller WorkerRun/message chain without replacing the Agent or rewriting historical gaps. Migration-time legacy no-gap witnesses are immutable and post-migration creation remains forbidden; statuses remain ✅.
 - `golish-db` is current as of 2026-07-16 for the Operation Turn migration restart hotfix: checksum repair accepts only the audited `20260716000001` trailing-blank-line old→new SHA-384 pair via metadata CAS, while every other unknown/dirty drift remains fail closed; real CLI and GUI cold starts both reached DB ready and Target data readback. Status remains ✅.
 - `frontend/store`, `frontend/lib`, and `frontend/components` are current as of 2026-07-16 for same-identity durable child resume display: cold restore marks stale Agent/tool work interrupted, the authoritative repeated `sub_agent_started` revives the exact WorkerRun card while preserving history, and every detail surface leaves old tools terminal while only newly issued tools render running. Statuses remain ✅.
+- `golish-db`, `golish-db/repo`, `golish-agent-runtime/agentic_loop`, `golish-pentest-app`, and `frontend/components` are current as of 2026-07-17 for exact-gap Controller successor repair, independent two-Turn resume fuel, typed WhatWeb ledger status in Target Surface, and the rule that frontend status never pre-authorizes Enumeration exclusion. Statuses remain ✅.
+- `golish-agent-kit`, `golish-agent-kit/harness`, `golish-agent-runtime/agentic_loop`, `golish-db`, `golish-db/repo`, and `golish-agent-app/ai` are current as of 2026-07-17 for cardinality-safe Vuln `TechniqueOutcomeSet` final seals, fixed-window replay, complete Reporting expansion, post-aggregation Candidate fuel, and post-Gate finalization failure routing. Statuses remain ✅.
+- `golish-pentest-app/pentest_bridge` is current as of 2026-07-17 for Enumeration JS extraction positive-truth precedence: persisted API/parameter findings remain evidence-backed terminal `found` even when unresolved diagnostics coexist, while zero-fact incomplete extraction stays `partial` and terminal sibling truth suppresses identical no-progress repair. Status remains ✅.
+- `golish-agent-kit`, `golish-agent-app/ai`, `golish-agent-runtime/agentic_loop`, and `golish-db/repo` are current as of 2026-07-17 for Scoping pre-freeze subsidiary evidence authorization, evidence-backed checked-empty results, current `{rows:[]}` unit-review compatibility, and latest same-root human-choice repair convergence. Statuses remain ✅.
+- `golish-sub-agents/executor`, `golish-agent-runtime/agentic_loop`, and `frontend/components` are current as of 2026-07-17 for canonical target-scoped Stage Team dispatch: model-visible refs require `kind + target_id`, safe historical target shorthand is canonicalized and deduplicated before DB reauthorization, durable rejection decisions survive ToolResult routing, and historical all-rejected assignments render error rather than queued. Statuses remain ✅.
+- `golish-agent-kit/harness`, `golish-agent-runtime/agentic_loop`, `golish-db/repo`, and `frontend/components` are current as of 2026-07-17 for scope/epoch-bounded Company Controller worker admission: frozen lifetime totals remain replay metadata only, C/G/K live concurrency and per-WorkItem attempts remain enforced, and the UI no longer presents a lifetime worker quota. Statuses remain ✅.
+- `golish-pentest-app/pentest_bridge` and `golish-db/repo` are current as of 2026-07-17 for zero-body uniform-baseline filtering and exact-origin Candidate directory-set aggregation with complete count/hash plus bounded deterministic preview; the final 100-item policy remains post-aggregation. Statuses remain ✅.
+- `golish-pentest-app/pentest_bridge` is current as of 2026-07-17 for the local Nuclei HTTP/SSL template policy: proof, active Vuln scans, and exact replay share one canonical local tree without the broken `-dut` filter, while code/JavaScript/headless/file/OAST/remote-template capabilities remain unavailable and stage/scope/exact-origin/tag-or-exact-id/rate guards remain mandatory. Status remains ✅.
+- `golish-pentest-app/pentest_bridge` is current as of 2026-07-18 for Nuclei operation template snapshots: General binds only operator HTTP/SSL or DAST subtrees and never adysec; fingerprint-targeted checks remote adysec freshness at most once every seven days and pins one commit per Vuln operation; offline proof is reused by operation/source/selection and snapshot-scoped failure stops sibling URL retries without becoming checked-empty. Status remains ✅.
+- `frontend/components` is current as of 2026-07-17 for request-scoped Attack Candidate `stage_run` detail routing: live/blocked/completed Attack Analyst rows remain visible and drillable even when production args contain only `orgs`, while explicit stage conflicts fail closed and Candidate Review remains DB-backed. Status remains ✅.
+- `golish-db`, `golish-db/repo`, `golish-agent-runtime`, `golish-agent-runtime/agentic_loop`, and `frontend/components` are current as of 2026-07-17 for repair-epoch dispatch convergence: a stable Company Controller may parent current-epoch children only under exact DB-owned repair/successor authority, while terminal persistence failures render error instead of permanent queued cards. Statuses remain ✅.
+- `golish-agent-runtime/agentic_loop` is current as of 2026-07-17 for closed final-submitter continuation: a Controller that prepared finalization but returned without a durable submission is resumed through the exact Aggregator claim on the same WorkItem/WorkerRun/message chain instead of being rejected by the open-leader fence. Status remains ✅.
+- `golish-sub-agents/executor`, `golish-agent-runtime/agentic_loop`, and `golish-db/repo` are current as of 2026-07-18 for Stage Team overlap/fence/drain convergence: exact duplicate normalized assignments are rejected before durable writes, begin/finish tool fences share bounded `40P01`/`40001` transaction retry, only typed begin `LeaseLost` poisons the shared bound lease across both lifecycle and generic wrapper, and one child error no longer skips claimable sibling retries. Statuses remain ✅.
+- `golish/cli`, `golish/stage_run`, `golish-agent-app/ai`, `golish-agent-kit/task_orchestrator`, `golish-agent-runtime/agentic_loop`, `golish-db`, and `golish-db/repo` are current as of 2026-07-18 for shared-DB immutable-source stage forks: Scoping adopts sealed scope truth, post-Scoping predecessors use exact per-org final seals, active-stage Targets are snapshotted/fenced, and Candidate-only uses the existing Wave/Gate/Review kernel through a narrow fork entry. Statuses remain ✅.
+- `golish-sub-agents/executor` is current as of 2026-07-19 for Vuln Nuclei timeout ownership: the two guarded Nuclei wrappers retain control through their server-validated 10–600 second foreground deadline and DB landing instead of being dropped by the SubAgent 300-second fallback; generic and anonymous-access tools keep the outer timeout, and timeout remains non-terminal coverage. Status remains ✅.
+- `golish-agent-runtime`, `golish-agent-runtime/agentic_loop`, `golish-sub-agents/executor`, `golish-core`, `golish-app-core`, `golish-pentest-app/pentest_bridge`, `golish-agent-app/ai`, `frontend/lib`, and `frontend/components` are current as of 2026-07-19 for the Vuln DB-authoritative worklist executor: exact-origin capability shards replace LLM formulaic fan-out, primary budget failure narrows to finite single-technique retries, Nuclei cancellation is kill+await+landing, stable target transport can become evidence-backed blocked while runtime failure remains partial, and UI exposes terminal/total/remaining plus separate historical/retry/recovery lanes. Statuses remain ✅; real CLI acceptance is intentionally pending.
+- `golish-db`, `golish-db/repo`, `golish-cleanup-domain`, `golish-cleanup-app`, `golish-app-core`, `golish-recon-app/organizations`, `frontend/lib`, and `frontend/components` are current as of 2026-07-19 for organization-deletion/stage-fork admission convergence: both writers share live Organization lock ordering, reject the losing race before partial cleanup/fork materialization, preserve a typed blocker through IPC, and stop frontend timeout polling on admission rejection. Statuses remain ✅.
+- `golish-db`, `golish-db/repo`, `frontend/lib`, and `frontend/components` are current as of 2026-07-19 for quiescent organization-deletion convergence: a waiting stage Task with no live Worker lease or active tool pointer is atomically closed and audited inside deletion admission, while durable executor authority or unresolved tool ownership still returns the typed blocker and the confirmation copy explains both paths. Statuses remain ✅.

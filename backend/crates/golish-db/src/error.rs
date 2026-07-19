@@ -37,6 +37,17 @@ pub enum DbError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    /// A non-terminal stage-test fork still owns immutable Target scope for
+    /// an organization subtree requested for deletion.
+    #[error(
+        "organization_delete_active_stage_fork: operation_id={operation_id}, stage={stage}, status={status}"
+    )]
+    OrganizationDeletionActiveStageFork {
+        operation_id: uuid::Uuid,
+        stage: String,
+        status: String,
+    },
+
     /// Any other failure, typically carrying context added upstream via
     /// `anyhow`'s `.context(...)`.
     #[error(transparent)]

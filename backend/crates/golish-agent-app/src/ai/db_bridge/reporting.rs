@@ -9,7 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
 
-use golish_agent_kit::harness::handoff_catalog::{CanonicalFactKey, StageHandoffPayload};
+use golish_agent_kit::harness::handoff_catalog::{
+    CanonicalFactKey, CanonicalFactRef, StageHandoffPayload,
+};
 use golish_memory_domain::source_ref::{CanonicalRowId, StoredCanonicalRowId};
 use golish_reporting_domain::{
     CitationSourceType, CleanupBlockedDecisionTruth, CleanupCloseoutTruth, EvidenceAuditTruth,
@@ -390,9 +392,20 @@ struct TechniqueSourceRow {
     run_id: String,
     asset: String,
     technique: String,
+    outcome: String,
+    collected_at: Option<chrono::DateTime<chrono::Utc>>,
+    updated_at: chrono::DateTime<chrono::Utc>,
     row_version: i64,
     content: Value,
     evidence_ids: Vec<i64>,
+}
+
+#[derive(Clone, Debug)]
+struct TechniqueOutcomeSetAuthority {
+    reference: CanonicalFactRef,
+    freshness_floor: chrono::DateTime<chrono::Utc>,
+    gate_passed_at: chrono::DateTime<chrono::Utc>,
+    handoff_evidence: BTreeSet<i64>,
 }
 
 /// Enumerate every exact operation-bound TechniqueOutcome and require it to be
@@ -469,6 +482,7 @@ async fn authoritative_technique_outcome_sources_on(
         .map(|stage| (*stage).to_string())
         .collect::<Vec<_>>();
     let mut sealed_refs = BTreeMap::<TechniqueAuthorityKey, TechniqueAuthority>::new();
+    let mut sealed_sets = Vec::<TechniqueOutcomeSetAuthority>::new();
     let mut handoff_sources = Vec::new();
     for organization_id in organization_ids {
         let handoffs = latest_final_sealed_handoffs_on(
@@ -491,44 +505,95 @@ async fn authoritative_technique_outcome_sources_on(
                 .collect::<BTreeSet<_>>();
             let mut contains_technique_ref = false;
             for reference in payload.canonical_fact_refs {
-                if let CanonicalFactKey::TechniqueOutcome {
-                    organization_id: ref_org,
-                    run_id,
-                    asset,
-                    technique,
-                } = reference.key
-                {
-                    contains_technique_ref = true;
-                    if ref_org != *organization_id
-                        || reference.organization_id != *organization_id
-                        || run_id != operation_id.to_string()
-                        || reference.evidence_ids.is_empty()
-                        || reference
-                            .evidence_ids
-                            .iter()
-                            .any(|evidence_id| !handoff_evidence.contains(evidence_id))
-                        || decode_sha256(&reference.content_sha256).is_err()
-                    {
-                        anyhow::bail!("report_technique_handoff_authority_invalid");
-                    }
-                    let key = TechniqueAuthorityKey {
+                match &reference.key {
+                    CanonicalFactKey::TechniqueOutcome {
                         organization_id: ref_org,
                         run_id,
                         asset,
                         technique,
-                    };
-                    if sealed_refs
-                        .insert(
-                            key,
-                            TechniqueAuthority {
-                                content_sha256: reference.content_sha256,
-                                evidence_ids: reference.evidence_ids,
-                            },
-                        )
-                        .is_some()
-                    {
-                        anyhow::bail!("report_technique_handoff_ref_duplicate");
+                    } => {
+                        contains_technique_ref = true;
+                        if *ref_org != *organization_id
+                            || reference.organization_id != *organization_id
+                            || run_id != &operation_id.to_string()
+                            || reference.evidence_ids.is_empty()
+                            || reference
+                                .evidence_ids
+                                .iter()
+                                .any(|evidence_id| !handoff_evidence.contains(evidence_id))
+                            || decode_sha256(&reference.content_sha256).is_err()
+                        {
+                            anyhow::bail!("report_technique_handoff_authority_invalid");
+                        }
+                        let key = TechniqueAuthorityKey {
+                            organization_id: *ref_org,
+                            run_id: run_id.clone(),
+                            asset: asset.clone(),
+                            technique: technique.clone(),
+                        };
+                        if sealed_refs
+                            .insert(
+                                key,
+                                TechniqueAuthority {
+                                    content_sha256: reference.content_sha256,
+                                    evidence_ids: reference.evidence_ids,
+                                },
+                            )
+                            .is_some()
+                        {
+                            anyhow::bail!("report_technique_handoff_ref_duplicate");
+                        }
                     }
+                    CanonicalFactKey::TechniqueOutcomeSet {
+                        organization_id: ref_org,
+                        run_id,
+                        stage,
+                        terminal_cell_count,
+                        outcome_set_sha256,
+                    } => {
+                        contains_technique_ref = true;
+                        if *ref_org != *organization_id
+                            || reference.organization_id != *organization_id
+                            || run_id != &operation_id.to_string()
+                            || stage != "vuln_triage"
+                            || *terminal_cell_count == 0
+                            || decode_sha256(outcome_set_sha256).is_err()
+                            || decode_sha256(&reference.content_sha256).is_err()
+                            || reference.evidence_ids.is_empty()
+                            || reference
+                                .evidence_ids
+                                .iter()
+                                .any(|evidence_id| !handoff_evidence.contains(evidence_id))
+                        {
+                            anyhow::bail!("report_technique_outcome_set_authority_invalid");
+                        }
+                        let freshness_floor =
+                            sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+                                r#"SELECT unit.started_at
+                                 FROM stage_run_units AS unit
+                                WHERE unit.id=$1 AND unit.operation_id=$2
+                                  AND unit.stage_execution_id=$3
+                                  AND unit.organization_id=$4
+                                  AND unit.stage_kind='vuln_triage'
+                                  AND unit.status='passed' AND unit.started_at IS NOT NULL"#,
+                            )
+                            .bind(handoff.source_stage_run_unit_id)
+                            .bind(operation_id)
+                            .bind(handoff.stage_execution_id)
+                            .bind(organization_id)
+                            .fetch_optional(&mut *connection)
+                            .await?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("report_technique_outcome_set_lineage_invalid")
+                            })?;
+                        sealed_sets.push(TechniqueOutcomeSetAuthority {
+                            reference,
+                            freshness_floor,
+                            gate_passed_at: handoff.gate_passed_at,
+                            handoff_evidence: handoff_evidence.clone(),
+                        });
+                    }
+                    _ => {}
                 }
             }
             if contains_technique_ref {
@@ -544,8 +609,8 @@ async fn authoritative_technique_outcome_sources_on(
 
     let rows = sqlx::query_as::<_, TechniqueSourceRow>(
         r#"SELECT outcome.id,outcome.organization_id,outcome.run_id,outcome.asset,
-                  outcome.technique,outcome.row_version,to_jsonb(outcome) AS content,
-                  outcome.evidence_ids
+                  outcome.technique,outcome.outcome,outcome.collected_at,outcome.updated_at,
+                  outcome.row_version,to_jsonb(outcome.*) AS content,outcome.evidence_ids
              FROM technique_outcomes AS outcome
             WHERE outcome.run_id=$1 AND outcome.organization_id=ANY($2)
             ORDER BY outcome.organization_id,outcome.asset,outcome.technique"#,
@@ -565,6 +630,86 @@ async fn authoritative_technique_outcome_sources_on(
         };
         if rows_by_key.insert(key, row).is_some() {
             anyhow::bail!("report_technique_outcome_duplicate");
+        }
+    }
+    for sealed_set in sealed_sets {
+        let CanonicalFactKey::TechniqueOutcomeSet {
+            organization_id,
+            run_id,
+            stage,
+            terminal_cell_count,
+            outcome_set_sha256,
+        } = &sealed_set.reference.key
+        else {
+            unreachable!("stored authority is an outcome set")
+        };
+        let members = rows_by_key
+            .values()
+            .filter_map(|row| {
+                let observed_at = row.collected_at?;
+                (row.organization_id == *organization_id
+                    && row.run_id == *run_id
+                    && observed_at >= sealed_set.freshness_floor
+                    && observed_at <= sealed_set.gate_passed_at
+                    && row.updated_at <= sealed_set.gate_passed_at)
+                    .then(
+                        || golish_db::repo::canonical_fact_refs::TechniqueOutcomeSetMember {
+                            organization_id: row.organization_id,
+                            run_id: row.run_id.clone(),
+                            asset: row.asset.clone(),
+                            technique: row.technique.clone(),
+                            outcome: row.outcome.clone(),
+                            observed_at,
+                            evidence_ids: row.evidence_ids.clone(),
+                            content: row.content.clone(),
+                        },
+                    )
+            })
+            .collect::<Vec<_>>();
+        let attestation =
+            golish_db::repo::canonical_fact_refs::technique_outcome_set_attestation_at(
+                stage,
+                *organization_id,
+                run_id,
+                &members,
+                Some(sealed_set.gate_passed_at),
+            )
+            .map_err(|_| anyhow::anyhow!("report_technique_outcome_set_changed"))?;
+        let mut ref_evidence_ids = sealed_set.reference.evidence_ids.clone();
+        ref_evidence_ids.sort_unstable();
+        let original_ref_evidence_count = ref_evidence_ids.len();
+        ref_evidence_ids.dedup();
+        if attestation.terminal_cell_count != *terminal_cell_count
+            || attestation.outcome_set_sha256 != *outcome_set_sha256
+            || attestation.content_sha256 != sealed_set.reference.content_sha256
+            || attestation.observed_at != sealed_set.reference.observed_at
+            || attestation.evidence_ids != ref_evidence_ids
+            || ref_evidence_ids.len() != original_ref_evidence_count
+            || ref_evidence_ids
+                .iter()
+                .any(|evidence_id| !sealed_set.handoff_evidence.contains(evidence_id))
+        {
+            anyhow::bail!("report_technique_outcome_set_changed");
+        }
+        for member in members {
+            let key = TechniqueAuthorityKey {
+                organization_id: member.organization_id,
+                run_id: member.run_id,
+                asset: member.asset,
+                technique: member.technique,
+            };
+            if sealed_refs
+                .insert(
+                    key,
+                    TechniqueAuthority {
+                        content_sha256: sha256(&member.content),
+                        evidence_ids: member.evidence_ids,
+                    },
+                )
+                .is_some()
+            {
+                anyhow::bail!("report_technique_handoff_ref_duplicate");
+            }
         }
     }
     for key in sealed_refs.keys() {

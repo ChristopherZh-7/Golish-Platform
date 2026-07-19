@@ -81,6 +81,71 @@ fn resolve_resume_slice(
     Ok((terminal, allowlist))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedForkSlice {
+    entry_stage: StageKind,
+    terminal_stage: StageKind,
+    allowlist: HashSet<StageKind>,
+    adopted_stage_kinds: Vec<StageKind>,
+}
+
+/// Resolve a source-operation fork without ever allowing Scoping itself to be
+/// executed. A fork must name one exact stage or a fully-bounded forward
+/// range; its adopted inputs are the profile-DAG strict ancestors of the
+/// selected entry, in canonical graph order.
+fn resolve_stage_run_fork_slice(profile_id: &str, args: &Args) -> Result<ResolvedForkSlice> {
+    let parse =
+        |value: &str| StageKind::try_parse(value).ok_or_else(|| anyhow!("unknown stage: {value}"));
+    let (entry_stage, terminal_stage) = match (
+        args.only.as_deref(),
+        args.from.as_deref(),
+        args.to.as_deref(),
+    ) {
+        (Some(only), None, None) => {
+            let stage = parse(only)?;
+            (stage, stage)
+        }
+        (None, Some(from), Some(to)) => (parse(from)?, parse(to)?),
+        _ => anyhow::bail!(
+            "--stage-run-fork requires --only <stage> or both --from <stage> and --to <stage>"
+        ),
+    };
+    anyhow::ensure!(
+        entry_stage != StageKind::Scoping,
+        "--stage-run-fork adopts Scoping from the source operation; use --stage-run to execute Scoping"
+    );
+
+    let (resolved_entry, allowlist) = resolve_slice(profile_id, Some(entry_stage), terminal_stage)?;
+    anyhow::ensure!(
+        resolved_entry == entry_stage,
+        "fork slice entry diverges from the requested stage"
+    );
+    let profile = golish_agent_kit::harness::load_embedded_profile(profile_id)
+        .with_context(|| format!("load fork profile {profile_id}"))?
+        .ok_or_else(|| anyhow!("unknown harness profile: {profile_id}"))?;
+    let graph = golish_agent_kit::harness::base_operation_graph()
+        .context("load operation graph for stage fork")?;
+    let dag = graph.project(&profile.allowed_stage_set());
+    let strict_ancestors = dag.ancestors_inclusive(entry_stage);
+    let adopted_stage_kinds = dag
+        .nodes
+        .iter()
+        .copied()
+        .filter(|stage| *stage != entry_stage && strict_ancestors.contains(stage))
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        adopted_stage_kinds.first() == Some(&StageKind::Scoping),
+        "fork entry has no adopted Scoping authority in profile {profile_id}"
+    );
+
+    Ok(ResolvedForkSlice {
+        entry_stage,
+        terminal_stage,
+        allowlist,
+        adopted_stage_kinds,
+    })
+}
+
 const EXACT_RESUME_CHAIN_SQL: &str = r#"SELECT session_id, task_id, agent::text,
               chain IS NOT NULL AS has_persisted_chain
        FROM message_chains
@@ -743,6 +808,240 @@ async fn load_resume_rows(
     }
 }
 
+#[derive(Debug, Clone)]
+struct ValidatedStageForkSource {
+    operation_id: uuid::Uuid,
+    profile: String,
+    project_scope_id: uuid::Uuid,
+    source_scope_snapshot_id: uuid::Uuid,
+    root_organization_id: uuid::Uuid,
+    root_organization_name: String,
+    provider: Option<String>,
+    model: Option<String>,
+    runtime_scope: golish_agent_kit::db_traits::CliRuntimeScope,
+}
+
+fn require_unique_stage_fork_operation(
+    session_id: uuid::Uuid,
+    operation_ids: &[uuid::Uuid],
+) -> Result<uuid::Uuid> {
+    anyhow::ensure!(
+        operation_ids.len() == 1,
+        "stage fork refused: DB session {session_id} has {} operations; pass the exact operation UUID",
+        operation_ids.len()
+    );
+    Ok(operation_ids[0])
+}
+
+async fn task_for_stage_fork_session(
+    pool: &sqlx::PgPool,
+    session: &golish_db::models::Session,
+) -> Result<golish_db::models::Task> {
+    let tasks = golish_db::repo::tasks::list_by_session(pool, session.id)
+        .await
+        .context("list source session tasks for stage fork")?;
+    let mut operation_ids = Vec::new();
+    for task in &tasks {
+        if golish_db::repo::operation_state::get(pool, task.id)
+            .await
+            .context("look up source operation for stage fork")?
+            .is_some()
+        {
+            operation_ids.push(task.id);
+        }
+    }
+    let operation_id = require_unique_stage_fork_operation(session.id, &operation_ids)?;
+    tasks
+        .into_iter()
+        .find(|task| task.id == operation_id)
+        .ok_or_else(|| anyhow!("stage fork source task disappeared"))
+}
+
+async fn load_stage_fork_rows(
+    pool: &sqlx::PgPool,
+    selector: &ResumeSelector,
+) -> Result<(
+    golish_db::models::Session,
+    golish_db::models::Task,
+    golish_db::repo::operation_state::OperationStateRow,
+)> {
+    match selector {
+        ResumeSelector::ChatKey(chat_key) => {
+            anyhow::ensure!(
+                is_supported_resume_chat_key(chat_key),
+                "stage fork refused: chat selector must be a stage-run-* or pentest-chat-* key"
+            );
+            let session = session_by_chat_key(pool, chat_key)
+                .await?
+                .ok_or_else(|| anyhow!("stage fork source session {chat_key} not found"))?;
+            let task = task_for_stage_fork_session(pool, &session).await?;
+            let operation = golish_db::repo::operation_state::get(pool, task.id)
+                .await
+                .context("load selected stage fork source operation")?
+                .ok_or_else(|| anyhow!("stage fork source task {} has no operation", task.id))?;
+            Ok((session, task, operation))
+        }
+        ResumeSelector::Uuid(id) => {
+            if let Some(operation) = golish_db::repo::operation_state::get(pool, *id)
+                .await
+                .context("resolve stage fork UUID as operation")?
+            {
+                let task = golish_db::repo::tasks::get(pool, operation.operation_id)
+                    .await
+                    .context("load stage fork source task")?
+                    .ok_or_else(|| anyhow!("stage fork source operation {id} has no task"))?;
+                let session = golish_db::repo::sessions::get(pool, task.session_id)
+                    .await
+                    .context("load stage fork source session")?
+                    .ok_or_else(|| anyhow!("stage fork source task {} has no session", task.id))?;
+                return Ok((session, task, operation));
+            }
+            let session = golish_db::repo::sessions::get(pool, *id)
+                .await
+                .context("resolve stage fork UUID as DB session")?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "stage fork refused: UUID {id} is neither an operation nor a DB session"
+                    )
+                })?;
+            let task = task_for_stage_fork_session(pool, &session).await?;
+            let operation = golish_db::repo::operation_state::get(pool, task.id)
+                .await
+                .context("load selected stage fork source operation")?
+                .ok_or_else(|| anyhow!("stage fork source task {} has no operation", task.id))?;
+            Ok((session, task, operation))
+        }
+    }
+}
+
+async fn validate_stage_fork_source(
+    pool: &sqlx::PgPool,
+    selector: &ResumeSelector,
+    workspace: &Path,
+    resolved: &ResolvedForkSlice,
+) -> Result<ValidatedStageForkSource> {
+    let (session, task, operation) = load_stage_fork_rows(pool, selector).await?;
+    anyhow::ensure!(
+        task.id == operation.operation_id,
+        "stage fork source task/operation mismatch"
+    );
+    anyhow::ensure!(
+        operation.superseded_by.is_none(),
+        "stage fork source operation was superseded"
+    );
+    resolve_slice(
+        &operation.profile,
+        Some(resolved.entry_stage),
+        resolved.terminal_stage,
+    )
+    .context("stage fork slice is outside the source operation profile")?;
+    let project_scope_id = operation
+        .project_scope_id
+        .ok_or_else(|| anyhow!("stage fork source has no frozen project scope"))?;
+    let frozen =
+        golish_db::repo::operation_org_scope::load_for_operation(pool, operation.operation_id)
+            .await
+            .map_err(anyhow::Error::new)
+            .context("load stage fork source organization scope")?
+            .ok_or_else(|| anyhow!("stage fork source has no organization scope snapshot"))?;
+    anyhow::ensure!(
+        frozen.snapshot.sealed_at.is_some(),
+        "stage fork source scope is not sealed"
+    );
+    anyhow::ensure!(
+        frozen.snapshot.project_scope_id == project_scope_id,
+        "stage fork source project/scope identity mismatch"
+    );
+    let (canonical_workspace, _) =
+        golish_agent_kit::runtime_memory::canonical_workspace_identity(workspace)
+            .map_err(anyhow::Error::new)
+            .context("canonicalize stage fork workspace")?;
+    anyhow::ensure!(
+        frozen.snapshot.project_path_at_freeze == canonical_workspace,
+        "stage fork source belongs to workspace {}, current workspace is {}",
+        frozen.snapshot.project_path_at_freeze,
+        canonical_workspace
+    );
+    anyhow::ensure!(!frozen.units.is_empty(), "stage fork source scope is empty");
+
+    let adopted_names = resolved
+        .adopted_stage_kinds
+        .iter()
+        .map(|stage| stage.as_str().to_string())
+        .collect::<Vec<_>>();
+    for unit in &frozen.units {
+        let expected = adopted_names
+            .iter()
+            // Scoping authority is the already-validated sealed organization
+            // snapshot above; normal Scoping completion deliberately has no
+            // Worker-backed StageHandoff.
+            .filter(|stage| stage.as_str() != StageKind::Scoping.as_str())
+            .cloned()
+            .collect::<Vec<_>>();
+        let seals = golish_db::repo::stage_handoffs::list_latest_final_sealed_for_sources(
+            pool,
+            operation.operation_id,
+            unit.organization_id,
+            &expected,
+        )
+        .await
+        .map_err(anyhow::Error::new)
+        .with_context(|| format!("validate adopted final seals for {}", unit.organization_id))?;
+        let actual = seals
+            .iter()
+            .map(|seal| seal.from_stage_kind.as_str())
+            .collect::<BTreeSet<_>>();
+        let expected_set = expected.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        anyhow::ensure!(
+            actual == expected_set,
+            "stage fork source is incomplete for organization {}: expected {:?}, found {:?}",
+            unit.organization_id,
+            expected_set,
+            actual
+        );
+    }
+
+    let root = frozen
+        .units
+        .iter()
+        .find(|unit| unit.organization_id == frozen.snapshot.root_organization_id)
+        .ok_or_else(|| anyhow!("stage fork source scope has no root unit"))?;
+    let runtime_scope = golish_agent_kit::db_traits::CliRuntimeScope {
+        root_organization_id: frozen.snapshot.root_organization_id,
+        include_subsidiaries: frozen.units.len() > 1,
+        subsidiary_threshold: 51,
+        units: frozen
+            .units
+            .iter()
+            .map(|unit| golish_agent_kit::db_traits::CliRuntimeScopeUnit {
+                organization_id: unit.organization_id,
+                parent_organization_id: unit.parent_organization_id,
+                organization_name: unit.organization_name_at_freeze.clone(),
+                depth: unit.depth,
+                ordinal: unit.ordinal,
+                ownership_percent: unit.ownership_percent.clone(),
+                approval_source: serde_json::json!({
+                    "kind": "stage_fork_source_scope",
+                    "source_operation_id": operation.operation_id,
+                    "source_scope_snapshot_id": frozen.snapshot.id,
+                    "source_decision_row_id": unit.decision_row_id,
+                }),
+            })
+            .collect(),
+    };
+    Ok(ValidatedStageForkSource {
+        operation_id: operation.operation_id,
+        profile: operation.profile,
+        project_scope_id,
+        source_scope_snapshot_id: frozen.snapshot.id,
+        root_organization_id: frozen.snapshot.root_organization_id,
+        root_organization_name: root.organization_name_at_freeze.clone(),
+        provider: session.provider,
+        model: session.model,
+        runtime_scope,
+    })
+}
+
 async fn resolve_stage_run_resume_target(
     pool: &sqlx::PgPool,
     selector: &ResumeSelector,
@@ -1087,6 +1386,9 @@ fn maybe_keep_ephemeral_db(stage_db: &mut StageRunDbConfig, keep: bool) {
 pub async fn run(args: Args) -> Result<()> {
     if args.stage_run_resume.is_some() {
         return run_resume(args).await;
+    }
+    if args.stage_run_fork.is_some() {
+        return run_fork(args).await;
     }
 
     // 1) Resolve profile + stage slice up front (cheap, fails fast on bad input).
@@ -1584,6 +1886,202 @@ pub async fn run(args: Args) -> Result<()> {
     }
 }
 
+/// Create a new operation from one exact GUI/CLI source operation and execute
+/// only the selected post-Scoping slice. Source selection and prefix validation
+/// complete before the bridge can dispatch any provider or pentest tool.
+async fn run_fork(mut args: Args) -> Result<()> {
+    let selector_text = args
+        .stage_run_fork
+        .clone()
+        .ok_or_else(|| anyhow!("--stage-run-fork selector is required"))?;
+    let selector = classify_resume_selector(&selector_text);
+    let workspace = args
+        .resolve_workspace()
+        .context("resolve stage fork workspace")?;
+    let settings_manager = Arc::new(
+        crate::settings::SettingsManager::new()
+            .await
+            .context("init settings manager")?,
+    );
+    settings_manager.ensure_settings_file().await.ok();
+    let settings = settings_manager.get().await;
+    golish_settings::apply_proxy_env(&settings);
+    init_tracing_best_effort(&settings, args.verbose);
+
+    let mut stage_db = prepare_stage_run_db(&args)?;
+    let preexisting_pg_on_port = local_port_is_open(stage_db.config.port);
+    let (db_pool, db_ready) =
+        crate::app::bootstrap::create_lazy_db_pool_with_config(&stage_db.config);
+    let pg_handle_rx = crate::app::bootstrap::spawn_embedded_pg_owned_with_config(
+        db_ready.clone(),
+        stage_db.config.clone(),
+    );
+    eprintln!("[stage-run-fork] waiting for shared embedded Postgres...");
+    if !wait_for_db(&db_ready).await {
+        return Err(anyhow!("embedded Postgres did not become ready in time"));
+    }
+
+    let execution_result: Result<()> = async {
+        let (_, _, preview_operation) = load_stage_fork_rows(&db_pool, &selector).await?;
+        let resolved = resolve_stage_run_fork_slice(&preview_operation.profile, &args)?;
+        let source = validate_stage_fork_source(&db_pool, &selector, &workspace, &resolved).await?;
+        anyhow::ensure!(
+            source.profile == preview_operation.profile,
+            "stage fork source changed during preflight"
+        );
+        if args.provider.is_none() {
+            args.provider = source.provider.clone();
+        }
+        if args.model.is_none() {
+            args.model = source.model.clone();
+        }
+        eprintln!(
+            "[stage-run-fork] source={} scope={} project={} profile={} entry={} to={} adopted={:?}",
+            source.operation_id,
+            source.source_scope_snapshot_id,
+            source.project_scope_id,
+            source.profile,
+            resolved.entry_stage.as_str(),
+            resolved.terminal_stage.as_str(),
+            resolved
+                .adopted_stage_kinds
+                .iter()
+                .map(|stage| stage.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        let app_state = crate::state::AppState::new(
+            settings_manager.clone(),
+            false,
+            None,
+            db_pool.clone(),
+            db_ready,
+        )
+        .await;
+        let agent_state = app_state.extract_agent_state();
+        let (rt_tx, rt_rx) = mpsc::unbounded_channel::<RuntimeEvent>();
+        let runtime: Arc<dyn GolishRuntime> =
+            Arc::new(CliRuntime::new(rt_tx, args.auto_approve, args.json));
+        let session_id = format!("stage-run-{}", uuid::Uuid::new_v4());
+        let (mut bridge, mcp_manager) = crate::cli::initialize_agent(
+            &workspace,
+            &settings,
+            &args,
+            runtime,
+            app_state.indexer_state.clone(),
+            app_state.sidecar_state.clone(),
+            &session_id,
+            Some(app_state.memory_supervisor.unit_of_work()),
+        )
+        .await
+        .context("build stage fork agent bridge")?;
+        crate::ai::commands::configure_bridge(&mut bridge, &agent_state, &session_id, None).await;
+
+        let transcripts_dir = golish_events::op_trace::resolve_transcript_base(Some(&workspace));
+        golish_events::op_trace::set_active_transcript_base(transcripts_dir.clone());
+        match golish_events::TranscriptWriter::new(&transcripts_dir, &session_id).await {
+            Ok(writer) => bridge.set_transcript_writer(writer, transcripts_dir.clone()),
+            Err(error) => tracing::warn!("stage-run-fork transcript init failed: {error}"),
+        }
+        bridge.set_session_id(Some(session_id.clone())).await;
+        bridge
+            .set_execution_mode(golish_agent_kit::execution_mode::ExecutionMode::Task)
+            .await;
+        bridge
+            .set_harness_profile(Some(source.profile.clone()))
+            .await;
+        if args.auto_approve {
+            bridge.set_agent_mode(AgentMode::AutoApprove).await;
+        }
+        if let Err(error) = app_state.memory_supervisor.start().await {
+            if let Some(manager) = mcp_manager {
+                manager.shutdown().await;
+            }
+            return Err(anyhow!(
+                "start stage fork Memory Supervisor: {}",
+                error.code()
+            ));
+        }
+
+        let bridge = Arc::new(bridge);
+        crate::ai::commands::configure_bridge_background_listeners(&bridge, &agent_state).await;
+        bridge.mark_frontend_ready().await;
+        let collected: Arc<Mutex<Vec<AiEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        spawn_event_consumer(
+            rt_rx,
+            bridge.clone(),
+            collected.clone(),
+            args.auto_approve,
+            StageRunAutoApprovalPolicy {
+                trusted_scope_response: None,
+                include_subsidiaries: None,
+                confirmed_organization_id: Some(source.root_organization_id),
+                approve_phase_boundaries: args.approve_phase_boundaries,
+            },
+        );
+
+        let objective = args.execute.clone().unwrap_or_else(|| {
+            format!(
+                "基于 operation {} 的完整前置数据，只重新测试 {} 到 {}",
+                source.operation_id,
+                resolved.entry_stage.as_str(),
+                resolved.terminal_stage.as_str()
+            )
+        });
+        let result = orchestrate_stage_fork(
+            &bridge,
+            &db_pool,
+            &session_id,
+            &source,
+            &resolved,
+            &objective,
+        )
+        .await
+        .map(|outcome| outcome.response);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let _ = golish_events::op_trace::write_trace_artifacts(&transcripts_dir, &session_id);
+        let events = collected
+            .lock()
+            .map(|events| events.clone())
+            .unwrap_or_default();
+        let report = format_report(
+            &events,
+            &result,
+            &source.profile,
+            resolved.entry_stage,
+            resolved.terminal_stage,
+            &session_id,
+            &transcripts_dir,
+        );
+        if args.json {
+            for event in &events {
+                if let Ok(line) = serde_json::to_string(event) {
+                    println!("{line}");
+                }
+            }
+        } else {
+            println!("{report}");
+        }
+        if let Some(manager) = mcp_manager {
+            manager.shutdown().await;
+        }
+        let shutdown = app_state.memory_supervisor.shutdown().await;
+        match (result, shutdown) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(anyhow!(
+                "shutdown stage fork Memory Supervisor: {}",
+                error.code()
+            )),
+            (Ok(_), Ok(())) => Ok(()),
+        }
+    }
+    .await;
+
+    finish_embedded_pg(pg_handle_rx, !preexisting_pg_on_port).await;
+    maybe_keep_ephemeral_db(&mut stage_db, args.keep_ephemeral_db);
+    execution_result
+}
+
 /// Resume one exact interrupted headless stage-run without allocating a new
 /// chat session, task, operation, or freshness epoch.
 async fn run_resume(mut args: Args) -> Result<()> {
@@ -1980,6 +2478,56 @@ pub(crate) async fn orchestrate(
     prepared.run_fresh(launch).await
 }
 
+async fn orchestrate_stage_fork(
+    bridge: &Arc<AgentBridge>,
+    db_pool: &Arc<sqlx::PgPool>,
+    session_id: &str,
+    source: &ValidatedStageForkSource,
+    resolved: &ResolvedForkSlice,
+    objective: &str,
+) -> Result<crate::ai::task_operation::FreshTaskOperationOutcome> {
+    use crate::ai::task_operation::{
+        prepare_task_operation, FreshOperationScope, StageForkTaskOperationLaunch,
+        SubsidiaryScopePolicy,
+    };
+
+    let subsidiary_policy = SubsidiaryScopePolicy {
+        include_subsidiaries: source.runtime_scope.include_subsidiaries,
+        ownership_threshold_percent: source.runtime_scope.subsidiary_threshold,
+    };
+    let scope = FreshOperationScope::confirmed_organization_intake(
+        source.root_organization_name.clone(),
+        source.root_organization_id,
+        Some(source.runtime_scope.clone()),
+        &subsidiary_policy,
+    )?;
+    let launch = StageForkTaskOperationLaunch::new(
+        objective,
+        &source.profile,
+        source.operation_id,
+        source.source_scope_snapshot_id,
+        resolved.entry_stage,
+        resolved.terminal_stage,
+        resolved.allowlist.clone(),
+        resolved.adopted_stage_kinds.clone(),
+        scope,
+        subsidiary_policy,
+    )?;
+    let request = bridge
+        .begin_top_level_request()
+        .await
+        .context("start stage fork request")?;
+    let prepared = prepare_task_operation(
+        bridge.clone(),
+        db_pool.clone(),
+        session_id,
+        objective,
+        request,
+    )
+    .await?;
+    prepared.run_stage_fork(launch).await
+}
+
 /// Scoping must derive and freeze its organization scope from the persisted
 /// typed human decision and the trusted deliverable submission. Pre-freezing
 /// the CLI scope during operation creation would make finalization enter its
@@ -2090,6 +2638,8 @@ async fn orchestrate_resume(
         )
         .map_err(anyhow::Error::new)
         .context("authorize exact-resume project scope")?;
+        let stage_fork_target_authority =
+            immutable_stage_fork_target_authority(db_pool.as_ref(), target).await?;
 
         let mut orchestrator = prepared.build_orchestrator(TaskOperationConfig {
             profile_override: Some(target.profile.clone()),
@@ -2097,6 +2647,7 @@ async fn orchestrate_resume(
             harness_org_id: Some(target.organization_id),
             current_invocation_target_authority: persisted_resume_target_authority(
                 &target.state_blob,
+                stage_fork_target_authority,
             )?,
             ..TaskOperationConfig::default()
         });
@@ -2137,16 +2688,50 @@ async fn orchestrate_resume(
     prepared.finish(result).await
 }
 
-fn persisted_resume_target_authority(state_blob: &serde_json::Value) -> Result<Option<bool>> {
+async fn immutable_stage_fork_target_authority(
+    pool: &sqlx::PgPool,
+    target: &ValidatedResumeTarget,
+) -> Result<bool> {
+    let Some(fork) = golish_db::repo::operation_stage_forks::get(pool, target.operation_id).await?
+    else {
+        return Ok(false);
+    };
+    anyhow::ensure!(
+        fork.operation_id == target.operation_id
+            && fork.target_profile == target.profile
+            && fork.target_runtime_memory_contract == target.runtime_memory_contract.as_str()
+            && fork.expected_target_count > 0,
+        "resume refused: immutable stage-fork target authority does not match the selected operation"
+    );
+    let frozen_targets =
+        golish_db::repo::operation_stage_forks::list_targets(pool, target.operation_id).await?;
+    anyhow::ensure!(
+        frozen_targets.len() == fork.expected_target_count as usize
+            && frozen_targets.iter().all(|row| {
+                row.operation_id == target.operation_id
+                    && row.scope_snapshot_id == fork.target_scope_snapshot_id
+                    && row.target_scope_at_fork.trim().eq_ignore_ascii_case("in")
+                    && !row.canonical_identity_sha256.trim().is_empty()
+            }),
+        "resume refused: immutable stage-fork target manifest is incomplete or inconsistent"
+    );
+    Ok(true)
+}
+
+fn persisted_resume_target_authority(
+    state_blob: &serde_json::Value,
+    immutable_stage_fork_target_authority: bool,
+) -> Result<Option<bool>> {
     golish_agent_kit::task_orchestrator::harness_resume::current_invocation_target_authority_from_state_blob(
         state_blob,
     )
     .context("restore persisted fresh target authority for exact resume")
     // Exact resume is a headless stage-run surface, not the GUI interactive
     // lifecycle. A missing marker is therefore not permission to consult an
-    // organization's historical targets: fail closed until a fresh invocation
-    // supplies an exact --target again.
-    .map(|authority| Some(authority.unwrap_or(false)))
+    // organization's historical targets. An immutable stage fork is the only
+    // marker-free exception because its exact non-empty target manifest was
+    // validated and frozen in the operation-creation transaction.
+    .map(|authority| Some(authority.unwrap_or(immutable_stage_fork_target_authority)))
 }
 
 /// Watch the runtime event stream: resolve only typed, policy-backed
@@ -3679,7 +4264,7 @@ mod tests {
             false,
         );
         assert_eq!(
-            persisted_resume_target_authority(&company_only)
+            persisted_resume_target_authority(&company_only, false)
                 .expect("valid persisted company-only marker"),
             Some(false)
         );
@@ -3689,13 +4274,14 @@ mod tests {
             true,
         );
         assert_eq!(
-            persisted_resume_target_authority(&exact_target)
+            persisted_resume_target_authority(&exact_target, false)
                 .expect("valid persisted exact-target marker"),
             Some(true)
         );
         assert_eq!(
             persisted_resume_target_authority(
-                &serde_json::json!({"profile": "red_team", "current_stage": "scoping"})
+                &serde_json::json!({"profile": "red_team", "current_stage": "scoping"}),
+                false,
             )
             .expect("old headless operation without a marker must fail closed"),
             Some(false)
@@ -3707,7 +4293,19 @@ mod tests {
                 "current_invocation_target_authority": "false"
             }
         });
-        assert!(persisted_resume_target_authority(&malformed).is_err());
+        assert!(persisted_resume_target_authority(&malformed, false).is_err());
+    }
+
+    #[test]
+    fn exact_resume_uses_immutable_stage_fork_targets_when_marker_is_missing() {
+        let missing_marker =
+            serde_json::json!({"profile": "red_team", "current_stage": "external_attack_surface"});
+
+        assert_eq!(
+            persisted_resume_target_authority(&missing_marker, true)
+                .expect("immutable stage-fork targets are trusted launch authority"),
+            Some(true)
+        );
     }
 
     #[test]
@@ -3789,6 +4387,112 @@ mod tests {
     fn resolve_from_to_requires_to_or_only() {
         let args = Args::parse_from(["golish", "--stage-run"]);
         assert!(resolve_from_to(&args).is_err());
+    }
+
+    #[test]
+    fn resolve_stage_run_fork_only_candidate_adopts_exact_prefix() {
+        let args = Args::parse_from([
+            "golish",
+            "--stage-run-fork",
+            "425c7693-99fb-4598-8361-62275c9413b1",
+            "--only",
+            "attack_candidate",
+        ]);
+        let resolved = resolve_stage_run_fork_slice("pentest", &args).expect("candidate fork");
+        assert_eq!(resolved.entry_stage, StageKind::AttackCandidate);
+        assert_eq!(resolved.terminal_stage, StageKind::AttackCandidate);
+        assert_eq!(
+            resolved.allowlist,
+            HashSet::from([StageKind::AttackCandidate])
+        );
+        assert_eq!(
+            resolved.adopted_stage_kinds,
+            vec![
+                StageKind::Scoping,
+                StageKind::TargetIntel,
+                StageKind::ExternalAttackSurface,
+                StageKind::Enumeration,
+                StageKind::VulnTriage,
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_stage_run_fork_range_adopts_only_strict_prefix() {
+        let args = Args::parse_from([
+            "golish",
+            "--stage-run-fork",
+            "425c7693-99fb-4598-8361-62275c9413b1",
+            "--from",
+            "enumeration",
+            "--to",
+            "attack_candidate",
+        ]);
+        let resolved = resolve_stage_run_fork_slice("pentest", &args).expect("range fork");
+        assert_eq!(resolved.entry_stage, StageKind::Enumeration);
+        assert_eq!(resolved.terminal_stage, StageKind::AttackCandidate);
+        assert_eq!(
+            resolved.allowlist,
+            HashSet::from([
+                StageKind::Enumeration,
+                StageKind::VulnTriage,
+                StageKind::AttackCandidate,
+            ])
+        );
+        assert_eq!(
+            resolved.adopted_stage_kinds,
+            vec![
+                StageKind::Scoping,
+                StageKind::TargetIntel,
+                StageKind::ExternalAttackSurface,
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_stage_run_fork_rejects_scoping_and_incomplete_range() {
+        for argv in [
+            vec![
+                "golish",
+                "--stage-run-fork",
+                "425c7693-99fb-4598-8361-62275c9413b1",
+                "--only",
+                "scoping",
+            ],
+            vec![
+                "golish",
+                "--stage-run-fork",
+                "425c7693-99fb-4598-8361-62275c9413b1",
+                "--from",
+                "enumeration",
+            ],
+            vec![
+                "golish",
+                "--stage-run-fork",
+                "425c7693-99fb-4598-8361-62275c9413b1",
+                "--to",
+                "attack_candidate",
+            ],
+        ] {
+            let args = Args::parse_from(argv);
+            assert!(resolve_stage_run_fork_slice("pentest", &args).is_err());
+        }
+    }
+
+    #[test]
+    fn stage_run_fork_session_selector_requires_exactly_one_operation() {
+        let session_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::new_v4();
+        assert_eq!(
+            require_unique_stage_fork_operation(session_id, &[operation_id]).unwrap(),
+            operation_id
+        );
+        assert!(require_unique_stage_fork_operation(session_id, &[]).is_err());
+        assert!(require_unique_stage_fork_operation(
+            session_id,
+            &[operation_id, uuid::Uuid::new_v4()]
+        )
+        .is_err());
     }
 
     #[test]

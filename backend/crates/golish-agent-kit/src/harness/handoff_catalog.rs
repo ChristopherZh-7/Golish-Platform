@@ -57,6 +57,13 @@ pub enum CanonicalFactKey {
         asset: String,
         technique: String,
     },
+    TechniqueOutcomeSet {
+        organization_id: Uuid,
+        run_id: String,
+        stage: String,
+        terminal_cell_count: u32,
+        outcome_set_sha256: String,
+    },
     /// One immutable, server-frozen attack-candidate reasoning cell. The DB
     /// resolver binds this key back to the exact operation/org manifest before
     /// it can enter a handoff.
@@ -75,6 +82,19 @@ pub struct CanonicalFactRef {
     pub observed_at: chrono::DateTime<chrono::Utc>,
     pub content_sha256: String,
     pub evidence_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TechniqueOutcomeSetCell {
+    pub asset: String,
+    pub technique: String,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TechniqueOutcomeSetIdentity {
+    pub terminal_cell_count: u32,
+    pub outcome_set_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -157,6 +177,59 @@ fn sha256_json(value: &Value) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// Build the compact identity committed by a Vuln Triage outcome-set key.
+/// The DB resolver independently rebuilds the same identity from every exact
+/// operation-owned `technique_outcomes` row before accepting the handoff.
+pub fn technique_outcome_set_identity(
+    stage: &str,
+    organization_id: Uuid,
+    run_id: &str,
+    cells: &[TechniqueOutcomeSetCell],
+) -> Result<TechniqueOutcomeSetIdentity, HandoffCatalogError> {
+    if stage != "vuln_triage" || run_id.trim().is_empty() {
+        return Err(HandoffCatalogError::Invalid(
+            "technique_outcome_set_identity",
+        ));
+    }
+    let mut normalized = cells.to_vec();
+    if normalized.iter().any(|cell| {
+        cell.asset.trim().is_empty()
+            || cell.technique.trim().is_empty()
+            || !matches!(
+                cell.state.as_str(),
+                "found" | "checked_empty" | "blocked" | "not_applicable"
+            )
+    }) {
+        return Err(HandoffCatalogError::Invalid("technique_outcome_set_cell"));
+    }
+    normalized.sort_by(|left, right| {
+        left.asset
+            .cmp(&right.asset)
+            .then_with(|| left.technique.cmp(&right.technique))
+    });
+    if normalized
+        .windows(2)
+        .any(|pair| pair[0].asset == pair[1].asset && pair[0].technique == pair[1].technique)
+    {
+        return Err(HandoffCatalogError::Invalid(
+            "technique_outcome_set_duplicate_cell",
+        ));
+    }
+    let terminal_cell_count =
+        u32::try_from(normalized.len()).map_err(|_| HandoffCatalogError::TooLarge)?;
+    let outcome_set_sha256 = sha256_json(&serde_json::json!({
+        "schema": "technique_outcome_identity_set_v1",
+        "stage": stage,
+        "organization_id": organization_id,
+        "run_id": run_id,
+        "cells": normalized,
+    }));
+    Ok(TechniqueOutcomeSetIdentity {
+        terminal_cell_count,
+        outcome_set_sha256,
+    })
 }
 
 /// Build a final-seal command entirely from server runtime/Gate state. The DB
@@ -308,6 +381,49 @@ mod tests {
         assert_eq!(seal.deliverable_submission_id, deliverable_submission_id);
         assert_eq!(seal.gate_decision["outcome"], "pass");
         assert_eq!(seal.gate_decision_hash.len(), 64);
+    }
+
+    #[test]
+    fn technique_outcome_set_identity_is_order_independent_and_serde_stable() {
+        let organization_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4().to_string();
+        let mut cells = (0..360)
+            .map(|index| TechniqueOutcomeSetCell {
+                asset: format!("https://host-{:03}.example", index / 10),
+                technique: format!("GOLISH-VULN-{:02}", index % 10),
+                state: "blocked".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let first = technique_outcome_set_identity("vuln_triage", organization_id, &run_id, &cells)
+            .expect("complete set identity");
+        cells.reverse();
+        let second =
+            technique_outcome_set_identity("vuln_triage", organization_id, &run_id, &cells)
+                .expect("reversed set identity");
+        assert_eq!(first, second);
+        assert_eq!(first.terminal_cell_count, 360);
+        let key = CanonicalFactKey::TechniqueOutcomeSet {
+            organization_id,
+            run_id,
+            stage: "vuln_triage".to_string(),
+            terminal_cell_count: first.terminal_cell_count,
+            outcome_set_sha256: first.outcome_set_sha256,
+        };
+        assert_eq!(
+            serde_json::from_value::<CanonicalFactKey>(serde_json::to_value(&key).unwrap())
+                .unwrap(),
+            key
+        );
+
+        let empty = technique_outcome_set_identity(
+            "vuln_triage",
+            organization_id,
+            &Uuid::new_v4().to_string(),
+            &[],
+        )
+        .expect("an authoritative zero denominator has a stable identity");
+        assert_eq!(empty.terminal_cell_count, 0);
+        assert_eq!(empty.outcome_set_sha256.len(), 64);
     }
 
     #[test]

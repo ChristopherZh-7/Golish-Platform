@@ -6,6 +6,7 @@ import {
   jsAnalysisList,
   normalizeBackendSurfaceHierarchy,
   normalizeCapturePayload,
+  oplogListByTarget,
   targetAssetsList,
 } from "./security-analysis";
 
@@ -131,6 +132,30 @@ describe("security-analysis api normalization", () => {
         id: "fingerprint-1",
         targetId: "target-1",
         evidence: [evidence],
+      }),
+    ]);
+  });
+
+  it("keeps evidence-ledger outcome fields used by Target WhatWeb status", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      {
+        id: 29047,
+        target_id: "target-1",
+        audit_role: "evidence",
+        evidence_technique: "GOLISH-EAS-WEB-FINGERPRINT",
+        evidence_outcome: "blocked",
+        evidence_asset: "http://123.6.40.244:8000",
+        detail: {},
+        created_at: 1,
+      },
+    ]);
+
+    await expect(oplogListByTarget("target-1")).resolves.toEqual([
+      expect.objectContaining({
+        auditRole: "evidence",
+        evidenceTechnique: "GOLISH-EAS-WEB-FINGERPRINT",
+        evidenceOutcome: "blocked",
+        evidenceAsset: "http://123.6.40.244:8000",
       }),
     ]);
   });

@@ -1,5 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api/client";
+import en from "@/lib/i18n/en.json";
+import zhCN from "@/lib/i18n/zh-CN.json";
 
 const mocks = vi.hoisted(() => ({
   deleteOrganization: vi.fn(),
@@ -103,6 +106,15 @@ describe("TargetGroupedView delete confirmation", () => {
     });
   });
 
+  it("discloses that only paused stage tasks without active authority are stopped", () => {
+    expect(en.organizations.deleteConfirm).toContain(
+      "Paused stage tasks without an active executor will be stopped"
+    );
+    expect(zhCN.organizations.deleteConfirm).toContain(
+      "没有活动执行者的已暂停阶段任务会被停止"
+    );
+  });
+
   it("requires the in-app confirmation before deleting an organization", async () => {
     render(
       <TargetGroupedView
@@ -144,5 +156,48 @@ describe("TargetGroupedView delete confirmation", () => {
       })
     );
     await waitFor(() => expect(mocks.onReloadTargets).toHaveBeenCalledOnce());
+  });
+
+  it("shows an actionable active-stage blocker without polling deletion", async () => {
+    mocks.deleteOrganization.mockRejectedValueOnce(
+      new ApiError(
+        "organization_delete",
+        {
+          code: "ORGANIZATION_DELETE_ACTIVE_STAGE_FORK",
+          message:
+            "Organization deletion is blocked by active stage fork operation-1 (vuln_triage, task waiting)",
+        },
+        "deadbeef"
+      )
+    );
+    render(
+      <TargetGroupedView
+        targets={[]}
+        t={(key) => translations[key] ?? key}
+        onAdd={vi.fn(async () => null)}
+        onBatchAdd={vi.fn(async () => [])}
+        onDelete={vi.fn(async () => undefined)}
+        onDeleteMany={vi.fn(async () => undefined)}
+        onReloadTargets={mocks.onReloadTargets}
+        onToggleScope={vi.fn(async () => undefined)}
+        onUpdateNotes={vi.fn()}
+      />
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "request organization delete",
+      })
+    );
+    const readsBeforeDelete = mocks.listOrganizations.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(
+      await screen.findByText(
+        "A stage task still has an active executor or unresolved tool outcome. Stop or recover it before deleting."
+      )
+    ).toBeVisible();
+    expect(mocks.listOrganizations).toHaveBeenCalledTimes(readsBeforeDelete);
+    expect(mocks.onReloadTargets).not.toHaveBeenCalled();
   });
 });

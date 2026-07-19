@@ -318,8 +318,22 @@ fn stage_team_dispatch_workers_tool_definition() -> ToolDefinition {
                             },
                             "subject_refs": {
                                 "type": "array",
-                                "description": "Optional canonical subject references inside this company's frozen scope.",
-                                "items": { "type": "object" }
+                                "description": "Optional canonical target references inside this company's frozen scope. Use exact objects shaped as {\"kind\":\"target\",\"target_id\":\"<uuid>\"}; never put target_url in a subject ref. Omit subject_refs only for an intentional whole-company assignment.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": ["target"]
+                                        },
+                                        "target_id": {
+                                            "type": "string",
+                                            "minLength": 1
+                                        }
+                                    },
+                                    "required": ["kind", "target_id"],
+                                    "additionalProperties": false
+                                }
                             }
                         },
                         "required": ["dedupe_key", "role", "kind", "objective"],
@@ -466,6 +480,25 @@ mod tests {
         let mut tools = vec![td("pentest_run")];
         apply_stage_tool_hiding(&mut tools, &None, "pentester");
         assert_eq!(tools.len(), 1, "no hider → list untouched");
+    }
+
+    #[test]
+    fn stage_team_dispatch_schema_requires_canonical_target_refs() {
+        let tool = stage_team_dispatch_workers_tool_definition();
+        let subject_ref = &tool.parameters["properties"]["workers"]["items"]["properties"]
+            ["subject_refs"]["items"];
+
+        assert_eq!(subject_ref["type"], "object");
+        assert_eq!(
+            subject_ref["required"],
+            serde_json::json!(["kind", "target_id"])
+        );
+        assert_eq!(
+            subject_ref["properties"]["kind"]["enum"],
+            serde_json::json!(["target"])
+        );
+        assert_eq!(subject_ref["additionalProperties"], false);
+        assert!(subject_ref["properties"].get("target_url").is_none());
     }
 
     #[test]

@@ -43,3 +43,12 @@
 just check-fe
 just test-fe   # vitest（含 useAiEvents/useTauriEvents 等 hook 测试）
 ```
+
+## AI session restore event buffering（2026-07-17）
+
+- `useAiEvents` 对带具体 backend `session_id`、但 conversation → terminal 映射尚未恢复完成的事件使用有界
+  per-session FIFO；不再把恢复窗口误判成 permanently unknown 后直接丢弃。
+- FIFO 只在真实 terminal session 可解析后经原 sequence/handler 路径重放；入缓冲不会提前推进
+  `lastSeenSeq`。title-generation 事件仍忽略，空/`unknown` identity 仍只能走 active terminal fallback。
+- 缓冲跨 React effect remount 保留，并限制为 32 个 session、每 session 512 条；hook cleanup 取消 store/Tauri
+  subscriptions，但不会破坏等待 conversation restore 的事件。

@@ -62,3 +62,19 @@
 just check-fe   # biome + typecheck（含 ts-rs 绑定漂移检查）
 just test-fe    # vitest
 ```
+
+## Durable dispatch recovery UI support（2026-07-17）
+
+- `api/stage-team.ts::getStageTeamReadModel` 也是 Company Controller detail 的历史派工恢复 authority：组件只用
+  exact `operationId + stageExecutionId` 读取，并以 `requests[].parentWorkerRunId`、`acceptedWorkItemId` 和
+  `workItems[].workers[]` 重建缺失的 UI 投影。
+- `i18n/en.json` 与 `i18n/zh-CN.json` 提供恢复派工的 loading/error/empty/success 文案；这些文案不改变
+  scheduler truth，也不能从 prose 推断 durable Request。
+
+## Operation-scoped Vuln coverage API（2026-07-19）
+
+- `api/stage-coverage.ts` 的 read wrapper可携带 operation id；Stage Team Vuln视图必须传 exact operation，不允许从最新 run或本地事件猜 coverage。返回的 cell `details` 只用于 attempt/retry显示，terminal truth仍由后端 state与 evidence refs决定。
+
+## Organization deletion blocker translation（2026-07-19）
+
+- `api/error-codes.ts` 把 `ORGANIZATION_DELETE_ACTIVE_STAGE_FORK` 翻译为“仍有活动执行者或未决工具结果，需先停止或恢复”的可操作提示；`i18n/*.json` 的删除确认同步披露 quiescent paused Task会被自动停止。未知 code 仍保留 backend fallback message，不能从字符串解析 blocker 类型。

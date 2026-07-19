@@ -1,6 +1,6 @@
 # golish-agent-kit / task_orchestrator
 
-> **一句话职责**：harness 驱动的自动化任务执行——一个 Task 由 metalcraft Executor 在 profile 投影的 Operation DAG 上推进：每阶段自规划+派发 specialist、提交 StageDeliverable、过确定性 evidence gate 才前进（大阶段边界 HITL），末尾 reporter 收尾。
+> **一句话职责**：harness 驱动的自动化任务执行——一个 Task 由 metalcraft Executor 在 profile 投影的 Operation DAG 上推进：每阶段自规划+派发 specialist、提交 StageDeliverable、过确定性 evidence gate 才前进；常规人工确认只在 Scoping，后续阶段经专用安全 barrier 后自动推进，末尾 reporter 收尾。
 
 - **类型**：目录模块（属于 crate [`golish-agent-kit`](../golish-agent-kit.md)）
 - **路径**：`backend/crates/golish-agent-kit/src/task_orchestrator/`
@@ -31,6 +31,7 @@
 | `agent_run_checkpoint` | P2a 细粒度 agent-run checkpoint DTO + `state_blob.agent_run` merge helpers |
 | `stage_refiner` | Stage-aware deterministic repair owner：submit/gate 失败后生成 capability-first `RepairDirective`，并转换为 sub-agent `SubmitRepairMode` |
 | `runtime_supervisor` | PentAGI-style in-run strategy supervisor：重复/停滞工具触发后解析 LLM JSON，按 stage/tool policy 裁剪成 `StrategyDirective` |
+| `two_level_phase_gate` | graph-flow 流转闸：先执行 Candidate V2 review 与 TargetIntel→EAS exact target-scope barrier；其它 post-Scoping stage 在 Gate PASS 后自动推进，不再打开 generic phase confirmation |
 | `types`（planning DTO / token usage / 执行上下文） | 编排类型 |
 | `prompts` | 各阶段 prompt 模板 |
 
@@ -53,6 +54,7 @@
 ## 注意事项 / 坑
 
 - **不变量 I7/I8**：每阶段必须过 evidence gate 才前进；gate 是确定性规则，不能拿「agent 自信说完成」当通过。
+- 常规 HITL 只属于 Scoping。`two_level_phase_gate` 仍先执行 exact Candidate review 与主动目标范围授权，随后对所有 post-Scoping 普通 crossing 返回 `Allowed`；这不等于自动批准 Candidate、扩大 scope、批准高风险 tool call 或绕过 Gate BLOCK。`phases.json.entry_approval` / profile approval policy 保留为风险与兼容元数据，前端历史 confirmation renderer 和 CLI flag 也无需删除。
 - Candidate contract routing 必须同时读取 operation persisted `RuntimeMemoryContract` 与 `AttackExecutionContract`，但 synthesis、blocking review 与 verifier 分开 gate：`attack_candidate` 在 runtime-memory 可写 V2 且 attack contract `writes_v2()` 时进入 relational `attack_analyst` 路由，覆盖两个 dual contract并产生真实 shadow sample；review barrier 和 `candidate_verifier`/exact DB truth 只有两者都为 `v2_only` 才启用，Legacy/dual 不读 barrier、不 hold、不执行 verifier。同一 effective-specialist 解析用于 fresh stage prompt 与裸 resume 的 `stage_run` one-shot force。contract lookup 失败时 Candidate primary 留在 specialist-only 路由，交由 `stage_run` 权威重读 fail closed。Legacy/dual Verification 保留旧 deliverable candidate 的 bounded `chain_wave` fallback。V2 Gate PASS 后 `resolve_stage_flow_outcome` 重读并校验同 operation/scope/current-wave 全部 Unit truth，再调用 `attack_v2_consolidate_wave`；只有返回 identity/decision/count shape 全部匹配才发安全的 `AttackWaveConsolidated` trace，并以 `durable_wave_cursor=true` 把 durable终态交给 graph：`opened_next_wave` 回 AttackCandidate，`exhausted` 固定 Reporting，`closed_no_delta` 只有 proof-backed + Finding-linked exact `verified` Attempt 才走 AccessValidation，零 Candidate / 全 refuted / blocked 都走 Reporting。`pending_enrichment` 是显式可观察 BLOCK：trace 带 pending count，source Wave 不推进，不能当 invalid/error 或伪造下一 Wave。missing/extra/DB error/foreign/inconsistent/consolidation failure 一律改判 BLOCK，不能回退进程内 wave state。
 - Reporting stage entry 先通过 `DbRepoProvider::reporting_build_validated_revision` 从完整 canonical DB source set build/reuse validated revision；失败时在任何 agent turn 前 BLOCK。stage close 再用 `reporting_gate_truth` 重读 current truth。Reporting 跳过 generic enrichment/planner/wiki prior，只允许最小 StageDeliverable；stage seam 不持有 artifact/finalizer 能力，最终发布只能走显式本地 operator command。
 - `bridge_executor`（`AgentExecutor` 实现）在 `golish-agent-bridge`（依赖 AgentBridge）；本模块只持 trait。
@@ -98,6 +100,11 @@
 - `TaskOrchestrator::resume(task_id, user_message, ...)` 把本次非空 continuation/steering 文本作为 request-local `ExecutionContext.task_input`，继而由 bridge 传到 `SubAgentContext.original_request` 和 stage-run worker 的 operator-constraint 摘录；不覆写 `tasks.input` 中的 durable 初始目标。空或全空白 continuation 明确回退 durable 初始目标。worker chain/checkpoint 和 request-scoped reentry guard 不参与该选择。
 - Graph-flow 分支路由的 `made_progress` 必须按 stage 语义判断：漏洞阶段可以用 `findings_count`，但 `findings_allowed=false` 的信息收集/覆盖矩阵阶段（`target_intel` / `external_attack_surface` / `enumeration`）不能要求 findings；它们通过 DB/ledger truth、coverage handoff、stage_run pass token 等信号表示“有进展”，不要依赖模型提交的 evidence ids。否则 EAS 会因 `findings=[]` 被误判为无进展并走 `reporting` 短路，跳过 `enumeration`。
 - RuntimeSupervisor 是运行中策略纠偏机制：只在 `ExecutionMonitor` 触发后运行，模型输出必须先解析成 `StrategyDirective` 并经过 stage/tool policy 裁剪，不能覆盖 gate，也不能覆盖 StageRefiner 的 post-gate `RepairDirective`。repair/stage_run 的确定性补洞仍以 StageRefiner 为准。
+
+## Stage fork入口（2026-07-18）
+
+- `TaskOrchestrator::stage_fork` 只携带 typed `StageForkCreate` 到 shared operation-create；stage执行仍走 `run_stage -> run_from_stage`，没有 CLI专用 executor、Gate或Company Controller。
+- fork launch把当前数据库 Target快照作为 fresh invocation authority，但数据库仍验证快照非空/未漂移；普通 company-only fresh launch的 `Some(false)` 语义不变。
 
 ## 测试入口
 

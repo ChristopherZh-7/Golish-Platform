@@ -1,5 +1,9 @@
 # Active Recon 目标范围一次确认设计
 
+> The exact TargetIntel→EAS target-scope review in this design remains current.
+> Its statement that other post-Scoping boundaries keep generic confirmation is
+> superseded by `docs/design/2026-07-18-scoping-only-routine-human-confirmation.md`.
+
 ## 背景
 
 `target_intel` 是被动情报阶段。它可以发现 domain、IP、CIDR、URL 或 wildcard，但这些 provider 派生结果不是客户授权，不能直接成为主动扫描范围。当前流程在 Target Intel Gate PASS 后复用通用 `waiting_approval` 状态，因此 UI 只显示 “Waiting for approval”；即使用户批准通用阶段边界，也不能制造可信目标，运行仍会停在 `ACTIVE_RECON_TRUSTED_TARGET_REQUIRED`。

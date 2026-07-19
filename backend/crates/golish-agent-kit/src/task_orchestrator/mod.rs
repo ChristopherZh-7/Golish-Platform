@@ -3,8 +3,9 @@
 //! A Task = one operation driven by the metalcraft Executor over the profile-
 //! projected Operation DAG: each stage self-plans + dispatches specialists,
 //! submits a StageDeliverable, and passes a deterministic evidence gate before
-//! the graph advances (with human approval at 大阶段 boundaries). A final
-//! reporter summarizes the run.
+//! the graph advances. Routine human confirmation belongs to Scoping; later
+//! stages auto-advance after typed target/Candidate authorization barriers and
+//! deterministic gates pass. A final reporter summarizes the run.
 //!
 //! This module operates at a level above the `AgentBridge`, calling into it
 //! for each agent invocation while managing the overall task lifecycle and DB

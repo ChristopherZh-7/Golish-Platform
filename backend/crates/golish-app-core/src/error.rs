@@ -74,6 +74,15 @@ pub enum GolishError {
     #[error("Runtime scope history must be invalidated before deleting organization {0}")]
     RuntimeScopeHistoryRequiresInvalidation(String),
 
+    #[error(
+        "Organization deletion is blocked by active stage fork {operation_id} ({stage}, task {status})"
+    )]
+    OrganizationDeletionActiveStageFork {
+        operation_id: uuid::Uuid,
+        stage: String,
+        status: String,
+    },
+
     #[error("{0}")]
     Internal(String),
 }
@@ -105,6 +114,9 @@ impl GolishError {
             Self::RuntimeScopeHistoryRequiresInvalidation(_) => {
                 "runtime_scope_history_requires_invalidation"
             }
+            Self::OrganizationDeletionActiveStageFork { .. } => {
+                "ORGANIZATION_DELETE_ACTIVE_STAGE_FORK"
+            }
             Self::Internal(_) => "INTERNAL",
         }
     }
@@ -125,6 +137,15 @@ impl From<golish_db::DbError> for GolishError {
             golish_db::DbError::Json(e) => Self::Json(e),
             golish_db::DbError::Io(e) => Self::Io(e),
             golish_db::DbError::NotFound(m) => Self::NotFound(m),
+            golish_db::DbError::OrganizationDeletionActiveStageFork {
+                operation_id,
+                stage,
+                status,
+            } => Self::OrganizationDeletionActiveStageFork {
+                operation_id,
+                stage,
+                status,
+            },
             other => Self::Internal(other.to_string()),
         }
     }
@@ -212,6 +233,15 @@ mod tests {
             GolishError::SessionNotFound("s".into()).code(),
             "SESSION_NOT_FOUND"
         );
+        assert_eq!(
+            GolishError::OrganizationDeletionActiveStageFork {
+                operation_id: uuid::Uuid::nil(),
+                stage: "vuln_triage".to_string(),
+                status: "waiting".to_string(),
+            }
+            .code(),
+            "ORGANIZATION_DELETE_ACTIVE_STAGE_FORK"
+        );
     }
 
     #[test]
@@ -228,5 +258,22 @@ mod tests {
         let v = serde_json::to_value(&err).expect("serialize");
         assert_eq!(v["code"], "VALIDATION");
         assert_eq!(v["message"], "Validation error: bad input");
+    }
+
+    #[test]
+    fn active_stage_fork_deletion_blocker_serializes_exact_identity() {
+        let operation_id = uuid::Uuid::new_v4();
+        let value = serde_json::to_value(GolishError::OrganizationDeletionActiveStageFork {
+            operation_id,
+            stage: "vuln_triage".to_string(),
+            status: "waiting".to_string(),
+        })
+        .expect("serialize active stage-fork deletion blocker");
+
+        assert_eq!(value["code"], "ORGANIZATION_DELETE_ACTIVE_STAGE_FORK");
+        assert!(value["message"]
+            .as_str()
+            .expect("serialized blocker message")
+            .contains(&operation_id.to_string()));
     }
 }

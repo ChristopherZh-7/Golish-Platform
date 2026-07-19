@@ -40,6 +40,7 @@
 - `verification_failed` 不是 live 状态，也不是 obligation terminal；不得阻止下一 ordinal。
 - cleanup evidence 与 absence evidence 必须独立，不能复用同一 evidence id 冒充二次验证。
 - opaque principal 的 server constructor 只允许 trusted adapter 使用，不能加 serde/公开字段；`WaiverRequest` 的 exact scope 字段是资源授权，不得退化成只传 obligation id。
+- `CleanupError::OrganizationDeletionActiveStageFork` 保留阻塞 fork 的 operation/stage/task status；这是可操作的 admission conflict，不能降格成普通 repository string。
 
 ## 测试入口
 

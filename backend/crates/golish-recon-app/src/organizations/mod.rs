@@ -179,7 +179,18 @@ pub async fn organization_delete(
     golish_cleanup_app::PgCleanupRepository::new(pool.clone())
         .request_organization_deletion(uid, &project_path)
         .await
-        .map_err(|error| GolishError::Internal(format!("{}: {error}", error.code())))?;
+        .map_err(|error| match error {
+            golish_cleanup_app::CleanupError::OrganizationDeletionActiveStageFork {
+                operation_id,
+                stage,
+                status,
+            } => GolishError::OrganizationDeletionActiveStageFork {
+                operation_id,
+                stage,
+                status,
+            },
+            other => GolishError::Internal(format!("{}: {other}", other.code())),
+        })?;
     Ok(())
 }
 

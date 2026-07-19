@@ -15,8 +15,10 @@ use super::super::types::{
 };
 use super::super::TaskOrchestrator;
 
-/// Outcome of asking the human to approve a 大阶段 crossing
-/// ([`TaskOrchestrator::request_phase_approval`]).
+/// Dormant compatibility outcome for a Scoping-origin generic phase crossing
+/// ([`TaskOrchestrator::request_phase_approval`]). Post-Scoping routine
+/// crossings never enter this path; typed target/Candidate/tool authorization
+/// remains separate and fail-closed.
 enum PhaseApproval {
     /// Human approved — proceed across the boundary.
     Approved,
@@ -29,12 +31,14 @@ enum PhaseApproval {
 /// What the servicer loop should do at a phase boundary
 /// ([`TaskOrchestrator::two_level_phase_gate`]).
 enum PhaseGateDecision {
-    /// No approval needed, or the human approved — let the advance proceed.
+    /// This seam adds no phase hold. The caller forwards the original stage
+    /// outcome unchanged, so a deterministic Gate BLOCK still interrupts graph
+    /// progression even though the phase decision itself is `Allowed`.
     Allowed,
     /// Human held the crossing with no rework note — block (engine interrupts).
     Held,
-    /// Human held the crossing and asked the agent to rework THIS stage first,
-    /// using the carried reviewer note.
+    /// Human held a Scoping-origin compatibility crossing and asked the agent to
+    /// rework THIS stage first, using the carried reviewer note.
     Rework(String),
 }
 
@@ -1454,8 +1458,9 @@ impl TaskOrchestrator {
             }
         };
 
-        // Two-level model: the Profile object (for phase-boundary approval policy).
-        // Loaded once; only consulted when GOLISH_HARNESS_TWO_LEVEL is on.
+        // Profile approval metadata is loaded once for the narrow Scoping-origin
+        // compatibility crossing. Post-Scoping routine transitions auto-advance
+        // after their typed barriers and do not consult generic phase approval.
         let op_profile = crate::harness::load_embedded_profile(profile_id)
             .ok()
             .flatten();
@@ -1587,12 +1592,12 @@ impl TaskOrchestrator {
                     // the stage body, so a failed transition cannot execute under
                     // the previous stage's identity.
                     self.sync_stage_execution_on_entry(&mut exec_ctx, task_id, req.stage).await?;
-                    // Two-level model (flag on): run the stage, then hold for human
-                    // approval before crossing a 大阶段 boundary. A decline that
-                    // carries a reviewer note re-runs THIS stage with the note as a
-                    // rework directive (bounded by MAX_HUMAN_REWORKS) so the agent
-                    // backtracks per the human's reason; a bare hold (no note) →
-                    // blocked so the engine Interrupts at this stage.
+                    // Run the stage, then enforce typed security barriers before
+                    // graph progression. Scoping owns routine human confirmation;
+                    // later Gate-PASS stages auto-advance, while exact target scope
+                    // and Candidate review barriers can still hold. The compatibility
+                    // Scoping phase path may return a reviewer note and re-run this
+                    // stage (bounded by MAX_HUMAN_REWORKS).
                     const MAX_HUMAN_REWORKS: u8 = 3;
                     let mut human_correction: Option<String> = None;
                     let mut human_reworks: u8 = 0;
@@ -2045,14 +2050,14 @@ impl TaskOrchestrator {
         outcome
     }
 
-    /// 两级模型 · graph-flow 路径的「跨大阶段审批」闸（设计 2026-06-03）。
+    /// Graph-flow transition gate with Scoping-only routine confirmation.
     ///
-    /// gate 没过 / 非跨界 / 无需审批 → 直接放行（返回 `true`）。在把某 stage 的 flow
-    /// outcome 回给 metalcraft 引擎前调用：若这步推进会跨大阶段且需人工批准，
-    /// 则发 `waiting_approval` 并**阻塞等用户回复**。`false`（未获批）时调用方把 outcome
-    /// 降级为 `blocked`，使引擎在当前 stage Interrupt（暂停返工），不跨大阶段。
-    /// Candidate review 是另一条 DB barrier：只在 runtime/attack contract 都为
-    /// `V2Only` 时读取并阻塞；dual-write 的 V2 mirror 永远不是 live authority。
+    /// The deterministic stage Gate remains authoritative. Before ordinary graph
+    /// progression this seam also enforces exact Candidate review and Target
+    /// Intel→EAS target-scope authorization. Once those typed barriers pass,
+    /// post-Scoping stages advance without a generic phase confirmation card.
+    /// Only a Scoping-origin compatibility crossing may call
+    /// [`TaskOrchestrator::request_phase_approval`].
     async fn two_level_phase_gate(
         &mut self,
         task_id: Uuid,
@@ -2062,6 +2067,9 @@ impl TaskOrchestrator {
         profile: Option<&crate::harness::Profile>,
     ) -> PhaseGateDecision {
         if !outcome.gate_allowed {
+            // Do not stack a phase-approval hold on top of the authoritative
+            // stage BLOCK. The caller still returns this same blocked `outcome`
+            // to the graph, which interrupts at the current stage.
             return PhaseGateDecision::Allowed;
         }
         // Resolve the projected successor before consulting any crossing-only
@@ -2175,6 +2183,16 @@ impl TaskOrchestrator {
                 PhaseGateDecision::Held
             };
         }
+        if from_stage != crate::harness::StageKind::Scoping {
+            tracing::debug!(
+                target: "harness::hook",
+                task_id = %task_id,
+                from = ?from_stage,
+                to = ?next,
+                "post-Scoping stage transition auto-advances after typed barriers"
+            );
+            return PhaseGateDecision::Allowed;
+        }
         let Some(profile) = profile else {
             return PhaseGateDecision::Allowed;
         };
@@ -2225,7 +2243,11 @@ impl TaskOrchestrator {
         }
     }
 
-    /// Ask the human to approve crossing a 大阶段 boundary.
+    /// Dormant compatibility path for a custom Scoping-origin phase crossing.
+    ///
+    /// The built-in DAG keeps Scoping and Target Intel in the same phase, while
+    /// every post-Scoping transition returns above after typed barriers, so no
+    /// current built-in flow reaches this generic confirmation path.
     ///
     /// **Preferred (interactive) path** — when a HITL coordinator is wired
     /// ([`TaskOrchestrator::set_approval_coordinator`]): emit an

@@ -9,16 +9,17 @@ use golish_agent_kit::db_traits::{
     SeedStageTeamRuntime, StageTeamPlanSeed, StageTeamPlanView, StageWorkItemSeed,
     StageWorkItemView, StageWorkerOutputDisposition, StageWorkerOutputView,
 };
-use golish_agent_kit::harness::{CanonicalFactKey, StageSpec};
+use golish_agent_kit::harness::{CanonicalFactKey, StageKind, StageSpec};
 use golish_sub_agents::StageTeamLeaderBinding;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_TEAM_OUTPUT_VALUES: usize = 128;
 const MAX_TEAM_OUTPUT_SUMMARY_CHARS: usize = 4_096;
 const MAX_STAGE_TEAM_REPAIR_GENERATIONS: usize = 2;
+const MAX_STAGE_TEAM_CONTROLLER_TURN_RESUMES: usize = 2;
 // Reserve a bounded Controller-repair/child retry budget up front so a valid
 // Gate repair cannot be created and then become unclaimable merely because the
 // initial Controller/child WorkerRun allowance was exhausted.
@@ -49,6 +50,261 @@ pub(super) fn sha256_json(value: &Value) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     format!("sha256:{digest}")
+}
+
+const VULN_GENERAL_BASELINE_TECHNIQUES: &[&str] = &[
+    "WSTG-ATHN-02",
+    "WSTG-SESS-02",
+    "WSTG-CONF-05",
+    "WSTG-CRYP-03",
+    "WSTG-INFO",
+];
+const VULN_GENERAL_DAST_TECHNIQUES: &[&str] = &["WSTG-INPV-05", "WSTG-INPV-01", "WSTG-INPV-12"];
+const VULN_ANONYMOUS_TECHNIQUE: &str = "WSTG-ATHN-04";
+const VULN_NDAY_TECHNIQUE: &str = "GOLISH-NDAY";
+const MAX_VULN_AUTOMATIC_ATTEMPTS: u32 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum VulnShardShape {
+    Primary,
+    Narrowed,
+}
+
+impl VulnShardShape {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Narrowed => "narrowed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct VulnWorklistShard {
+    pub target_id: uuid::Uuid,
+    pub target_url: String,
+    pub tool_name: &'static str,
+    pub techniques: Vec<String>,
+    pub shape: VulnShardShape,
+    pub recovery_attempt: u32,
+}
+
+impl VulnWorklistShard {
+    fn capability_family(&self) -> &'static str {
+        match self.tool_name {
+            "vuln_nuclei_general"
+                if self.techniques.iter().all(|technique| {
+                    VULN_GENERAL_DAST_TECHNIQUES.contains(&technique.as_str())
+                }) =>
+            {
+                "nuclei_general_dast"
+            }
+            "vuln_nuclei_general" => "nuclei_general_baseline",
+            "vuln_nuclei_fingerprint_targeted" => "nuclei_fingerprint_targeted",
+            "vuln_probe_anonymous_access" => "anonymous_access",
+            _ => "invalid",
+        }
+    }
+
+    pub(super) fn stable_key(&self) -> String {
+        let digest = sha256_json(&json!({
+            "capability": self.capability_family(),
+            "recovery_attempt": self.recovery_attempt,
+            "shape": self.shape.as_str(),
+            "target_id": self.target_id,
+            "target_url": self.target_url,
+            "techniques": self.techniques,
+            "tool": self.tool_name,
+        }));
+        format!(
+            "vuln-worklist:{}:{}",
+            self.shape.as_str(),
+            digest.trim_start_matches("sha256:")
+        )
+    }
+
+    pub(super) fn subject_refs(&self) -> Vec<Value> {
+        vec![json!({
+            "kind": "target",
+            "target_id": self.target_id,
+        })]
+    }
+
+    pub(super) fn objective(&self) -> String {
+        json!({
+            "assignment_schema": "vuln_formulaic_shard.v1",
+            "capability": self.capability_family(),
+            "instructions": "Execute exactly this server-owned shard. Do not page the worklist, broaden the subject, dispatch workers, or retry the wrapper inside this Worker. Call the named wrapper at most once, preserve partial/error truth, then return the typed Stage Worker result.",
+            "recovery_attempt": self.recovery_attempt,
+            "shape": self.shape.as_str(),
+            "target_id": self.target_id,
+            "target_url": self.target_url,
+            "techniques": self.techniques,
+            "tool": self.tool_name,
+        })
+        .to_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct VulnShardGroupKey {
+    target_id: uuid::Uuid,
+    target_url: String,
+    tool_name: &'static str,
+    capability_family: &'static str,
+    shape: VulnShardShape,
+    recovery_attempt: u32,
+    narrowed_technique: Option<String>,
+}
+
+fn exact_http_origin(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && matches!(url.path(), "" | "/")
+        && url.port_or_known_default().is_some()
+}
+
+fn vuln_capability_for_technique(technique: &str) -> Option<(&'static str, &'static str)> {
+    if VULN_GENERAL_DAST_TECHNIQUES.contains(&technique) {
+        Some(("vuln_nuclei_general", "nuclei_general_dast"))
+    } else if VULN_GENERAL_BASELINE_TECHNIQUES.contains(&technique) {
+        Some(("vuln_nuclei_general", "nuclei_general_baseline"))
+    } else if technique == VULN_NDAY_TECHNIQUE {
+        Some((
+            "vuln_nuclei_fingerprint_targeted",
+            "nuclei_fingerprint_targeted",
+        ))
+    } else if technique == VULN_ANONYMOUS_TECHNIQUE {
+        Some(("vuln_probe_anonymous_access", "anonymous_access"))
+    } else {
+        None
+    }
+}
+
+pub(super) fn validate_vuln_shard_assignment(
+    tool_name: &str,
+    capability_family: &str,
+    target_url: &str,
+    techniques: &[String],
+) -> bool {
+    !techniques.is_empty()
+        && exact_http_origin(target_url)
+        && techniques.iter().all(|technique| {
+            vuln_capability_for_technique(technique).is_some_and(
+                |(expected_tool, expected_family)| {
+                    expected_tool == tool_name && expected_family == capability_family
+                },
+            )
+        })
+}
+
+/// Convert the operation-scoped Vuln coverage matrix into deterministic exact
+/// origin shards. Pending cells share one capability call; any prior
+/// partial/error is narrowed to one technique so a spent broad budget is never
+/// retried with the same shape.
+pub(super) fn build_vuln_worklist_shards(
+    snapshot: &Value,
+) -> Result<Vec<VulnWorklistShard>, &'static str> {
+    if snapshot.get("stage").and_then(Value::as_str) != Some("vuln_triage") {
+        return Err("vuln_worklist_stage_mismatch");
+    }
+    let assets = snapshot
+        .get("assets")
+        .and_then(Value::as_array)
+        .ok_or("vuln_worklist_assets_missing")?;
+    let mut grouped = BTreeMap::<VulnShardGroupKey, BTreeSet<String>>::new();
+    for asset in assets {
+        let target_id = asset
+            .get("target_id")
+            .and_then(Value::as_str)
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            .filter(|value| !value.is_nil())
+            .ok_or("vuln_worklist_target_id_invalid")?;
+        let target_url = asset
+            .get("value")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && exact_http_origin(value))
+            .ok_or("vuln_worklist_exact_origin_invalid")?
+            .to_string();
+        let coverage = asset
+            .get("coverage")
+            .and_then(Value::as_array)
+            .ok_or("vuln_worklist_coverage_missing")?;
+        for cell in coverage {
+            let technique = cell
+                .get("technique")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or("vuln_worklist_technique_missing")?;
+            let (tool_name, capability_family) = vuln_capability_for_technique(technique)
+                .ok_or("vuln_worklist_technique_unknown")?;
+            let state = cell
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("pending");
+            let shape = match state {
+                "pending" => VulnShardShape::Primary,
+                "partial" | "error" => VulnShardShape::Narrowed,
+                "found" | "checked_empty" | "blocked" | "not_applicable" => continue,
+                _ => return Err("vuln_worklist_state_invalid"),
+            };
+            let recovery_attempt = if shape == VulnShardShape::Narrowed {
+                if cell
+                    .pointer("/details/automatic_retry_allowed")
+                    .and_then(Value::as_bool)
+                    == Some(false)
+                {
+                    continue;
+                }
+                let prior_attempt = cell
+                    .pointer("/details/attempt_ordinal")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(1);
+                if prior_attempt >= MAX_VULN_AUTOMATIC_ATTEMPTS {
+                    continue;
+                }
+                prior_attempt.saturating_add(1)
+            } else {
+                1
+            };
+            let key = VulnShardGroupKey {
+                target_id,
+                target_url: target_url.clone(),
+                tool_name,
+                capability_family,
+                shape,
+                recovery_attempt,
+                narrowed_technique: (shape == VulnShardShape::Narrowed)
+                    .then(|| technique.to_string()),
+            };
+            grouped
+                .entry(key)
+                .or_default()
+                .insert(technique.to_string());
+        }
+    }
+    Ok(grouped
+        .into_iter()
+        .map(|(key, techniques)| VulnWorklistShard {
+            target_id: key.target_id,
+            target_url: key.target_url,
+            tool_name: key.tool_name,
+            techniques: techniques.into_iter().collect(),
+            shape: key.shape,
+            recovery_attempt: key.recovery_attempt,
+        })
+        .collect())
 }
 
 /// Project a claimed WorkItem into the narrow host authority understood by
@@ -366,6 +622,65 @@ pub(super) fn stage_child_completion_from_result(
     })
 }
 
+/// Turn the exact wrapper's already-landed ledger result into the immutable
+/// advisory child output. The wrapper/technique_outcome rows remain Gate
+/// authority; this record only proves that the durable shard reached its one
+/// allowed producer boundary.
+pub(super) fn server_vuln_child_output_from_wrapper(
+    item: &StageWorkItemView,
+    worker_run_id: uuid::Uuid,
+    wrapper_result: &Value,
+) -> Result<NewStageWorkerOutput, StageChildOutputViolation> {
+    let mut evidence_ids = wrapper_result
+        .pointer("/guarded_evidence/evidence_ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_i64)
+        .filter(|id| *id > 0)
+        .collect::<Vec<_>>();
+    evidence_ids.sort_unstable();
+    evidence_ids.dedup();
+    if evidence_ids.is_empty() {
+        return Err(stage_child_output_violation(
+            "VULN_FORMULAIC_LEDGER_LANDING_MISSING",
+            "server-owned Vuln wrapper returned without authoritative evidence ids",
+        ));
+    }
+    let canonical_output = canonicalize_json(&json!({
+        "automatic_retry_allowed": wrapper_result.get("automatic_retry_allowed"),
+        "completion_state": wrapper_result.get("completion_state"),
+        "exact_origin": wrapper_result.get("exact_origin"),
+        "schema_version": 1,
+        "stable_work_key": item.stable_key,
+        "techniques": wrapper_result.get("techniques"),
+        "wrapper_tool": wrapper_result.get("wrapper_tool"),
+    }));
+    let hash_material = canonicalize_json(&json!({
+        "blocker_code": Value::Null,
+        "canonical_output": canonical_output,
+        "checked_empty_units": [],
+        "disposition": "found",
+        "evidence_ids": evidence_ids,
+        "fact_refs": [],
+        "output_schema": item.output_schema,
+        "work_item_id": item.id,
+        "worker_run_id": worker_run_id,
+    }));
+    Ok(NewStageWorkerOutput {
+        work_item_id: item.id,
+        worker_run_id,
+        output_schema: item.output_schema.clone(),
+        disposition: StageWorkerOutputDisposition::Found,
+        canonical_output,
+        fact_refs: Vec::new(),
+        evidence_ids,
+        checked_empty_units: Vec::new(),
+        blocker_code: None,
+        output_sha256: sha256_json(&hash_material),
+    })
+}
+
 #[cfg(test)]
 fn stage_child_output_from_result(
     item: &StageWorkItemView,
@@ -404,7 +719,9 @@ pub(super) fn stage_child_objective(
          A blocked disposition requires a stable blocker_code. A found result may retain independently \
          checked-empty provider/asset subunits in checked_empty_units; those subunits do not downgrade \
          the overall found result. Any non-empty checked_empty_units requires booked evidence. Evidence \
-         ids must come from evidence actually booked by this WorkItem. A checked_empty business disposition \
+         ids must come from evidence actually booked by this WorkItem. Before returning, refresh with \
+         list_recent_evidence and copy only values from its evidence_id field; never copy a generic id or \
+         any audit/action, event, or tool-call id into evidence_ids. A checked_empty business disposition \
          MUST include at least one exact checked_empty_units entry and booked evidence; never return \
          checked_empty with an empty checked_empty_units array.",
         stage = spec.kind.as_str(),
@@ -434,13 +751,17 @@ pub(super) fn controller_final_objective(
         })
         .collect::<Vec<_>>();
     let encoded = serde_json::to_string(&manifest).map_err(|_| "team_output_not_serializable")?;
+    let final_action = if spec.kind == StageKind::VulnTriage {
+        "The server-owned formulaic worklist executor has observed zero unfinished cells. Do not run any scanner, wrapper, worklist paging, retry, or child dispatch in this turn. Refresh current DB/evidence truth only as needed, then call submit_stage_deliverable exactly once."
+    } else {
+        "Close any exact remaining deterministic gaps using stage-allowed tools, then call submit_stage_deliverable exactly once."
+    };
     Ok(format!(
         "Continue as the same Company Controller for stage {stage}. Organization: \
          {organization_name} (organization_id: {organization_id}). This is your final submission \
          turn and the request epoch is closed; do not dispatch more SubAgents. Reconcile the \
          immutable child-output manifest below with CURRENT database/evidence-ledger truth. Child \
-         prose is not gate authority. Close any exact remaining deterministic gaps using \
-         stage-allowed tools, then call submit_stage_deliverable exactly once. This Company \
+         prose is not gate authority. {final_action} This Company \
          Controller is the only Worker allowed to submit the final Unit deliverable.\n\n\
          IMMUTABLE CHILD OUTPUT MANIFEST:\n{encoded}",
         stage = spec.kind.as_str(),
@@ -475,6 +796,14 @@ pub(super) fn build_stage_team_seed(
         return Err("invalid_stage_team_policy");
     }
 
+    let server_owned_vuln_worklist = spec.kind == StageKind::VulnTriage;
+    let child_budget = if server_owned_vuln_worklist {
+        json!({"max_wrapper_calls": 1})
+    } else {
+        json!({})
+    };
+    let organization_scope_implicit = !server_owned_vuln_worklist;
+
     let leader_manifest = canonicalize_json(&json!({
         "coordination_mode": "company_controller",
         "role": policy.aggregator_role,
@@ -503,7 +832,7 @@ pub(super) fn build_stage_team_seed(
         "aggregator_kind": policy.aggregator_kind,
         "aggregator_role": policy.aggregator_role,
         "allowed_roles": allowed_roles,
-        "child_budget": {},
+        "child_budget": child_budget,
         "child_output_schema": "stage_worker_output.v1",
         "coordination_mode": "company_controller",
         "global_provider_cap": policy.global_provider_cap,
@@ -512,7 +841,7 @@ pub(super) fn build_stage_team_seed(
         "max_dynamic_subject_refs": policy.max_dynamic_subject_refs,
         "max_dynamic_requests": policy.max_dynamic_requests,
         "max_workers": policy.max_workers,
-        "organization_scope_implicit": true,
+        "organization_scope_implicit": organization_scope_implicit,
         "risk_lane": policy.risk_lane,
         "schema_version": policy.schema_version,
         "stage": spec.kind.as_str(),
@@ -534,9 +863,10 @@ pub(super) fn build_stage_team_seed(
         &serde_json::to_value(policy).map_err(|_| "stage_team_policy_not_serializable")?,
     );
 
-    // `max_workers` is the concurrency cap from StageSpec, not the lifetime
-    // number of WorkerRuns. The Lead and every dynamic child may consume up to
-    // three retry attempts, so the lifetime budget is derived independently.
+    // Preserve the historical total exactly in frozen plan material so an
+    // active Company Controller operation can replay its seed after upgrade.
+    // Runtime admission, claim, retry and coordination do not enforce this
+    // compatibility count for `coordination_mode=company_controller`.
     let maximum_dynamic_requests = usize::try_from(policy.max_dynamic_requests)
         .map_err(|_| "stage_team_worker_limit_overflow")?;
     let maximum_work_items = work_items
@@ -552,6 +882,29 @@ pub(super) fn build_stage_team_seed(
     let maximum_worker_runs = initial_worker_runs
         .checked_add(repair_worker_runs)
         .ok_or("stage_team_worker_limit_overflow")?;
+    let mut dynamic_request_policy = json!({
+        "allowed_request_kinds": policy.allowed_dynamic_request_kinds,
+        "canonical_subject_refs_only": true,
+        "child_budget": child_budget,
+        "child_output_schema": "stage_worker_output.v1",
+        "coordination_mode": "company_controller",
+        "global_provider_cap": policy.global_provider_cap,
+        "max_company_units_active": policy.max_company_units_active,
+        // Same-Turn Gate repair and operator-triggered successor Turns
+        // are separate bounded fuels. The latter aligns with the
+        // producer contract that may need three attempts before an
+        // exact cell can terminalize.
+        "max_controller_gate_repairs": 1,
+        "max_controller_turn_resumes": MAX_STAGE_TEAM_CONTROLLER_TURN_RESUMES,
+        "max_requests": policy.max_dynamic_requests,
+        "max_repair_generations": MAX_STAGE_TEAM_REPAIR_GENERATIONS,
+        "max_subject_refs": policy.max_dynamic_subject_refs,
+        "organization_scope_implicit": organization_scope_implicit,
+    });
+    if server_owned_vuln_worklist {
+        dynamic_request_policy["attempt_policy"] = json!({"max_attempts": 1});
+        dynamic_request_policy["formulaic_worklist_executor"] = json!("vuln_v1");
+    }
 
     Ok(Some(SeedStageTeamRuntime {
         base,
@@ -568,24 +921,7 @@ pub(super) fn build_stage_team_seed(
             max_workers_active: i32::try_from(policy.max_workers)
                 .map_err(|_| "stage_team_active_worker_limit_overflow")?,
             dynamic_requests_enabled: true,
-            dynamic_request_policy: json!({
-                "allowed_request_kinds": policy.allowed_dynamic_request_kinds,
-                "canonical_subject_refs_only": true,
-                "child_budget": {},
-                "child_output_schema": "stage_worker_output.v1",
-                "coordination_mode": "company_controller",
-                "global_provider_cap": policy.global_provider_cap,
-                "max_company_units_active": policy.max_company_units_active,
-                // The current runtime-memory schema binds one durable Gate gap
-                // to the stable Company Controller WorkerRun. Freeze that
-                // explicit limit instead of inheriting the two-generation
-                // sibling-Aggregator repair budget.
-                "max_controller_gate_repairs": 1,
-                "max_requests": policy.max_dynamic_requests,
-                "max_repair_generations": MAX_STAGE_TEAM_REPAIR_GENERATIONS,
-                "max_subject_refs": policy.max_dynamic_subject_refs,
-                "organization_scope_implicit": true,
-            }),
+            dynamic_request_policy,
             final_submitter_kind: "worker".to_string(),
             created_from_stage_spec_hash,
         },
@@ -725,11 +1061,11 @@ mod tests {
                     .expect("team scheduler")
                     .max_dynamic_requests,
             )
-            .expect("dynamic request limit");
+            .expect("compatibility request count");
         let reserved_repair_runs =
             MAX_STAGE_TEAM_REPAIR_GENERATIONS * MAX_REPAIR_WORKER_RUNS_PER_GENERATION;
         assert_eq!(
-            usize::try_from(first.plan.max_workers_total).expect("worker budget"),
+            usize::try_from(first.plan.max_workers_total).expect("compatibility worker total"),
             initial_and_dynamic_items * 3 + reserved_repair_runs
         );
         assert_eq!(
@@ -761,6 +1097,195 @@ mod tests {
             assert_eq!(seeded.work_items[0].role, "company_stage_controller");
             assert!(seeded.plan.allowed_roles.contains(&child_role.to_string()));
         }
+    }
+
+    #[test]
+    fn company_controller_vuln_plan_is_server_worklist_owned_and_requires_subjects() {
+        let spec = load_embedded_stage_spec(StageKind::VulnTriage).expect("vuln spec");
+        let mut base = base_seed();
+        base.stage_kind = StageKind::VulnTriage.as_str().to_string();
+        base.specialist = "vuln_scanner".to_string();
+        let seeded = build_stage_team_seed(&spec, base)
+            .expect("valid policy")
+            .expect("team enabled");
+
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["formulaic_worklist_executor"],
+            "vuln_v1"
+        );
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["organization_scope_implicit"],
+            false
+        );
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["attempt_policy"],
+            json!({"max_attempts": 1})
+        );
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["child_budget"],
+            json!({"max_wrapper_calls": 1})
+        );
+    }
+
+    fn vuln_snapshot_with_cells(target_id: Uuid, origin: &str, cells: &[(&str, &str)]) -> Value {
+        json!({
+            "stage": "vuln_triage",
+            "organization_id": Uuid::new_v4(),
+            "session_id": Uuid::new_v4(),
+            "summary": {
+                "total_assets": 1,
+                "seed_assets": 1,
+                "new_assets": 0,
+                "done_assets": 0,
+                "pending_assets": 1,
+                "blocked_assets": 0
+            },
+            "assets": [{
+                "target_id": target_id,
+                "value": origin,
+                "target_type": "url",
+                "coverage": cells.iter().map(|(technique, state)| json!({
+                    "technique": technique,
+                    "state": state
+                })).collect::<Vec<_>>()
+            }]
+        })
+    }
+
+    #[test]
+    fn vuln_worklist_shard_groups_pending_cells_by_exact_origin_and_capability() {
+        let first_target = Uuid::new_v4();
+        let second_target = Uuid::new_v4();
+        let mut snapshot = vuln_snapshot_with_cells(
+            first_target,
+            "https://one.example:443",
+            &[
+                ("WSTG-ATHN-02", "pending"),
+                ("WSTG-SESS-02", "pending"),
+                ("WSTG-CONF-05", "pending"),
+                ("WSTG-CRYP-03", "pending"),
+                ("WSTG-INFO", "pending"),
+                ("GOLISH-NDAY", "not_applicable"),
+            ],
+        );
+        snapshot["assets"].as_array_mut().expect("assets").push(
+            vuln_snapshot_with_cells(
+                second_target,
+                "https://two.example:443",
+                &[("WSTG-ATHN-02", "pending")],
+            )["assets"][0]
+                .clone(),
+        );
+
+        let shards = build_vuln_worklist_shards(&snapshot).expect("valid worklist snapshot");
+
+        assert_eq!(shards.len(), 2);
+        let first = shards
+            .iter()
+            .find(|shard| shard.target_id == first_target)
+            .expect("first target shard");
+        let second = shards
+            .iter()
+            .find(|shard| shard.target_id == second_target)
+            .expect("second target shard");
+        assert_eq!(first.target_url, "https://one.example:443");
+        assert_eq!(first.tool_name, "vuln_nuclei_general");
+        assert_eq!(first.shape, VulnShardShape::Primary);
+        assert_eq!(
+            first.techniques,
+            [
+                "WSTG-ATHN-02",
+                "WSTG-CONF-05",
+                "WSTG-CRYP-03",
+                "WSTG-INFO",
+                "WSTG-SESS-02",
+            ]
+        );
+        assert_ne!(first.stable_key(), second.stable_key());
+    }
+
+    #[test]
+    fn vuln_worklist_shard_narrows_partial_or_error_cells_to_one_technique() {
+        let target_id = Uuid::new_v4();
+        let snapshot = vuln_snapshot_with_cells(
+            target_id,
+            "https://partial.example:443",
+            &[
+                ("WSTG-ATHN-02", "partial"),
+                ("WSTG-SESS-02", "error"),
+                ("WSTG-CONF-05", "checked_empty"),
+            ],
+        );
+
+        let shards = build_vuln_worklist_shards(&snapshot).expect("valid worklist snapshot");
+
+        assert_eq!(shards.len(), 2);
+        assert!(shards
+            .iter()
+            .all(|shard| shard.shape == VulnShardShape::Narrowed));
+        assert!(shards.iter().all(|shard| shard.techniques.len() == 1));
+        assert_eq!(
+            shards
+                .iter()
+                .map(|shard| shard.techniques[0].as_str())
+                .collect::<Vec<_>>(),
+            vec!["WSTG-ATHN-02", "WSTG-SESS-02"]
+        );
+    }
+
+    #[test]
+    fn vuln_worklist_shard_rejects_non_exact_or_unknown_work() {
+        for snapshot in [
+            vuln_snapshot_with_cells(
+                Uuid::nil(),
+                "https://example.test:443",
+                &[("WSTG-ATHN-02", "pending")],
+            ),
+            vuln_snapshot_with_cells(
+                Uuid::new_v4(),
+                "example.test",
+                &[("WSTG-ATHN-02", "pending")],
+            ),
+            vuln_snapshot_with_cells(
+                Uuid::new_v4(),
+                "https://example.test:443",
+                &[("WSTG-UNKNOWN", "pending")],
+            ),
+        ] {
+            assert!(build_vuln_worklist_shards(&snapshot).is_err());
+        }
+        assert!(!validate_vuln_shard_assignment(
+            "vuln_nuclei_general",
+            "nuclei_general_baseline",
+            "https://example.test:443/path",
+            &["WSTG-ATHN-02".to_string()],
+        ));
+        assert!(!validate_vuln_shard_assignment(
+            "vuln_nuclei_general",
+            "nuclei_general_dast",
+            "https://example.test:443",
+            &["WSTG-ATHN-02".to_string()],
+        ));
+    }
+
+    #[test]
+    fn vuln_worklist_shard_stops_after_backend_retry_fuel_is_exhausted() {
+        let mut snapshot = vuln_snapshot_with_cells(
+            Uuid::new_v4(),
+            "https://exhausted.example:443",
+            &[("WSTG-ATHN-02", "partial"), ("WSTG-SESS-02", "error")],
+        );
+        snapshot["assets"][0]["coverage"][0]["details"] = json!({
+            "attempt_ordinal": 2,
+            "automatic_retry_allowed": false
+        });
+        snapshot["assets"][0]["coverage"][1]["details"] = json!({
+            "attempt_ordinal": MAX_VULN_AUTOMATIC_ATTEMPTS
+        });
+
+        let shards = build_vuln_worklist_shards(&snapshot).expect("valid exhausted worklist");
+
+        assert!(shards.is_empty());
     }
 
     #[test]
@@ -824,6 +1349,7 @@ mod tests {
                 "global_provider_cap": 7,
                 "max_company_units_active": 3,
                 "max_controller_gate_repairs": 1,
+                "max_controller_turn_resumes": 2,
                 "max_repair_generations": MAX_STAGE_TEAM_REPAIR_GENERATIONS,
                 "max_requests": 12,
                 "max_subject_refs": 16,
@@ -864,6 +1390,17 @@ mod tests {
             status: RuntimeStageWorkItemStatus::Running,
             row_version: 1,
         }
+    }
+
+    #[test]
+    fn stage_child_objective_requires_authoritative_ledger_evidence_ids() {
+        let spec = load_embedded_stage_spec(StageKind::Enumeration).expect("Enumeration spec");
+        let item = stage_child_item();
+        let objective = stage_child_objective(&spec, "Example Corp", item.organization_id, &item);
+
+        assert!(objective.contains("list_recent_evidence"));
+        assert!(objective.contains("evidence_id"));
+        assert!(objective.contains("audit/action"));
     }
 
     #[test]

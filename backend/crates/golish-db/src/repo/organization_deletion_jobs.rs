@@ -6,7 +6,7 @@
 //! claimed from the committed job.  `hard_delete` is a third, independent
 //! transaction so filesystem I/O never occurs while a DB transaction is held.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
 use golish_memory_domain::event_catalog::{
@@ -23,6 +23,8 @@ use crate::Result;
 
 pub const TABLE_NAME: &str = "organization_deletion_jobs";
 pub const DEFAULT_JOB_LEASE_SECONDS: i64 = 120;
+const ORGANIZATION_DELETION_STOPPED_TASK_RESULT: &str =
+    "Stopped: organization deletion closed a quiescent stage task.";
 
 #[derive(Clone, Debug, sqlx::FromRow, PartialEq, Serialize, Deserialize)]
 pub struct OrganizationDeletionJobRow {
@@ -141,6 +143,20 @@ struct TargetSnapshotRow {
     value: String,
     name: String,
     scope: String,
+}
+
+#[derive(Clone, Debug, sqlx::FromRow)]
+struct ActiveStageForkBlockerRow {
+    operation_id: Uuid,
+    stage: String,
+    status: String,
+}
+
+#[derive(Clone, Debug, sqlx::FromRow)]
+struct LockedStageWorkerAuthorityRow {
+    operation_id: Uuid,
+    has_live_lease: bool,
+    active_tool_call_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -484,6 +500,136 @@ pub async fn request(
     .bind(&organization_ids)
     .fetch_all(&mut *tx)
     .await?;
+    let active_stage_fork_operation_ids = sqlx::query_scalar::<_, Uuid>(
+        r#"SELECT DISTINCT fork.operation_id
+             FROM operation_stage_forks AS fork
+             JOIN operation_org_scope_units AS unit
+               ON unit.snapshot_id=fork.target_scope_snapshot_id
+             JOIN tasks AS task
+               ON task.id=fork.operation_id
+              AND task.status IN ('created','running','waiting')
+            WHERE unit.organization_id=ANY($1)
+            ORDER BY fork.operation_id"#,
+    )
+    .bind(&organization_ids)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut stopped_quiescent_stage_task_ids = Vec::new();
+    if !active_stage_fork_operation_ids.is_empty() {
+        // Exact resume locks operation_state before its Task CAS. Match that
+        // order so deletion and resume cannot deadlock or both commit.
+        let locked_operation_ids = sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT operation_id FROM operation_state
+                WHERE operation_id=ANY($1)
+                ORDER BY operation_id
+                FOR UPDATE"#,
+        )
+        .bind(&active_stage_fork_operation_ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        if locked_operation_ids != active_stage_fork_operation_ids {
+            return Err(conflict("organization_delete_stage_fork_authority_changed"));
+        }
+        let locked_tasks = sqlx::query_as::<_, ActiveStageForkBlockerRow>(
+            r#"SELECT fork.operation_id,
+                      fork.entry_stage AS stage,
+                      task.status::TEXT AS status
+                 FROM operation_stage_forks AS fork
+                 JOIN tasks AS task ON task.id=fork.operation_id
+                WHERE fork.operation_id=ANY($1)
+                ORDER BY fork.operation_id
+                FOR UPDATE OF task"#,
+        )
+        .bind(&active_stage_fork_operation_ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        if locked_tasks.len() != active_stage_fork_operation_ids.len() {
+            return Err(conflict("organization_delete_stage_fork_authority_changed"));
+        }
+        let locked_worker_authority = sqlx::query_as::<_, LockedStageWorkerAuthorityRow>(
+            r#"SELECT operation_id,
+                          lease_token IS NOT NULL
+                              AND lease_expires_at IS NOT NULL
+                              AND lease_expires_at>NOW() AS has_live_lease,
+                          active_tool_call_id
+                     FROM stage_worker_runs
+                    WHERE operation_id=ANY($1)
+                    ORDER BY operation_id,id
+                    FOR UPDATE"#,
+        )
+        .bind(&active_stage_fork_operation_ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut worker_authority_by_operation = BTreeMap::<Uuid, (bool, bool)>::new();
+        for worker in locked_worker_authority {
+            let authority = worker_authority_by_operation
+                .entry(worker.operation_id)
+                .or_insert((false, false));
+            authority.0 |= worker.has_live_lease;
+            authority.1 |= worker.active_tool_call_id.is_some();
+        }
+        for task in locked_tasks {
+            if matches!(task.status.as_str(), "finished" | "failed") {
+                continue;
+            }
+            let (has_live_lease, has_active_tool) = worker_authority_by_operation
+                .get(&task.operation_id)
+                .copied()
+                .unwrap_or((false, false));
+            if task.status != "waiting" || has_live_lease || has_active_tool {
+                return Err(crate::DbError::OrganizationDeletionActiveStageFork {
+                    operation_id: task.operation_id,
+                    stage: task.stage,
+                    status: task.status,
+                });
+            }
+            stopped_quiescent_stage_task_ids.push(task.operation_id);
+        }
+        if !stopped_quiescent_stage_task_ids.is_empty() {
+            sqlx::query(
+                r#"UPDATE tool_calls
+                      SET status='failed',
+                          result=COALESCE(result,$2),
+                          updated_at=NOW()
+                    WHERE task_id=ANY($1)
+                      AND status IN ('received','running')"#,
+            )
+            .bind(&stopped_quiescent_stage_task_ids)
+            .bind(ORGANIZATION_DELETION_STOPPED_TASK_RESULT)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE subtasks
+                      SET status='failed',
+                          result=COALESCE(result,$2),
+                          updated_at=NOW()
+                    WHERE task_id=ANY($1)
+                      AND status IN ('created','running','waiting')"#,
+            )
+            .bind(&stopped_quiescent_stage_task_ids)
+            .bind(ORGANIZATION_DELETION_STOPPED_TASK_RESULT)
+            .execute(&mut *tx)
+            .await?;
+            let stopped_task_count = sqlx::query(
+                r#"UPDATE tasks
+                      SET status='failed',
+                          result=COALESCE(result,$2),
+                          updated_at=NOW()
+                    WHERE id=ANY($1) AND status='waiting'"#,
+            )
+            .bind(&stopped_quiescent_stage_task_ids)
+            .bind(ORGANIZATION_DELETION_STOPPED_TASK_RESULT)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if stopped_task_count
+                != u64::try_from(stopped_quiescent_stage_task_ids.len())
+                    .map_err(|_| conflict("organization_delete_stage_task_count"))?
+            {
+                return Err(conflict("organization_delete_stage_task_changed"));
+            }
+        }
+    }
     let organization_snapshot = Value::Array(
         organizations
             .iter()
@@ -535,7 +681,10 @@ pub async fn request(
         &mut tx,
         job.id,
         "deleting_db_committed",
-        json!({"preconditions": "passed"}),
+        json!({
+            "preconditions": "passed",
+            "stoppedQuiescentStageTaskIds": stopped_quiescent_stage_task_ids,
+        }),
     )
     .await?;
 
@@ -917,6 +1066,15 @@ pub async fn hard_delete(pool: &PgPool, job_id: Uuid) -> Result<OrganizationDele
     .fetch_all(&mut *tx)
     .await?;
     assert_deletion_preconditions(&mut tx, &organization_ids).await?;
+    sqlx::query(
+        r#"DELETE FROM targets AS target
+           USING organization_deletion_job_targets AS frozen
+           WHERE frozen.job_id=$1
+             AND frozen.live_target_id=target.id"#,
+    )
+    .bind(job_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM organizations WHERE id=$1")
         .bind(current.root_organization_id_at_time)
         .execute(&mut *tx)

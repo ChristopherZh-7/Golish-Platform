@@ -588,18 +588,68 @@ pub async fn accept_gate_passed_candidate_batch_with_connection(
             AND consolidation.operation_id=unit.operation_id
             AND consolidation.scope_snapshot_id=unit.scope_snapshot_id
             AND consolidation.decision_kind='opened_next_wave'
+      LEFT JOIN operation_stage_fork_inputs AS fork_vuln_input
+             ON fork_vuln_input.id=unit.entry_stage_fork_input_id
+            AND fork_vuln_input.operation_id=unit.operation_id
+            AND fork_vuln_input.target_scope_snapshot_id=unit.scope_snapshot_id
+            AND fork_vuln_input.organization_id=unit.organization_id
+            AND fork_vuln_input.source_stage_kind='vuln_triage'
+      LEFT JOIN operation_stage_forks AS fork
+             ON fork.operation_id=fork_vuln_input.operation_id
+            AND fork.source_operation_id=fork_vuln_input.source_operation_id
+            AND fork.entry_stage='attack_candidate'
+      LEFT JOIN operation_state AS fork_source_operation
+             ON fork_source_operation.operation_id=fork_vuln_input.source_operation_id
+            AND fork_source_operation.superseded_by IS NULL
+      LEFT JOIN operation_stage_fork_inputs AS fork_enumeration_input
+             ON fork_enumeration_input.operation_id=fork_vuln_input.operation_id
+            AND fork_enumeration_input.source_operation_id=fork_vuln_input.source_operation_id
+            AND fork_enumeration_input.organization_id=fork_vuln_input.organization_id
+            AND fork_enumeration_input.source_stage_kind='enumeration'
+      LEFT JOIN stage_handoffs AS fork_vuln_handoff
+             ON fork_vuln_handoff.id=fork_vuln_input.source_handoff_id
+            AND fork_vuln_handoff.operation_id=fork_vuln_input.source_operation_id
+            AND fork_vuln_handoff.scope_snapshot_id=fork_vuln_input.source_scope_snapshot_id
+            AND fork_vuln_handoff.organization_id=fork_vuln_input.organization_id
+            AND fork_vuln_handoff.stage_execution_id=fork_vuln_input.source_stage_execution_id
+            AND fork_vuln_handoff.source_stage_run_unit_id=fork_vuln_input.source_stage_run_unit_id
+            AND fork_vuln_handoff.deliverable_submission_id=fork_vuln_input.source_deliverable_submission_id
+            AND fork_vuln_handoff.from_stage_kind='vuln_triage'
+            AND fork_vuln_handoff.invalidated_at IS NULL
+      LEFT JOIN stage_handoffs AS fork_enumeration_handoff
+             ON fork_enumeration_handoff.id=fork_enumeration_input.source_handoff_id
+            AND fork_enumeration_handoff.operation_id=fork_enumeration_input.source_operation_id
+            AND fork_enumeration_handoff.scope_snapshot_id=fork_enumeration_input.source_scope_snapshot_id
+            AND fork_enumeration_handoff.organization_id=fork_enumeration_input.organization_id
+            AND fork_enumeration_handoff.stage_execution_id=fork_enumeration_input.source_stage_execution_id
+            AND fork_enumeration_handoff.source_stage_run_unit_id=fork_enumeration_input.source_stage_run_unit_id
+            AND fork_enumeration_handoff.deliverable_submission_id=fork_enumeration_input.source_deliverable_submission_id
+            AND fork_enumeration_handoff.from_stage_kind='enumeration'
+            AND fork_enumeration_handoff.invalidated_at IS NULL
            WHERE run.id=$1 AND run.operation_id=$2 AND run.scope_snapshot_id=$3
              AND unit.id=$4 AND unit.organization_id=$5
              AND (
                  (
-                     unit.entry_consolidation_id IS NULL
+                     unit.entry_stage_fork_input_id IS NULL
+                     AND unit.entry_consolidation_id IS NULL
                      AND unit.entry_stage_kind='vuln_triage'
                      AND entry_unit.status='passed'
                      AND entry_unit.terminal_at IS NOT NULL
                      AND handoff.id IS NOT NULL
                  )
                  OR (
-                     unit.entry_consolidation_id IS NOT NULL
+                     unit.entry_stage_fork_input_id IS NOT NULL
+                     AND unit.entry_consolidation_id IS NULL
+                     AND unit.entry_stage_execution_id IS NULL
+                     AND fork.operation_id IS NOT NULL
+                     AND fork_source_operation.operation_id IS NOT NULL
+                     AND fork_enumeration_input.id IS NOT NULL
+                     AND fork_vuln_handoff.id IS NOT NULL
+                     AND fork_enumeration_handoff.id IS NOT NULL
+                 )
+                 OR (
+                     unit.entry_stage_fork_input_id IS NULL
+                     AND unit.entry_consolidation_id IS NOT NULL
                      AND consolidation.id IS NOT NULL
                      AND EXISTS (
                          SELECT 1

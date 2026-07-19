@@ -33,6 +33,7 @@ use golish_agent_kit::harness::org_gate::{
     apply_technique_outcome_rows, eas_service_not_applicable_from_port_outcomes,
     stage_accepts_outcome_projection, stage_accepts_source_query_completion,
     stage_asset_axis_cutoff, stage_gate_expected_techniques,
+    trusted_vuln_surface_not_applicable_from_snapshot,
     validated_enumeration_axis_from_coverage_snapshot,
     validated_exact_web_origin_axis_from_coverage_snapshot, vuln_not_applicable_from_outcomes,
     TargetIntelOrganizationContext, STAGE_RUN_PASS_TOKEN_KIND,
@@ -1610,6 +1611,17 @@ impl SubmitStageDeliverableTool {
                         stage.as_str()
                     )
                 })?;
+                if stage == StageKind::VulnTriage {
+                    not_applicable_coverage.extend(
+                        trusted_vuln_surface_not_applicable_from_snapshot(&snapshot).map_err(
+                            |error| {
+                                format!(
+                                    "vuln_triage surface applicability snapshot is invalid: {error}"
+                                )
+                            },
+                        )?,
+                    );
+                }
                 authoritative_coverage_axis = true;
             }
             // (4) #4/E3: **始终**从 technique_outcomes union 进 facts（submit 预检；与

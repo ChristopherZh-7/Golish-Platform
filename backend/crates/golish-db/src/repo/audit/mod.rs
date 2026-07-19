@@ -217,8 +217,8 @@ pub async fn log_operation_with_lineage_in_transaction(
 ///
 /// 与 `log_operation_with_lineage` 的区别: `status` 固定 `'completed'`,
 /// `audit_role` 固定 `'evidence'` (migration `20260601000001` 加的列, 默认
-/// `'action'`, 老行不破). `RETURNING *` 多出的 `audit_role` 列被 `FromRow`
-/// 忽略 (AuditEntry 不含该字段, 读路径走 detail JSON).
+/// `'action'`, 老行不破). `AuditEntry` 保留这些 typed evidence 列，让只读 UI
+/// 可以按 ledger outcome 展示状态，而不从 `detail.raw_output` 猜测成功/空结果。
 ///
 /// PR2 (设计 2026-06-11 coverage 投影): `technique` / `asset` / `outcome` 写进
 /// migration `20260611000001/2` 的三个 nullable 列 — 不进 `detail` JSON, 哈希链

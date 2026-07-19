@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type AiToolExecution, useStore } from "@/store";
 import { ToolCallDetailView } from "./ToolCallDetailView";
@@ -26,7 +26,7 @@ function setSelectedCandidateStageRun() {
   const execution: AiToolExecution = {
     requestId: REQUEST_ID,
     toolName: "stage_run",
-    args: { stage: "attack_candidate" },
+    args: { orgs: [] },
     result: { stage: "attack_candidate", passed: true },
     status: "completed",
     startedAt: "2026-07-13T00:00:00Z",
@@ -65,6 +65,63 @@ function setSelectedCandidateStageRun() {
   });
 }
 
+function setSelectedRunningCandidateStageRun() {
+  const execution: AiToolExecution = {
+    requestId: REQUEST_ID,
+    toolName: "stage_run",
+    args: { orgs: [] },
+    status: "running",
+    startedAt: "2026-07-17T05:18:37Z",
+  };
+  useStore.setState({
+    sessions: {
+      [SESSION_ID]: {
+        id: SESSION_ID,
+        name: "Candidate detail",
+        workingDirectory: "/tmp/candidate-detail",
+        createdAt: "2026-07-17T05:18:37Z",
+        mode: "agent",
+        detailViewMode: "tool-detail",
+        toolDetailRequestIds: [REQUEST_ID],
+        stageRuns: {
+          [REQUEST_ID]: {
+            requestId: REQUEST_ID,
+            stageLabel: "Attack Candidate",
+            roleLabel: "Attack Analyst",
+            coverageAxis: ["CANDIDATES"],
+            rows: [
+              {
+                id: "org-candidate-1",
+                name: "Acme Root",
+                ownershipPercent: null,
+                status: "running",
+                agentRequestId: `${REQUEST_ID}::org::org-candidate-1`,
+                activity: "classifying 26 frozen work items",
+                evidenceCount: 0,
+                coverage: {},
+                stage: "attack_candidate",
+              },
+            ],
+            summary: { total: 1, covered: 0, active: 1, queued: 0, blocked: 0 },
+          },
+        },
+      },
+    },
+    timelines: {
+      [SESSION_ID]: [
+        {
+          id: `tool-exec-${REQUEST_ID}`,
+          type: "ai_tool_execution",
+          timestamp: "2026-07-17T05:18:37Z",
+          data: execution,
+        },
+      ],
+    },
+    activeSubAgents: {},
+    backgroundJobs: {},
+  });
+}
+
 describe("ToolCallDetailView Candidate production entry", () => {
   beforeEach(() => {
     useStore.setState({ sessions: {}, timelines: {}, backgroundJobs: {} });
@@ -86,5 +143,24 @@ describe("ToolCallDetailView Candidate production entry", () => {
     expect(screen.getByTestId("candidate-attempts-production-entry")).toHaveTextContent(
       JSON.stringify(expectedProps)
     );
+  });
+
+  it("shows the live Attack Analyst from progress when stage_run args contain only orgs", () => {
+    setSelectedRunningCandidateStageRun();
+
+    render(<ToolCallDetailView sessionId={SESSION_ID} />);
+
+    expect(screen.getByTestId("attack-candidate-stage-run")).toBeInTheDocument();
+    expect(screen.getByText("Attack Analyst Agent")).toBeInTheDocument();
+    expect(screen.getByText("Acme Root")).toBeInTheDocument();
+    expect(screen.getByText("classifying 26 frozen work items")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /查看 Acme Root 的 Attack Analyst Agent 运行流/ }));
+
+    expect(useStore.getState().sessions[SESSION_ID]?.detailViewMode).toBe("sub-agent-detail");
+    expect(useStore.getState().sessions[SESSION_ID]?.toolDetailRequestIds).toEqual([
+      REQUEST_ID,
+      `${REQUEST_ID}::org::org-candidate-1`,
+    ]);
   });
 });

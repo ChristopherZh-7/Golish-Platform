@@ -1,5 +1,10 @@
 # 两级阶段模型：大阶段(Phase) × 小阶段(Stage)
 
+> Routine post-Scoping phase-confirmation decisions are superseded by
+> `docs/design/2026-07-18-scoping-only-routine-human-confirmation.md`.
+> Phase grouping, risk metadata, per-stage deterministic Gates, and typed
+> authorization boundaries remain current.
+
 > **一句话**：把现在扁平的 12 个 stage 重构成「外圈大阶段(phase) + 内圈小阶段(stage)」两级。大阶段 = 风险/审批边界（锚定已有授权阶梯 L0–L5）；大阶段内部的小阶段无强制先后、可并行，跑完整个大阶段在出口过一道放行（审批 + 游标前进）。
 >
 > **基于**：`docs/design/2026-06-01-harness-explainer-and-decisions.md`（现状地图 + 决策清单）。本文是它点名的「下一份设计决策文档」。

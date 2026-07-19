@@ -907,6 +907,23 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.dispatch_list_running_impl(session_id).await
     }
 
+    async fn scoping_passive_recon_organization_authorized(
+        &self,
+        operation_id: Uuid,
+        stage_execution_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let authorized =
+            golish_db::repo::operation_scope_decisions::scoping_passive_recon_organization_authorized(
+                &self.pool,
+                operation_id,
+                stage_execution_id,
+                organization_id,
+            )
+            .await?;
+        Ok(authorized)
+    }
+
     // ── Evidence Ledger (P0) ─────────────────────────────────
     async fn evidence_append(
         &self,

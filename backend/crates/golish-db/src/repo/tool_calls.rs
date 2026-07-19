@@ -420,7 +420,12 @@ fn approved_unit_review(
     }
     approved_human_response(result)
         .and_then(|response| serde_json::from_str::<serde_json::Value>(&response).ok())
-        .and_then(|response| response.as_array().map(|_| ()))
+        .and_then(|response| {
+            response
+                .as_array()
+                .map(|_| ())
+                .or_else(|| response.get("rows")?.as_array().map(|_| ()))
+        })
         .is_some()
 }
 
@@ -935,6 +940,22 @@ mod tests {
         assert_eq!(
             unit_flow_for_org(&[proposal.clone(), review.clone()], organization_id),
             (true, true)
+        );
+        let current_protocol_review = (
+            "ask_human".to_string(),
+            serde_json::json!({
+                "input_type": "unit_review",
+                "context": serde_json::json!({"organization_id": organization_id}).to_string()
+            }),
+            Some(r#"{"response":"{\"rows\":[]}","skipped":false}"#.to_string()),
+        );
+        assert_eq!(
+            unit_flow_for_org(
+                &[proposal.clone(), current_protocol_review],
+                organization_id
+            ),
+            (true, true),
+            "the current AskHuman unit-review protocol wraps rows in an object"
         );
         assert_eq!(
             unit_flow_for_org(&[review.clone(), proposal.clone()], organization_id),

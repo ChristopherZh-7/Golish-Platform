@@ -13,6 +13,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { translateErrorCode } from "@/lib/api/error-codes";
 import {
+  type GetStageAssetCoverageArgs,
+  getStageAssetCoverage,
+  type StageAssetCoverageSnapshot,
+} from "@/lib/api/stage-coverage";
+import {
   getStageTeamReadModel,
   resolveStageTeamRecovery,
   type StageTeamReadModel,
@@ -24,6 +29,7 @@ import { cn } from "@/lib/utils";
 
 export interface StageTeamReadApi {
   getReadModel: (request: StageTeamReadRequest) => Promise<StageTeamReadModel>;
+  getCoverage?: (request: GetStageAssetCoverageArgs) => Promise<StageAssetCoverageSnapshot>;
   resolveRecovery: (
     request: StageTeamRecoveryResolveRequest
   ) => Promise<StageTeamRecoveryResolveResponse>;
@@ -31,6 +37,7 @@ export interface StageTeamReadApi {
 
 const defaultApi: StageTeamReadApi = {
   getReadModel: getStageTeamReadModel,
+  getCoverage: getStageAssetCoverage,
   resolveRecovery: resolveStageTeamRecovery,
 };
 
@@ -144,6 +151,22 @@ function currentWorker(item: StageTeamWorkItem) {
   );
 }
 
+function workerAttemptLane(item: StageTeamWorkItem, worker: StageTeamWorkItem["workers"][number]) {
+  if (worker.recoveryState === "manual_required" || worker.status === "recovery_required") {
+    return "operator recovery";
+  }
+  if (
+    ["running", "claimed"].includes(worker.status) &&
+    (worker.generation > 1 || worker.attemptEpoch > 1 || item.status === "retry_pending")
+  ) {
+    return "current retry";
+  }
+  if (["failed", "exhausted", "killed", "cancelled"].includes(worker.status)) {
+    return "historical attempt failed";
+  }
+  return null;
+}
+
 function UnsupportedLegacyTeamRun() {
   return (
     <div
@@ -168,6 +191,11 @@ export function StageTeamRunView({
   const [loadedIdentity, setLoadedIdentity] = useState<string | null>(null);
   const [errorState, setErrorState] = useState<{ identity: string; text: string } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [coverageByOrg, setCoverageByOrg] = useState<Record<string, StageAssetCoverageSnapshot>>(
+    {}
+  );
+  const [coverageLoading, setCoverageLoading] = useState(false);
+  const [coverageError, setCoverageError] = useState<string | null>(null);
   const [showSchedulerDetails, setShowSchedulerDetails] = useState(false);
   const [recoveryActions, setRecoveryActions] = useState<Record<string, RecoveryActionState>>({});
   const recoveryRequestIds = useRef(new Map<string, string>());
@@ -185,10 +213,44 @@ export function StageTeamRunView({
       if (sequence.current !== current) return;
       setState(next);
       setLoadedIdentity(identity);
+      if (next.stageKind === "vuln_triage" && api.getCoverage) {
+        setCoverageByOrg({});
+        setCoverageLoading(true);
+        setCoverageError(null);
+        try {
+          const snapshots = await Promise.all(
+            next.units.map((unit) =>
+              api.getCoverage!({
+                operationId,
+                organizationId: unit.organizationId,
+                stage: next.stageKind,
+                stageStartedAt: next.startedAt,
+              })
+            )
+          );
+          if (sequence.current !== current) return;
+          setCoverageByOrg(
+            Object.fromEntries(snapshots.map((snapshot) => [snapshot.organization_id, snapshot]))
+          );
+        } catch (cause) {
+          if (sequence.current !== current) return;
+          setCoverageByOrg({});
+          setCoverageError(message(cause));
+        } finally {
+          if (sequence.current === current) setCoverageLoading(false);
+        }
+      } else {
+        setCoverageByOrg({});
+        setCoverageError(null);
+        setCoverageLoading(false);
+      }
     } catch (cause) {
       if (sequence.current !== current) return;
       setState(undefined);
       setLoadedIdentity(identity);
+      setCoverageByOrg({});
+      setCoverageLoading(false);
+      setCoverageError(null);
       setErrorState({ identity, text: message(cause) });
     } finally {
       if (sequence.current === current) setRefreshing(false);
@@ -295,6 +357,19 @@ export function StageTeamRunView({
         ) ?? false,
     };
   }, [model]);
+  const coverageSummary = useMemo(() => {
+    const cells = Object.values(coverageByOrg).flatMap((snapshot) =>
+      snapshot.assets.flatMap((asset) => asset.coverage)
+    );
+    const terminal = cells.filter((cell) =>
+      ["found", "checked_empty", "blocked", "not_applicable"].includes(cell.state)
+    ).length;
+    return {
+      total: cells.length,
+      terminal,
+      remaining: cells.length - terminal,
+    };
+  }, [coverageByOrg]);
   const schedulerDetailsVisible = showSchedulerDetails || summary.recovery > 0;
 
   if (model === undefined && error === null) {
@@ -340,6 +415,23 @@ export function StageTeamRunView({
         <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-cyan-300">
           采集 {summary.returned}/{summary.items} 已返回
         </span>
+        {model.stageKind === "vuln_triage" && coverageLoading && (
+          <span className="inline-flex items-center gap-1 rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-300">
+            <Loader2 className="h-3 w-3 animate-spin" /> 正在读取 DB worklist
+          </span>
+        )}
+        {model.stageKind === "vuln_triage" && coverageError && (
+          <span role="alert" className="rounded bg-red-500/10 px-1.5 py-0.5 text-red-300">
+            worklist 读取失败：{coverageError}
+          </span>
+        )}
+        {model.stageKind === "vuln_triage" && !coverageLoading && !coverageError && (
+          <span className="rounded bg-violet-500/10 px-1.5 py-0.5 font-medium text-violet-200">
+            {coverageSummary.total === 0
+              ? "DB worklist 暂无 cells"
+              : `${coverageSummary.terminal}/${coverageSummary.total} cells 终态 · 剩余 ${coverageSummary.remaining}`}
+          </span>
+        )}
         {summary.collecting > 0 && (
           <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-300">
             {summary.collecting} 个采集中
@@ -432,6 +524,29 @@ export function StageTeamRunView({
                       item.status === "recovery_required" ||
                       item.status === "exhausted"
                   ).length;
+                  const attemptLanes = children.flatMap((item) =>
+                    item.workers.map((worker) => workerAttemptLane(item, worker))
+                  );
+                  const workerHistoricalFailedAttempts = attemptLanes.filter(
+                    (lane) => lane === "historical attempt failed"
+                  ).length;
+                  const currentRetries = attemptLanes.filter(
+                    (lane) => lane === "current retry"
+                  ).length;
+                  const operatorRecoveries = attemptLanes.filter(
+                    (lane) => lane === "operator recovery"
+                  ).length;
+                  const unitCoverage = coverageByOrg[unit.organizationId];
+                  const unitCells = unitCoverage?.assets.flatMap((asset) => asset.coverage) ?? [];
+                  const unitTerminalCells = unitCells.filter((cell) =>
+                    ["found", "checked_empty", "blocked", "not_applicable"].includes(cell.state)
+                  ).length;
+                  const historicalFailedCells = unitCells.filter((cell) =>
+                    ["partial", "error"].includes(cell.state)
+                  ).length;
+                  const historicalFailedAttempts = unitCoverage
+                    ? historicalFailedCells
+                    : workerHistoricalFailedAttempts;
                   return (
                     <div className="mt-2 rounded border border-cyan-500/25 bg-cyan-500/[0.04] px-2.5 py-2.5 text-[11px]">
                       <div className="flex flex-wrap items-center gap-2">
@@ -479,7 +594,27 @@ export function StageTeamRunView({
                             {blockedChildren} 个阻塞
                           </span>
                         )}
+                        {unitCoverage && (
+                          <span className="rounded bg-violet-500/10 px-1.5 py-0.5 font-medium text-violet-200">
+                            {unitTerminalCells}/{unitCells.length} cells · 剩余{" "}
+                            {unitCells.length - unitTerminalCells}
+                          </span>
+                        )}
                       </div>
+                      {model.stageKind === "vuln_triage" && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                          <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-red-300">
+                            历史 attempt 失败 {historicalFailedAttempts}
+                            {unitCoverage ? " cells" : ""}
+                          </span>
+                          <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-300">
+                            当前 retry {currentRetries}
+                          </span>
+                          <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300">
+                            operator recovery {operatorRecoveries}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   );
                 }
@@ -501,9 +636,7 @@ export function StageTeamRunView({
                       <span className="text-muted-foreground" title={unit.plan.planSha256}>
                         {short(unit.plan.planSha256, 18)}
                       </span>
-                      <span>
-                        {unit.plan.maxWorkersActive} active / {unit.plan.maxWorkersTotal} total
-                      </span>
+                      <span>{unit.plan.maxWorkersActive} active workers max</span>
                       <span>epoch {unit.plan.dispatchEpoch}</span>
                       <span>
                         {unit.plan.dynamicRequestsEnabled
@@ -599,6 +732,7 @@ export function StageTeamRunView({
                           <div className="mt-1.5 space-y-1 border-l border-border/30 pl-2">
                             {item.workers.map((worker) => {
                               const recoveryAction = recoveryActions[worker.workerRunId];
+                              const attemptLane = workerAttemptLane(item, worker);
                               const canResolveRecovery =
                                 worker.recoveryState === "manual_required" &&
                                 worker.activeToolCallId !== null;
@@ -611,6 +745,24 @@ export function StageTeamRunView({
                                     <span>epoch {worker.attemptEpoch}</span>
                                     <span>lease {worker.leaseState}</span>
                                     <span>recovery {worker.recoveryState}</span>
+                                    {model.stageKind === "vuln_triage" && attemptLane && (
+                                      <span
+                                        className={cn(
+                                          "rounded px-1.5 py-0.5 font-medium",
+                                          attemptLane === "historical attempt failed"
+                                            ? "bg-red-500/10 text-red-300"
+                                            : attemptLane === "current retry"
+                                              ? "bg-sky-500/10 text-sky-300"
+                                              : "bg-amber-500/10 text-amber-300"
+                                        )}
+                                      >
+                                        {attemptLane === "historical attempt failed"
+                                          ? "历史 attempt 失败"
+                                          : attemptLane === "current retry"
+                                            ? "当前 retry"
+                                            : "operator recovery"}
+                                      </span>
+                                    )}
                                     {worker.messageChainId && (
                                       <span>chain {short(worker.messageChainId)}</span>
                                     )}

@@ -169,6 +169,16 @@ fn timeout_job_value(
     })
 }
 
+fn cancelled_job_value(command: &str, snap: crate::background_jobs::JobSnapshot) -> Value {
+    let mut value = finished_job_value(command, snap);
+    value["status"] = Value::String("cancelled".to_string());
+    value["error_kind"] = Value::String("COMMAND_CANCELLED".to_string());
+    value["error"] = Value::String(
+        "Command was cancelled, killed, reaped, and drained before wrapper landing.".to_string(),
+    );
+    value
+}
+
 /// Run a shell command outside the visible terminal and return structured
 /// output for the AI tool detail panel.
 ///
@@ -237,10 +247,13 @@ async fn run_shell_command_detail_with_mode(
     // can be routed back to that session. Capture the current tool context too
     // so live stdout/stderr chunks can update the existing tool-call detail UI.
     // `None` when not attributable.
+    let tool_cancellation = golish_core::current_agent_tool_cancellation();
     let (session_id, tool_context) = match mode {
         // Foreground-only jobs are consumed by this tool call, so they should
-        // not hold the stage-close background barrier open.
-        ShellRunMode::ForegroundOnly => (None, None),
+        // not hold the stage-close background barrier open. Keep the tool
+        // context so stdout/stderr and cancellation remain attached to the
+        // exact durable wrapper call.
+        ShellRunMode::ForegroundOnly => (None, golish_core::current_agent_tool_context()),
         ShellRunMode::AutoBackgroundAfterSoftTimeout | ShellRunMode::BackgroundAfterStartup => (
             golish_core::current_agent_session(),
             golish_core::current_agent_tool_context(),
@@ -283,6 +296,26 @@ async fn run_shell_command_detail_with_mode(
     if inline_wait_ms > 0 {
         let inline_deadline = started_at + Duration::from_millis(inline_wait_ms);
         loop {
+            if tool_cancellation
+                .as_ref()
+                .is_some_and(golish_core::AgentToolCancellation::is_cancelled)
+            {
+                let _ = crate::background_jobs::manager().kill(&job_id);
+                let snap = crate::background_jobs::manager()
+                    .wait_terminal(&job_id)
+                    .await
+                    .unwrap_or_else(|| crate::background_jobs::JobSnapshot {
+                        command: command.to_string(),
+                        status: crate::background_jobs::JobStatus::Killed,
+                        exit_code: Some(124),
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        duration_ms: started_at.elapsed().as_millis() as u64,
+                        finished: true,
+                    });
+                crate::background_jobs::manager().remove(&job_id);
+                return Ok(cancelled_job_value(command, snap));
+            }
             if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
                 if snap.finished {
                     crate::background_jobs::manager().remove(&job_id);
@@ -304,25 +337,18 @@ async fn run_shell_command_detail_with_mode(
             }
         }
         let _ = crate::background_jobs::manager().kill(&job_id);
-        let settle_deadline = std::time::Instant::now() + Duration::from_millis(750);
-        let snap = loop {
-            if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
-                if snap.finished || std::time::Instant::now() >= settle_deadline {
-                    break snap;
-                }
-            } else {
-                break crate::background_jobs::JobSnapshot {
-                    command: command.to_string(),
-                    status: crate::background_jobs::JobStatus::Killed,
-                    exit_code: Some(124),
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    duration_ms: started_at.elapsed().as_millis() as u64,
-                    finished: true,
-                };
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        };
+        let snap = crate::background_jobs::manager()
+            .wait_terminal(&job_id)
+            .await
+            .unwrap_or_else(|| crate::background_jobs::JobSnapshot {
+                command: command.to_string(),
+                status: crate::background_jobs::JobStatus::Killed,
+                exit_code: Some(124),
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                finished: true,
+            });
         crate::background_jobs::manager().remove(&job_id);
         return Ok(timeout_job_value(command, snap, timeout_ms));
     }
@@ -961,6 +987,31 @@ mod tests {
             res.get("job_id").is_none(),
             "foreground-only timeout must not hand the model a background job: {res:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_only_cancellation_kills_reaps_and_returns_inline() {
+        let cancellation = golish_core::AgentToolCancellation::default();
+        let cancellation_for_tool = cancellation.clone();
+        let execution = tokio::spawn(async move {
+            golish_core::with_agent_tool_cancellation(Some(cancellation_for_tool), async {
+                run_shell_command_detail_foreground_only("sleep 30", &ws(), 30_000).await
+            })
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        cancellation.cancel();
+
+        let res = tokio::time::timeout(Duration::from_secs(5), execution)
+            .await
+            .expect("cancelled foreground child must be killed and awaited")
+            .expect("foreground task should join")
+            .expect("foreground tool should return a structured cancellation");
+
+        assert_eq!(res.get("status"), Some(&json!("cancelled")));
+        assert_eq!(res.get("error_kind"), Some(&json!("COMMAND_CANCELLED")));
+        assert!(res.get("job_id").is_none());
     }
 
     #[cfg(unix)]

@@ -30,6 +30,7 @@ agent 服务的命令面与运行时状态宿主。`AiState` 持有 per-session 
 | `PgKnowledgeContextAdapter` | DB ownership + server-owned principal policy + local temporal graph 组成的 C7 scoped ContextPack provider |
 | `ai_get_stage_team_read_model` / `ai_resolve_stage_team_recovery` | DB-authoritative Stage Team hierarchy 与 LocalDesktop exact-CAS unknown-tool recovery；绝不提供 replay tool 入口 |
 | `attack_list_verification_queue` / `attack_resolve_candidate_recovery` | Candidate TerminalIntent/action/recovery/Wave 与 pending FactDelta enrichment 的安全 typed read/mutation surface |
+| `StageForkTaskOperationLaunch` | CLI/GUI 共用 TaskOperation 创建入口的 typed 阶段分叉投影；只携带 source/scope/slice lineage，实际执行仍进入共享 orchestrator |
 | `ai_session_not_initialized_error` | 会话未初始化错误构造 |
 | `ai`（`commands/` `db_bridge/` `tracking_bridge/`） | command handlers + AppState-free 桥接 |
 | `conversation_store` | agent 拥有的会话存储 |
@@ -65,6 +66,7 @@ agent 服务的命令面与运行时状态宿主。`AiState` 持有 per-session 
 - 命令面经 `golish::commands_facade::{ai, workspace}` glob 暴露给 `generate_handler!`，新增命令要确认 facade 能 glob 到 `__cmd__$name`。
 - `AiState` 的 request slot 必须跨 `AgentBridge` generation：init 在构建前 fail-fast reserve，同 session concurrent init 不排队；shutdown 先 invalidate/remove 再 cancel returned Arc。GC 必须同时确认 wrapper slot 和内部 `SessionRequestSlot` 都没有 late bridge/request lease 引用；否则 same-id 新 slot 会绕过仍在 unwind 的 old owner。busy shutdown 当下不能回收时，后续 init 的 opportunistic sweep 只按相同安全条件清 tombstone。
 - `ai/commands/bridge_config.rs` 用同一个 `GolishDbRepoProvider` Arc 同时装配 generic DB reads 与 `RuntimeMemoryRepository`，并把后者注入 bound-chain persistence/AgentBridge；V2 worker 不得回退 raw chain SQL 或 shared deliverable sink，legacy chat 保持原路径。
+- `db_bridge/runtime_memory.rs` 必须把 typed `StageForkCreate` 交给 golish-db 的同一原子 operation-create 事务；不能在 app 层复制 handoff、Target、Worker、tool call 或 evidence。
 - `AgentState.knowledge_memory` 与 process supervisor 必须来自同一个 adapter Arc；`bridge_config.rs` 只注入 UoW handle。P1 final-seal/P2 Attempt 在各自 DB compound transaction 接 inner seam 前，不能宣称 canonical producer atomic 闭环完成。
 - `PgKnowledgeMemory` assertion promoter 对每个非空 catalog route 使用显式 authority policy；Candidate/Post-Exploit/Cleanup terminal event 的 derived Assertion 只能信任 envelope + sealed frozen scope，严格 payload 只承载事实内容。只有 reason-only blocked Candidate（persisted blocker reason、无 audit evidence、无 FactDelta）在通过 exact sealed operation/project/snapshot/org/source authority 后允许 intentional suppression；无 authority 不得借 suppression 绕过。Candidate `fact_delta_count > 0` 在 typed evidence-role 字段落地前 fail closed；其他投影不得由测试手工 ACK `succeeded_suppressed` 代替。
 - `bridge_config.rs` 的 ContextPack provider 必须来自当前 `DbState` pool；request/model 不传 actor、project path 或 trusted context。检索失败不得接 legacy global fallback。

@@ -85,6 +85,26 @@ describe("getShellOutputForDetail", () => {
   it("mounts Candidate review only on attack_candidate stage_run detail", () => {
     expect(isAttackCandidateStageRun("stage_run", { stage: "attack_candidate" })).toBe(true);
     expect(isAttackCandidateStageRun("stage_run", '{"stage_id":"attack_candidate"}')).toBe(true);
+    expect(
+      isAttackCandidateStageRun(
+        "stage_run",
+        { orgs: [] },
+        { stage: "attack_candidate", passed: false }
+      )
+    ).toBe(true);
+    expect(
+      isAttackCandidateStageRun("stage_run", { orgs: [] }, undefined, [
+        { stage: "attack_candidate" },
+      ])
+    ).toBe(true);
+    expect(
+      isAttackCandidateStageRun(
+        "stage_run",
+        { stage: "verification" },
+        { stage: "attack_candidate" },
+        [{ stage: "attack_candidate" }]
+      )
+    ).toBe(false);
     expect(isAttackCandidateStageRun("stage_run", { stage: "verification" })).toBe(false);
     expect(isAttackCandidateStageRun("submit_stage_deliverable", { stage: "attack_candidate" })).toBe(
       false

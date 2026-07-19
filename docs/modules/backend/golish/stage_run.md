@@ -1,6 +1,6 @@
 # golish / stage_run
 
-> **一句话职责**：headless 单/区间阶段实跑与 exact recovery（fresh `golish --stage-run` / persisted `--stage-run-resume`）——无 GUI 启真后端（嵌入式 PG + 真 pentest 工具 + 真 LLM），fresh 路径跑一个 stage/DAG 切片；resume 路径复用旧 session/task/operation/freshness/worker chain 并只重驱当前中断 stage；两者均打印 gate/evidence 报告，transcript 可 `--replay`。
+> **一句话职责**：headless 单/区间阶段实跑、shared-DB stage fork 与 exact recovery（fresh `--stage-run` / immutable-source `--stage-run-fork` / persisted `--stage-run-resume`）——三者共享 GUI 的 TaskOperation/TaskOrchestrator/Stage/Gate 内核。
 
 - **类型**：目录模块（属于 crate [`golish`](../golish.md)）
 - **路径**：`backend/crates/golish/src/stage_run/`
@@ -10,7 +10,7 @@
 
 ## 何时该读这张卡（给 AI 的触发提示）
 
-- 改 headless 阶段实跑（boot/seed/run/report）、`--stage-run`/`--from`/`--to`/`--only`/`--org`/`--target` 行为时
+- 改 headless 阶段实跑（boot/seed/run/report）、`--stage-run`/`--stage-run-fork`/`--from`/`--to`/`--only`/`--org`/`--target` 行为时
 - 调试逐阶段测试（替代 `just dev` 起 GUI 手动驱阶段）时
 - 改真实 smoke runner（`scripts/stage_smoke.py` / `just stage-smoke`）或临时 DB 测试模式时
 
@@ -60,7 +60,7 @@
 - 临时 DB 跑完默认删除；需要事后连库人工排查时加 `--keep-ephemeral-db`。自动验证优先看 `--db-smoke-summary`，它是在 PG 仍存活时查询出来的。
 - 普通 `--stage-run` 启动前会探测配置端口：若 PostgreSQL 已在监听，说明本次复用了用户现有 DB，收尾只关闭本进程的 pool 并保留现有 PG；只有本次真正启动的 embedded PG 才调用 `stop()`。不能把“端口已占用、复用现有 PG”误当成本次拥有其生命周期。
 - 被 Ctrl-C 或 panic 打断的 smoke 可能来不及停临时 embedded PG；收尾时只清理 `golish-stage-run-db-*` 临时 PG，勿杀默认 app DB（`~/Library/Application Support/golish-platform/pgdata`）。
-- gate 走确定性 evidence 门（I7/I8）。`--auto-approve` 的 ask_human 路径是 typed policy：trusted `--target` 才能批准 exact `scope_review`；fresh CLI 的 subsidiary flag 只能在 request context 的 `organization_id` 精确匹配本次 seeded `--org` 时选择对应 option（默认 root-only）；phase confirmation 默认 decline，只有本次调用同时显式给出 `--approve-phase-boundaries` 才执行与 GUI Confirm 卡等价的批准；ordinary choice、unit_review/credentials/freetext/unknown 与无 trusted target 的 scope review仍全部 decline，禁止 generic `auto-approved` 放松 gate。subsidiary control threshold 默认与 GUI/contract 一致为 51%。
+- gate 走确定性 evidence 门（I7/I8）。`--auto-approve` 的 ask_human 路径是 typed policy：trusted `--target` 才能批准 exact `scope_review`；fresh CLI 的 subsidiary flag 只能在 request context 的 `organization_id` 精确匹配本次 seeded `--org` 时选择对应 option（默认 root-only）。当前内置 flow 的常规人工确认只在 Scoping，post-Scoping Gate PASS 后不会再发 generic phase confirmation；`--approve-phase-boundaries` 继续被 parser/auto-resolver 接受以兼容旧脚本与 Scoping-origin 兼容事件，但不是 target/Candidate/tool 授权。ordinary choice、unit_review/credentials/freetext/unknown 与无 trusted target 的 scope review仍全部 decline，禁止 generic `auto-approved` 放松 gate。subsidiary control threshold 默认与 GUI/contract 一致为 51%。
 - fresh CLI 的 `--target` 是 trusted pre-stage intake：必须在 Scoping 前以
   `source='stage-run-seed'` 落精确 domain/IP/CIDR/URL/wildcard target。Headless
   `scope_review` auto-response 只从这些 `--target` 构造 exact table payload，不从 objective/
@@ -111,6 +111,14 @@
   body 非空；`task_id=Some` 时还必须等于 operation。旧 stage-run chain 可能是
   `task_id=NULL`，由 guarded `operation_state.stage_run_workers` map 绑定 operation，
   可兼容但绝不手工回填；非空错 task 一律拒绝。
+
+## Shared-DB stage fork（2026-07-18）
+
+- `--stage-run-fork <operation UUID>` 最无歧义；chat/session selector 必须只绑定一个 operation。
+- Scoping 固定采用源 sealed scope；可只跑 `target_intel` 到 `attack_candidate` 任一阶段，或连续 `--from/--to` 切片。
+- target operation 拥有新的 Task/execution/Worker/tool/evidence；前缀只通过 immutable fork input读取，不复制或重跑 source Worker。
+- Candidate-only 仍走共享 Candidate Wave/Gate/Review；generation-zero entry 是 exact `ForkedVulnHandoff`，不会放宽普通 Candidate 的同-operation连续性。
+- EAS 及以后入口在任务非终态期间冻结创建时 Target identity/scope/source/owner，enrichment列仍可写；缺 in-scope Target 会在模型/扫描器前拒绝。
 
 ## 测试入口
 

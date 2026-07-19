@@ -1,10 +1,11 @@
-//! Tests for the harness post-gate handling + the two-level phase-approval gate.
+//! Tests for harness post-gate handling + Scoping-only routine human confirmation.
 //!
 //! Exercises [`TaskOrchestrator::consume_gate_outcome`] (the post-gate chokepoint
 //! that records the cross-stage handoff + emits `stage_passed` + accumulates the
 //! stage flow outcome) and [`TaskOrchestrator::two_level_phase_gate`] (the live
-//! graph-flow human-approval gate at 大阶段 boundaries), against an in-memory repo
-//! + the live user-input approval channel. Plus P3 RAG-prior wiring and
+//! graph-flow transition gate: typed security barriers stay fail-closed while
+//! post-Scoping routine phase crossings auto-advance), against an in-memory repo.
+//! Plus P3 RAG-prior wiring and
 //!   `fail_task_if_active`. Deterministic regardless of `GOLISH_HARNESS_PROFILE`.
 
 use std::collections::HashMap;
@@ -1413,7 +1414,7 @@ fn company_parity_target(scope: &str) -> ScopingReviewedTarget {
 }
 
 /// Block until the next `AskHumanRequest` arrives, returning its `request_id`
-/// (used to resolve that card through the coordinator in the rework test).
+/// (used to resolve exact target-scope cards through the coordinator).
 async fn recv_ask_human_request_id(rx: &mut mpsc::UnboundedReceiver<AiEvent>) -> String {
     loop {
         match rx.recv().await {
@@ -2991,7 +2992,7 @@ async fn pre_eas_barrier_fails_closed_when_trusted_snapshot_read_fails() {
 }
 
 #[tokio::test]
-async fn two_level_phase_gate_withholds_on_non_affirmative_reply() {
+async fn two_level_phase_gate_ignores_non_affirmative_reply_after_scoping() {
     use crate::harness::operation_flow::StageFlowOutcome;
     let op = Uuid::new_v4();
     let repo = MemRepo::seed(op, "pentest", "enumeration");
@@ -3015,19 +3016,15 @@ async fn two_level_phase_gate_withholds_on_non_affirmative_reply() {
         )
         .await;
 
-    // On the fallback text channel a non-affirmative reply carries no rework note,
-    // so the gate holds (engine interrupts) rather than requesting a rework.
     assert!(
-        matches!(decision, super::PhaseGateDecision::Held),
-        "non-affirmative reply must withhold approval"
+        matches!(decision, super::PhaseGateDecision::Allowed),
+        "post-Scoping phase progression must not depend on a queued human reply"
     );
-    assert!(saw_waiting_approval(&drain(&mut rx)));
+    assert!(!saw_waiting_approval(&drain(&mut rx)));
 }
 
-/// Same phase boundary, but an affirmative reply grants approval (the caller then
-/// proceeds with the cross-phase advance).
 #[tokio::test]
-async fn two_level_phase_gate_approves_on_affirmative_reply() {
+async fn two_level_phase_gate_auto_advances_after_scoping_without_reply() {
     use crate::harness::operation_flow::StageFlowOutcome;
     let op = Uuid::new_v4();
     let repo = MemRepo::seed(op, "pentest", "enumeration");
@@ -3040,24 +3037,19 @@ async fn two_level_phase_gate_approves_on_affirmative_reply() {
         .unwrap();
     let dag = graph.project(&profile.allowed_stage_set());
 
-    orch.user_input_sender()
-        .send("approve".to_string())
-        .unwrap();
-    let decision = orch
-        .two_level_phase_gate(
-            op,
-            StageKind::Enumeration,
-            &StageFlowOutcome::pass_with_progress(),
-            &dag,
-            Some(&profile),
-        )
-        .await;
+    let outcome = StageFlowOutcome::pass_with_progress();
+    let decision = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        orch.two_level_phase_gate(op, StageKind::Enumeration, &outcome, &dag, Some(&profile)),
+    )
+    .await
+    .expect("post-Scoping phase progression must not wait for user input");
 
     assert!(
         matches!(decision, super::PhaseGateDecision::Allowed),
-        "affirmative reply must grant approval"
+        "Enumeration Gate PASS must auto-advance into the next projected stage"
     );
-    assert!(saw_waiting_approval(&drain(&mut rx)));
+    assert!(!saw_waiting_approval(&drain(&mut rx)));
 }
 
 #[tokio::test]
@@ -3294,15 +3286,9 @@ async fn dual_write_verification_never_enables_the_v2_verifier_specialist() {
     );
 }
 
-/// Interactive (coordinator) path: declining the crossing and then supplying a
-/// note routes the gate into `Rework(note)` — not a bare hold — so the caller
-/// re-runs THIS stage with the reviewer's reason. Exercises the two-step
-/// ask_human flow end-to-end against a real `EventCoordinator`: confirm card →
-/// declined, then freetext card → note.
 #[tokio::test]
-async fn two_level_phase_gate_reworks_on_declined_with_reason() {
+async fn two_level_phase_gate_does_not_open_confirmation_card_after_scoping() {
     use crate::harness::operation_flow::StageFlowOutcome;
-    use golish_core::hitl::ApprovalDecision;
 
     let op = Uuid::new_v4();
     let repo = MemRepo::seed(op, "pentest", "enumeration");
@@ -3314,7 +3300,7 @@ async fn two_level_phase_gate_reworks_on_declined_with_reason() {
         Arc::new(GateMockRuntime),
         None,
     );
-    orch.set_approval_coordinator(Some(coordinator.clone()));
+    orch.set_approval_coordinator(Some(coordinator));
 
     let graph = crate::harness::base_operation_graph().unwrap();
     let profile = crate::harness::load_embedded_profile("pentest")
@@ -3323,38 +3309,22 @@ async fn two_level_phase_gate_reworks_on_declined_with_reason() {
     let dag = graph.project(&profile.allowed_stage_set());
     let outcome = StageFlowOutcome::pass_with_progress();
 
-    // Decline the confirm card, then answer the follow-up freetext card with a
-    // rework note. Each card's request_id is read off the emitted event so the
-    // coordinator can resolve the exact oneshot the gate is awaiting.
-    let responder = async {
-        let confirm_id = recv_ask_human_request_id(&mut rx).await;
-        coordinator.resolve_approval(ApprovalDecision {
-            request_id: confirm_id,
-            approved: false,
-            reason: None,
-            remember: false,
-            always_allow: false,
-        });
-        let reason_id = recv_ask_human_request_id(&mut rx).await;
-        coordinator.resolve_approval(ApprovalDecision {
-            request_id: reason_id,
-            approved: true,
-            reason: Some("re-scan the open ports you skipped".to_string()),
-            remember: false,
-            always_allow: false,
-        });
-    };
+    let decision = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        orch.two_level_phase_gate(op, StageKind::Enumeration, &outcome, &dag, Some(&profile)),
+    )
+    .await
+    .expect("post-Scoping phase progression must not wait on the coordinator");
 
-    let gate =
-        orch.two_level_phase_gate(op, StageKind::Enumeration, &outcome, &dag, Some(&profile));
-    let (decision, ()) = tokio::join!(gate, responder);
-
-    match decision {
-        super::PhaseGateDecision::Rework(note) => {
-            assert_eq!(note, "re-scan the open ports you skipped");
-        }
-        _ => panic!("a declined crossing with a note must route to Rework"),
-    }
+    assert!(matches!(decision, super::PhaseGateDecision::Allowed));
+    let events = drain(&mut rx);
+    assert!(!saw_waiting_approval(&events));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AiEvent::AskHumanRequest { .. })),
+        "post-Scoping progression must not open a generic confirmation card"
+    );
 }
 
 /// P3 RAG-prior wiring: inside a harness stage, `execute_single_subtask` pulls

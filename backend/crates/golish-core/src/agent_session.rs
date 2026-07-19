@@ -15,7 +15,10 @@
 //! (e.g. the eval harness or a direct `execute_tool` call), and callers must
 //! treat the absence of a session id as "not attributable", never as an error.
 
-use tokio::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use tokio::sync::{mpsc, Notify};
 
 use crate::events::{AiEvent, ToolSource};
 
@@ -64,10 +67,45 @@ pub struct AgentToolContext {
     pub candidate_attempt: Option<crate::CandidateAttemptContextRef>,
 }
 
+/// Cooperative cancellation owned by a self-bounded tool wrapper. Callers may
+/// signal it, but must keep awaiting the wrapper until its child process has
+/// been killed, reaped, and its partial/error evidence has landed.
+#[derive(Debug, Clone, Default)]
+pub struct AgentToolCancellation {
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl AgentToolCancellation {
+    pub fn cancel(&self) {
+        if !self.cancelled.swap(true, Ordering::SeqCst) {
+            self.notify.notify_waiters();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub async fn cancelled(&self) {
+        loop {
+            if self.is_cancelled() {
+                return;
+            }
+            let notified = self.notify.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
 tokio::task_local! {
     static CURRENT_AGENT_SESSION: Option<String>;
     static CURRENT_AGENT_TOOL_CONTEXT: Option<AgentToolContext>;
     static CURRENT_AGENT_TOOL_OUTPUT_SENDER: Option<mpsc::UnboundedSender<AiEvent>>;
+    static CURRENT_AGENT_TOOL_CANCELLATION: Option<AgentToolCancellation>;
 }
 
 /// Run `fut` with `session_id` set as the current agent session for the whole
@@ -104,6 +142,20 @@ where
         .await
 }
 
+/// Run a self-bounded wrapper with its host-owned cooperative cancellation
+/// handle installed for all inline child-process work.
+pub async fn with_agent_tool_cancellation<F, T>(
+    cancellation: Option<AgentToolCancellation>,
+    fut: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    CURRENT_AGENT_TOOL_CANCELLATION
+        .scope(cancellation, fut)
+        .await
+}
+
 /// The current agent session id, or `None` when not running inside
 /// [`with_agent_session`]. Never panics if the task-local is unset.
 pub fn current_agent_session() -> Option<String> {
@@ -124,6 +176,14 @@ pub fn current_agent_tool_context() -> Option<AgentToolContext> {
 pub fn current_agent_tool_output_sender() -> Option<mpsc::UnboundedSender<AiEvent>> {
     CURRENT_AGENT_TOOL_OUTPUT_SENDER
         .try_with(|sender| sender.clone())
+        .ok()
+        .flatten()
+}
+
+/// Cooperative cancellation for the current self-bounded wrapper, if any.
+pub fn current_agent_tool_cancellation() -> Option<AgentToolCancellation> {
+    CURRENT_AGENT_TOOL_CANCELLATION
+        .try_with(|cancellation| cancellation.clone())
         .ok()
         .flatten()
 }
@@ -185,6 +245,26 @@ mod tests {
     async fn none_scope_is_not_attributable() {
         let got = with_agent_session(None, async { current_agent_session() }).await;
         assert_eq!(got, None);
+    }
+
+    #[tokio::test]
+    async fn tool_cancellation_is_sticky_and_visible_inside_scope() {
+        let cancellation = AgentToolCancellation::default();
+        cancellation.cancel();
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            cancellation.cancelled(),
+        )
+        .await
+        .expect("a cancellation signalled before waiting must remain observable");
+        let current = with_agent_tool_cancellation(Some(cancellation.clone()), async {
+            current_agent_tool_cancellation()
+        })
+        .await
+        .expect("scoped cancellation");
+        assert!(current.is_cancelled());
+        assert!(current_agent_tool_cancellation().is_none());
     }
 
     #[tokio::test]

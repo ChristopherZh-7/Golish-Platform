@@ -9,6 +9,7 @@ use golish_agent_bridge::{
 use golish_agent_kit::{
     db_traits::{
         CliRuntimeScope, DbRepoProvider, ProjectScopeRegistration, RuntimeMemoryRepository,
+        StageForkCreate,
     },
     harness::{ContinuityAdoptionPlan, StageKind},
     task_orchestrator::TaskOrchestrator,
@@ -36,6 +37,7 @@ pub struct TaskOperationConfig {
     /// `Some` value through this same config.
     pub current_invocation_target_authority: Option<bool>,
     pub continuity_adoption: Option<ContinuityAdoptionPlan>,
+    pub stage_fork: Option<StageForkCreate>,
 }
 
 impl Default for TaskOperationConfig {
@@ -49,6 +51,7 @@ impl Default for TaskOperationConfig {
             cli_runtime_scope: None,
             current_invocation_target_authority: None,
             continuity_adoption: None,
+            stage_fork: None,
         }
     }
 }
@@ -319,6 +322,152 @@ pub struct FreshTaskOperationLaunch {
     pub continuity_adoption: Option<ContinuityAdoptionPlan>,
 }
 
+/// Trusted launch contract for a new operation that adopts an exact source
+/// operation prefix and executes one post-Scoping stage slice. It is separate
+/// from continuity adoption: the DB repository, not a global completion
+/// ledger, validates and freezes every adopted input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageForkTaskOperationLaunch {
+    pub objective: String,
+    pub profile_id: String,
+    pub source_operation_id: Uuid,
+    pub source_scope_snapshot_id: Uuid,
+    pub entry_stage: StageKind,
+    pub terminal_stage: StageKind,
+    pub allowlist: HashSet<StageKind>,
+    pub adopted_stage_kinds: Vec<StageKind>,
+    pub scope: FreshOperationScope,
+    pub subsidiary_policy: SubsidiaryScopePolicy,
+}
+
+impl StageForkTaskOperationLaunch {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        objective: impl Into<String>,
+        profile_id: impl Into<String>,
+        source_operation_id: Uuid,
+        source_scope_snapshot_id: Uuid,
+        entry_stage: StageKind,
+        terminal_stage: StageKind,
+        allowlist: HashSet<StageKind>,
+        adopted_stage_kinds: Vec<StageKind>,
+        scope: FreshOperationScope,
+        subsidiary_policy: SubsidiaryScopePolicy,
+    ) -> Result<Self> {
+        let launch = Self {
+            objective: objective.into(),
+            profile_id: profile_id.into(),
+            source_operation_id,
+            source_scope_snapshot_id,
+            entry_stage,
+            terminal_stage,
+            allowlist,
+            adopted_stage_kinds,
+            scope,
+            subsidiary_policy,
+        };
+        launch.validate()?;
+        Ok(launch)
+    }
+
+    fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.objective.trim().is_empty(),
+            "stage fork objective cannot be empty"
+        );
+        anyhow::ensure!(
+            !self.source_operation_id.is_nil(),
+            "stage fork source operation is nil"
+        );
+        anyhow::ensure!(
+            !self.source_scope_snapshot_id.is_nil(),
+            "stage fork source scope is nil"
+        );
+        anyhow::ensure!(
+            self.entry_stage != StageKind::Scoping,
+            "stage fork cannot execute Scoping"
+        );
+        anyhow::ensure!(
+            self.allowlist.contains(&self.entry_stage),
+            "stage fork slice omits its entry"
+        );
+        anyhow::ensure!(
+            self.allowlist.contains(&self.terminal_stage),
+            "stage fork slice omits its terminal"
+        );
+        anyhow::ensure!(
+            self.adopted_stage_kinds.first() == Some(&StageKind::Scoping)
+                && !self.adopted_stage_kinds.contains(&self.entry_stage),
+            "stage fork must adopt a strict prefix beginning at Scoping"
+        );
+        anyhow::ensure!(
+            golish_agent_kit::harness::load_embedded_profile(&self.profile_id)
+                .context("load stage fork harness profile")?
+                .is_some(),
+            "unknown harness profile: {}",
+            self.profile_id
+        );
+        anyhow::ensure!(
+            matches!(
+                &self.scope,
+                FreshOperationScope::ConfirmedTargetIntake {
+                    runtime_scope: Some(_),
+                    ..
+                } | FreshOperationScope::ConfirmedOrganizationIntake {
+                    runtime_scope: Some(_),
+                    ..
+                }
+            ),
+            "stage fork scope must contain the frozen selected source operation scope"
+        );
+        self.scope.validate(&self.subsidiary_policy)
+    }
+
+    fn task_operation_config(&self) -> Result<TaskOperationConfig> {
+        self.validate()?;
+        let (harness_org_id, cli_runtime_scope, current_invocation_target_authority) =
+            match &self.scope {
+                FreshOperationScope::ConfirmedTargetIntake {
+                    organization_id,
+                    runtime_scope,
+                    ..
+                } => (*organization_id, runtime_scope.clone(), Some(true)),
+                FreshOperationScope::ConfirmedOrganizationIntake {
+                    organization_id,
+                    runtime_scope,
+                    ..
+                } => {
+                    // Unlike an ordinary company-only fresh launch, a stage
+                    // fork freezes the current DB Targets atomically with its
+                    // lineage manifest before any active stage dispatch.
+                    (Some(*organization_id), runtime_scope.clone(), Some(true))
+                }
+                FreshOperationScope::UnconfirmedSubject { .. } => unreachable!("validated above"),
+            };
+        Ok(TaskOperationConfig {
+            profile_override: Some(self.profile_id.clone()),
+            stage_allowlist: Some(self.allowlist.clone()),
+            harness_org_id,
+            include_subsidiaries: self.subsidiary_policy.include_subsidiaries,
+            subsidiary_threshold: self.subsidiary_policy.ownership_threshold_percent,
+            cli_runtime_scope,
+            current_invocation_target_authority,
+            continuity_adoption: None,
+            stage_fork: Some(StageForkCreate {
+                source_operation_id: self.source_operation_id,
+                source_scope_snapshot_id: self.source_scope_snapshot_id,
+                entry_stage: self.entry_stage.as_str().to_string(),
+                terminal_stage: self.terminal_stage.as_str().to_string(),
+                adopted_stage_kinds: self
+                    .adopted_stage_kinds
+                    .iter()
+                    .map(|stage| stage.as_str().to_string())
+                    .collect(),
+            }),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FreshLaunchAuthorityScope {
     UnconfirmedSubject { label: String },
@@ -477,6 +626,7 @@ impl FreshTaskOperationLaunch {
             cli_runtime_scope,
             current_invocation_target_authority,
             continuity_adoption: self.continuity_adoption.clone(),
+            stage_fork: None,
         };
         self.validate_config_consistency(&config)?;
         Ok(config)
@@ -672,6 +822,7 @@ impl PreparedTaskOperation {
         orchestrator
             .set_current_invocation_target_authority(config.current_invocation_target_authority);
         orchestrator.set_continuity_adoption(config.continuity_adoption);
+        orchestrator.set_stage_fork(config.stage_fork);
         orchestrator
     }
 
@@ -717,6 +868,37 @@ impl PreparedTaskOperation {
             })
     }
 
+    /// Execute a new stage-testing fork through the same orchestrator stage
+    /// kernel as ordinary GUI and CLI operations.
+    pub async fn run_stage_fork(
+        self,
+        launch: StageForkTaskOperationLaunch,
+    ) -> Result<FreshTaskOperationOutcome> {
+        let config = match launch.task_operation_config() {
+            Ok(config) => config,
+            Err(error) => return self.finish(Err(error)).await,
+        };
+        let project_scope = match self.register_project_scope().await {
+            Ok(scope) => scope,
+            Err(error) => return self.finish(Err(error)).await,
+        };
+        let mut orchestrator = self.build_orchestrator(config);
+        let result = orchestrator
+            .run_stage(
+                launch.entry_stage,
+                &launch.objective,
+                project_scope,
+                self.executor(),
+            )
+            .await;
+        let session_id = self.session_id;
+        let response = self.finish(result).await?;
+        Ok(FreshTaskOperationOutcome {
+            session_id,
+            response,
+        })
+    }
+
     /// Clear request-scoped harness state without allowing cleanup failure to
     /// hide the primary operation error.
     pub async fn finish<T>(self, result: Result<T>) -> Result<T> {
@@ -752,11 +934,15 @@ pub(crate) fn truncate_session_title(input: &str, max_bytes: usize) -> String {
 mod tests {
     use std::collections::HashSet;
 
-    use golish_agent_kit::harness::StageKind;
+    use golish_agent_kit::{
+        db_traits::{CliRuntimeScope, CliRuntimeScopeUnit},
+        harness::StageKind,
+    };
 
     use super::{
         task_session_title, FreshLaunchAuthorityScope, FreshOperationEntry, FreshOperationScope,
-        FreshTaskOperationLaunch, SubsidiaryScopePolicy, TaskOperationConfig,
+        FreshTaskOperationLaunch, StageForkTaskOperationLaunch, SubsidiaryScopePolicy,
+        TaskOperationConfig,
     };
 
     #[test]
@@ -1007,11 +1193,78 @@ mod tests {
             cli_runtime_scope: None,
             current_invocation_target_authority: None,
             continuity_adoption: None,
+            stage_fork: None,
         };
 
         assert_eq!(config.profile_override.as_deref(), Some("red_team"));
         assert_eq!(config.stage_allowlist, Some(allowlist));
         assert_eq!(config.subsidiary_threshold, 51);
+    }
+
+    #[test]
+    fn stage_fork_launch_projects_exact_lineage_into_shared_orchestrator_config() {
+        let source_operation_id = uuid::Uuid::new_v4();
+        let source_scope_snapshot_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let runtime_scope = CliRuntimeScope {
+            root_organization_id: organization_id,
+            include_subsidiaries: false,
+            subsidiary_threshold: 51,
+            units: vec![CliRuntimeScopeUnit {
+                organization_id,
+                parent_organization_id: None,
+                organization_name: "fixture org".to_string(),
+                depth: 0,
+                ordinal: 0,
+                ownership_percent: None,
+                approval_source: serde_json::json!({
+                    "kind": "stage_fork_source_scope",
+                    "source_operation_id": source_operation_id,
+                    "source_scope_snapshot_id": source_scope_snapshot_id,
+                }),
+            }],
+        };
+        let launch = StageForkTaskOperationLaunch::new(
+            "rerun candidate only",
+            "pentest",
+            source_operation_id,
+            source_scope_snapshot_id,
+            StageKind::AttackCandidate,
+            StageKind::AttackCandidate,
+            HashSet::from([StageKind::AttackCandidate]),
+            vec![
+                StageKind::Scoping,
+                StageKind::TargetIntel,
+                StageKind::ExternalAttackSurface,
+                StageKind::Enumeration,
+                StageKind::VulnTriage,
+            ],
+            FreshOperationScope::confirmed_organization_intake(
+                "fixture org",
+                organization_id,
+                Some(runtime_scope),
+                &SubsidiaryScopePolicy::default(),
+            )
+            .expect("source scope"),
+            SubsidiaryScopePolicy::default(),
+        )
+        .expect("stage fork launch");
+
+        let config = launch.task_operation_config().expect("fork config");
+        assert_eq!(
+            config.stage_allowlist,
+            Some(HashSet::from([StageKind::AttackCandidate]))
+        );
+        assert!(config.continuity_adoption.is_none());
+        let fork = config.stage_fork.expect("typed DB lineage");
+        assert_eq!(fork.source_operation_id, source_operation_id);
+        assert_eq!(fork.source_scope_snapshot_id, source_scope_snapshot_id);
+        assert_eq!(fork.entry_stage, "attack_candidate");
+        assert_eq!(fork.terminal_stage, "attack_candidate");
+        assert_eq!(
+            fork.adopted_stage_kinds.last().map(String::as_str),
+            Some("vuln_triage")
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use golish_db::models::{AgentType, NewSession};
+use golish_db::models::{AgentType, NewSession, ToolcallStatus};
 use golish_db::repo::{
     canonical_fact_refs, message_chains, operation_state, project_scopes, runtime_memory_rollout,
     runtime_memory_tx, sessions, stage_asset_waves, stage_deliverable_submissions, stage_handoffs,
@@ -2101,6 +2101,190 @@ async fn exact_resume_accepts_company_controller_pentester_chain_ownership() {
 
 #[tokio::test]
 #[serial]
+async fn company_controller_scope_bounded_admission_has_no_lifetime_request_quota() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded =
+        runtime_memory_tx::seed_stage_team_runtime(db.pool(), &stage_team_controller_seed(&roots))
+            .await
+            .expect("seed scope-bounded Controller Team")
+            .remove(0);
+    assert_eq!(seeded.plan.max_workers_total, 5);
+    assert_eq!(
+        seeded
+            .plan
+            .dynamic_request_policy
+            .get("max_requests")
+            .and_then(serde_json::Value::as_i64),
+        Some(3),
+        "fixture keeps the historical quotas to prove existing plans stop enforcing them"
+    );
+    let controller = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: stage_team_claim_input(&roots, &seeded, "scope-bounded-controller"),
+        },
+    )
+    .await
+    .expect("claim scope-bounded Company Controller")
+    .expect("Controller is runnable");
+    let controller_fence = stage_team_fence(&roots, &seeded, &controller);
+
+    for index in 0..6 {
+        let mut request = runtime_memory_tx::RequestStageWorkerRow {
+            fence: controller_fence.clone(),
+            stage_team_plan_id: seeded.plan.id,
+            parent_work_item_id: controller.work_item.id,
+            expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+            requested_role: "intel_researcher".to_string(),
+            requested_kind: "stage_axis".to_string(),
+            subject_refs: Vec::new(),
+            reason: serde_json::json!({
+                "schema": "stage_team_controller_request.v1",
+                "objective": format!("Cover authoritative worklist shard {index}"),
+                "parent_tool_request_id": format!("scope-bounded-dispatch-{index}"),
+            })
+            .to_string(),
+            output_schema: serde_json::json!("stage_worker_output.v1"),
+            budget_hint: serde_json::json!({}),
+            dedupe_key: format!("authoritative-worklist-shard-{index}"),
+            request_sha256: String::new(),
+        };
+        request.request_sha256 = runtime_memory_tx::stage_worker_request_payload_hash(&request);
+        let accepted = runtime_memory_tx::request_stage_worker(db.pool(), &request)
+            .await
+            .expect("persist scope-bounded Controller request");
+        assert_eq!(
+            accepted.request.status, "accepted",
+            "request {index} must not be rejected by historical lifetime counters: {:?}",
+            accepted.request.decision_reason_code
+        );
+        assert!(accepted.work_item.is_some());
+    }
+
+    let accepted_requests: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stage_worker_requests WHERE team_plan_id=$1 AND status='accepted'",
+    )
+    .bind(seeded.plan.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count scope-bounded accepted requests");
+    let work_items: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM stage_work_items WHERE team_plan_id=$1")
+            .bind(seeded.plan.id)
+            .fetch_one(db.pool())
+            .await
+            .expect("count scope-bounded WorkItems");
+    assert_eq!(accepted_requests, 6);
+    assert_eq!(work_items, 7, "one Controller plus all six child WorkItems");
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn company_controller_keeps_live_concurrency_and_retries_without_a_lifetime_total() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let mut seed = stage_team_controller_seed(&roots);
+    seed.plan.max_workers_total = 3;
+    seed.plan.max_workers_active = 3;
+    let hash = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+    for index in 0..3 {
+        seed.work_items
+            .push(runtime_memory_tx::StageWorkItemSeedRow {
+                stable_key: format!("scope-shard:{index}"),
+                work_item_kind: "stage_axis".to_string(),
+                role: "intel_researcher".to_string(),
+                input_manifest: serde_json::json!({"scope_shard": index}),
+                input_manifest_hash: hash(char::from(b'a' + index as u8)),
+                conflict_key: None,
+                priority: index + 1,
+                required_for_barrier: true,
+                is_aggregator: false,
+                attempt_policy: serde_json::json!({"max_attempts": 2}),
+                budget: serde_json::json!({}),
+                output_schema: "stage_worker_output.v1".to_string(),
+                created_by: "server_seed".to_string(),
+            });
+    }
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &seed)
+        .await
+        .expect("seed concurrency-bounded Controller Team")
+        .remove(0);
+    let claim = stage_team_claim_input(&roots, &seeded, "scope-bounded-claim");
+    let _controller = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: claim.clone(),
+        },
+    )
+    .await
+    .expect("claim Company Controller")
+    .expect("Controller is runnable");
+    let first = runtime_memory_tx::claim_stage_work_item(db.pool(), &claim)
+        .await
+        .expect("claim first live child")
+        .expect("first child is runnable");
+    let _second = runtime_memory_tx::claim_stage_work_item(db.pool(), &claim)
+        .await
+        .expect("claim second live child")
+        .expect("second child is runnable");
+    assert!(
+        runtime_memory_tx::claim_stage_work_item(db.pool(), &claim)
+            .await
+            .expect("active concurrency check")
+            .is_none(),
+        "K=3 includes the Controller and blocks a third simultaneous child"
+    );
+
+    let retried = stage_teams::retry_stage_worker(
+        db.pool(),
+        stage_teams::RetryStageWorkerRow {
+            fence: stage_team_fence(&roots, &seeded, &first),
+            team_plan_id: seeded.plan.id,
+            work_item_id: first.work_item.id,
+            expected_work_item_row_version: first.work_item.row_version,
+            failure_code: "provider_unavailable".to_string(),
+            terminal_checkpoint: serde_json::json!({
+                "stage_team_execution_failure": {"code": "provider_unavailable"}
+            }),
+        },
+    )
+    .await
+    .expect("retry Company Controller child at historical total");
+    assert!(
+        retried.retry_scheduled,
+        "the WorkItem's own attempt policy, not a Team lifetime total, owns retry fuel"
+    );
+    let retry = runtime_memory_tx::claim_stage_work_item(db.pool(), &claim)
+        .await
+        .expect("claim retry beyond historical WorkerRun total")
+        .expect("a freed live slot admits the retry");
+    assert_eq!(retry.work_item.id, first.work_item.id);
+    assert_ne!(retry.worker.id, first.worker.id);
+    let worker_runs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE stage_run_unit_id=$1")
+            .bind(seeded.unit.id)
+            .fetch_one(db.pool())
+            .await
+            .expect("count WorkerRuns beyond compatibility total");
+    assert_eq!(worker_runs, 4);
+    assert!(worker_runs > i64::from(seeded.plan.max_workers_total));
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn company_controller_parks_for_dynamic_child_and_resumes_same_worker_chain() {
     let (mut db, _data_dir) = fixture().await;
     let roots = create_sealed_runtime_roots_with_contract(
@@ -2602,6 +2786,189 @@ async fn expired_company_controller_reclaims_same_worker_and_message_chain() {
 
 #[tokio::test]
 #[serial]
+async fn stage_team_repair_epoch_dispatch_accepts_child_from_stable_company_controller() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded =
+        runtime_memory_tx::seed_stage_team_runtime(db.pool(), &stage_team_controller_seed(&roots))
+            .await
+            .expect("seed repair-dispatch Controller Team")
+            .remove(0);
+    let claim = stage_team_claim_input(&roots, &seeded, "repair-epoch-dispatch-controller");
+    let controller = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: claim.clone(),
+        },
+    )
+    .await
+    .expect("claim Controller before repair")
+    .expect("Controller is runnable");
+    let original_controller_epoch = controller.work_item.dispatch_epoch;
+
+    let closed = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: controller.plan.dispatch_epoch,
+            expected_plan_row_version: controller.plan.row_version,
+        },
+    )
+    .await
+    .expect("close initial Controller epoch");
+    let bound = runtime_memory_tx::bind_stage_team_leader_final_submitter(
+        db.pool(),
+        &runtime_memory_tx::BindStageTeamLeaderFinalSubmitterRow {
+            fence: stage_team_fence(&roots, &seeded, &controller),
+            stage_team_plan_id: seeded.plan.id,
+            leader_work_item_id: controller.work_item.id,
+            expected_plan_row_version: closed.plan.row_version,
+            expected_dispatch_epoch: closed.plan.dispatch_epoch,
+            expected_manifest_hash: closed.barrier.manifest_hash.clone(),
+        },
+    )
+    .await
+    .expect("bind Controller before Gate BLOCK");
+    let (submission, controller_after_tool) = persist_stage_team_submission(
+        &db,
+        &roots,
+        &seeded,
+        &controller,
+        "repair-epoch-dispatch-submit",
+    )
+    .await;
+    let gate_decision_hash = format!(
+        "sha256:{}",
+        sha256_json(&serde_json::json!({
+            "decision": "block",
+            "reason": "retry exact origins",
+        }))
+    );
+    let gap_manifest = serde_json::json!({
+        "gate_decision_hash": gate_decision_hash,
+        "reasons": ["retry_exact_web_origins"],
+        "schema_version": 1,
+    });
+    let reopened = runtime_memory_tx::reopen_stage_team_leader_after_gate_block(
+        db.pool(),
+        &runtime_memory_tx::ReopenStageTeamLeaderAfterGateBlockRow {
+            request_id: "repair-epoch-dispatch-gate-block".to_string(),
+            fence: runtime_memory_tx::RuntimeMemoryTxFence {
+                operation_id: roots.operation_id,
+                stage_execution_id: roots.stage_execution_id,
+                stage_run_unit_id: seeded.unit.id,
+                worker_run_id: controller.worker.id,
+                lease_token: controller_after_tool
+                    .lease_token
+                    .expect("Controller lease remains after submit tool"),
+                attempt_epoch: controller_after_tool.attempt_epoch,
+                expected_checkpoint_version: controller_after_tool.checkpoint_version,
+            },
+            stage_team_plan_id: seeded.plan.id,
+            leader_work_item_id: controller.work_item.id,
+            deliverable_submission_id: submission.id,
+            expected_dispatch_epoch: bound.plan.dispatch_epoch,
+            expected_manifest_hash: closed.barrier.manifest_hash,
+            gate_decision_hash: gate_decision_hash.clone(),
+            gap_manifest_hash: format!("sha256:{}", sha256_json(&gap_manifest)),
+            gap_manifest,
+            checkpoint: serde_json::json!({"repair": "retry exact origins"}),
+        },
+    )
+    .await
+    .expect("open exact Controller repair epoch");
+    let resumed = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow { claim },
+    )
+    .await
+    .expect("claim reopened Controller")
+    .expect("reopened Controller is runnable");
+    assert_eq!(resumed.work_item.id, controller.work_item.id);
+    assert_eq!(resumed.work_item.dispatch_epoch, original_controller_epoch);
+    assert_eq!(resumed.plan.dispatch_epoch, reopened.plan.dispatch_epoch);
+    assert_eq!(resumed.plan.dispatch_epoch, original_controller_epoch + 1);
+
+    let mut request = runtime_memory_tx::RequestStageWorkerRow {
+        fence: stage_team_fence(&roots, &seeded, &resumed),
+        stage_team_plan_id: resumed.plan.id,
+        parent_work_item_id: resumed.work_item.id,
+        expected_dispatch_epoch: resumed.plan.dispatch_epoch,
+        requested_role: "intel_researcher".to_string(),
+        requested_kind: "stage_axis".to_string(),
+        subject_refs: Vec::new(),
+        reason: serde_json::json!({
+            "schema": "stage_team_controller_request.v1",
+            "objective": "Retry the five exact origins from the durable Gate gap",
+            "parent_tool_request_id": "repair-epoch-dispatch-tool",
+        })
+        .to_string(),
+        output_schema: serde_json::json!("ignored-by-controller-policy"),
+        budget_hint: serde_json::json!({}),
+        dedupe_key: "repair-epoch:retry-exact-origins".to_string(),
+        request_sha256: String::new(),
+    };
+    request.request_sha256 = runtime_memory_tx::stage_worker_request_payload_hash(&request);
+    let accepted = runtime_memory_tx::request_stage_worker(db.pool(), &request)
+        .await
+        .expect("repair epoch Controller dispatch is accepted");
+    assert_eq!(accepted.request.status, "accepted");
+    assert_eq!(accepted.request.dispatch_epoch, resumed.plan.dispatch_epoch);
+    assert_eq!(
+        accepted
+            .work_item
+            .as_ref()
+            .expect("accepted repair child")
+            .dispatch_epoch,
+        resumed.plan.dispatch_epoch
+    );
+    assert_eq!(accepted.request.parent_work_item_id, resumed.work_item.id);
+
+    let mut authority_tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin authority-loss fixture");
+    sqlx::query("SET LOCAL session_replication_role='replica'")
+        .execute(&mut *authority_tx)
+        .await
+        .expect("disable immutable repair-generation trigger in fixture");
+    sqlx::query(
+        "DELETE FROM stage_team_repair_generations WHERE team_plan_id=$1 AND dispatch_epoch=$2",
+    )
+    .bind(resumed.plan.id)
+    .bind(resumed.plan.dispatch_epoch)
+    .execute(&mut *authority_tx)
+    .await
+    .expect("remove only the server-owned cross-epoch authority in fixture");
+    authority_tx
+        .commit()
+        .await
+        .expect("commit authority-loss fixture");
+
+    let mut unauthorized = request.clone();
+    unauthorized.dedupe_key = "repair-epoch:unauthorized-followup".to_string();
+    unauthorized.request_sha256 =
+        runtime_memory_tx::stage_worker_request_payload_hash(&unauthorized);
+    assert!(matches!(
+        runtime_memory_tx::request_stage_worker(db.pool(), &unauthorized).await,
+        Err(runtime_memory_tx::RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_controller_parent_epoch_not_authorized"
+        })
+    ));
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn company_controller_gate_block_reopens_same_worker_chain_until_repair_fuel_is_exhausted() {
     let (mut db, _data_dir) = fixture().await;
     let roots = create_sealed_runtime_roots_with_contract(
@@ -2736,6 +3103,15 @@ async fn company_controller_gate_block_reopens_same_worker_chain_until_repair_fu
             .pointer("/_runtime_stage_team_gate_block/request_id")
             .and_then(serde_json::Value::as_str),
         Some("controller-gate-reopen-1")
+    );
+    assert_eq!(
+        reopened
+            .leader_worker
+            .checkpoint
+            .pointer("/_runtime_stage_team_gate_block/gap_manifest/reasons/0")
+            .and_then(serde_json::Value::as_str),
+        Some("missing_dns_attestation"),
+        "the resumed Controller receives the server-authored durable gap, not hashes alone"
     );
     let workers_after_reopen: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE stage_run_unit_id=$1")
@@ -5788,6 +6164,146 @@ async fn v2_only_developer_reset_ignores_caller_legacy_checkpoint_namespaces() {
 
 #[tokio::test]
 #[serial]
+async fn v2_only_company_stage_reset_is_plan_first_and_closes_active_tool() {
+    let (mut db, _data_dir) = fixture().await;
+    let runtime = create_claimed_compound_runtime_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let tool_call_id = tool_calls::record_tracked_start(
+        db.pool(),
+        "reset-active-company-stage-tool",
+        runtime.roots.session_id,
+        Some(runtime.roots.operation_id),
+        None,
+        "intel_search",
+        &serde_json::json!({"query": "authorized fixture"}),
+        Some(&tool_calls::RuntimeToolIdentity {
+            operation_id: runtime.roots.operation_id,
+            stage_execution_id: runtime.roots.stage_execution_id,
+            stage_run_unit_id: Some(runtime.unit_id),
+            worker_run_id: Some(runtime.worker_id),
+            organization_id: Some(runtime.roots.organization_id),
+            attempt_epoch: Some(runtime.worker.attempt_epoch),
+            lease_token: runtime.worker.lease_token,
+        }),
+    )
+    .await
+    .expect("record reset fixture tool");
+    runtime_memory_tx::begin_worker_tool(db.pool(), &fence_for_claimed(&runtime), tool_call_id)
+        .await
+        .expect("bind reset fixture tool");
+
+    let replacement_stage_execution_id = Uuid::new_v4();
+    runtime_memory_tx::supersede_stage_checkpoint(
+        db.pool(),
+        &runtime_memory_tx::SupersedeStageCheckpointRow {
+            operation_id: runtime.roots.operation_id,
+            expected_current_stage: "target_intel".to_string(),
+            selected_stage: "vuln_triage".to_string(),
+            affected_stage_kinds: vec!["target_intel".to_string(), "vuln_triage".to_string()],
+            next_state_blob: serde_json::json!({}),
+            replacement_specialist: Some("vuln_scanner".to_string()),
+            replacement_stage_execution_id: Some(replacement_stage_execution_id),
+        },
+    )
+    .await
+    .expect("reset V2-only Company stage");
+
+    let replacement_roots = RuntimeRoots {
+        session_id: runtime.roots.session_id,
+        operation_id: runtime.roots.operation_id,
+        stage_execution_id: replacement_stage_execution_id,
+        snapshot_id: runtime.roots.snapshot_id,
+        organization_id: runtime.roots.organization_id,
+    };
+    let mut team_seed = stage_team_controller_seed(&replacement_roots);
+    team_seed.base.stage_kind = "vuln_triage".to_string();
+    team_seed.base.unit_generation = 1;
+    team_seed.base.specialist = "vuln_scanner".to_string();
+    team_seed.base.worker_generation = 1;
+    team_seed.base.work_item_kind = "organization".to_string();
+    team_seed.base.work_item_key = "vuln_triage".to_string();
+    team_seed.base.agent_path_prefix = "main>stage_run:vuln_triage".to_string();
+    team_seed.plan.allowed_roles = vec![
+        "company_stage_controller".to_string(),
+        "vuln_scanner".to_string(),
+    ];
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &team_seed)
+        .await
+        .expect("canonical Company Controller Team seed must follow reset")
+        .remove(0);
+
+    let workers_before_claim = stage_worker_runs::list_for_execution(
+        db.pool(),
+        runtime.roots.operation_id,
+        replacement_stage_execution_id,
+    )
+    .await
+    .expect("load replacement workers before claim");
+    assert!(
+        workers_before_claim.is_empty(),
+        "Team seed must remain Worker-free until a WorkItem is claimed"
+    );
+    let superseded_worker = stage_worker_runs::get(db.pool(), runtime.worker_id)
+        .await
+        .expect("load superseded worker")
+        .expect("superseded worker remains as history");
+    assert_eq!(superseded_worker.status, "superseded");
+    assert_eq!(superseded_worker.active_tool_call_id, None);
+    assert_eq!(superseded_worker.active_tool_started_at, None);
+    let failed_tool = tool_calls::get(db.pool(), tool_call_id)
+        .await
+        .expect("load reset-terminalized tool")
+        .expect("tool history remains");
+    assert_eq!(failed_tool.status, ToolcallStatus::Failed);
+    let failed_result: serde_json::Value = serde_json::from_str(
+        failed_tool
+            .result
+            .as_deref()
+            .expect("reset terminalizes the tool with a structured result"),
+    )
+    .expect("reset tool result is valid JSON");
+    assert_eq!(
+        failed_result,
+        serde_json::json!({
+            "kind": "runtime_stage_checkpoint_superseded",
+            "outcome": "unknown_not_replayed",
+            "reason": "developer_reset",
+            "schema_version": 1,
+        })
+    );
+
+    let controller = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: stage_team_claim_input(&replacement_roots, &seeded, "reset-controller"),
+        },
+    )
+    .await
+    .expect("claim Controller after reset")
+    .expect("reset Controller WorkItem is runnable");
+    assert_eq!(controller.worker.specialist, "company_stage_controller");
+    assert_eq!(controller.work_item.stable_key, "leader:primary");
+    assert_eq!(
+        controller.worker.work_item_id,
+        Some(controller.work_item.id)
+    );
+    let workers_after_claim = stage_worker_runs::list_for_execution(
+        db.pool(),
+        runtime.roots.operation_id,
+        replacement_stage_execution_id,
+    )
+    .await
+    .expect("load replacement workers after claim");
+    assert_eq!(workers_after_claim.len(), 1);
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn v2_only_state_blob_rejects_legacy_checkpoint_writes_at_repo_and_raw_sql() {
     let (mut db, _data_dir) = fixture().await;
     let runtime = create_claimed_compound_runtime_with_contract(
@@ -6643,6 +7159,133 @@ async fn stage_handoff_accepts_exact_operation_chat_session_outcome() {
         canonical_fact_refs::CanonicalFactKey::TechniqueOutcome { run_id, .. }
             if run_id == &chat_session_key
     ));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn final_seal_resolver_attests_complete_large_vuln_outcome_set() {
+    let (mut db, _data_dir) = fixture().await;
+    let fixture = create_final_seal_fixture(&db).await;
+    for asset_index in 0..36 {
+        for technique_index in 0..10 {
+            sqlx::query(
+                r#"INSERT INTO technique_outcomes (
+                       organization_id,run_id,asset,technique,outcome,source,query,
+                       result_count,confidence,evidence_ids,seq,collected_at
+                   ) VALUES ($1,$2,$3,$4,'blocked','vuln_terminal_materializer',
+                             'bounded fixture',0,1.0,$5,$6,NOW())"#,
+            )
+            .bind(fixture.runtime.roots.organization_id)
+            .bind(fixture.runtime.roots.operation_id.to_string())
+            .bind(format!("https://host-{asset_index:03}.example"))
+            .bind(format!("GOLISH-VULN-{technique_index:02}"))
+            .bind(vec![fixture.evidence_id])
+            .bind(i64::from(asset_index * 10 + technique_index + 1))
+            .execute(db.pool())
+            .await
+            .expect("insert exact Vuln outcome-set member");
+        }
+    }
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            String,
+            String,
+            chrono::DateTime<chrono::Utc>,
+            Vec<i64>,
+            serde_json::Value,
+        ),
+    >(
+        r#"SELECT outcome.organization_id,outcome.run_id,outcome.asset,outcome.technique,
+                  outcome.outcome,outcome.collected_at,outcome.evidence_ids,
+                  to_jsonb(outcome.*)
+             FROM technique_outcomes AS outcome
+            WHERE outcome.organization_id=$1 AND outcome.run_id=$2
+            ORDER BY outcome.asset,outcome.technique"#,
+    )
+    .bind(fixture.runtime.roots.organization_id)
+    .bind(fixture.runtime.roots.operation_id.to_string())
+    .fetch_all(db.pool())
+    .await
+    .expect("load exact Vuln outcome-set members");
+    let members = rows
+        .into_iter()
+        .map(
+            |(
+                organization_id,
+                run_id,
+                asset,
+                technique,
+                outcome,
+                observed_at,
+                evidence_ids,
+                content,
+            )| canonical_fact_refs::TechniqueOutcomeSetMember {
+                organization_id,
+                run_id,
+                asset,
+                technique,
+                outcome,
+                observed_at,
+                evidence_ids,
+                content,
+            },
+        )
+        .collect::<Vec<_>>();
+    let attestation = canonical_fact_refs::technique_outcome_set_attestation(
+        "vuln_triage",
+        fixture.runtime.roots.organization_id,
+        &fixture.runtime.roots.operation_id.to_string(),
+        &members,
+    )
+    .expect("compute expected outcome-set identity");
+    let key = canonical_fact_refs::CanonicalFactKey::TechniqueOutcomeSet {
+        organization_id: fixture.runtime.roots.organization_id,
+        run_id: fixture.runtime.roots.operation_id.to_string(),
+        stage: "vuln_triage".to_string(),
+        terminal_cell_count: attestation.terminal_cell_count,
+        outcome_set_sha256: attestation.outcome_set_sha256.clone(),
+    };
+    let mut tx = db.pool().begin().await.expect("begin set resolution");
+    let resolved = canonical_fact_refs::resolve_for_final_seal(
+        &mut tx,
+        fixture.runtime.roots.operation_id,
+        fixture.runtime.roots.organization_id,
+        "/tmp/runtime-worker",
+        fixture
+            .unit
+            .started_at
+            .expect("running Unit has start time"),
+        chrono::Utc::now() + chrono::Duration::seconds(1),
+        std::slice::from_ref(&key),
+    )
+    .await
+    .expect("resolve complete final-seal outcome set");
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].content_sha256, attestation.content_sha256);
+    assert_eq!(resolved[0].evidence_ids, vec![fixture.evidence_id]);
+    assert!(matches!(
+        canonical_fact_refs::resolve_for_handoff(
+            &mut tx,
+            fixture.runtime.roots.operation_id,
+            fixture.runtime.roots.organization_id,
+            "/tmp/runtime-worker",
+            fixture
+                .unit
+                .started_at
+                .expect("running Unit has start time"),
+            &[key],
+        )
+        .await,
+        Err(canonical_fact_refs::CanonicalFactRefError::Rejected {
+            code: "technique_outcome_set_final_seal_only"
+        })
+    ));
+    tx.rollback().await.expect("finish set resolution");
     db.stop().await;
 }
 

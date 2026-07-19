@@ -1,5 +1,9 @@
 # Active Recon 目标范围一次确认实现计划
 
+> The exact target-scope implementation remains current. Generic confirmation
+> on other post-Scoping phase boundaries is superseded by
+> `docs/superpowers/plans/2026-07-18-scoping-only-routine-human-confirmation.md`.
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:executing-plans 逐任务实现此计划。用户已明确禁止 `init.sh`；本计划只跑聚焦验证，也不创建 commit。
 
 **目标：** Target Intel 完成后让用户确认本次发现的精确目标子集一次，确认成功即自动进入 EAS，不再出现第二个通用 approval。

@@ -663,6 +663,21 @@ pub trait DbRepoProvider: Send + Sync {
         session_id: Uuid,
     ) -> anyhow::Result<Vec<SubAgentDispatchView>>;
 
+    /// Authorize Scoping's pre-freeze passive subsidiary discovery against
+    /// exact durable lifecycle truth. The model-supplied organization id is
+    /// never sufficient by itself; production verifies operation, Scoping
+    /// execution, project root and latest same-root human choice. Test doubles
+    /// deny by default.
+    async fn scoping_passive_recon_organization_authorized(
+        &self,
+        operation_id: Uuid,
+        stage_execution_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let _ = (operation_id, stage_execution_id, organization_id);
+        Ok(false)
+    }
+
     // ── Evidence Ledger (P0 · OpenFang-style hash chain) ────────────────
 
     /// Append a tool-output evidence row to the ledger: writes an

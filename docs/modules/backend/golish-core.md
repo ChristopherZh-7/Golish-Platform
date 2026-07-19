@@ -59,6 +59,7 @@
 - 跨 IPC 的类型若在此定义，必须 `#[derive(ts_rs::TS)]` 同步前端（不变量 I5）。
 - `AttackExecutionContract` 在这里仅定义稳定纯类型与 rollout 语义；deployment default、operation row 冻结、DB constraint/immutable trigger 属于 Candidate V2 后续 schema/repo task，不能用环境变量在 operation 中途覆盖。
 - `agent_session.rs` 的 task-local attribution 是 best-effort：只对 inline awaited work 生效，启动后台 job 时要立即 capture，不能等到 spawned task 里再读。`AgentToolContext.operation_id` 来自 runtime 的 active harness operation/stage attempt，不能从模型参数猜；`organization_id` 承载当前 harness org。后台 completion 用这些可信绑定把结构化扫描结果、证据和 coverage outcome 写回正确 run/org。
+- `AgentToolCancellation` 是 sticky task-local取消通道：wrapper/runner在 inline scope捕获 clone，Stop 后所有观察者都能看到同一状态；等待实现必须在注册 `Notify` 前后都重查 flag，避免 cancel 与 waiter注册竞态。它只传递取消，不替代具体工具的 kill/await/landing责任。
 - direct/bridge 工具如果要让前端实时看到“工具现在在看什么”，用 `emit_current_agent_tool_output_chunk` 发 chunk；主 loop / sub-agent executor 会注入 `with_agent_tool_output_sender`。如果工具自己 `tokio::spawn` 读子进程 stderr/stdout，必须先在 inline scope capture `current_agent_tool_context()` 和 `current_agent_tool_output_sender()`，spawn 里不能再读 task-local。
 - 改动牵一发动全身：优先在子模块内部小改，避免改公共 `pub` 签名。
 

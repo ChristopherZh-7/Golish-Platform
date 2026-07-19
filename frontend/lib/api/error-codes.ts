@@ -18,6 +18,7 @@ export const GOLISH_ERROR_CODES = [
   "NOT_FOUND",
   "VALIDATION",
   "CONFIG",
+  "ORGANIZATION_DELETE_ACTIVE_STAGE_FORK",
   "runtime_scope_history_requires_invalidation",
   "ATTACK_CANDIDATE_PLAN_CHANGED",
   "ATTACK_REVIEW_SCOPE_MISMATCH",
@@ -51,6 +52,8 @@ const MESSAGES: Record<GolishErrorCode | typeof UNKNOWN_ERROR_CODE, string> = {
   NOT_FOUND: "The requested item was not found.",
   VALIDATION: "The input was invalid.",
   CONFIG: "There is a configuration problem.",
+  ORGANIZATION_DELETE_ACTIVE_STAGE_FORK:
+    "A stage task still has an active executor or unresolved tool outcome. Stop or recover it before deleting.",
   runtime_scope_history_requires_invalidation:
     "This organization is retained by immutable runtime scope history. Invalidate that history before deleting it.",
   ATTACK_CANDIDATE_PLAN_CHANGED:

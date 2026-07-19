@@ -235,7 +235,18 @@ impl PgCleanupRepository {
 }
 
 fn repository_error(error: golish_db::DbError) -> CleanupError {
-    CleanupError::Repository(error.to_string())
+    match error {
+        golish_db::DbError::OrganizationDeletionActiveStageFork {
+            operation_id,
+            stage,
+            status,
+        } => CleanupError::OrganizationDeletionActiveStageFork {
+            operation_id,
+            stage,
+            status,
+        },
+        other => CleanupError::Repository(other.to_string()),
+    }
 }
 
 #[async_trait]

@@ -121,6 +121,14 @@ pub enum CleanupError {
     UntrustedOperator,
     #[error("cleanup canonical scope is not authorized")]
     ScopeNotAuthorized,
+    #[error(
+        "organization deletion is blocked by active stage fork {operation_id} ({stage}, task {status})"
+    )]
+    OrganizationDeletionActiveStageFork {
+        operation_id: Uuid,
+        stage: String,
+        status: String,
+    },
     #[error("cleanup repository failed: {0}")]
     Repository(String),
 }
@@ -135,6 +143,9 @@ impl CleanupError {
             Self::InvalidResourceSnapshot => "cleanup_resource_snapshot_invalid",
             Self::UntrustedOperator => "cleanup_operator_untrusted",
             Self::ScopeNotAuthorized => "cleanup_scope_not_authorized",
+            Self::OrganizationDeletionActiveStageFork { .. } => {
+                "organization_delete_active_stage_fork"
+            }
             Self::Repository(_) => "cleanup_repository_failed",
         }
     }

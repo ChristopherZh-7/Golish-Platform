@@ -1,6 +1,6 @@
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { createElement } from "react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useStore } from "@/store";
 import {
   extractAssetSubjectFromText,
@@ -289,6 +289,280 @@ describe("stripAgentXmlTags", () => {
 });
 
 describe("SubAgentDetailView rendering", () => {
+  it("recovers durable dispatch assignments when the historical parent tool event is missing", async () => {
+    const sessionId = "controller-restored-dispatch-session";
+    const stageRunRequestId = "stage-run-restored";
+    const organizationId = "org-1";
+    const controllerWorkerRunId = "controller-worker";
+    const controllerRequestId = `${stageRunRequestId}::team::${organizationId}::lead:${controllerWorkerRunId}`;
+    const dispatchRequestId = "dispatch-event-that-was-dropped";
+    const startedAt = "2026-07-17T07:31:18.000Z";
+    const continuedAt = Date.parse("2026-07-17T07:32:18.000Z");
+    const getReadModel = vi.fn().mockResolvedValue({
+      operationId: "operation-1",
+      stageExecutionId: "stage-execution-1",
+      stageKind: "enumeration",
+      executionStatus: "running",
+      startedAt,
+      completedAt: null,
+      units: [
+        {
+          stageRunUnitId: "unit-1",
+          scopeSnapshotId: "scope-1",
+          organizationId,
+          organizationName: "Example Company",
+          stageKind: "enumeration",
+          generation: 0,
+          specialist: "enumerator",
+          status: "running",
+          gate: {
+            status: "pending",
+            attempt: 0,
+            passWatermarkPresent: false,
+            finalHandoffId: null,
+            finalHandoffSha256: null,
+            finalHandoffEvidenceCount: 0,
+            evidenceWatermark: null,
+            gatePassedAt: null,
+          },
+          plan: {
+            stageTeamPlanId: "plan-1",
+            schemaVersion: 1,
+            planVersion: 1,
+            planSha256: "plan-sha",
+            leaderRole: "enumerator",
+            aggregatorKind: "company_controller",
+            aggregatorRole: "enumerator",
+            allowedRoles: ["enumerator"],
+            maxWorkersTotal: 8,
+            maxWorkersActive: 2,
+            dynamicRequestsEnabled: true,
+            dispatchEpoch: 0,
+            requestsClosedAt: null,
+            finalSubmitterKind: "leader",
+            finalSubmitterWorkerRunId: controllerWorkerRunId,
+            barrier: {
+              dispatchEpoch: 0,
+              requestsClosed: false,
+              requiredWorkItems: 3,
+              terminalRequiredWorkItems: 0,
+              liveWorkers: 2,
+              retryPendingWorkItems: 0,
+              recoveryRequiredWorkers: 0,
+              missingOutputs: 3,
+              manifestSha256: "barrier-sha",
+              readyToFinalize: false,
+            },
+            requests: [1, 2, 3].map((ordinal) => ({
+              requestId: `request-${ordinal}`,
+              parentWorkItemId: "controller-work-item",
+              parentWorkerRunId: controllerWorkerRunId,
+              dispatchEpoch: 0,
+              requestedRole: "enumerator",
+              requestKind: `enumeration-batch-${ordinal}`,
+              subjectRefCount: 1,
+              reasonCode: "controller_dispatch",
+              expectedOutputSchema: "stage_worker_output.v1",
+              dedupeKey: `batch-${ordinal}`,
+              requestSha256: `request-sha-${ordinal}`,
+              status: "accepted",
+              decisionReasonCode: null,
+              acceptedWorkItemId: `work-item-${ordinal}`,
+              createdAt: `2026-07-17T07:31:1${ordinal}.000Z`,
+            })),
+            workItems: [
+              {
+                workItemId: "controller-work-item",
+                kind: "company_controller",
+                stableKey: "leader:primary",
+                role: "enumerator",
+                inputManifestSha256: "controller-manifest",
+                subjectRefCount: 1,
+                requiredForBarrier: true,
+                isAggregator: true,
+                conflictKey: null,
+                priority: 0,
+                status: "running",
+                maxAttempts: 3,
+                outputSchema: "stage_deliverable.v1",
+                createdBy: "seed",
+                rowVersion: 1,
+                dependencyWorkItemIds: [],
+                workers: [
+                  {
+                    workerRunId: controllerWorkerRunId,
+                    generation: 0,
+                    specialist: "enumerator",
+                    agentPath: "company_controller",
+                    messageChainId: "controller-chain",
+                    status: "running",
+                    gateAttempt: 0,
+                    attemptEpoch: 0,
+                    checkpointVersion: 1,
+                    hasActiveTool: false,
+                    activeToolCallId: null,
+                    leaseState: "active",
+                    recoveryState: "none",
+                    evidenceWatermark: null,
+                    startedAt,
+                    updatedAt: startedAt,
+                    terminalAt: null,
+                  },
+                ],
+                output: null,
+                startedAt,
+                terminalAt: null,
+              },
+              ...[1, 2, 3].map((ordinal) => ({
+                workItemId: `work-item-${ordinal}`,
+                kind: `enumeration-batch-${ordinal}`,
+                stableKey: `dynamic:batch-${ordinal}`,
+                role: "enumerator",
+                inputManifestSha256: `manifest-${ordinal}`,
+                subjectRefCount: 1,
+                requiredForBarrier: true,
+                isAggregator: false,
+                conflictKey: null,
+                priority: ordinal,
+                status: ordinal < 3 ? "running" : "queued",
+                maxAttempts: 3,
+                outputSchema: "stage_worker_output.v1",
+                createdBy: "dynamic_request",
+                rowVersion: 1,
+                dependencyWorkItemIds: [],
+                workers:
+                  ordinal < 3
+                    ? [
+                        {
+                          workerRunId: `worker-${ordinal}`,
+                          generation: 0,
+                          specialist: "enumerator",
+                          agentPath: "enumerator",
+                          messageChainId: `chain-${ordinal}`,
+                          status: "running",
+                          gateAttempt: 0,
+                          attemptEpoch: 0,
+                          checkpointVersion: 1,
+                          hasActiveTool: false,
+                          activeToolCallId: null,
+                          leaseState: "active",
+                          recoveryState: "none",
+                          evidenceWatermark: null,
+                          startedAt,
+                          updatedAt: startedAt,
+                          terminalAt: null,
+                        },
+                      ]
+                    : [],
+                output: null,
+                startedAt: ordinal < 3 ? startedAt : null,
+                terminalAt: null,
+              })),
+            ],
+          },
+          startedAt,
+          terminalAt: null,
+        },
+      ],
+    });
+
+    useStore.setState({
+      activeSubAgents: {
+        [sessionId]: [
+          {
+            agentId: "enumerator",
+            agentName: "Enumerator",
+            depth: 0,
+            entries: [
+              { kind: "text", text: "Now I'll dispatch 3 Enumerator workers." },
+              {
+                kind: "thinking",
+                text: "The delegated workers finished; I will verify coverage now.",
+                startedAt: continuedAt,
+                endedAt: continuedAt + 500,
+              },
+              { kind: "text", text: "Main Agent continued after the delegated workers." },
+            ],
+            parentRequestId: controllerRequestId,
+            startedAt,
+            status: "running",
+            task: "Coordinate Enumeration for Example Company",
+            toolCalls: [],
+          },
+          ...[1, 2].map((ordinal) => ({
+            agentId: "enumerator",
+            agentName: "Enumerator",
+            depth: 1,
+            entries: [],
+            parentRequestId: `${dispatchRequestId}::worker:worker-${ordinal}`,
+            startedAt,
+            status: "running" as const,
+            task: `Recovered enumeration batch ${ordinal}. Durable work_item_id: work-item-${ordinal}; role: enumerator.`,
+            toolCalls: [],
+          })),
+        ],
+      },
+      backgroundJobs: {},
+      sessions: {
+        [sessionId]: {
+          createdAt: startedAt,
+          detailViewMode: "sub-agent-detail",
+          id: sessionId,
+          mode: "agent",
+          name: "Restored Controller Session",
+          toolDetailRequestIds: [controllerRequestId],
+          workingDirectory: "/tmp",
+          stageRuns: {
+            [stageRunRequestId]: {
+              requestId: stageRunRequestId,
+              stageLabel: "Enumeration",
+              roleLabel: "Enumerator",
+              coverageAxis: ["JS", "JSAPI", "DIR", "PARAM"],
+              summary: { total: 1, covered: 0, active: 1, queued: 0, blocked: 0 },
+              rows: [
+                {
+                  id: organizationId,
+                  operationId: "operation-1",
+                  stageExecutionId: "stage-execution-1",
+                  stageRunUnitId: "unit-1",
+                  name: "Example Company",
+                  ownershipPercent: 100,
+                  status: "running",
+                  agentRequestId: controllerRequestId,
+                  evidenceCount: 0,
+                  coverage: {},
+                  stage: "enumeration",
+                },
+              ],
+            },
+          },
+        },
+      },
+      timelines: {},
+    });
+
+    const view = render(
+      createElement(SubAgentDetailView, {
+        sessionId,
+        stageTeamReadApi: { getReadModel },
+      } as never)
+    );
+
+    await waitFor(() => {
+      expect(getReadModel).toHaveBeenCalledWith({
+        operationId: "operation-1",
+        stageExecutionId: "stage-execution-1",
+      });
+      expect(view.getAllByTestId("stage-team-dispatch-assignment")).toHaveLength(3);
+    });
+    expect(view.getByText("ai.subAgentDetail.recoveredDispatch")).toBeInTheDocument();
+    expect(view.getAllByRole("button", { name: /Enumerator/ })).toHaveLength(2);
+    expect(view.getByText("ai.subAgentDetail.status.queued")).toBeInTheDocument();
+    const recoveredDispatch = view.getByTestId("stage-team-recovered-dispatch");
+    const continuedOutput = view.getByText("Main Agent continued after the delegated workers.");
+    expect(recoveredDispatch.compareDocumentPosition(continuedOutput) & 4).toBe(4);
+  });
+
   it("renders every accepted dispatch assignment as a distinct card including queued children", () => {
     const sessionId = "controller-three-children-session";
     const startedAt = "2026-07-16T02:47:26.000Z";
@@ -408,6 +682,149 @@ describe("SubAgentDetailView rendering", () => {
     expect(view.getByText("Enumerate remaining IP roots")).toBeInTheDocument();
     expect(view.getAllByRole("button", { name: /Enumerator/ })).toHaveLength(2);
     expect(view.getByText("ai.subAgentDetail.status.queued")).toBeInTheDocument();
+  });
+
+  it("renders historical all-rejected dispatch assignments as errors instead of queued", () => {
+    const sessionId = "controller-all-rejected-session";
+    const startedAt = "2026-07-17T01:00:00.000Z";
+    const controllerRequestId = "stage-run::team::org-1::lead:controller-worker";
+    const dispatchRequestId = "dispatch-all-rejected";
+
+    useStore.setState({
+      activeSubAgents: {
+        [sessionId]: [
+          {
+            agentId: "enumerator",
+            agentName: "Enumerator",
+            depth: 0,
+            entries: [{ kind: "tool_call", toolCallId: dispatchRequestId }],
+            parentRequestId: controllerRequestId,
+            startedAt,
+            status: "completed",
+            task: "Coordinate enumeration",
+            toolCalls: [
+              {
+                args: {
+                  workers: [
+                    {
+                      dedupe_key: "domain-roots",
+                      kind: "content_enumeration",
+                      objective: "Enumerate domain roots",
+                      role: "enumerator",
+                    },
+                    {
+                      dedupe_key: "ip-roots",
+                      kind: "content_enumeration",
+                      objective: "Enumerate IP roots",
+                      role: "enumerator",
+                    },
+                  ],
+                },
+                completedAt: startedAt,
+                id: dispatchRequestId,
+                name: "stage_team_dispatch_workers",
+                result: {
+                  code: "STAGE_TEAM_DISPATCH_NONE_ACCEPTED",
+                  error: "no requested Stage Team worker was accepted",
+                },
+                startedAt,
+                status: "error",
+              },
+            ],
+          },
+        ],
+      },
+      backgroundJobs: {},
+      sessions: {
+        [sessionId]: {
+          createdAt: startedAt,
+          detailViewMode: "sub-agent-detail",
+          id: sessionId,
+          mode: "agent",
+          name: "Rejected Enumerator Session",
+          toolDetailRequestIds: [controllerRequestId],
+          workingDirectory: "/tmp",
+        },
+      },
+      timelines: {},
+    });
+
+    const view = render(createElement(SubAgentDetailView, { sessionId }));
+
+    const assignments = view.getAllByTestId("stage-team-dispatch-assignment");
+    expect(assignments).toHaveLength(2);
+    for (const assignment of assignments) {
+      expect(assignment).toHaveTextContent("ai.subAgentDetail.status.error");
+    }
+    expect(view.queryByText("ai.subAgentDetail.status.queued")).not.toBeInTheDocument();
+  });
+
+  it("renders terminal dispatch persistence failures as errors instead of queued", () => {
+    const sessionId = "controller-persist-failed-session";
+    const startedAt = "2026-07-17T06:29:50.093Z";
+    const controllerRequestId = "stage-run::team::org-1::lead:controller-worker";
+    const dispatchRequestId = "repair-dispatch-persist-failed";
+
+    useStore.setState({
+      activeSubAgents: {
+        [sessionId]: [
+          {
+            agentId: "prober",
+            agentName: "Company Controller",
+            depth: 0,
+            entries: [{ kind: "tool_call", toolCallId: dispatchRequestId }],
+            parentRequestId: controllerRequestId,
+            startedAt,
+            status: "completed",
+            task: "Coordinate Gate repair",
+            toolCalls: [
+              {
+                args: {
+                  workers: [
+                    {
+                      dedupe_key: "retry-five-origins",
+                      kind: "surface_probe",
+                      objective: "Retry five exact WEB-FINGERPRINT origins",
+                      role: "prober",
+                    },
+                  ],
+                },
+                completedAt: startedAt,
+                id: dispatchRequestId,
+                name: "stage_team_dispatch_workers",
+                result: {
+                  code: "STAGE_TEAM_DISPATCH_PERSIST_FAILED",
+                  error:
+                    'durable Stage Team worker request failed: insert or update on table "stage_worker_requests" violates foreign key constraint',
+                },
+                startedAt,
+                status: "error",
+              },
+            ],
+          },
+        ],
+      },
+      backgroundJobs: {},
+      sessions: {
+        [sessionId]: {
+          createdAt: startedAt,
+          detailViewMode: "sub-agent-detail",
+          id: sessionId,
+          mode: "agent",
+          name: "Repair Dispatch Persistence Failure",
+          toolDetailRequestIds: [controllerRequestId],
+          workingDirectory: "/tmp",
+        },
+      },
+      timelines: {},
+    });
+
+    const view = render(createElement(SubAgentDetailView, { sessionId }));
+
+    const assignment = view.getByTestId("stage-team-dispatch-assignment");
+    expect(assignment).toHaveTextContent("ai.subAgentDetail.status.error");
+    expect(assignment).toHaveTextContent("STAGE_TEAM_DISPATCH_PERSIST_FAILED");
+    expect(view.queryByText("ai.subAgentDetail.status.queued")).not.toBeInTheDocument();
   });
 
   it("groups retry generations for one WorkItem into one assignment card", () => {

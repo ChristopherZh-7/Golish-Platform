@@ -52,11 +52,13 @@ const NUCLEI_POC_QUERY: &str = r#"SELECT DISTINCT
    ORDER BY id
    LIMIT 501"#;
 
-/// Select safe, local Nuclei template ids using only fingerprints that still
-/// belong to the target's current in-scope owner binding.
-pub async fn select_nuclei_templates_for_target(
+/// Select safe local Nuclei template ids using only fingerprints observed on
+/// this exact authorized Web Origin. There is deliberately no target-global
+/// fallback: another port/scheme on the same target is a different surface.
+pub async fn select_nuclei_templates_for_origin(
     pool: &sqlx::PgPool,
     target_id: Uuid,
+    exact_origin: &str,
 ) -> crate::ScanRunnerResult<Vec<NucleiTemplateSelection>> {
     let guard = golish_db::repo::scoped::load_target_write_guard(pool, target_id)
         .await?
@@ -66,12 +68,28 @@ pub async fn select_nuclei_templates_for_target(
             )
         })?;
 
-    let fingerprints =
-        golish_db::repo::fingerprints::list_by_current_target_owner(pool, target_id).await?;
+    let web_origin_id =
+        golish_db::repo::enumeration_surface_manifest::resolve_guarded_web_origin_id(
+            pool,
+            &guard,
+            exact_origin,
+        )
+        .await?;
+    let organization_id = guard.organization_id.ok_or_else(|| {
+        crate::ScanRunnerError::Nuclei(
+            "exact-origin template selection requires an organization-bound target".to_string(),
+        )
+    })?;
+    let fingerprints = golish_db::repo::enumeration_surface_manifest::list_fingerprints_for_origin(
+        pool,
+        organization_id,
+        web_origin_id,
+    )
+    .await?;
     golish_db::repo::scoped::validate_target_write_guard(pool, &guard).await?;
     if fingerprints.len() > MAX_FINGERPRINTS {
         return Err(crate::ScanRunnerError::Nuclei(format!(
-            "template selection exceeds the {MAX_FINGERPRINTS} current-owner fingerprint limit"
+            "template selection exceeds the {MAX_FINGERPRINTS} exact-origin fingerprint limit"
         )));
     }
 

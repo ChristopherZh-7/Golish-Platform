@@ -55,9 +55,9 @@
 
 ## 关键文件
 
-- `agentic_loop/tool_execution/direct/stage_run_call.rs`：Task harness `stage_run`；legacy/dual 保留 per-org fan-out，V2 Target Intel 走 durable sibling Team queue、每个 WorkerRun 独立 SubAgent UI parent identity、producer 有界 attempt retry、唯一 Aggregator、Gate BLOCK repair generation/fresh Aggregator；Candidate Verification 走 TerminalIntent recovery与同链 submit-only continuation。
-- `agentic_loop/tool_execution/direct/stage_team_scheduler.rs`：Stage Team plan/WorkItem/output/request 的确定性构造、唯一 fenced-object bounded parser、business output authority validator、lifetime/repair budget 与 stable hash。
-- `agentic_loop/tool_execution/direct/sub_agent_call.rs`：`sub_agent_*` 派发、sub-agent repair checkpoint 恢复、tool observer。
+- `agentic_loop/tool_execution/direct/stage_run_call.rs`：Task harness `stage_run`；stage fork 进入后仍复用同一 stage/team/candidate plan，仅把 Candidate 的 initial authority识别为 exact `ForkedVulnHandoff`；legacy/dual 保留 per-org fan-out，V2 Target Intel 走 durable sibling Team queue、每个 WorkerRun 独立 SubAgent UI parent identity、producer 有界 attempt retry、唯一 Aggregator、Gate BLOCK repair generation/fresh Aggregator；Candidate Verification 走 TerminalIntent recovery与同链 submit-only continuation。
+- `agentic_loop/tool_execution/direct/stage_team_scheduler.rs`：Stage Team plan/WorkItem/output/request 的确定性构造、唯一 fenced-object bounded parser、business output authority validator、stable hash 与 repair fuel；Company Controller 的历史 lifetime totals 只做 restart replay，不参与 admission/claim/retry/coordination loop。
+- `agentic_loop/tool_execution/direct/sub_agent_call.rs`：`sub_agent_*` 派发、Stage Team dispatch host router、sub-agent repair checkpoint 恢复、tool observer；零项持久化成功时返回带 request/card identity 的 terminal `dispatch_failed`，不能让前端把失败误画成 queued。
 - `test_utils.rs` / `test_utils_tests.rs`：feature gate 下的 mock 与自测。
 
 ## 注意事项 / 坑
@@ -76,6 +76,7 @@
 - Team producer 的 provider 执行失败、输出协议不合格、无 canonical fact/evidence authority 的 `found/checked_empty`，以及已登记的 dependency-not-ready blocker，不得第一次就固化成 business `blocked` output；它们必须走 `retry_stage_worker` compound API，在 frozen attempt budget 内重新排队，预算耗尽才由 repository 生成确定性 terminal blocker。合法未知 business blocker 仍是 immutable output，不能被自动重试规则吞掉。
 - 大型 Enumeration worklist 可能超过 Enumerator 单段 40 iterations；worker 无 deliverable 返回时，`stage_run` 会读取同源 DB coverage snapshot，只有 pending/error/partial 数量继续下降时才续同一精确 worker chain，最多两次。ready 但未 submit 只允许一次 submit-only continuation；停滞、取消或预算耗尽进入既有 request-scoped breaker，不能无限重开。
 - `stage_run_call::build_org_objective` 会把本次 Task 的 `SubAgentContext.original_request` 作为**有界、JSON 引用、低优先级**的 operator-constraint 摘录传给 specialist worker（最多 4096 Unicode 字符，超长保留首尾并显式标记截断）。该文本只可收紧现有执行方式（如 read-only、批次、已知不可达 exact origin、禁止某 producer），绝不能变成新的授权源：stage / authoritative org subtree / DB scope / exact-origin denominator / StageSpec tool boundary / evidence+gate contract 仍由 Rust 侧固定，冲突文字必须忽略。
+- Vuln Company Controller 是例外的 formulaic host path：runtime 从 operation-scoped coverage 生成 exact origin × capability shard，并以 canonical Target subject持久化；Nuclei shard 由 host 直调 guarded wrapper，pending 可按 capability 合并，partial/error 只生成 single-technique recovery。重复 stable request 必须区分 claimable、in-flight 与 recovery-required；scanner/runtime 耗尽保留非终态并阻止 Gate PASS，不能回退到“ALL remaining” LLM派工。
 
 ## 测试入口
 

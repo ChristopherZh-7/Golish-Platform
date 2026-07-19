@@ -48,9 +48,10 @@ pub struct Args {
     #[arg(long)]
     pub auto_approve: bool,
 
-    /// Explicitly approve every profile-defined phase-boundary confirmation in
-    /// a headless stage run. This is the CLI equivalent of clicking Confirm on
-    /// the GUI phase card; `--auto-approve` is still required to deliver it.
+    /// Compatibility switch for a profile-defined generic phase confirmation.
+    /// Built-in flows require routine confirmation only in Scoping and do not
+    /// use this after Scoping. It never approves target, Candidate, or tool authz;
+    /// `--auto-approve` is still required to deliver a compatible phase decision.
     #[arg(long, requires = "auto_approve")]
     pub approve_phase_boundaries: bool,
 
@@ -83,6 +84,30 @@ pub struct Args {
     /// See docs/design/2026-06-06-headless-single-stage-runner.md.
     #[arg(long)]
     pub stage_run: bool,
+
+    /// Create a new test operation from one exact GUI/CLI source operation,
+    /// adopt its validated post-Scoping prefix, and execute only the requested
+    /// stage slice. The source operation remains immutable.
+    #[arg(
+        long,
+        value_name = "SESSION_OR_OPERATION",
+        conflicts_with_all = [
+            "stage_run",
+            "stage_run_resume",
+            "resume_to",
+            "ephemeral_db",
+            "keep_ephemeral_db",
+            "profile",
+            "org",
+            "target",
+            "include_subsidiaries",
+            "subsidiary_threshold",
+            "allow_orphan_running",
+            "repair_missing_graph_flow",
+            "repair_reaped_task"
+        ]
+    )]
+    pub stage_run_fork: Option<String>,
 
     /// Resume one exact interrupted headless stage-run. Accepts its
     /// `stage-run-*` chat key, DB session UUID, or task/operation UUID. This is
@@ -430,6 +455,59 @@ mod tests {
             assert!(
                 Args::try_parse_from(argv).is_err(),
                 "resume must reject fresh/ephemeral selector"
+            );
+        }
+    }
+
+    #[test]
+    fn test_args_stage_run_fork_accepts_only_or_complete_range() {
+        let only = Args::try_parse_from([
+            "golish",
+            "--stage-run-fork",
+            "pentest-chat-1784364775375-1",
+            "--only",
+            "vuln_triage",
+        ])
+        .expect("fork should accept one selected post-Scoping stage");
+        assert_eq!(only.only.as_deref(), Some("vuln_triage"));
+
+        let range = Args::try_parse_from([
+            "golish",
+            "--stage-run-fork",
+            "425c7693-99fb-4598-8361-62275c9413b1",
+            "--from",
+            "enumeration",
+            "--to",
+            "attack_candidate",
+        ])
+        .expect("fork should accept one explicit contiguous stage range");
+        assert_eq!(range.from.as_deref(), Some("enumeration"));
+        assert_eq!(range.to.as_deref(), Some("attack_candidate"));
+    }
+
+    #[test]
+    fn test_args_stage_run_fork_rejects_fresh_resume_and_scope_overrides() {
+        for conflicting in [
+            vec!["--stage-run"],
+            vec!["--stage-run-resume", "stage-run-abc"],
+            vec!["--ephemeral-db"],
+            vec!["--profile", "pentest"],
+            vec!["--org", "ACME"],
+            vec!["--target", "a.example"],
+            vec!["--include-subsidiaries"],
+            vec!["--subsidiary-threshold", "60"],
+        ] {
+            let mut argv = vec![
+                "golish",
+                "--stage-run-fork",
+                "425c7693-99fb-4598-8361-62275c9413b1",
+                "--only",
+                "enumeration",
+            ];
+            argv.extend(conflicting);
+            assert!(
+                Args::try_parse_from(argv).is_err(),
+                "fork must reject fresh/resume/scope overrides"
             );
         }
     }

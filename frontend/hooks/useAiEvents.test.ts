@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useStore } from "../store";
 import { clearMockListeners, emitMockEvent, getListenerCount } from "../test/mocks/tauri-event";
 import {
+  clearPendingAiSessionEvents,
+  getPendingAiSessionEventCount,
   getSessionSequenceCount,
   resetAllSequences,
   resetLastSignaledAt,
@@ -45,6 +47,10 @@ describe("useAiEvents", () => {
     useStore.setState({
       sessions: {},
       activeSessionId: null,
+      conversations: {},
+      activeConversationId: null,
+      conversationOrder: [],
+      conversationTerminals: {},
       timelines: {},
       pendingCommand: {},
       agentStreaming: {},
@@ -65,6 +71,7 @@ describe("useAiEvents", () => {
     // starts from a clean module state (both Maps live at module scope).
     resetAllSequences();
     resetLastSignaledAt();
+    clearPendingAiSessionEvents();
 
     // Create a test session
     createTestSession("test-session");
@@ -73,6 +80,7 @@ describe("useAiEvents", () => {
   afterEach(() => {
     clearMockListeners();
     resetAllSequences();
+    clearPendingAiSessionEvents();
     vi.clearAllMocks();
   });
 
@@ -443,7 +451,7 @@ describe("useAiEvents", () => {
       expect(state.isAgentResponding["test-session"]).toBe(false);
     });
 
-    it("drops known-but-unresolved session reasoning instead of routing it to the active session", async () => {
+    it("buffers known-but-unresolved session reasoning without routing it to the active session", async () => {
       useStore.setState({ activeSessionId: "test-session" });
       renderHook(() => useAiEvents());
 
@@ -462,6 +470,85 @@ describe("useAiEvents", () => {
       const state = useStore.getState();
       expect(state.thinkingContent["test-session"]).toBe("");
       expect(state.timelines["test-session"] ?? []).toHaveLength(0);
+      expect(getPendingAiSessionEventCount("some-other-ai-session")).toBe(1);
+    });
+
+    it("replays sub-agent events after their conversation terminal finishes restoring", async () => {
+      const aiSessionId = "pentest-chat-restoring";
+      const terminalSessionId = "restored-terminal";
+      const parentRequestId = "dispatch-restored::worker:worker-run-1";
+      createTestSession(terminalSessionId, "Restored");
+      useStore.setState({ activeSessionId: "test-session" });
+      renderHook(() => useAiEvents());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+
+      act(() => {
+        emitMockEvent("ai-event", {
+          type: "sub_agent_started",
+          session_id: aiSessionId,
+          agent_id: "enumerator",
+          agent_name: "Enumerator",
+          task: "Resume the exact durable assignment",
+          depth: 1,
+          parent_request_id: parentRequestId,
+          seq: 1,
+        });
+        emitMockEvent("ai-event", {
+          type: "sub_agent_tool_request",
+          session_id: aiSessionId,
+          agent_id: "enumerator",
+          tool_name: "stage_worklist_status",
+          args: { organization_id: "org-1", stage: "enumeration" },
+          request_id: "worker-tool-1",
+          parent_request_id: parentRequestId,
+          seq: 2,
+        });
+        emitMockEvent("ai-event", {
+          type: "sub_agent_tool_result",
+          session_id: aiSessionId,
+          agent_id: "enumerator",
+          tool_name: "stage_worklist_status",
+          success: true,
+          result: { pending_cells: 12 },
+          request_id: "worker-tool-1",
+          parent_request_id: parentRequestId,
+          seq: 3,
+        });
+      });
+
+      expect(useStore.getState().activeSubAgents["test-session"] ?? []).toHaveLength(0);
+      expect(useStore.getState().activeSubAgents[terminalSessionId] ?? []).toHaveLength(0);
+      expect(getPendingAiSessionEventCount(aiSessionId)).toBe(3);
+
+      act(() => {
+        useStore.getState().addConversation({
+          id: "conversation-restoring",
+          title: "Restoring conversation",
+          messages: [],
+          createdAt: Date.now(),
+          aiSessionId,
+          aiInitialized: true,
+          isStreaming: true,
+        });
+        useStore.getState().addTerminalToConversation("conversation-restoring", terminalSessionId);
+      });
+
+      const restored = useStore.getState().activeSubAgents[terminalSessionId] ?? [];
+      expect(restored).toHaveLength(1);
+      expect(restored[0].parentRequestId).toBe(parentRequestId);
+      expect(restored[0].toolCalls).toEqual([
+        expect.objectContaining({
+          id: "worker-tool-1",
+          name: "stage_worklist_status",
+          result: { pending_cells: 12 },
+          status: "completed",
+        }),
+      ]);
+      expect(useStore.getState().activeSubAgents["test-session"] ?? []).toHaveLength(0);
+      expect(getPendingAiSessionEventCount(aiSessionId)).toBe(0);
     });
   });
 

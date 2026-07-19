@@ -122,6 +122,9 @@ fn attack_wave_entry_from_db(
         golish_db::repo::attack_waves::AttackWaveEntry::FactDeltaConsolidation { .. } => {
             AttackV2WaveEntryView::FactDeltaConsolidation
         }
+        golish_db::repo::attack_waves::AttackWaveEntry::ForkedVulnHandoff { .. } => {
+            AttackV2WaveEntryView::ForkedVulnHandoff
+        }
     }
 }
 
@@ -824,6 +827,19 @@ fn canonical_fact_key_to_db(
             asset,
             technique,
         },
+        CanonicalFactKey::TechniqueOutcomeSet {
+            organization_id,
+            run_id,
+            stage,
+            terminal_cell_count,
+            outcome_set_sha256,
+        } => Db::TechniqueOutcomeSet {
+            organization_id,
+            run_id,
+            stage,
+            terminal_cell_count,
+            outcome_set_sha256,
+        },
         CanonicalFactKey::AttackCandidateWorkItem { work_item_id } => {
             Db::AttackCandidateWorkItem { work_item_id }
         }
@@ -870,6 +886,19 @@ fn canonical_fact_key_from_db(
             run_id,
             asset,
             technique,
+        },
+        Db::TechniqueOutcomeSet {
+            organization_id,
+            run_id,
+            stage,
+            terminal_cell_count,
+            outcome_set_sha256,
+        } => CanonicalFactKey::TechniqueOutcomeSet {
+            organization_id,
+            run_id,
+            stage,
+            terminal_cell_count,
+            outcome_set_sha256,
         },
         Db::AttackCandidateWorkItem { work_item_id } => {
             CanonicalFactKey::AttackCandidateWorkItem { work_item_id }
@@ -1251,21 +1280,38 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
                         .collect(),
                 },
             );
-        let created = golish_db::repo::runtime_memory_tx::create_runtime_operation(
-            &self.pool,
-            &CreateRuntimeOperationRow {
-                operation_id: input.operation_id,
-                initial_stage_execution_id: expected_initial_stage_execution_id,
-                session_id: input.session_id,
-                title: input.title,
-                input: input.input,
-                profile: input.profile,
-                entry_stage: input.entry_stage,
-                project_scope_id: expected_project_scope_id,
-                cli_scope,
-            },
-        )
-        .await
+        let stage_fork =
+            input.stage_fork.map(
+                |fork| golish_db::repo::runtime_memory_tx::StageForkCreateRow {
+                    source_operation_id: fork.source_operation_id,
+                    source_scope_snapshot_id: fork.source_scope_snapshot_id,
+                    entry_stage: fork.entry_stage,
+                    terminal_stage: fork.terminal_stage,
+                    adopted_stage_kinds: fork.adopted_stage_kinds,
+                },
+            );
+        let row = CreateRuntimeOperationRow {
+            operation_id: input.operation_id,
+            initial_stage_execution_id: expected_initial_stage_execution_id,
+            session_id: input.session_id,
+            title: input.title,
+            input: input.input,
+            profile: input.profile,
+            entry_stage: input.entry_stage,
+            project_scope_id: expected_project_scope_id,
+            cli_scope,
+        };
+        let created = match stage_fork.as_ref() {
+            Some(stage_fork) => {
+                golish_db::repo::runtime_memory_tx::create_runtime_operation_with_stage_fork(
+                    &self.pool, &row, stage_fork,
+                )
+                .await
+            }
+            None => {
+                golish_db::repo::runtime_memory_tx::create_runtime_operation(&self.pool, &row).await
+            }
+        }
         .map_err(runtime_memory_error_from_db)?;
         created_runtime_operation_from_db(
             created,
@@ -3013,6 +3059,22 @@ mod tests {
     use super::*;
     use golish_agent_kit::db_traits::TaskStatus;
     use golish_agent_kit::harness::attack_execution::{AttackReadSource, AttackShadowComparison};
+
+    #[test]
+    fn technique_outcome_set_key_roundtrips_through_db_bridge() {
+        let key = CanonicalFactKey::TechniqueOutcomeSet {
+            organization_id: Uuid::new_v4(),
+            run_id: Uuid::new_v4().to_string(),
+            stage: "vuln_triage".to_string(),
+            terminal_cell_count: 360,
+            outcome_set_sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+        };
+        assert_eq!(
+            canonical_fact_key_from_db(canonical_fact_key_to_db(key.clone())),
+            key
+        );
+    }
 
     #[test]
     fn final_seal_post_commit_seam_reconciles_runtime_before_attack() {

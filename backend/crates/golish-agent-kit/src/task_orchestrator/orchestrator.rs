@@ -84,12 +84,11 @@ pub struct TaskOrchestrator {
     /// submit/runtime can use this session scope to reject fabricated refs.
     pub(super) chat_session_id: Option<String>,
     /// C5 · HITL approval channel (the **same coordinator** the `ask_human` tool
-    /// uses). When wired, the two-level phase-boundary approval gate requests a
-    /// Confirm/Skip decision through this coordinator — surfaced as an
-    /// `AskHumanRequest` card the user can click **without** stopping the running
-    /// task — instead of the legacy `user_input_rx` text channel (which has no
-    /// production feeder, so the gate would otherwise wedge forever). `None`
-    /// (e.g. unit tests) → text fallback over `user_input_rx`.
+    /// uses). Scoping and the exact TargetIntel→EAS target-scope review use this
+    /// channel for clickable decisions. Post-Scoping routine stage transitions
+    /// never request generic confirmation. `None` keeps the legacy text fallback
+    /// for a Scoping-origin compatibility phase crossing; typed target review
+    /// remains fail-closed without an interactive coordinator.
     pub(super) approval_coordinator: Option<crate::CoordinatorHandle>,
     /// 方案 2 · headless 单/区间阶段实跑的 DAG allowlist. `Some` 时,
     /// `run_executor_driven` 投影 DAG 用 `profile.allowed ∩ allowlist`, 把可执行
@@ -101,6 +100,10 @@ pub struct TaskOrchestrator {
     /// restricts the DAG to `remaining_stages`, so previously satisfied stages
     /// are skipped deterministically instead of being prompt-only context.
     pub(super) continuity_adoption: Option<crate::harness::ContinuityAdoptionPlan>,
+    /// Immutable source-operation authority for a fresh CLI stage fork. This
+    /// changes only operation creation; stage execution still uses the common
+    /// run_stage -> run_from_stage kernel.
+    pub(super) stage_fork: Option<crate::db_traits::StageForkCreate>,
     /// One-shot fast path for a bare continuation prompt. The next resumed stage
     /// request consumes this flag; if that stage is a DB-root-bound specialist
     /// stage, its first primary-agent turn is locked to `stage_run`.
@@ -161,6 +164,7 @@ impl TaskOrchestrator {
             approval_coordinator: None,
             stage_allowlist: None,
             continuity_adoption: None,
+            stage_fork: None,
             force_stage_run_on_resume_once: false,
             resume_runtime_memory_source: None,
             resume_task_preclaimed: false,
@@ -219,10 +223,10 @@ impl TaskOrchestrator {
         self.current_invocation_target_authority = authority;
     }
 
-    /// Wire the HITL coordinator so the two-level phase-approval gate can request
-    /// a clickable Confirm/Skip decision (the shared `ask_human` channel) instead
-    /// of the legacy `user_input_rx` text channel. Call right after [`Self::new`]
-    /// in the chat command. `None` keeps the text fallback (unit tests).
+    /// Wire the shared `ask_human` HITL coordinator for Scoping and exact target
+    /// review. A Scoping-origin compatibility phase crossing can also use it for
+    /// Confirm/Skip instead of `user_input_rx`; later routine stage crossings do
+    /// not request confirmation. Call right after [`Self::new`] in the chat command.
     pub fn set_approval_coordinator(&mut self, coordinator: Option<crate::CoordinatorHandle>) {
         self.approval_coordinator = coordinator;
     }
@@ -246,6 +250,10 @@ impl TaskOrchestrator {
         plan: Option<crate::harness::ContinuityAdoptionPlan>,
     ) {
         self.continuity_adoption = plan;
+    }
+
+    pub fn set_stage_fork(&mut self, stage_fork: Option<crate::db_traits::StageForkCreate>) {
+        self.stage_fork = stage_fork;
     }
 
     /// Prefer a deterministic `stage_run` dispatch for the next resumed stage
@@ -357,6 +365,7 @@ impl TaskOrchestrator {
                 entry_stage: entry_stage.as_str().to_string(),
                 project_scope,
                 cli_scope: self.cli_runtime_scope.take(),
+                stage_fork: self.stage_fork.take(),
             })
             .await
             .map_err(anyhow::Error::new)

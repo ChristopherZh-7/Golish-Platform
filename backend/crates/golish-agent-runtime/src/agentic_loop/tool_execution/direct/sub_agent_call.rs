@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use golish_agent_kit::db_traits::{
     RequestStageWorker, RuntimeMemoryRepository, RuntimeWorkerFence, StageWorkerRequestDecision,
 };
+use golish_agent_kit::harness::CanonicalFactKey;
 use golish_agent_kit::planner::{PlanManager, StepStatus, UpdatePlanArgs};
 use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
     agent_run_from_state_blob, state_blob_with_agent_run, state_blob_without_agent_run,
@@ -73,6 +74,72 @@ struct StageTeamControllerRequestEnvelope<'a> {
 
 fn stage_team_leader_router_error(code: &'static str, error: impl Into<String>) -> (Value, bool) {
     (json!({"code": code, "error": error.into()}), false)
+}
+
+fn canonicalize_stage_team_subject_refs(subject_refs: &[Value]) -> Result<Vec<Value>, String> {
+    let mut canonical_refs = Vec::with_capacity(subject_refs.len());
+    let mut seen = HashSet::with_capacity(subject_refs.len());
+
+    for subject_ref in subject_refs {
+        let canonical_key = match serde_json::from_value::<CanonicalFactKey>(subject_ref.clone()) {
+            Ok(canonical_key) => canonical_key,
+            Err(_) => {
+                let Some(selector) = subject_ref.as_object() else {
+                    return Err(
+                        "subject_refs must contain canonical objects such as {\"kind\":\"target\",\"target_id\":\"<uuid>\"}"
+                            .to_string(),
+                    );
+                };
+                if !selector
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "target_id" | "target_url"))
+                    || selector
+                        .get("target_url")
+                        .is_some_and(|target_url| !target_url.is_string())
+                {
+                    return Err(
+                        "non-canonical subject ref; target shorthand may contain target_id and target_url only"
+                            .to_string(),
+                    );
+                }
+                let target_id = selector
+                    .get("target_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "target shorthand requires a UUID target_id".to_string())?
+                    .parse::<uuid::Uuid>()
+                    .map_err(|_| "target shorthand requires a UUID target_id".to_string())?;
+                CanonicalFactKey::Target { target_id }
+            }
+        };
+        let canonical_ref = serde_json::to_value(canonical_key)
+            .map_err(|error| format!("canonical subject ref was not serializable: {error}"))?;
+        let dedupe_key = serde_json::to_string(&canonical_ref)
+            .map_err(|error| format!("canonical subject ref was not serializable: {error}"))?;
+        if seen.insert(dedupe_key) {
+            canonical_refs.push(canonical_ref);
+        }
+    }
+
+    Ok(canonical_refs)
+}
+
+fn stage_team_dispatch_assignment_identity(
+    worker: &StageTeamDispatchWorkerArgs,
+) -> Result<String, String> {
+    let mut subject_refs = worker
+        .subject_refs
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("canonical subject ref was not serializable: {error}"))?;
+    subject_refs.sort_unstable();
+    serde_json::to_string(&json!({
+        "kind": worker.kind.trim(),
+        "objective": worker.objective.split_whitespace().collect::<Vec<_>>().join(" "),
+        "role": worker.role.trim(),
+        "subject_refs": subject_refs,
+    }))
+    .map_err(|error| format!("Stage Team assignment identity was not serializable: {error}"))
 }
 
 fn stage_team_leader_tool_context_matches(
@@ -231,7 +298,7 @@ async fn route_stage_team_leader_host_tool(
         ));
     }
 
-    let parsed = match serde_json::from_value::<StageTeamDispatchWorkersArgs>(args.clone()) {
+    let mut parsed = match serde_json::from_value::<StageTeamDispatchWorkersArgs>(args.clone()) {
         Ok(parsed)
             if !parsed.workers.is_empty()
                 && parsed.workers.len() <= MAX_STAGE_TEAM_CONTROLLER_DISPATCH_BATCH =>
@@ -273,6 +340,41 @@ async fn route_stage_team_leader_host_tool(
             ));
         }
     }
+    for worker in &mut parsed.workers {
+        worker.subject_refs = match canonicalize_stage_team_subject_refs(&worker.subject_refs) {
+            Ok(subject_refs) => subject_refs,
+            Err(error) => {
+                return Some(stage_team_leader_router_error(
+                    "STAGE_TEAM_DISPATCH_WORKER_INVALID",
+                    format!(
+                        "worker '{}' has invalid subject_refs: {error}",
+                        worker.dedupe_key.trim()
+                    ),
+                ));
+            }
+        };
+    }
+    let mut assignment_identities = HashSet::with_capacity(parsed.workers.len());
+    for worker in &parsed.workers {
+        let assignment_identity = match stage_team_dispatch_assignment_identity(worker) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return Some(stage_team_leader_router_error(
+                    "STAGE_TEAM_DISPATCH_WORKER_INVALID",
+                    error,
+                ));
+            }
+        };
+        if !assignment_identities.insert(assignment_identity) {
+            return Some(stage_team_leader_router_error(
+                "STAGE_TEAM_DISPATCH_ASSIGNMENT_OVERLAP",
+                format!(
+                    "worker '{}' duplicates another normalized role/kind/objective/subject assignment in this batch; split disjoint subjects or submit one whole-company worker",
+                    worker.dedupe_key.trim()
+                ),
+            ));
+        }
+    }
 
     let fence = RuntimeWorkerFence {
         operation_id: bound.operation_id,
@@ -283,6 +385,7 @@ async fn route_stage_team_leader_host_tool(
         attempt_epoch: bound.worker_lease.attempt_epoch,
         expected_checkpoint_version: bound.current_checkpoint_version(),
     };
+    let request_count = parsed.workers.len();
     let mut decisions = Vec::with_capacity(parsed.workers.len());
     let mut accepted_count = 0usize;
     for worker in parsed.workers {
@@ -353,10 +456,21 @@ async fn route_stage_team_leader_host_tool(
                         true,
                     ));
                 }
-                return Some(stage_team_leader_router_error(
+                let (mut result, success) = stage_team_leader_router_error(
                     "STAGE_TEAM_DISPATCH_PERSIST_FAILED",
                     format!("durable Stage Team worker request failed: {error}"),
-                ));
+                );
+                if let Some(result) = result.as_object_mut() {
+                    result.insert("accepted_count".to_string(), json!(0));
+                    result.insert("request_count".to_string(), json!(request_count));
+                    result.insert("requests".to_string(), json!(decisions));
+                    result.insert("status".to_string(), json!("dispatch_failed"));
+                    result.insert(
+                        "tool_request_id".to_string(),
+                        json!(tool_context.request_id),
+                    );
+                }
+                return Some((result, success));
             }
         };
         if persisted.request.decision == StageWorkerRequestDecision::Accepted {
@@ -373,9 +487,20 @@ async fn route_stage_team_leader_host_tool(
     }
 
     if accepted_count == 0 {
-        return Some(stage_team_leader_router_error(
-            "STAGE_TEAM_DISPATCH_NONE_ACCEPTED",
-            "no requested Stage Team worker was accepted; revise the dispatch in this Controller turn",
+        return Some((
+            json!({
+                "accepted_count": 0,
+                "code": "STAGE_TEAM_DISPATCH_NONE_ACCEPTED",
+                "error": "no requested Stage Team worker was accepted; revise the dispatch in this Controller turn",
+                "next_action": "Retry with canonical {\"kind\":\"target\",\"target_id\":\"<uuid>\"} subject refs, or omit subject_refs only for an intentional whole-company assignment.",
+                "rejected_count": decisions.len(),
+                "request_count": decisions.len(),
+                "requests": decisions,
+                "retryable": true,
+                "status": "dispatch_rejected",
+                "tool_request_id": tool_context.request_id,
+            }),
+            false,
         ));
     }
 
@@ -1320,6 +1445,7 @@ where
             let tracker = ctx.events.db_tracker.cloned();
             let session_id = ctx.events.session_id.map(str::to_string);
             let harness_operation_id = ctx.harness_operation_id;
+            let stage_execution_id = ctx.stage_execution_id;
             let harness_org_id = effective_harness_org_id;
             let hook: golish_sub_agents::SubAgentToolResultHook = std::sync::Arc::new(
                 move |tool_name: String,
@@ -1335,6 +1461,7 @@ where
                             session_id.as_deref(),
                             Some(stage),
                             harness_operation_id,
+                            stage_execution_id,
                             harness_org_id,
                             &tool_name,
                             &tool_args,
@@ -1346,6 +1473,7 @@ where
                             Ok(Some(id)) => {
                                 if let Some(obj) = result.as_object_mut() {
                                     obj.insert("_evidence_id".to_string(), json!(id));
+                                    obj.insert("outcome_persisted".to_string(), json!(true));
                                 }
                             }
                             Ok(None) => {}
@@ -2083,6 +2211,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stage_team_dispatch_canonicalizes_and_deduplicates_target_shorthand() {
+        let repository = Arc::new(RecordingStageTeamRuntime::default());
+        let repository_port: Arc<dyn RuntimeMemoryRepository> = repository.clone();
+        let bound = stage_team_leader_bound();
+        let context = leader_tool_context(
+            &bound,
+            "call-lead-dispatch-target-shorthand",
+            "stage_team_dispatch_workers",
+        );
+        let subject_id = uuid::Uuid::new_v4();
+
+        let (_value, success) = route_stage_team_leader_host_tool(
+            "stage_team_dispatch_workers",
+            &serde_json::json!({
+                "workers": [{
+                    "dedupe_key": "two-origins-one-target",
+                    "role": "enumerator",
+                    "kind": "content_enumeration",
+                    "objective": "Enumerate two exact web origins for one canonical target",
+                    "subject_refs": [
+                        {"target_id":subject_id,"target_url":"https://example.test"},
+                        {"target_id":subject_id,"target_url":"https://www.example.test"}
+                    ]
+                }]
+            }),
+            Some(&repository_port),
+            Some(&bound),
+            Some(&context),
+        )
+        .await
+        .expect("reserved host tool");
+
+        assert!(success);
+        let requests = repository.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].subject_refs,
+            serde_json::json!([{"kind":"target","target_id":subject_id}])
+                .as_array()
+                .unwrap()
+                .clone()
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_team_dispatch_rejects_semantically_overlapping_assignments() {
+        let repository = Arc::new(RecordingStageTeamRuntime::default());
+        let repository_port: Arc<dyn RuntimeMemoryRepository> = repository.clone();
+        let bound = stage_team_leader_bound();
+        let context = leader_tool_context(
+            &bound,
+            "call-lead-dispatch-overlap",
+            "stage_team_dispatch_workers",
+        );
+
+        let (value, success) = route_stage_team_leader_host_tool(
+            "stage_team_dispatch_workers",
+            &serde_json::json!({
+                "workers": [
+                    {
+                        "dedupe_key": "remaining-assets-1",
+                        "role": "vuln_scanner",
+                        "kind": "vulnerability_triage",
+                        "objective": "Process ALL remaining pending assets",
+                        "subject_refs": []
+                    },
+                    {
+                        "dedupe_key": "remaining-assets-2",
+                        "role": "vuln_scanner",
+                        "kind": "vulnerability_triage",
+                        "objective": "Process  ALL  remaining pending assets",
+                        "subject_refs": []
+                    }
+                ]
+            }),
+            Some(&repository_port),
+            Some(&bound),
+            Some(&context),
+        )
+        .await
+        .expect("reserved host tool");
+
+        assert!(!success);
+        assert_eq!(value["code"], "STAGE_TEAM_DISPATCH_ASSIGNMENT_OVERLAP");
+        assert_eq!(repository.requests.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
     async fn stage_team_dispatch_all_rejected_does_not_enter_waiting_barrier() {
         let repository = Arc::new(RecordingStageTeamRuntime {
             requests: Mutex::new(Vec::new()),
@@ -2117,7 +2333,57 @@ mod tests {
 
         assert!(!success);
         assert_eq!(value["code"], "STAGE_TEAM_DISPATCH_NONE_ACCEPTED");
-        assert_ne!(value["status"], "dispatch_accepted");
+        assert_eq!(value["status"], "dispatch_rejected");
+        assert_eq!(value["accepted_count"], 0);
+        assert_eq!(value["rejected_count"], 1);
+        assert_eq!(value["request_count"], 1);
+        assert_eq!(value["requests"][0]["decision"], "rejected");
+        assert!(value["next_action"]
+            .as_str()
+            .is_some_and(|next_action| next_action.contains("canonical")));
+        assert_eq!(repository.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stage_team_dispatch_persist_failure_returns_terminal_assignment_details() {
+        let repository = Arc::new(RecordingStageTeamRuntime {
+            requests: Mutex::new(Vec::new()),
+            reject_all: false,
+            fail_on_request_number: Some(1),
+        });
+        let repository_port: Arc<dyn RuntimeMemoryRepository> = repository.clone();
+        let bound = stage_team_leader_bound();
+        let context = leader_tool_context(
+            &bound,
+            "call-lead-dispatch-persist-failed",
+            "stage_team_dispatch_workers",
+        );
+
+        let (value, success) = route_stage_team_leader_host_tool(
+            "stage_team_dispatch_workers",
+            &serde_json::json!({
+                "workers": [{
+                    "dedupe_key": "retry-five-origins",
+                    "role": "prober",
+                    "kind": "surface_probe",
+                    "objective": "Retry five exact origins",
+                    "subject_refs": []
+                }]
+            }),
+            Some(&repository_port),
+            Some(&bound),
+            Some(&context),
+        )
+        .await
+        .expect("reserved host tool");
+
+        assert!(!success);
+        assert_eq!(value["code"], "STAGE_TEAM_DISPATCH_PERSIST_FAILED");
+        assert_eq!(value["status"], "dispatch_failed");
+        assert_eq!(value["accepted_count"], 0);
+        assert_eq!(value["request_count"], 1);
+        assert_eq!(value["requests"], serde_json::json!([]));
+        assert_eq!(value["tool_request_id"], context.request_id);
         assert_eq!(repository.requests.lock().unwrap().len(), 1);
     }
 

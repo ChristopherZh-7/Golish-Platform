@@ -100,7 +100,7 @@ describe("EvidenceTab WhatWeb transport evidence", () => {
     expect(screen.queryByText(/Excluded from Enumeration/)).not.toBeInTheDocument();
   });
 
-  it("shows the terminal third failure and independently confirmed Enumeration exclusion", () => {
+  it("shows the terminal third failure without claiming that Enumeration already excluded it", () => {
     renderEvidence(
       timelineEntry({
         detail: {
@@ -121,9 +121,10 @@ describe("EvidenceTab WhatWeb transport evidence", () => {
     expect(screen.getByText("Attempt 3/3")).toBeInTheDocument();
     expect(screen.getByText("tls_handshake")).toBeInTheDocument();
     expect(screen.getByText("blocked")).toBeInTheDocument();
-    expect(
-      screen.getByText(`Excluded exact origin from Enumeration: ${exactOrigin}`)
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Independent transport check also blocked/)).toHaveTextContent(
+      `${exactOrigin}. Enumeration revalidates exact-origin eligibility before exclusion.`
+    );
+    expect(screen.queryByText(/Excluded exact origin/)).not.toBeInTheDocument();
   });
 
   it("keeps ordinary and malformed evidence rows unchanged", () => {

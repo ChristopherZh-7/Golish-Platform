@@ -116,12 +116,14 @@ pub fn crossing_phase_approval(
     }
 }
 
-/// 两级模型下「跨入 `next` 这一步是否需人工审批」= 跨大阶段 + 目标 phase 声明了
-/// `entry_approval` + profile 的 `approval_policy` 打开。
+/// Metadata-level declaration that crossing into `next` carries a generic phase
+/// approval key: cross-phase + target `entry_approval` + profile policy enabled.
 ///
 /// 镜像 [`super::stage_transition::stage_entry_requires_approval`] 的 policy 闸语义
 /// （`before_active_scan || before_scope_expansion` 任一为真即视为开），但锚在 **phase
-/// 边界** 而非 per-stage——这正是两级模型「审批从每 stage 收敛到大阶段出口」的落点。
+/// 边界**而非 per-stage。TaskOrchestrator applies the stricter runtime policy:
+/// this generic declaration can open routine HITL only for a Scoping-origin
+/// crossing; post-Scoping transitions auto-advance after typed barriers.
 pub fn phase_crossing_requires_approval(
     map: &PhaseMap,
     current: StageKind,

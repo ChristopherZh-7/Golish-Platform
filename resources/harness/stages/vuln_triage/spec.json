@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: vuln_triage. Evidence-first, non-destructive formulaic observation over enumerated exact web origins and their server-owned endpoint inventory.",
+  "$comment": "Stage spec: vuln_triage. Evidence-first formulaic observation over the final-sealed Enumeration manifest. The backend deterministically removes inapplicable injection/anonymous/N-day cells before execution; remaining cells require exact wrapper evidence.",
 
   "id": "vuln_triage",
   "kind": "vuln_triage",
@@ -11,7 +11,7 @@
 
   "allowed_tool_types": ["vuln_nuclei_general", "vuln_nuclei_fingerprint_targeted", "vuln_probe_anonymous_access"],
 
-  "$comment_formulaic": "Candidate V2 boundary: vuln_triage is the FORMULAIC OBSERVATION stage. It writes terminal technique_outcomes plus evidence only; it never writes Candidate or Finding rows. Its exact final-sealed handoff may enter the initial Wave only. A follow-on Wave entry must come from an immutable accepted FactDelta consolidation and must never reuse or fabricate a vuln_triage handoff.",
+  "$comment_formulaic": "Candidate V2 boundary: vuln_triage is the FORMULAIC OBSERVATION stage. It writes terminal technique_outcomes plus evidence only; it never writes Candidate or Finding rows. General Nuclei uses only the operator HTTP/SSL template supply; the managed adysec CVE feed applies only to fingerprint-targeted N-day, checks remote freshness at most once every seven days, and pins one commit per operation. A template_snapshot-scoped automatic_retry_allowed=false result stops sibling Nuclei dispatch instead of repeating supply proof per URL. Its exact final-sealed handoff may enter the initial Wave only. A follow-on Wave entry must come from an immutable accepted FactDelta consolidation and must never reuse or fabricate a vuln_triage handoff.",
   "specialist": "vuln_scanner",
   "$comment_team_scheduler": "2026-07-16 downstream convergence: every company uses one durable Company Controller while all execution stays inside the frozen Vuln Scanner formulaic wrappers. Controller planning/delegation cannot create Candidates/Findings or widen replay authority.",
   "team_scheduler": {
@@ -83,10 +83,13 @@
         "WSTG-ATHN-04", "WSTG-ATHN-02", "WSTG-SESS-02",
         "WSTG-CONF-05", "WSTG-CRYP-03", "WSTG-INFO", "GOLISH-NDAY"
       ],
-      "$comment_authoritative": "All ten formulaic cells are authoritative. Only fresh operation-scoped technique_outcomes from the two foreground Nuclei wrappers or the server-owned anonymous-access wrapper, bound to matching current-owner evidence, may close them; hand-written coverage, legacy manual-probe/shell evidence, and source_query rows never close a Vuln Triage cell.",
+      "$comment_authoritative": "The ten technique names are the closed taxonomy, but each exact origin's applicable subset is derived from the final Enumeration surface manifest. SQLi/XSS/command injection require an executable GET query parameter, anonymous access requires a published endpoint, and N-day requires an exact-origin fingerprint. Only backend snapshot source=enumeration_surface_manifest may close those absent surfaces as not_applicable. Remaining cells require fresh operation-scoped exact-wrapper outcomes; hand-written coverage, legacy manual-probe/shell evidence, and source_query rows never close a cell.",
       "on_fail": {
         "reason": "coverage incomplete: some (asset \u00d7 expected technique) cells were never attempted",
-        "hints": ["run only the worklist-suggested formulaic wrapper for each pending cell, then refresh DB-derived coverage; do not hand-write found, checked_empty, blocked, or not_applicable"]
+        "hints": [
+          "run only the worklist-suggested formulaic wrapper for each pending cell, then refresh DB-derived coverage; do not hand-write found, checked_empty, blocked, or not_applicable",
+          "if a Nuclei wrapper returns automatic_retry_allowed=false with retry_scope=template_snapshot, stop sibling dispatch for that proof scope and submit the backend blocker without retrying another URL"
+        ]
       }
     },
     {
@@ -102,7 +105,7 @@
     }
   ],
 
-  "$comment_expected_techniques": "The 10-cell formulaic denominator has three disjoint owners: eight WSTG cells route to vuln_nuclei_general with server-owned tag profiles; WSTG-ATHN-04 routes only to vuln_probe_anonymous_access after AI reviews the complete eligible server-owned endpoint-id set and selects a bounded subset; GOLISH-NDAY routes only to vuln_nuclei_fingerprint_targeted, whose template ids come from current-owner fingerprints and the local PoC KB. True IDOR/BOLA (WSTG-ATHZ-04) is deferred to later candidate verification. A wrapper may publish a terminal cell only from its real bounded execution/evidence; unsupported or inconclusive coverage must remain honest blocked/not_applicable/partial rather than fabricated found/empty.",
+  "$comment_expected_techniques": "The closed 10-name taxonomy has three disjoint owners and a dynamic per-origin applicability subset. Injection cells route to low-aggression Nuclei DAST only over operation-bound GET query inputs; five root-origin baseline WSTG cells route to general Nuclei; WSTG-ATHN-04 routes only to operation-bound anonymous endpoint review; GOLISH-NDAY routes only to exact-origin fingerprints. True IDOR/BOLA is deferred to Candidate verification.",
   "expected_techniques": [
     "WSTG-INPV-05", "WSTG-INPV-01", "WSTG-INPV-12",
     "WSTG-ATHN-04", "WSTG-ATHN-02", "WSTG-SESS-02",

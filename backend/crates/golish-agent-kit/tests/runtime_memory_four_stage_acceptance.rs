@@ -416,13 +416,44 @@ fn final_seal_input(
     fence: runtime_memory_tx::RuntimeMemoryTxFence,
     submission_id: Uuid,
 ) -> runtime_memory_tx::FinalizeUnitPassRow {
-    let canonical_fact_keys = Vec::<canonical_fact_refs::CanonicalFactKey>::new();
+    let outcome_set_identity = (fixture.stage == StageKind::VulnTriage).then(|| {
+        golish_agent_kit::harness::handoff_catalog::technique_outcome_set_identity(
+            StageKind::VulnTriage.as_str(),
+            claimed.unit.organization_id,
+            &fixture.operation_id.to_string(),
+            &[],
+        )
+        .expect("authoritative zero-denominator Vuln set identity")
+    });
+    let canonical_fact_keys = outcome_set_identity
+        .as_ref()
+        .map(|identity| {
+            vec![canonical_fact_refs::CanonicalFactKey::TechniqueOutcomeSet {
+                organization_id: claimed.unit.organization_id,
+                run_id: fixture.operation_id.to_string(),
+                stage: StageKind::VulnTriage.as_str().to_string(),
+                terminal_cell_count: identity.terminal_cell_count,
+                outcome_set_sha256: identity.outcome_set_sha256.clone(),
+            }]
+        })
+        .unwrap_or_default();
     let typed_claims = Vec::<serde_json::Value>::new();
-    let coverage_watermark = serde_json::json!({
+    let mut coverage_watermark = serde_json::json!({
         "stage": fixture.stage.as_str(),
         "organization_id": claimed.unit.organization_id,
         "terminal_cells": 0,
     });
+    if let Some(identity) = outcome_set_identity {
+        coverage_watermark["canonical_outcome_mode"] =
+            serde_json::json!("technique_outcome_set_v1");
+        coverage_watermark["canonical_outcome_cells"] =
+            serde_json::json!(identity.terminal_cell_count);
+        coverage_watermark["canonical_outcome_set_sha256"] =
+            serde_json::json!(identity.outcome_set_sha256);
+        coverage_watermark["canonical_ref_total"] = serde_json::json!(canonical_fact_keys.len());
+        coverage_watermark["canonical_ref_included"] = serde_json::json!(canonical_fact_keys.len());
+        coverage_watermark["canonical_ref_truncated"] = serde_json::json!(false);
+    }
     let evidence_ids = Vec::<i64>::new();
     let terminal_checkpoint = serde_json::json!({"terminal": true});
     let details = serde_json::json!({});

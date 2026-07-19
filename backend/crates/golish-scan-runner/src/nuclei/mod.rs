@@ -2,4 +2,4 @@
 
 mod poc_match;
 
-pub use poc_match::select_nuclei_templates_for_target;
+pub use poc_match::select_nuclei_templates_for_origin;

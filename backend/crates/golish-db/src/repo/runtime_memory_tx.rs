@@ -71,7 +71,8 @@ pub enum RuntimeMemoryStoreError {
 
 pub type RuntimeMemoryStoreResult<T> = Result<T, RuntimeMemoryStoreError>;
 
-const FINISH_WORKER_TOOL_TRANSACTION_ATTEMPTS: usize = 3;
+const WORKER_TOOL_TRANSACTION_ATTEMPTS: usize = 3;
+const MAX_COMPANY_CONTROLLER_SUCCESSOR_TURNS: i64 = 2;
 
 fn is_retryable_runtime_transaction_sqlstate(code: &str) -> bool {
     matches!(code, "40P01" | "40001")
@@ -98,12 +99,49 @@ fn is_retryable_runtime_transaction_error(error: &RuntimeMemoryStoreError) -> bo
     }
 }
 
+async fn worker_tool_transaction_retry_runner<T, Operation, OperationFuture, Retryable>(
+    phase: &'static str,
+    worker_run_id: Uuid,
+    tool_call_record_id: Uuid,
+    mut operation: Operation,
+    retryable: Retryable,
+) -> RuntimeMemoryStoreResult<T>
+where
+    Operation: FnMut() -> OperationFuture,
+    OperationFuture: std::future::Future<Output = RuntimeMemoryStoreResult<T>>,
+    Retryable: Fn(&RuntimeMemoryStoreError) -> bool,
+{
+    for attempt in 1..=WORKER_TOOL_TRANSACTION_ATTEMPTS {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < WORKER_TOOL_TRANSACTION_ATTEMPTS && retryable(&error) => {
+                tracing::warn!(
+                    worker_run_id = %worker_run_id,
+                    tool_call_record_id = %tool_call_record_id,
+                    phase,
+                    attempt,
+                    max_attempts = WORKER_TOOL_TRANSACTION_ATTEMPTS,
+                    error = %error,
+                    "retrying transient worker tool-fence transaction"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    5 * u64::try_from(attempt).unwrap_or(1),
+                ))
+                .await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded worker tool-fence transaction loop always returns")
+}
+
 #[cfg(test)]
 mod transient_runtime_tx_tests {
     use super::{
         is_retryable_runtime_transaction_sqlstate, stage_team_tool_recovery_policy,
-        StageTeamToolRecoveryPolicy,
+        worker_tool_transaction_retry_runner, RuntimeMemoryStoreError, StageTeamToolRecoveryPolicy,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn only_postgres_transaction_abort_states_are_retried() {
@@ -111,6 +149,65 @@ mod transient_runtime_tx_tests {
         assert!(is_retryable_runtime_transaction_sqlstate("40001"));
         assert!(!is_retryable_runtime_transaction_sqlstate("23505"));
         assert!(!is_retryable_runtime_transaction_sqlstate("08006"));
+    }
+
+    #[tokio::test]
+    async fn worker_tool_transaction_retry_runner_retries_only_retryable_failures() {
+        let attempts = AtomicUsize::new(0);
+        let value = worker_tool_transaction_retry_runner(
+            "tool_begin",
+            uuid::Uuid::from_u128(1),
+            uuid::Uuid::from_u128(2),
+            || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt < 2 {
+                        Err(RuntimeMemoryStoreError::Conflict {
+                            code: "transient_test",
+                        })
+                    } else {
+                        Ok(42_u8)
+                    }
+                }
+            },
+            |error| {
+                matches!(
+                    error,
+                    RuntimeMemoryStoreError::Conflict {
+                        code: "transient_test"
+                    }
+                )
+            },
+        )
+        .await
+        .expect("retryable operation converges");
+        assert_eq!(value, 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+
+        let attempts = AtomicUsize::new(0);
+        let error = worker_tool_transaction_retry_runner(
+            "tool_finish",
+            uuid::Uuid::from_u128(3),
+            uuid::Uuid::from_u128(4),
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err::<u8, _>(RuntimeMemoryStoreError::Conflict {
+                        code: "permanent_test",
+                    })
+                }
+            },
+            |_error| false,
+        )
+        .await
+        .expect_err("non-retryable operation must fail");
+        assert!(matches!(
+            error,
+            RuntimeMemoryStoreError::Conflict {
+                code: "permanent_test"
+            }
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -176,6 +273,15 @@ pub struct CreateRuntimeOperationRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageForkCreateRow {
+    pub source_operation_id: Uuid,
+    pub source_scope_snapshot_id: Uuid,
+    pub entry_stage: String,
+    pub terminal_stage: String,
+    pub adopted_stage_kinds: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliRuntimeScopeUnitRow {
     pub organization_id: Uuid,
     pub parent_organization_id: Option<Uuid>,
@@ -231,9 +337,10 @@ pub struct SupersedeStageCheckpointRow {
     pub selected_stage: String,
     pub affected_stage_kinds: Vec<String>,
     pub next_state_blob: Value,
-    /// Trusted stage-spec specialist. `Some` seeds one queued Unit+Worker per
-    /// frozen org for the replacement execution; `None` seeds a root-only Unit
-    /// when a sealed scope already exists (Scoping pre-freeze remains empty).
+    /// Trusted stage-spec specialist. `Some` seeds one queued Unit per frozen
+    /// org for the replacement execution; `None` seeds a root-only Unit when a
+    /// sealed scope already exists (Scoping pre-freeze remains empty). The
+    /// canonical Team seed/claim path owns all replacement Worker creation.
     pub replacement_specialist: Option<String>,
     /// `None` is the clear-repair mode (legacy mirror only). Restart modes
     /// preallocate a fresh active execution identity for `selected_stage`.
@@ -794,6 +901,7 @@ async fn freeze_cli_scope_with_connection(
     project_scope_id: Uuid,
     project_path: &str,
     stage_execution_id: Uuid,
+    decision_mode: operation_scope_decisions::ScopeDecisionMode,
     scope: &CliRuntimeScopeRow,
 ) -> RuntimeMemoryStoreResult<FrozenOperationOrgScope> {
     validate_cli_scope_shape(scope)?;
@@ -846,7 +954,7 @@ async fn freeze_cli_scope_with_connection(
         .collect::<Vec<_>>();
     let decision_rows = serde_json::json!({
         "schema_version": 1,
-        "source": "cli_flags",
+        "source": decision_mode.as_str(),
         "include_subsidiaries": scope.include_subsidiaries,
         "subsidiary_threshold": scope.subsidiary_threshold,
         "approved_units": units,
@@ -858,7 +966,7 @@ async fn freeze_cli_scope_with_connection(
         "project_scope_id": project_scope_id,
         "stage_execution_id": stage_execution_id,
         "root_organization_id": scope.root_organization_id,
-        "mode": operation_scope_decisions::ScopeDecisionMode::CliFlags.as_str(),
+        "mode": decision_mode.as_str(),
         "choice_tool_call_id": Value::Null,
         "proposal_tool_call_id": Value::Null,
         "review_tool_call_id": Value::Null,
@@ -870,7 +978,7 @@ async fn freeze_cli_scope_with_connection(
         project_scope_id,
         stage_execution_id,
         root_organization_id: scope.root_organization_id,
-        mode: operation_scope_decisions::ScopeDecisionMode::CliFlags,
+        mode: decision_mode,
         units,
         choice_tool_call_id: None,
         proposal_tool_call_id: None,
@@ -908,6 +1016,22 @@ pub(crate) async fn reconcile_deployment_rollouts_best_effort(
 pub async fn create_runtime_operation(
     pool: &sqlx::PgPool,
     input: &CreateRuntimeOperationRow,
+) -> RuntimeMemoryStoreResult<CreatedRuntimeOperationRow> {
+    create_runtime_operation_inner(pool, input, None).await
+}
+
+pub async fn create_runtime_operation_with_stage_fork(
+    pool: &sqlx::PgPool,
+    input: &CreateRuntimeOperationRow,
+    stage_fork: &StageForkCreateRow,
+) -> RuntimeMemoryStoreResult<CreatedRuntimeOperationRow> {
+    create_runtime_operation_inner(pool, input, Some(stage_fork)).await
+}
+
+async fn create_runtime_operation_inner(
+    pool: &sqlx::PgPool,
+    input: &CreateRuntimeOperationRow,
+    stage_fork: Option<&StageForkCreateRow>,
 ) -> RuntimeMemoryStoreResult<CreatedRuntimeOperationRow> {
     // Reconcile in its own transaction before freezing either deployment
     // contract. A not-ready cohort is a typed no-op; an infrastructure failure
@@ -962,21 +1086,56 @@ pub async fn create_runtime_operation(
         &input.entry_stage,
     )
     .await?;
+    let mut frozen_scope = None;
     if let Some(cli_scope) = input.cli_scope.as_ref() {
         if rollout.contract == runtime_memory_rollout::RuntimeMemoryContract::LegacyV1.as_str() {
             return Err(RuntimeMemoryStoreError::Conflict {
                 code: "cli_scope_requires_v2_writing_contract",
             });
         }
-        freeze_cli_scope_with_connection(
+        frozen_scope = Some(
+            freeze_cli_scope_with_connection(
+                &mut tx,
+                input.operation_id,
+                input.project_scope_id,
+                &project.canonical_project_path,
+                initial_stage_execution.id,
+                if stage_fork.is_some() {
+                    operation_scope_decisions::ScopeDecisionMode::ReuseReconfirmed
+                } else {
+                    operation_scope_decisions::ScopeDecisionMode::CliFlags
+                },
+                cli_scope,
+            )
+            .await?,
+        );
+    }
+    if stage_fork.is_some() && input.cli_scope.is_none() {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_fork_requires_frozen_scope",
+        });
+    }
+    if let Some(stage_fork) = stage_fork {
+        let target_scope_snapshot_id = frozen_scope.as_ref().map(|scope| scope.snapshot.id).ok_or(
+            RuntimeMemoryStoreError::Missing {
+                entity: "stage_fork_target_scope",
+            },
+        )?;
+        super::operation_stage_forks::materialize_with_connection(
             &mut tx,
-            input.operation_id,
-            input.project_scope_id,
-            &project.canonical_project_path,
-            initial_stage_execution.id,
-            cli_scope,
+            &super::operation_stage_forks::MaterializeOperationStageFork {
+                operation_id: input.operation_id,
+                target_scope_snapshot_id,
+                project_scope_id: input.project_scope_id,
+                source_operation_id: stage_fork.source_operation_id,
+                source_scope_snapshot_id: stage_fork.source_scope_snapshot_id,
+                entry_stage: stage_fork.entry_stage.clone(),
+                terminal_stage: stage_fork.terminal_stage.clone(),
+                adopted_stage_kinds: stage_fork.adopted_stage_kinds.clone(),
+            },
         )
-        .await?;
+        .await
+        .map_err(map_stage_fork_error)?;
     }
     tx.commit().await?;
     Ok(CreatedRuntimeOperationRow {
@@ -1367,9 +1526,94 @@ pub async fn supersede_stage_checkpoint(
         }
 
         if contract_writes_v2(contract) {
+            let affected_workers = sqlx::query_as::<_, StageWorkerRunRow>(
+                r#"SELECT worker.*
+                     FROM stage_worker_runs worker
+                    WHERE worker.operation_id=$1
+                      AND worker.status<>'superseded'
+                      AND (
+                          worker.stage_execution_id=ANY($2)
+                          OR EXISTS (
+                              SELECT 1 FROM stage_run_units unit
+                              WHERE unit.id=worker.stage_run_unit_id
+                                AND unit.operation_id=$1
+                                AND unit.stage_kind=ANY($3)
+                          )
+                      )
+                    ORDER BY worker.id
+                    FOR UPDATE"#,
+            )
+            .bind(input.operation_id)
+            .bind(&active_execution_ids)
+            .bind(&affected)
+            .fetch_all(&mut *tx)
+            .await?;
+            let reset_tool_result = serde_json::to_string(&serde_json::json!({
+                "kind": "runtime_stage_checkpoint_superseded",
+                "outcome": "unknown_not_replayed",
+                "reason": "developer_reset",
+                "schema_version": 1,
+            }))
+            .map_err(|_| RuntimeMemoryStoreError::IdentityMismatch {
+                code: "stage_checkpoint_reset_tool_result_invalid",
+            })?;
+            for worker in &affected_workers {
+                let Some(active_tool_call_id) = worker.active_tool_call_id else {
+                    continue;
+                };
+                let tool_rows = sqlx::query(
+                    r#"UPDATE tool_calls
+                          SET status='failed',result=$2,updated_at=NOW()
+                        WHERE id=$1 AND worker_run_id=$3 AND operation_id=$4
+                          AND stage_execution_id=$5 AND stage_run_unit_id=$6
+                          AND organization_id=$7 AND attempt_epoch=$8
+                          AND status IN ('received','running')"#,
+                )
+                .bind(active_tool_call_id)
+                .bind(&reset_tool_result)
+                .bind(worker.id)
+                .bind(worker.operation_id)
+                .bind(worker.stage_execution_id)
+                .bind(worker.stage_run_unit_id)
+                .bind(worker.organization_id)
+                .bind(worker.attempt_epoch)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+                if tool_rows == 0 {
+                    let exact_terminal = sqlx::query_scalar::<_, bool>(
+                        r#"SELECT EXISTS(
+                               SELECT 1 FROM tool_calls
+                                WHERE id=$1 AND worker_run_id=$2 AND operation_id=$3
+                                  AND stage_execution_id=$4 AND stage_run_unit_id=$5
+                                  AND organization_id=$6 AND attempt_epoch=$7
+                                  AND status IN ('finished','failed')
+                           )"#,
+                    )
+                    .bind(active_tool_call_id)
+                    .bind(worker.id)
+                    .bind(worker.operation_id)
+                    .bind(worker.stage_execution_id)
+                    .bind(worker.stage_run_unit_id)
+                    .bind(worker.organization_id)
+                    .bind(worker.attempt_epoch)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    if !exact_terminal {
+                        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                            code: "stage_checkpoint_reset_active_tool_identity_mismatch",
+                        });
+                    }
+                } else if tool_rows != 1 {
+                    return Err(RuntimeMemoryStoreError::Conflict {
+                        code: "stage_checkpoint_reset_active_tool_cas_failed",
+                    });
+                }
+            }
             let superseded_workers = sqlx::query_as::<_, StageWorkerRunRow>(
                 r#"UPDATE stage_worker_runs worker
                       SET status='superseded',
+                          active_tool_call_id=NULL, active_tool_started_at=NULL,
                           lease_token=NULL, lease_owner=NULL,
                           lease_acquired_at=NULL, lease_expires_at=NULL,
                           heartbeat_at=NULL, updated_at=NOW(), terminal_at=NOW()
@@ -1482,7 +1726,7 @@ pub async fn supersede_stage_checkpoint(
                             .collect::<Vec<_>>()
                     };
                     for scope_unit in selected_scope_units {
-                        let unit = stage_run_units::insert_with_executor(
+                        stage_run_units::insert_with_executor(
                             &mut *tx,
                             &stage_run_units::NewStageRunUnit {
                                 id: Uuid::new_v4(),
@@ -1496,40 +1740,6 @@ pub async fn supersede_stage_checkpoint(
                             },
                         )
                         .await?;
-                        if let Some(specialist) = specialist {
-                            let worker = stage_worker_runs::insert_with_executor(
-                                &mut *tx,
-                                &stage_worker_runs::NewStageWorkerRun {
-                                    id: Uuid::new_v4(),
-                                    operation_id: input.operation_id,
-                                    stage_execution_id: replacement_stage_execution_id,
-                                    stage_run_unit_id: unit.id,
-                                    work_item_id: None,
-                                    organization_id: scope_unit.organization_id,
-                                    worker_generation: 1,
-                                    specialist: specialist.to_string(),
-                                    work_item_kind: "organization".to_string(),
-                                    work_item_key: input.selected_stage.clone(),
-                                    agent_path: format!(
-                                        "main>stage_run:{}>org:{}>{}",
-                                        input.selected_stage,
-                                        scope_unit.organization_id,
-                                        specialist
-                                    ),
-                                    parent_request_id: None,
-                                },
-                            )
-                            .await?;
-                            if contract_writes_legacy_mirror(contract) {
-                                apply_legacy_worker_mirror(
-                                    &mut next_state_blob,
-                                    &input.selected_stage,
-                                    &scope_unit.organization_name_at_freeze,
-                                    &worker,
-                                );
-                                dual_mutated_worker_ids.push(worker.id);
-                            }
-                        }
                     }
                 }
                 (None, Some(_)) => {
@@ -1638,6 +1848,20 @@ fn map_scope_freeze_error(error: ScopeFreezeError) -> RuntimeMemoryStoreError {
         ScopeFreezeError::Conflict { code } => RuntimeMemoryStoreError::Conflict { code },
         ScopeFreezeError::Decision(error) => map_scope_decision_error(error),
         ScopeFreezeError::Sqlx(error) => RuntimeMemoryStoreError::Sqlx(error),
+    }
+}
+
+fn map_stage_fork_error(
+    error: super::operation_stage_forks::OperationStageForkError,
+) -> RuntimeMemoryStoreError {
+    use super::operation_stage_forks::OperationStageForkError;
+    match error {
+        OperationStageForkError::IdentityMismatch { code } => {
+            RuntimeMemoryStoreError::IdentityMismatch { code }
+        }
+        OperationStageForkError::Conflict { code } => RuntimeMemoryStoreError::Conflict { code },
+        OperationStageForkError::Missing { entity } => RuntimeMemoryStoreError::Missing { entity },
+        OperationStageForkError::Sqlx(error) => RuntimeMemoryStoreError::Sqlx(error),
     }
 }
 
@@ -3190,17 +3414,19 @@ fn dynamic_request_rejection(
     if !allowed_roles.contains(input.requested_role.as_str()) {
         return Some("stage_team_worker_role_not_allowed");
     }
-    let max_requests = plan
-        .dynamic_request_policy
-        .get("max_requests")
-        .or_else(|| plan.dynamic_request_policy.get("max_dynamic_requests"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    if max_requests <= 0 || accepted_requests >= max_requests {
-        return Some("stage_team_dynamic_request_limit_reached");
-    }
-    if work_item_count >= i64::from(plan.max_workers_total) {
-        return Some("stage_team_worker_total_limit_reached");
+    if stage_teams::enforces_lifetime_worker_total(&plan.dynamic_request_policy) {
+        let max_requests = plan
+            .dynamic_request_policy
+            .get("max_requests")
+            .or_else(|| plan.dynamic_request_policy.get("max_dynamic_requests"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if max_requests <= 0 || accepted_requests >= max_requests {
+            return Some("stage_team_dynamic_request_limit_reached");
+        }
+        if work_item_count >= i64::from(plan.max_workers_total) {
+            return Some("stage_team_worker_total_limit_reached");
+        }
     }
     let max_subject_refs = plan
         .dynamic_request_policy
@@ -3283,6 +3509,74 @@ async fn dynamic_request_subject_rejection(
             Err(RuntimeMemoryStoreError::Sqlx(error))
         }
     }
+}
+
+async fn stage_team_request_parent_epoch_is_authorized(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    plan: &stage_teams::StageTeamPlanRow,
+    parent_item: &stage_teams::StageWorkItemRow,
+    parent_worker_run_id: Uuid,
+) -> RuntimeMemoryStoreResult<bool> {
+    if parent_item.dispatch_epoch == plan.dispatch_epoch {
+        return Ok(true);
+    }
+    if plan
+        .dynamic_request_policy
+        .get("coordination_mode")
+        .and_then(Value::as_str)
+        != Some("company_controller")
+        || parent_item.stable_key != "leader:primary"
+        || parent_item.role != plan.leader_role
+        || plan.aggregator_role.as_deref() != Some(parent_item.role.as_str())
+        || parent_item.required_for_barrier
+    {
+        return Ok(false);
+    }
+
+    sqlx::query_scalar::<_, bool>(
+        r#"SELECT
+               EXISTS(
+                   SELECT 1
+                     FROM stage_team_repair_generations generation
+                    WHERE generation.team_plan_id=$1
+                      AND generation.operation_id=$2
+                      AND generation.stage_execution_id=$3
+                      AND generation.stage_run_unit_id=$4
+                      AND generation.scope_snapshot_id=$5
+                      AND generation.organization_id=$6
+                      AND generation.dispatch_epoch=$7
+                      AND generation.status IN ('building','sealed')
+                      AND generation.manifest->>'kind'='company_controller_gate_reopen'
+                      AND generation.manifest->>'leader_work_item_id'=$8
+                      AND generation.manifest->>'leader_worker_run_id'=$9
+               )
+               OR EXISTS(
+                   SELECT 1
+                     FROM stage_team_controller_turn_resumes resume
+                    WHERE resume.team_plan_id=$1
+                      AND resume.operation_id=$2
+                      AND resume.stage_execution_id=$3
+                      AND resume.stage_run_unit_id=$4
+                      AND resume.scope_snapshot_id=$5
+                      AND resume.organization_id=$6
+                      AND resume.resume_dispatch_epoch=$7
+                      AND resume.leader_work_item_id=$8::UUID
+                      AND resume.leader_worker_run_id=$9::UUID
+                      AND resume.status='applied'
+               )"#,
+    )
+    .bind(plan.id)
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .bind(plan.scope_snapshot_id)
+    .bind(plan.organization_id)
+    .bind(plan.dispatch_epoch)
+    .bind(parent_item.id.to_string())
+    .bind(parent_worker_run_id.to_string())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(RuntimeMemoryStoreError::from)
 }
 
 /// Persist one context-bound dynamic sibling request.  Both acceptance and
@@ -3381,6 +3675,18 @@ pub async fn request_stage_worker(
         && parent_item.stable_key == "leader:primary"
         && parent_item.role == plan.leader_role
         && plan.aggregator_role.as_deref() == Some(parent_item.role.as_str());
+    if !stage_team_request_parent_epoch_is_authorized(
+        &mut tx,
+        &plan,
+        &parent_item,
+        input.fence.worker_run_id,
+    )
+    .await?
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_controller_parent_epoch_not_authorized",
+        });
+    }
     if parent_item.status != "running"
         || (plan.aggregator_role.as_deref() == Some(parent_item.role.as_str())
             && !is_company_controller)
@@ -4634,15 +4940,18 @@ async fn claim_stage_team_item(
         if active_workers >= i64::from(plan.max_workers_active) {
             return Ok(None);
         }
-        let total_workers: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE stage_run_unit_id=$1")
-                .bind(input.stage_run_unit_id)
-                .fetch_one(&mut *tx)
-                .await?;
-        if total_workers >= i64::from(plan.max_workers_total) {
-            return Err(RuntimeMemoryStoreError::Conflict {
-                code: "stage_team_worker_lifetime_budget_exhausted",
-            });
+        if stage_teams::enforces_lifetime_worker_total(&plan.dynamic_request_policy) {
+            let total_workers: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM stage_worker_runs WHERE stage_run_unit_id=$1",
+            )
+            .bind(input.stage_run_unit_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if total_workers >= i64::from(plan.max_workers_total) {
+                return Err(RuntimeMemoryStoreError::Conflict {
+                    code: "stage_team_worker_lifetime_budget_exhausted",
+                });
+            }
         }
     }
     let item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
@@ -5163,6 +5472,7 @@ fn controller_gate_block_checkpoint(
     let runtime_gate = serde_json::json!({
         "deliverable_submission_id": input.deliverable_submission_id,
         "fuel_exhausted": fuel_exhausted,
+        "gap_manifest": input.gap_manifest,
         "gap_manifest_hash": input.gap_manifest_hash,
         "gate_decision_hash": input.gate_decision_hash,
         "repair_generation": repair_generation,
@@ -5798,27 +6108,34 @@ fn controller_turn_resume_checkpoint(
     source_gap_manifest_hash: &str,
     source_dispatch_epoch: i64,
     resume_dispatch_epoch: i64,
+    source_gap_manifest: Option<&serde_json::Value>,
 ) -> RuntimeMemoryStoreResult<serde_json::Value> {
     let serde_json::Value::Object(mut body) = checkpoint.clone() else {
         return Err(RuntimeMemoryStoreError::IdentityMismatch {
             code: "stage_team_controller_turn_resume_checkpoint_not_object",
         });
     };
-    body.insert(
-        "_runtime_stage_team_turn_resume".to_string(),
-        serde_json::json!({
-            "authority_id": authority_id,
-            "prior_turn_id": prior_turn_id,
-            "resume_turn_id": resume_turn_id,
-            "resume_dispatch_epoch": resume_dispatch_epoch,
-            "schema_version": 1,
-            "source_dispatch_epoch": source_dispatch_epoch,
-            "source_gap_id": source_gap_id,
-            "source_gap_manifest_hash": source_gap_manifest_hash,
-            "source_gate_decision_hash": source_gate_decision_hash,
-            "source_request_id": source_request_id,
-        }),
-    );
+    let mut turn_resume = serde_json::json!({
+        "authority_id": authority_id,
+        "prior_turn_id": prior_turn_id,
+        "resume_turn_id": resume_turn_id,
+        "resume_dispatch_epoch": resume_dispatch_epoch,
+        "schema_version": 1,
+        "source_dispatch_epoch": source_dispatch_epoch,
+        "source_gap_id": source_gap_id,
+        "source_gap_manifest_hash": source_gap_manifest_hash,
+        "source_gate_decision_hash": source_gate_decision_hash,
+        "source_request_id": source_request_id,
+    });
+    if let (Some(turn_resume), Some(source_gap_manifest)) =
+        (turn_resume.as_object_mut(), source_gap_manifest)
+    {
+        turn_resume.insert(
+            "source_gap_manifest".to_string(),
+            source_gap_manifest.clone(),
+        );
+    }
+    body.insert("_runtime_stage_team_turn_resume".to_string(), turn_resume);
     Ok(serde_json::Value::Object(body))
 }
 
@@ -6175,18 +6492,13 @@ pub(crate) async fn resume_company_controllers_for_successor_turn_in_transaction
         .bind(plan.id)
         .fetch_one(&mut **tx)
         .await?;
-        let max_repair_generations = plan
+        let max_controller_turn_resumes = plan
             .dynamic_request_policy
-            .get("max_repair_generations")
+            .get("max_controller_turn_resumes")
             .and_then(serde_json::Value::as_i64)
-            .or_else(|| {
-                plan.dynamic_request_policy
-                    .get("max_controller_gate_repairs")
-                    .and_then(serde_json::Value::as_i64)
-            })
-            .unwrap_or(1)
-            .clamp(0, 3);
-        if prior_generations.saturating_add(prior_turn_resumes) >= max_repair_generations {
+            .unwrap_or(MAX_COMPANY_CONTROLLER_SUCCESSOR_TURNS)
+            .clamp(0, MAX_COMPANY_CONTROLLER_SUCCESSOR_TURNS);
+        if prior_turn_resumes >= max_controller_turn_resumes {
             return Err(RuntimeMemoryStoreError::Conflict {
                 code: "stage_team_controller_turn_resume_fuel_exhausted",
             });
@@ -6290,6 +6602,7 @@ pub(crate) async fn resume_company_controllers_for_successor_turn_in_transaction
             gap_manifest_hash,
             plan.dispatch_epoch,
             resume_dispatch_epoch,
+            gap.as_ref().map(|gap| &gap.gap_manifest),
         )?;
         let resumed_worker = sqlx::query_as::<_, StageWorkerRunRow>(
             r#"UPDATE stage_worker_runs
@@ -6742,7 +7055,7 @@ pub async fn heartbeat_worker(
     Ok(worker)
 }
 
-pub async fn begin_worker_tool(
+async fn begin_worker_tool_once(
     pool: &sqlx::PgPool,
     fence: &RuntimeMemoryTxFence,
     tool_call_record_id: Uuid,
@@ -6756,6 +7069,21 @@ pub async fn begin_worker_tool(
         reconcile_deployment_rollouts_best_effort(pool, "begin_worker_tool").await;
     }
     Ok(worker)
+}
+
+pub async fn begin_worker_tool(
+    pool: &sqlx::PgPool,
+    fence: &RuntimeMemoryTxFence,
+    tool_call_record_id: Uuid,
+) -> RuntimeMemoryStoreResult<StageWorkerRunRow> {
+    worker_tool_transaction_retry_runner(
+        "tool_begin",
+        fence.worker_run_id,
+        tool_call_record_id,
+        || begin_worker_tool_once(pool, fence, tool_call_record_id),
+        is_retryable_runtime_transaction_error,
+    )
+    .await
 }
 
 async fn finish_worker_tool_once(
@@ -6779,30 +7107,14 @@ pub async fn finish_worker_tool(
     fence: &RuntimeMemoryTxFence,
     tool_call_record_id: Uuid,
 ) -> RuntimeMemoryStoreResult<StageWorkerRunRow> {
-    for attempt in 1..=FINISH_WORKER_TOOL_TRANSACTION_ATTEMPTS {
-        match finish_worker_tool_once(pool, fence, tool_call_record_id).await {
-            Ok(worker) => return Ok(worker),
-            Err(error)
-                if attempt < FINISH_WORKER_TOOL_TRANSACTION_ATTEMPTS
-                    && is_retryable_runtime_transaction_error(&error) =>
-            {
-                tracing::warn!(
-                    worker_run_id = %fence.worker_run_id,
-                    tool_call_record_id = %tool_call_record_id,
-                    attempt,
-                    max_attempts = FINISH_WORKER_TOOL_TRANSACTION_ATTEMPTS,
-                    error = %error,
-                    "retrying transient worker tool-fence transaction"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    5 * u64::try_from(attempt).unwrap_or(1),
-                ))
-                .await;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    unreachable!("bounded worker tool-fence transaction loop always returns")
+    worker_tool_transaction_retry_runner(
+        "tool_finish",
+        fence.worker_run_id,
+        tool_call_record_id,
+        || finish_worker_tool_once(pool, fence, tool_call_record_id),
+        is_retryable_runtime_transaction_error,
+    )
+    .await
 }
 
 pub async fn finish_worker_attempt(
@@ -7192,6 +7504,91 @@ fn validate_stage_specific_final_material(
     input: &FinalizeUnitPassRow,
     candidate_acceptance: Option<&attack_candidates::AcceptCandidateBatch>,
 ) -> RuntimeMemoryStoreResult<()> {
+    let outcome_sets = input
+        .canonical_fact_keys
+        .iter()
+        .filter_map(|key| match key {
+            CanonicalFactKey::TechniqueOutcomeSet {
+                organization_id,
+                run_id,
+                stage,
+                terminal_cell_count,
+                outcome_set_sha256,
+            } => Some((
+                *organization_id,
+                run_id.as_str(),
+                stage.as_str(),
+                *terminal_cell_count,
+                outcome_set_sha256.as_str(),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let has_individual_outcome = input
+        .canonical_fact_keys
+        .iter()
+        .any(|key| matches!(key, CanonicalFactKey::TechniqueOutcome { .. }));
+    if unit.stage_kind == "vuln_triage" {
+        let expected_run_id = unit.operation_id.to_string();
+        let expected_count = input
+            .coverage_watermark
+            .get("terminal_cells")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok());
+        let expected_hash = input
+            .coverage_watermark
+            .get("canonical_outcome_set_sha256")
+            .and_then(serde_json::Value::as_str);
+        let exact_set = match (expected_count, expected_hash) {
+            (Some(expected_count), Some(expected_hash)) => {
+                outcome_sets.as_slice()
+                    == [(
+                        unit.organization_id,
+                        expected_run_id.as_str(),
+                        "vuln_triage",
+                        expected_count,
+                        expected_hash,
+                    )]
+            }
+            _ => false,
+        };
+        let exact_watermark = input
+            .coverage_watermark
+            .get("canonical_outcome_mode")
+            .and_then(serde_json::Value::as_str)
+            == Some("technique_outcome_set_v1")
+            && expected_count.is_some()
+            && expected_hash.is_some()
+            && input
+                .coverage_watermark
+                .get("canonical_outcome_cells")
+                .and_then(serde_json::Value::as_u64)
+                == expected_count.map(u64::from)
+            && input
+                .coverage_watermark
+                .get("canonical_ref_total")
+                .and_then(serde_json::Value::as_u64)
+                == Some(input.canonical_fact_keys.len() as u64)
+            && input
+                .coverage_watermark
+                .get("canonical_ref_included")
+                .and_then(serde_json::Value::as_u64)
+                == Some(input.canonical_fact_keys.len() as u64)
+            && input
+                .coverage_watermark
+                .get("canonical_ref_truncated")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false);
+        if !exact_set || !exact_watermark || has_individual_outcome {
+            return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                code: "vuln_final_material_outcome_set_mismatch",
+            });
+        }
+    } else if !outcome_sets.is_empty() {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "technique_outcome_set_forbidden_for_stage",
+        });
+    }
     let has_candidate_work_item_key = input
         .canonical_fact_keys
         .iter()
@@ -7626,6 +8023,7 @@ async fn validate_replayed_authoritative_material(
     unit: &StageRunUnitRow,
     input: &FinalizeUnitPassRow,
     candidate_acceptance: Option<&attack_candidates::AcceptCandidateBatch>,
+    observation_ceiling: chrono::DateTime<chrono::Utc>,
     persisted_refs: &[CanonicalFactRef],
 ) -> RuntimeMemoryStoreResult<()> {
     let freshness_floor = unit.started_at.ok_or(RuntimeMemoryStoreError::Conflict {
@@ -7649,12 +8047,13 @@ async fn validate_replayed_authoritative_material(
             code: "final_seal_replay_mismatch",
         });
     }
-    let reloaded_refs = canonical_fact_refs::resolve_for_handoff(
+    let reloaded_refs = canonical_fact_refs::resolve_for_final_seal(
         connection,
         unit.operation_id,
         unit.organization_id,
         &scope.1,
         freshness_floor,
+        observation_ceiling,
         &input.canonical_fact_keys,
     )
     .await
@@ -7862,6 +8261,7 @@ async fn finalize_unit_pass_in_transaction(
             &locked_unit,
             input,
             candidate_acceptance.as_ref(),
+            replayed.handoff.gate_passed_at,
             &replayed.canonical_fact_refs,
         )
         .await?;
@@ -7979,12 +8379,17 @@ async fn finalize_unit_pass_in_transaction(
         load_candidate_inherited_evidence_ids(tx, &locked_unit, candidate_acceptance.as_ref())
             .await?;
 
-    let refs = canonical_fact_refs::resolve_for_handoff(
+    let seal_observation_ceiling =
+        sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>("SELECT NOW()")
+            .fetch_one(&mut **tx)
+            .await?;
+    let refs = canonical_fact_refs::resolve_for_final_seal(
         tx,
         input.fence.operation_id,
         locked_unit.organization_id,
         &scope.1,
         freshness_floor,
+        seal_observation_ceiling,
         &input.canonical_fact_keys,
     )
     .await
@@ -10117,6 +10522,33 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
+    #[test]
+    fn successor_turn_checkpoint_carries_exact_server_gap_manifest() {
+        let gap_manifest = serde_json::json!({
+            "reasons": ["retry exact origin"],
+            "schema_version": 1,
+        });
+        let checkpoint = controller_turn_resume_checkpoint(
+            &serde_json::json!({"chain": []}),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            "repair-request",
+            &format!("sha256:{}", "1".repeat(64)),
+            &format!("sha256:{}", "2".repeat(64)),
+            1,
+            2,
+            Some(&gap_manifest),
+        )
+        .expect("build successor checkpoint");
+
+        assert_eq!(
+            checkpoint.pointer("/_runtime_stage_team_turn_resume/source_gap_manifest"),
+            Some(&gap_manifest)
+        );
+    }
+
     fn reserve_local_port() -> u16 {
         std::net::TcpListener::bind(("127.0.0.1", 0))
             .expect("reserve local postgres port")
@@ -10786,7 +11218,7 @@ mod tests {
                 .expect("select reset relational V2 target")
                 .map(|task| task.id),
             Some(operation_id),
-            "compound reset must not leave a specialist execution without units/workers"
+            "compound reset must leave plan-first replacement units for Team seed"
         );
 
         let root_only_execution_id = Uuid::new_v4();
@@ -10806,7 +11238,7 @@ mod tests {
         )
         .await
         .expect("atomically reset to a root-only stage");
-        assert_eq!(root_only_reset.workers_superseded, 3);
+        assert_eq!(root_only_reset.workers_superseded, 0);
         assert_eq!(root_only_reset.units_superseded, 3);
         let root_only_units = crate::repo::stage_run_units::list_for_execution(
             db.pool(),

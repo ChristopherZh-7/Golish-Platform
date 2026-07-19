@@ -342,6 +342,28 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                                              NULLIF(BTRIM(unit.specialist),'') IS NULL
                                              OR NOT (
                                                  (
+                                                     jsonb_typeof(
+                                                         os.state_blob -> 'runtime_v2_dev_reset'
+                                                     )='object'
+                                                     AND os.state_blob #>> ARRAY[
+                                                         'runtime_v2_dev_reset',
+                                                         'replacement_stage_execution_id'
+                                                     ]=active_execution.id::text
+                                                     AND os.state_blob #>> ARRAY[
+                                                         'runtime_v2_dev_reset','selected_stage'
+                                                     ]=unit.stage_kind
+                                                     AND NOT EXISTS (
+                                                         SELECT 1 FROM stage_team_plans team_plan
+                                                         WHERE team_plan.stage_run_unit_id=unit.id
+                                                     )
+                                                     AND NOT EXISTS (
+                                                         SELECT 1 FROM stage_worker_runs reset_worker
+                                                         WHERE reset_worker.operation_id=os.operation_id
+                                                           AND reset_worker.stage_execution_id=active_execution.id
+                                                           AND reset_worker.stage_run_unit_id=unit.id
+                                                     )
+                                                 )
+                                                 OR (
                                                      NOT EXISTS (
                                                          SELECT 1 FROM stage_team_plans team_plan
                                                          WHERE team_plan.stage_run_unit_id=unit.id

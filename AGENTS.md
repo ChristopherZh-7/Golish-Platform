@@ -16,11 +16,19 @@
 - **LLM 编排**：`rig-core` 0.36 + 4 个 in-tree provider forks。
 - **关键约束**：本项目是渗透测试平台，**安全与证据是第一公民**——任何阶段交付都必须能追溯到 evidence，不能只靠自然语言声称完成。
 
+### 0.1 验证策略（默认定向，全量需明确授权）
+
+- **用户没有在当前请求中明确要求时，不得主动运行** `./init.sh`、`just precommit`、`just check`、`just test`、`just test-rust`、`just test-rust-all`、全量 `just test-fe` / `just test-e2e` 或等价的全仓、全 workspace 大型验证。
+- “完成”、“提交”、“收尾”不自动等于授权大型验证；用户必须明确说“跑 init / precommit / 全量测试 / 全仓门禁”或同等含义。
+- 默认只做与本轮改动直接相关的定向验证：精确到测试名/文件的用例、受影响 crate 或前端文件的检查，以及必要的格式/JSON/diff 检查。所有实际验证仍要记录命令、退出码和关键证据。
+- 如果定向验证不足以支撑高风险结论，必须说明剩余风险并请用户决定是否补跑大型验证，不得擅自开跑。
+- `feature_list.json.verification` 中历史遗留的上述大型命令按本节视为**可选全量门禁**：未获用户明确授权时记录“按项目策略未运行”，不得仅因此阻塞 `passing`；是否 `passing` 由新鲜的定向证据能否覆盖本次行为和风险决定。
+
 ---
 
 ## 1. 开工流程（每轮新会话第一件事）
 
-按顺序执行 1→2→3→4 才能开始动代码，**任何一步跳过都视为违反 harness 约定**：
+按顺序执行 1→2→3→4 才能开始动代码；第 2 步是制定符合 §0.1 的定向验证方案，**不得因为开始会话就自动运行大型验证**：
 
 1. **读上下文**
    - `agent-progress.md` → 看上一轮留下的状态、blocker、下一步建议
@@ -28,11 +36,10 @@
    - 当前会话用户的具体指令
    - `docs/modules/INDEX.md` → 模块地图入口；按本轮要动的模块找到对应「模块卡」，**动手前先读它**（职责 / 公开接口 / 依赖 / 坑 / 测试入口）。没有卡就先按现有模板补一张再动手
 
-2. **验证基础环境**
-   ```bash
-   ./init.sh
-   ```
-   预期：依赖装好、`just check` + `just test-fe` + `just test-rust` 全绿。**如果失败，先修基础环境，不要在坏的地基上叠新功能**。
+2. **制定定向验证方案**
+   - 根据本轮将修改的文件/模块，先确定最小且足够的测试、lint、typecheck 或格式检查。
+   - 只有用户当前明确要求基线/全量验证时才运行 `./init.sh` 或其他大型门禁。
+   - 如果发现现有环境问题直接阻断定向开发，先诊断并说明，不要用全量测试代替定位。
 
    在运行任何 Cargo 构建或 Rust 测试前先执行 `just space-guard`。它只在系统剩余空间低于安全水位且 Cargo/rustc/nextest 均空闲时回收最旧构建产物，禁止用 `cargo clean` 作为日常空间管理手段。
 
@@ -62,8 +69,8 @@
 - 加新 Tauri command 必须按 `docs/development.md` 五步走：函数 → facade `pub use` → registry → 前端 wrapper → ts-rs 类型同步
 - 命令命名 `<domain>_<verb>_<object>`（如 `ai_send_prompt`、`pentest_launch_tool`），禁止 camelCase 或动词在前
 - **禁止**直接在 `backend/crates/golish/src/commands_registry.rs` 加 `use crate::foo::commands::*;` glob，必须走 `commands_facade/<domain>.rs`
-- 改动后跑 `cd backend && cargo nextest run --status-level fail` 或 `just test-rust`
-- clippy 必须零 warning：`just lint-rust`
+- 改动后默认跑精确到受影响 package/test 的 `cargo nextest run -p <crate> -E 'test(...)'`；只有用户明确要求时才跑全 workspace `just test-rust`
+- 受影响 crate 的 clippy 必须零 warning；默认使用 scoped `cargo clippy -p <crate> ... -- -D warnings`，全仓 `just lint-rust` 仅在用户明确要求时运行
 
 ### 2.3 改前端代码
 
@@ -71,7 +78,7 @@
 - 调 Tauri 走 `frontend/lib/api/<domain>.ts`，**禁止**裸 `invoke()`
 - 跨 IPC 类型从 `frontend/lib/generated/`（由 ts-rs 生成）import，不要手写
 - 三态 UI（loading / error / empty）每条异步路径都要画
-- 改动后跑 `just check-fe`（biome + typecheck）+ `just test-fe`
+- 改动后默认跑相关测试文件的 focused Vitest、受影响文件的 Biome，以及在类型链受影响时跑 typecheck；全量 `just check-fe` / `just test-fe` 仅在用户明确要求时运行
 
 ### 2.4 改文档
 
@@ -89,11 +96,8 @@
 
 ### 2.6 提交前
 
-```bash
-just precommit   # = just check + just test
-```
-
-**全绿之前不允许 commit**。`just check` 跑 `fmt + check-fe + test-fe + lint-rust + test-rust-all`，是最严格的本地门禁。
+- 提交前必须有与本次改动直接相关的新鲜定向验证，并且验证通过、证据已记录。
+- `just precommit` 是可选的最严格本地门禁，**仅在用户明确要求时运行**。未获授权而没跑 `just precommit` 本身不阻止 commit，也不得伪称它已通过。
 
 ### 2.7 高风险操作必须先问用户
 
@@ -124,8 +128,8 @@ just precommit   # = just check + just test
 1. **有验证命令实际跑过且证据被记录**
    - 跑的命令、退出码、关键输出片段，复制到 `agent-progress.md` 的"已记录证据"段
    - 跑的命令必须能在另一台机器上原样重放
-2. **`feature_list.json` 对应条目的 `verification` 步骤逐条核对过**，并把通过证据填到 `evidence` 字段
-3. **`just precommit` 全绿**（fmt + lint + 前后端 test 全过）
+2. **`feature_list.json` 对应条目的 `verification` 步骤逐条核对过**，并把通过证据填到 `evidence` 字段；其中属于 §0.1 的可选大型门禁，未授权时如实记录“按项目策略未运行”
+3. **与改动行为和风险相匹配的定向测试/检查全绿**；`just precommit` 不再是 `passing` 的默认前置条件
 4. **没有引入未在本任务 scope 内的代码改动**——不要"顺手优化"无关代码
 5. **下一轮会话不需要人工补救就能继续工作**——任何半成品状态必须写进 progress
 
@@ -141,7 +145,7 @@ just precommit   # = just check + just test
 
 按顺序执行：
 
-1. 跑一次 `just precommit`，确认全绿
+1. 跑与本轮改动直接相关的定向验证并记录证据；只有用户明确要求时才跑 `just precommit` 或其他全量门禁
 2. 对照 `clean-state-checklist.md` 逐项核查
 3. 更新 `agent-progress.md`：
    - 本轮目标 / 已完成 / 跑过的验证 / 已记录证据 / commit 记录 / 风险 / 下一步建议
@@ -185,15 +189,15 @@ just precommit   # = just check + just test
 ## 7. 快速参考
 
 ```bash
-./init.sh                    一键环境验证
+./init.sh                    一键环境验证（仅用户明确要求）
 just dev                     启动 Tauri 开发模式（端口 1420）
 just dev-fe                  仅前端（mock Tauri 环境）
-just check                   全套静态检查 + 单测
-just test                    全部测试（前 + 后）
-just test-fe                 仅前端测试（Vitest）
-just test-rust               仅 Rust 测试（cargo nextest）
-just test-e2e                Playwright E2E
-just precommit               commit 前必跑（= check + test）
+just check                   全套静态检查 + 单测（仅用户明确要求）
+just test                    全部测试（前 + 后，仅用户明确要求）
+just test-fe                 全量前端测试（仅用户明确要求）
+just test-rust               全 workspace Rust 测试（仅用户明确要求）
+just test-e2e                Playwright E2E（仅用户明确要求）
+just precommit               最严格全仓门禁（仅用户明确要求）
 just kill                    清掉残留进程（占用 1420 端口时用）
 ```
 

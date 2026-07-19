@@ -28,7 +28,7 @@ pub mod whatweb;
 pub use authorization::{authorize_scan_target, AuthorizedScanTarget};
 pub use error::{ScanRunnerError, ScanRunnerResult};
 pub use feroxbuster::{run_feroxbuster, FeroxScanOptions};
-pub use nuclei::select_nuclei_templates_for_target;
+pub use nuclei::select_nuclei_templates_for_origin;
 pub use storage::ScanStorage;
 pub use types::{NucleiTemplateRationale, NucleiTemplateSelection, ScanProgress, ScanResult};
 pub use whatweb::{run_whatweb, WhatWebOptions};

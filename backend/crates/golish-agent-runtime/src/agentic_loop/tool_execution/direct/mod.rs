@@ -126,11 +126,65 @@ fn stage_evidence_operation_id(
     )
 }
 
+fn scoping_recon_requested_organization_id(
+    harness_stage: Option<golish_agent_kit::harness::StageKind>,
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+) -> Option<uuid::Uuid> {
+    if harness_stage != Some(golish_agent_kit::harness::StageKind::Scoping)
+        || tool_name != "recon_discover_subsidiaries"
+    {
+        return None;
+    }
+    tool_args
+        .get("organization_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| value.parse::<uuid::Uuid>().ok())
+}
+
+async fn recon_evidence_organization_id(
+    repo: &dyn golish_agent_kit::db_traits::DbRepoProvider,
+    harness_stage: Option<golish_agent_kit::harness::StageKind>,
+    harness_operation_id: Option<uuid::Uuid>,
+    stage_execution_id: Option<uuid::Uuid>,
+    harness_org_id: Option<uuid::Uuid>,
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+) -> std::result::Result<uuid::Uuid, String> {
+    if let Some(organization_id) = harness_org_id {
+        return Ok(organization_id);
+    }
+    let organization_id =
+        scoping_recon_requested_organization_id(harness_stage, tool_name, tool_args).ok_or_else(
+            || "active recon has no trusted organization id for evidence persistence".to_string(),
+        )?;
+    let operation_id = stage_evidence_operation_id(harness_operation_id)?;
+    let stage_execution_id = stage_execution_id.ok_or_else(|| {
+        "active Scoping recon has no exact stage execution for evidence persistence".to_string()
+    })?;
+    let authorized = repo
+        .scoping_passive_recon_organization_authorized(
+            operation_id,
+            stage_execution_id,
+            organization_id,
+        )
+        .await
+        .map_err(|error| format!("Scoping passive recon authorization failed: {error}"))?;
+    if !authorized {
+        return Err(
+            "Scoping passive recon organization was not authorized by the exact human choice"
+                .to_string(),
+        );
+    }
+    Ok(organization_id)
+}
+
 async fn record_recon_passive_evidence(
     tracker: Option<&golish_agent_kit::db_tracking::DbTracker>,
     session_id: Option<&str>,
     harness_stage: Option<golish_agent_kit::harness::StageKind>,
     harness_operation_id: Option<uuid::Uuid>,
+    stage_execution_id: Option<uuid::Uuid>,
     harness_org_id: Option<uuid::Uuid>,
     tool_name: &str,
     tool_args: &serde_json::Value,
@@ -152,9 +206,16 @@ async fn record_recon_passive_evidence(
         "active Target Intel recon has no DB repository for evidence persistence".to_string()
     })?;
     let op_id = stage_evidence_operation_id(harness_operation_id)?;
-    let organization_id = harness_org_id.ok_or_else(|| {
-        "active Target Intel recon has no organization id for evidence persistence".to_string()
-    })?;
+    let organization_id = recon_evidence_organization_id(
+        repo,
+        harness_stage,
+        harness_operation_id,
+        stage_execution_id,
+        harness_org_id,
+        tool_name,
+        tool_args,
+    )
+    .await?;
     let ev_subject = result
         .get("company")
         .and_then(|c| c.as_str())
@@ -194,14 +255,13 @@ async fn record_recon_passive_evidence(
                 "recon passive evidence appended; surfacing id to agent"
             );
 
-            if let (Some(org_id), Some(rid), Some((tech, asset, outcome))) = (
-                harness_org_id,
+            if let (Some(rid), Some((tech, asset, outcome))) = (
                 session_id,
                 facts.as_ref().map(|(t, a, o)| (*t, a.as_str(), *o)),
             ) {
                 if let Err(e) = repo
                     .upsert_technique_outcome(
-                        org_id,
+                        organization_id,
                         rid,
                         asset,
                         tech,
@@ -219,13 +279,13 @@ async fn record_recon_passive_evidence(
             }
 
             if tool_name == "recon_discover_subsidiaries" {
-                if let (Some(org_id), Some(rid)) = (harness_org_id, session_id) {
+                if let Some(rid) = session_id {
                     for lead in
                         golish_agent_kit::harness::evidence_facts::expansion_leads_from_subsidiary_discovery(result)
                     {
                         if let Err(e) = repo
                             .enqueue_expansion_lead(
-                                org_id,
+                                organization_id,
                                 rid,
                                 lead.lead_type,
                                 &lead.lead_value,
@@ -245,12 +305,12 @@ async fn record_recon_passive_evidence(
                 }
             }
 
-            if let (Some(org_id), Some(rid)) = (harness_org_id, session_id) {
+            if let Some(rid) = session_id {
                 let source_rows = recon_source_query_rows_for_call(tool_name, tool_args, result);
                 for row in &source_rows {
                     if let Err(e) = repo
                         .upsert_source_query(
-                            org_id,
+                            organization_id,
                             rid,
                             &row.source,
                             &row.query,
@@ -274,7 +334,7 @@ async fn record_recon_passive_evidence(
                 for row in source_status_completion_rows(tool_name, &source_rows) {
                     if let Err(e) = repo
                         .upsert_source_query(
-                            org_id,
+                            organization_id,
                             rid,
                             &row.source,
                             &row.query,
@@ -294,15 +354,15 @@ async fn record_recon_passive_evidence(
             }
 
             if should_refresh_target_intel_dns(tool_name, success) {
-                if let (Some(org_id), Some(rid)) = (harness_org_id, session_id) {
+                if let Some(rid) = session_id {
                     match repo
-                        .mark_target_intel_dns_empty_outcomes(org_id, rid, &[id])
+                        .mark_target_intel_dns_empty_outcomes(organization_id, rid, &[id])
                         .await
                     {
                         Ok(count) if count > 0 => tracing::info!(
                             target: "harness::evidence",
                             tool = %tool_name,
-                            organization_id = %org_id,
+                            organization_id = %organization_id,
                             marked = count,
                             "target_intel DNS attempt outcomes recorded"
                         ),
@@ -846,11 +906,13 @@ where
             }
 
             let mut recon_persistence_error = None;
+            let mut recon_outcome_persisted = false;
             match record_recon_passive_evidence(
                 ctx.events.db_tracker,
                 ctx.events.session_id,
                 ctx.harness_stage,
                 ctx.harness_operation_id,
+                ctx.stage_execution_id,
                 ctx.harness_org_id,
                 effective_tool_name,
                 tool_args,
@@ -859,7 +921,10 @@ where
             )
             .await
             {
-                Ok(Some(id)) => appended_evidence_ids.push(id),
+                Ok(Some(id)) => {
+                    appended_evidence_ids.push(id);
+                    recon_outcome_persisted = true;
+                }
                 Ok(None) => {}
                 Err(error) => {
                     tracing::warn!(
@@ -887,6 +952,11 @@ where
                 if let Some(obj) = value.as_object_mut() {
                     obj.insert("_evidence_id".to_string(), json!(id));
                     obj.insert("_evidence_ids".to_string(), json!(appended_evidence_ids));
+                }
+            }
+            if recon_outcome_persisted {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("outcome_persisted".to_string(), Value::Bool(true));
                 }
             }
             if recon_persistence_error.is_some() {
@@ -1412,7 +1482,8 @@ mod tests {
     use super::{
         duplicate_guard_query, generic_pentest_evidence_enabled, guardrail_block_reason,
         has_retryable_target_intel_dns_outcome, is_skippable_source_query_status,
-        recon_source_query_rows, recon_source_query_rows_for_call, should_refresh_target_intel_dns,
+        recon_source_query_rows, recon_source_query_rows_for_call,
+        scoping_recon_requested_organization_id, should_refresh_target_intel_dns,
         source_query_belongs_to_action, source_query_statuses_all_terminal,
         source_status_completion_marker_matches, source_status_completion_rows,
         stage_evidence_operation_id, structured_storage_hook_payload,
@@ -1436,6 +1507,47 @@ mod tests {
         assert!(
             stage_evidence_operation_id(None).is_err(),
             "a staged writer must fail closed instead of falling back to task/session UUIDs"
+        );
+    }
+
+    #[test]
+    fn scoping_recon_evidence_requests_authorization_only_for_subsidiary_discovery() {
+        let root_id = uuid::Uuid::from_u128(7);
+        let args = json!({"organization_id": root_id});
+
+        assert_eq!(
+            scoping_recon_requested_organization_id(
+                Some(StageKind::Scoping),
+                "recon_discover_subsidiaries",
+                &args,
+            ),
+            Some(root_id)
+        );
+        assert_eq!(
+            scoping_recon_requested_organization_id(
+                Some(StageKind::TargetIntel),
+                "recon_discover_subsidiaries",
+                &args,
+            ),
+            None,
+            "Target Intel must continue using its frozen harness organization"
+        );
+        assert_eq!(
+            scoping_recon_requested_organization_id(
+                Some(StageKind::Scoping),
+                "recon_map_assets",
+                &args,
+            ),
+            None,
+            "the Scoping exception must not broaden to other recon actions"
+        );
+        assert_eq!(
+            scoping_recon_requested_organization_id(
+                Some(StageKind::Scoping),
+                "recon_discover_subsidiaries",
+                &json!({"organization_id":"not-a-uuid"}),
+            ),
+            None
         );
     }
 

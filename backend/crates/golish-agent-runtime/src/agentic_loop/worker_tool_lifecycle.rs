@@ -12,6 +12,15 @@ use golish_sub_agents::{BoundWorkerChainContext, BoundWorkerToolLifecycle};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+fn begin_worker_tool_error_invalidates_lease(
+    error: &golish_agent_kit::db_traits::RuntimeMemoryError,
+) -> bool {
+    matches!(
+        error,
+        golish_agent_kit::db_traits::RuntimeMemoryError::LeaseLost { .. }
+    )
+}
+
 pub(crate) struct RuntimeWorkerToolLifecycle {
     tracker: DbTracker,
     repository: Arc<dyn RuntimeMemoryRepository>,
@@ -89,7 +98,9 @@ impl BoundWorkerToolLifecycle for RuntimeWorkerToolLifecycle {
             })
             .await
         {
-            self.bound.mark_lease_lost();
+            if begin_worker_tool_error_invalidates_lease(&error) {
+                self.bound.mark_lease_lost();
+            }
             let result = format!("worker tool fence rejected before dispatch: {error}");
             self.tracker
                 .finish_tool_call_checked(guard, false, &result)
@@ -144,5 +155,30 @@ impl BoundWorkerToolLifecycle for RuntimeWorkerToolLifecycle {
             .finish_tool_call_checked(guard, success, &result_text)
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::begin_worker_tool_error_invalidates_lease;
+    use golish_agent_kit::db_traits::RuntimeMemoryError;
+    use uuid::Uuid;
+
+    #[test]
+    fn begin_worker_tool_error_marks_only_typed_lease_loss() {
+        assert!(!begin_worker_tool_error_invalidates_lease(
+            &RuntimeMemoryError::Storage("deadlock detected".to_string())
+        ));
+        assert!(!begin_worker_tool_error_invalidates_lease(
+            &RuntimeMemoryError::Conflict {
+                code: "worker_tool_already_active",
+            }
+        ));
+        assert!(begin_worker_tool_error_invalidates_lease(
+            &RuntimeMemoryError::LeaseLost {
+                worker_run_id: Uuid::from_u128(7),
+                attempt_epoch: 2,
+            }
+        ));
     }
 }

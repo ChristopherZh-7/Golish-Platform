@@ -36,6 +36,7 @@ import { SitemapTab } from "./surface/tabs/SitemapTab";
 import { SurfaceTabView } from "./surface/tabs/SurfaceTabView";
 import { WebOriginsTab } from "./surface/tabs/WebOriginsTab";
 import { SURFACE_TABS, type SurfaceTab } from "./surface/types";
+import { buildWhatWebAssessments } from "./surface/whatWebAssessment";
 
 type IpSurfaceTab =
   | "overview"
@@ -343,6 +344,11 @@ export function TargetSurfaceWorkbench({
     [backendHierarchy, frontendHierarchy]
   );
   const hierarchy = hierarchyMerge.hierarchy;
+  const whatWebAssessments = useMemo(
+    () =>
+      buildWhatWebAssessments(data.logs, new Set(hierarchy.webOrigins.map((origin) => origin.id))),
+    [data.logs, hierarchy.webOrigins]
+  );
   const isIpSurface = hierarchy.mode === "ip";
   const endpointParamCount = useMemo(() => countEndpointParams(apiEndpoints), [apiEndpoints]);
   const sensitiveFindings = useMemo(
@@ -568,6 +574,7 @@ export function TargetSurfaceWorkbench({
             selectedOriginId={selectedOriginId}
             onSelectOrigin={setSelectedOriginId}
             projectPath={projectPath}
+            assessmentByOrigin={whatWebAssessments}
           />
         )}
         {isIpSurface && activeTab === "domains" && (

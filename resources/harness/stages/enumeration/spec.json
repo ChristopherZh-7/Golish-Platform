@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: enumeration — CONTENT enumeration of services mapped by EAS (JS/API extraction, directory/path, parameter discovery). 阶段重排 2026-06-09: 端口/服务前移到 EAS; 本阶段在已知服务上挖内容, 产出可测单元 = vuln_triage 分母. 见 docs/design/2026-06-09-active-stage-verify-first.md.",
+  "$comment": "Stage spec: enumeration — CONTENT enumeration of services mapped by EAS (JS/API extraction, directory/path, parameter discovery). The final output is an operation-bound exact-origin endpoint/parameter manifest; that manifest, not a fixed ten-cell assumption, determines the applicable vuln_triage denominator. 见 docs/design/2026-07-17-enumeration-surface-manifest-vuln-applicability.md.",
 
   "id": "enumeration",
   "kind": "enumeration",
@@ -46,7 +46,7 @@
       "authoritative_found": true,
       "require_note_for_other": true,
       "error_is_terminal": false,
-      "$comment_derive": "Enumeration is current-run evidence authoritative on the exact Web Origin × four-axis matrix. found/checked_empty ownership is unchanged and strict: JS=browser_collect_js_api, JSAPI/PARAM=js_extract_apis, DIR=route_probe_paths. blocked has a separate narrow producer matrix: enum_preflight_web_origins + enumeration_transport_blocked may close JS/DIR/PARAM/JSAPI; route_probe_paths + dir_probe_recovery_exhausted may close DIR only; browser_collect_js_api + enumeration_collection_recovery_exhausted may close JS/JSAPI/PARAM only. Every terminal projection requires fresh evidence bound to the current organization, authorized target, exact origin, technique, outcome, and evidence id. Browser runtime discovery otherwise leaves JSAPI/PARAM partial until same-set static extraction; ordinary error/partial stay non-terminal. Model-authored blocked/not_applicable cannot close a cell, and raw non-web hosts are excluded instead of being promoted to origin-level not_applicable.",
+      "$comment_derive": "Enumeration is current-run evidence authoritative on the exact Web Origin × four-axis matrix. found/checked_empty ownership is unchanged and strict: JS=browser_collect_js_api, JSAPI/PARAM=js_extract_apis, DIR=route_probe_paths. Browser/JS endpoint success must also publish the normalized operation+origin endpoint/parameter manifest; manifest persistence failure keeps JSAPI/PARAM incomplete. blocked has a separate narrow producer matrix: enum_preflight_web_origins + enumeration_transport_blocked may close JS/DIR/PARAM/JSAPI; route_probe_paths + dir_probe_recovery_exhausted may close DIR only; browser_collect_js_api + enumeration_collection_recovery_exhausted may close JS/JSAPI/PARAM only. Every terminal projection requires fresh evidence bound to the current organization, authorized target, exact origin, technique, outcome, and evidence id. Model-authored blocked/not_applicable cannot close a cell.",
       "on_fail": {
         "reason": "content enumeration incomplete: some alive in-scope services were not fully enumerated (js/api / dir / param)",
         "hints": [

@@ -60,6 +60,19 @@ pub struct CreateRuntimeOperation {
     /// as the task/operation/stage-execution roots. Model-authored stage input
     /// can never populate this field.
     pub cli_scope: Option<CliRuntimeScope>,
+    /// Trusted source-operation lineage for a fresh stage-testing fork. The
+    /// repository validates and freezes this authority in the same transaction
+    /// as the new operation roots; it is never reconstructed from model text.
+    pub stage_fork: Option<StageForkCreate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageForkCreate {
+    pub source_operation_id: Uuid,
+    pub source_scope_snapshot_id: Uuid,
+    pub entry_stage: String,
+    pub terminal_stage: String,
+    pub adopted_stage_kinds: Vec<String>,
 }
 
 /// One organization selected by trusted CLI flags before a V2-writing
@@ -671,6 +684,7 @@ pub struct SeededStageTeamRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttackV2WaveEntryView {
     VulnTriageHandoff,
+    ForkedVulnHandoff,
     FactDeltaConsolidation,
 }
 

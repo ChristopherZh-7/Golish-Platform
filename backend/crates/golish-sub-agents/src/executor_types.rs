@@ -184,6 +184,10 @@ impl BoundWorkerChainContext {
 /// `begin` must durably create the generic tool-call record before setting the
 /// worker's active-tool marker. `finish` must clear that marker under the same
 /// lease/version fence before the result is allowed to land in model history.
+/// The concrete implementation owns typed begin-error classification and must
+/// update its shared bound lease flag before returning an actual lease-loss
+/// error; the generic executor cannot infer lease loss from an arbitrary
+/// pre-dispatch storage error.
 #[async_trait::async_trait]
 pub trait BoundWorkerToolLifecycle: Send + Sync {
     async fn begin(

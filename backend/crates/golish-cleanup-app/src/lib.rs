@@ -6,6 +6,7 @@ pub mod recovery;
 pub mod service;
 pub mod worker;
 
+pub use golish_cleanup_domain::CleanupError;
 pub use golish_db::repo::organization_deletion_jobs::{
     ArtifactCleanupFailure, ArtifactCleanupPlan,
 };

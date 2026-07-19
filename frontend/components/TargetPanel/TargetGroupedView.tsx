@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/dialog";
 import { assetIntel, organizationRecon, organizations as orgsApi } from "@/lib/api";
 import type { AssetIntelRun } from "@/lib/api/asset-intel";
+import { translateErrorCode } from "@/lib/api/error-codes";
 import type { OrganizationReconRunSnapshot } from "@/lib/api/organization-recon";
 import type { Organization } from "@/lib/api/organizations";
 import { onCustomEvent, onEvent, sendCustomEvent } from "@/lib/events";
@@ -185,6 +186,13 @@ async function waitForOrganizationDeletion(
     }
     await new Promise((resolve) => setTimeout(resolve, ORGANIZATION_DELETE_POLL_INTERVAL_MS));
   }
+}
+
+function organizationDeletionErrorMessage(error: unknown): string {
+  if (error instanceof Error && "code" in error && typeof error.code === "string") {
+    return translateErrorCode(error.code, error.message);
+  }
+  return String(error);
 }
 
 /**
@@ -902,7 +910,7 @@ export function TargetGroupedView({
       }
       setDeleteIntent(null);
     } catch (error) {
-      setDeleteError(String(error));
+      setDeleteError(organizationDeletionErrorMessage(error));
     } finally {
       setDeleteSubmitting(false);
     }

@@ -28,11 +28,13 @@
 | `get_tool_definitions_*` / `ToolPreset` / `ToolSelectionConfig` | 工具 schema + preset 选择 |
 | `DefaultToolProvider` | `ToolProvider` 默认实现 |
 | `task_orchestrator` / `planner` / `hitl` / `loop_detection` / `tool_policy` / `system_hooks` | 编排 / 计划 / 审批 / 防循环 / 策略 / 钩子 |
-| `harness`（`gate` / `graph_engine` / `knowledge_context`） | stage harness gate + prompt-safe ContextPack renderer；Candidate classifier 将冻结 observation/hash 映射为 exact replay capability；`StageSpec.runtime_memory` 声明 Unit owner/final-seal，`StageSpec.team_scheduler` 以 closed policy声明 V2 sibling roles、K、dynamic request 与 risk lane |
-| `db_traits` / `db_tracking` / `db_shim` / `memory_*` | repo/tracking 抽象 + 长期记忆；runtime-aware tool start 固定 exact operation task owner；org-bound evidence append显式携带 trusted organization witness；RuntimeMemory trait暴露 Stage Team plan/claim/output/barrier/repair/operator recovery与 Candidate TerminalIntent/barrier/recovery exact contracts |
+| `harness`（`gate` / `graph_engine` / `handoff_catalog` / `knowledge_context`） | stage harness gate + canonical handoff keys + prompt-safe ContextPack renderer；Candidate classifier 将冻结 observation/hash 映射为 exact replay capability；`StageSpec.runtime_memory` 声明 Unit owner/final-seal，`StageSpec.team_scheduler` 以 closed policy声明 V2 sibling roles、K、dynamic request 与 risk lane；Vuln final seal 用一个可重算的 `TechniqueOutcomeSet` 证明完整 outcome 集合，独立 Finding 仍单独引用 |
+| `db_traits` / `db_tracking` / `db_shim` / `memory_*` | repo/tracking 抽象 + 长期记忆；runtime-aware tool start 固定 exact operation task owner；org-bound evidence append显式携带 trusted organization witness；RuntimeMemory trait暴露 Stage Team plan/claim/output/barrier/repair/operator recovery、Candidate TerminalIntent/barrier/recovery，以及 immutable `StageForkCreate` exact-lineage contract |
+
+Company Controller StageSpec 的 C/G/K 是真实并发权威；历史 `max_dynamic_requests` 只保留在冻结序列化形状中支持旧 TeamPlan exact replay，不再代表 child lifetime admission。完成权威仍是 DB worklist/evidence/Gate，不是 child 数量。
 | `SharedComponentsConfig` / `ExecutionMode` / `AgentMode`（re-export） | llm-client 配置 / 执行模式 |
 | `SessionCaptureBackend` | per-bridge sidecar lifecycle/capture；restore 支持 end/find/resume/start，禁止回退到 app-global sidecar |
-| `DbFlowCheckpointer` / `TaskOrchestrator::run_from_stage` | whole-record graph adapter：trusted resume 可显式固定 V2/legacy-fallback source；V2 source save no-op、load 只用 relational cursor，legacy source 才读写 `graph_flow` |
+| `DbFlowCheckpointer` / `TaskOrchestrator::run_from_stage` | whole-record graph adapter：trusted resume或stage fork可从指定 stage进入同一 graph；V2 source save no-op、load 只用 relational cursor，legacy source 才读写 `graph_flow` |
 
 ## 依赖
 
@@ -71,6 +73,7 @@
 - ContextPack renderer 只能消费已授权 pack 并输出 escaped data；不得把检索内容变成 ToolDefinition/ToolChoice/authz，也不得解引用 VaultRef。
 - 与 `golish-agent-runtime` 是**有意分家**（A2）：底层基础设施在此，流式 loop 在那；改这层会触发下游重编。
 - `db_traits::DbRepoProvider::org_subtree_units` 是 root-bound `stage_run` 的 scope truth 入口；默认实现只能给测试 double 兜底，生产实现必须返回 DB root+descendants 的 id/name/parent_id，避免续跑时靠模型重建 org 列表漏资产。
+- `DbRepoProvider::scoping_passive_recon_organization_authorized` 是 Scoping pre-freeze 子公司 evidence 的窄授权 seam：生产实现必须重验 exact operation/stage/root/latest human choice，默认实现恒拒绝。runtime 不能把模型传入的 organization UUID 直接当作 evidence owner，也不能把该 seam 扩展给其他 recon action 或主动阶段。
 - crate 级 `#![allow(too_many_arguments / needless_borrow / manual_async_fn)]` 是有意保留（宽 context 透传 / object-safe trait）。
 - `SessionCaptureBackend` 是 bridge-owned session truth；新增实现必须实现 legacy match + resume，full restore 不能绕过 trait 操作另一个全局实例。
 - `V2Only` 与已整源选择 V2 的 `DualWriteV2Preferred` 都以 relational runtime 为恢复源。metalcraft graph 起点只能从 persisted `current_stage` 构造为空默认状态，不能读取、修复或回写 legacy `state_blob`；preferred legacy fallback 必须显式标成 `LegacyFallback`。

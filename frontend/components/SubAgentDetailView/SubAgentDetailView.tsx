@@ -19,7 +19,16 @@ import {
   Wrench,
   XCircle,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type WheelEvent,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { ThinkingBlock } from "@/components/AIChatPanel/ThinkingBlock";
 import { Ansi } from "@/components/Ansi";
@@ -42,6 +51,11 @@ import {
   stripAllAnsi,
   stripOscSequences,
 } from "@/lib/ansi";
+import {
+  getStageTeamReadModel,
+  type StageTeamReadModel,
+  type StageTeamReadRequest,
+} from "@/lib/api/stage-team";
 import { copyToClipboard } from "@/lib/clipboard";
 import { shouldStickToBottomAfterScroll } from "@/lib/scroll-stickiness";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
@@ -1366,10 +1380,13 @@ interface StageTeamDispatchAssignment {
   attempts: ActiveSubAgent[];
   decision: string | null;
   dedupeKey: string | null;
+  failed: boolean;
+  failureReason: string | null;
   key: string;
   objective: string;
   ordinal: number;
   role: string;
+  statusOverride: "queued" | "running" | "completed" | "error" | null;
   workItemId: string | null;
 }
 
@@ -1384,8 +1401,11 @@ const PendingStageTeamDispatchCard = memo(function PendingStageTeamDispatchCard(
   const roleName = humanizeDirectiveToken(assignment.role) || "SubAgent";
   const Icon = getAgentIcon(roleName);
   const color = getAgentColor(roleName);
-  const rejected = Boolean(assignment.decision && assignment.decision !== "accepted");
-  const status = rejected ? "error" : isLiveToolStatus(toolStatus) ? "running" : "queued";
+  const rejected =
+    assignment.failed || Boolean(assignment.decision && assignment.decision !== "accepted");
+  const status = rejected
+    ? "error"
+    : (assignment.statusOverride ?? (isLiveToolStatus(toolStatus) ? "running" : "queued"));
   const statusLabel = t(`ai.subAgentDetail.status.${status}`);
 
   return (
@@ -1399,6 +1419,7 @@ const PendingStageTeamDispatchCard = memo(function PendingStageTeamDispatchCard(
           "relative w-full overflow-hidden rounded-lg border bg-card/45 text-left shadow-[0_1px_0_rgb(255_255_255/0.02)]",
           status === "queued" && "border-border/20",
           status === "running" && "border-[var(--ansi-blue)]/25 bg-[var(--ansi-blue)]/[0.03]",
+          status === "completed" && "border-[var(--success)]/20 bg-[var(--success-dim)]/35",
           status === "error" && "border-destructive/30 bg-destructive/[0.035]"
         )}
       >
@@ -1434,6 +1455,11 @@ const PendingStageTeamDispatchCard = memo(function PendingStageTeamDispatchCard(
                 {assignment.objective}
               </span>
             )}
+            {assignment.failureReason && (
+              <span className="line-clamp-2 font-mono text-[9px] leading-[1.4] text-destructive/75">
+                {assignment.failureReason}
+              </span>
+            )}
           </span>
           <span
             className={cn(
@@ -1441,11 +1467,15 @@ const PendingStageTeamDispatchCard = memo(function PendingStageTeamDispatchCard(
               status === "queued" && "border-border/25 bg-background/35 text-muted-foreground/60",
               status === "running" &&
                 "border-[var(--ansi-blue)]/35 bg-[var(--ansi-blue)]/10 text-[var(--ansi-blue)]",
+              status === "completed" &&
+                "border-[var(--success)]/25 bg-[var(--success-dim)] text-[var(--success)]",
               status === "error" && "border-destructive/30 bg-destructive/10 text-destructive"
             )}
           >
             {status === "running" ? (
               <Loader2 className="h-3 w-3 animate-spin" />
+            ) : status === "completed" ? (
+              <CheckCircle2 className="h-3 w-3" />
             ) : status === "error" ? (
               <XCircle className="h-3 w-3" />
             ) : (
@@ -1478,6 +1508,7 @@ export const SUB_AGENT_HEADER_STATUS_BADGE_STYLES: Record<
 
 interface SubAgentDetailViewProps {
   sessionId: string;
+  stageTeamReadApi?: SubAgentDetailStageTeamReadApi;
 }
 
 const EMPTY_SUB_AGENT_LIST: ActiveSubAgent[] = [];
@@ -1491,6 +1522,11 @@ interface StageCoverageContext {
   stage: string;
   stageLabel: string;
 }
+
+type RecoveredDispatchReadState =
+  | { status: "idle" | "loading"; model: null; error: null }
+  | { status: "success"; model: StageTeamReadModel; error: null }
+  | { status: "error"; model: null; error: string };
 
 export function isCompanyControllerAgentRequestId(
   parentRequestId: string | null | undefined
@@ -1561,6 +1597,21 @@ function stageTeamDispatchAssignmentsForTool(
   const workers = Array.isArray(tool.args.workers) ? tool.args.workers.filter(isRecord) : [];
   const result = stageTeamDispatchResultRecord(tool.result);
   const requests = Array.isArray(result?.requests) ? result.requests.filter(isRecord) : [];
+  const hasAcceptedRequest = requests.some(
+    (request) => optionalStringField(request, "decision") === "accepted"
+  );
+  const allRejected =
+    optionalStringField(result ?? undefined, "code") === "STAGE_TEAM_DISPATCH_NONE_ACCEPTED";
+  const failedWithoutDurableChild =
+    tool.status === "error" && !hasAcceptedRequest && nestedAgents.length === 0;
+  const failureReason = failedWithoutDurableChild
+    ? [
+        optionalStringField(result ?? undefined, "code"),
+        optionalStringField(result ?? undefined, "error"),
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(": ") || null
+    : null;
 
   if (workers.length === 0) {
     const groups = new Map<string, ActiveSubAgent[]>();
@@ -1576,10 +1627,13 @@ function stageTeamDispatchAssignmentsForTool(
         attempts,
         decision: null,
         dedupeKey: null,
+        failed: false,
+        failureReason: null,
         key,
         objective: agent?.task ?? "",
         ordinal: index + 1,
         role: agent?.agentName || agent?.agentId || "sub_agent",
+        statusOverride: null,
         workItemId: durableWorkItemIdForAgent(attempts[0]),
       };
     });
@@ -1594,12 +1648,15 @@ function stageTeamDispatchAssignmentsForTool(
     return {
       agent: null,
       attempts: [],
-      decision: optionalStringField(request, "decision"),
+      decision: optionalStringField(request, "decision") ?? (allRejected ? "rejected" : null),
       dedupeKey,
+      failed: failedWithoutDurableChild,
+      failureReason,
       key: workItemId ?? dedupeKey ?? `${tool.id}:assignment:${index + 1}`,
       objective: optionalStringField(worker, "objective") ?? "",
       ordinal: index + 1,
       role: optionalStringField(worker, "role") ?? "sub_agent",
+      statusOverride: null,
       workItemId,
     };
   });
@@ -1656,10 +1713,13 @@ function stageTeamDispatchAssignmentsForTool(
           attempts,
           decision: null,
           dedupeKey: null,
+          failed: false,
+          failureReason: null,
           key,
           objective: agent?.task ?? "",
           ordinal: assignments.length + index + 1,
           role: agent?.agentName || agent?.agentId || "sub_agent",
+          statusOverride: null,
           workItemId: durableWorkItemIdForAgent(attempts[0]),
         };
       }
@@ -1734,6 +1794,268 @@ function StageTeamDispatchAssignmentList({
       ))}
     </div>
   );
+}
+
+function RecoveredStageTeamDispatchBlock({
+  assignments,
+  hasPointer,
+  readState,
+  sessionId,
+  shouldRecover,
+  onOpen,
+  onRetry,
+}: {
+  assignments: StageTeamDispatchAssignment[];
+  hasPointer: boolean;
+  readState: RecoveredDispatchReadState;
+  sessionId: string;
+  shouldRecover: boolean;
+  onOpen: (parentRequestId: string) => void;
+  onRetry: () => void;
+}) {
+  const { t } = useTranslation();
+  if (!shouldRecover) return null;
+
+  if (!hasPointer) {
+    return (
+      <div
+        className="mx-3 my-2.5 rounded-lg border border-amber-400/25 bg-amber-400/[0.04] px-3 py-2.5 text-[11px] text-amber-200/80"
+        data-testid="stage-team-recovered-dispatch-unavailable"
+        role="status"
+      >
+        {t("ai.subAgentDetail.recoveredDispatchUnavailable")}
+      </div>
+    );
+  }
+
+  if (readState.status === "loading" || readState.status === "idle") {
+    return (
+      <div
+        className="mx-3 my-2.5 flex items-center gap-2 rounded-lg border border-[var(--ansi-blue)]/20 bg-[var(--ansi-blue)]/[0.03] px-3 py-2.5 text-[11px] text-[var(--ansi-blue)]/80"
+        data-testid="stage-team-recovered-dispatch-loading"
+        role="status"
+      >
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        {t("ai.subAgentDetail.recoveringDispatch")}
+      </div>
+    );
+  }
+
+  if (readState.status === "error") {
+    return (
+      <div
+        className="mx-3 my-2.5 rounded-lg border border-destructive/25 bg-destructive/[0.04] px-3 py-2.5 text-[11px] text-destructive/85"
+        data-testid="stage-team-recovered-dispatch-error"
+        role="alert"
+      >
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 break-words">
+            {t("ai.subAgentDetail.recoveredDispatchError")}: {readState.error}
+          </span>
+          <button
+            className="shrink-0 rounded border border-destructive/25 px-2 py-1 hover:bg-destructive/10"
+            onClick={onRetry}
+            type="button"
+          >
+            {t("ai.subAgentDetail.recoveredDispatchRetry")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return assignments.length > 0 ? (
+    <section
+      className="mx-3 my-2.5 overflow-hidden rounded-lg border border-[var(--ansi-magenta)]/20 bg-[var(--ansi-magenta)]/[0.025]"
+      data-testid="stage-team-recovered-dispatch"
+    >
+      <header className="flex items-center gap-2 border-b border-[var(--ansi-magenta)]/10 px-3 py-2 text-[10px] font-medium text-[var(--ansi-magenta)]/80">
+        <Wrench className="h-3.5 w-3.5" />
+        {t("ai.subAgentDetail.recoveredDispatch")}
+      </header>
+      <StageTeamDispatchAssignmentList
+        assignments={assignments}
+        sessionId={sessionId}
+        toolStatus="completed"
+        onOpen={onOpen}
+      />
+    </section>
+  ) : (
+    <div
+      className="mx-3 my-2.5 rounded-lg border border-border/20 px-3 py-2.5 text-[11px] text-muted-foreground/65"
+      data-testid="stage-team-recovered-dispatch-empty"
+      role="status"
+    >
+      {t("ai.subAgentDetail.recoveredDispatchEmpty")}
+    </div>
+  );
+}
+
+export interface SubAgentDetailStageTeamReadApi {
+  getReadModel: (request: StageTeamReadRequest) => Promise<StageTeamReadModel>;
+}
+
+const defaultStageTeamReadApi: SubAgentDetailStageTeamReadApi = {
+  getReadModel: getStageTeamReadModel,
+};
+
+interface RecoveredStageTeamDispatchPointer {
+  operationId: string;
+  stageExecutionId: string;
+  controllerWorkerRunId: string;
+}
+
+function workerRunIdFromAgentRequestId(parentRequestId: string): string | null {
+  return parentRequestId.match(/::(?:lead|worker):([^:]+)$/)?.[1] ?? null;
+}
+
+export function resolveRecoveredStageTeamDispatchPointer(
+  parentRequestId: string | null | undefined,
+  stageRuns: Record<string, SessionStageRun> | undefined,
+  fallbackStageRun: SessionStageRun | null | undefined
+): RecoveredStageTeamDispatchPointer | null {
+  const parsed = parseStageRunOrgRequestId(parentRequestId);
+  const controllerWorkerRunId = parentRequestId
+    ? parentRequestId.match(/::lead:([^:]+)$/)?.[1]
+    : null;
+  if (!parsed || !controllerWorkerRunId) return null;
+
+  const stageRun =
+    stageRuns?.[parsed.stageRunRequestId] ??
+    (fallbackStageRun?.requestId === parsed.stageRunRequestId ? fallbackStageRun : null);
+  if (!stageRun) return null;
+  const row =
+    stageRun.rows.find((candidate) => candidate.agentRequestId === parentRequestId) ??
+    stageRun.rows.find((candidate) => candidate.id === parsed.organizationId);
+  const operationId = row?.operationId?.trim();
+  const stageExecutionId = row?.stageExecutionId?.trim();
+  if (!operationId || !stageExecutionId) return null;
+  return { operationId, stageExecutionId, controllerWorkerRunId };
+}
+
+function durableRecoveredAssignmentStatus(
+  workItem: NonNullable<StageTeamReadModel["units"][number]["plan"]>["workItems"][number] | null,
+  requestStatus: string,
+  acceptedWorkItemId: string | null
+): "queued" | "running" | "completed" | "error" {
+  if (!acceptedWorkItemId || !workItem) {
+    return /reject|fail|error|block/i.test(requestStatus) || acceptedWorkItemId
+      ? "error"
+      : "queued";
+  }
+
+  const liveWorker = workItem.workers.find((worker) =>
+    ["running", "claimed"].includes(worker.status)
+  );
+  const latestWorker = liveWorker ?? workItem.workers[workItem.workers.length - 1];
+  const status = latestWorker?.status ?? workItem.status;
+  if (["running", "claimed"].includes(status)) return "running";
+  if (["completed", "passed"].includes(status)) return "completed";
+  if (/blocked|recovery|required|exhausted|failed|error|interrupted/i.test(status)) return "error";
+  return "queued";
+}
+
+function recoveredStageTeamDispatchAssignments(
+  model: StageTeamReadModel,
+  controllerWorkerRunId: string,
+  subAgents: readonly ActiveSubAgent[]
+): StageTeamDispatchAssignment[] {
+  const activeAgentByWorkerRunId = new Map<string, ActiveSubAgent>();
+  for (const agent of subAgents) {
+    const workerRunId = workerRunIdFromAgentRequestId(agent.parentRequestId);
+    if (workerRunId) activeAgentByWorkerRunId.set(workerRunId, agent);
+  }
+
+  const recovered: StageTeamDispatchAssignment[] = [];
+  for (const unit of model.units) {
+    const plan = unit.plan;
+    if (!plan) continue;
+    const workItemsById = new Map(plan.workItems.map((item) => [item.workItemId, item]));
+    const requests = plan.requests
+      .filter((request) => request.parentWorkerRunId === controllerWorkerRunId)
+      .sort(
+        (left, right) =>
+          new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() ||
+          left.requestId.localeCompare(right.requestId)
+      );
+
+    for (const request of requests) {
+      const workItem = request.acceptedWorkItemId
+        ? (workItemsById.get(request.acceptedWorkItemId) ?? null)
+        : null;
+      const attempts = sortWorkerAttempts(
+        (workItem?.workers ?? []).flatMap((worker) => {
+          const agent = activeAgentByWorkerRunId.get(worker.workerRunId);
+          return agent ? [agent] : [];
+        })
+      );
+      const agent = attempts[attempts.length - 1] ?? null;
+      const statusOverride = durableRecoveredAssignmentStatus(
+        workItem,
+        request.status,
+        request.acceptedWorkItemId
+      );
+      const failed = statusOverride === "error" && request.status !== "accepted";
+      recovered.push({
+        agent,
+        attempts,
+        decision: request.acceptedWorkItemId ? "accepted" : request.status,
+        dedupeKey: request.dedupeKey,
+        failed,
+        failureReason:
+          request.decisionReasonCode ??
+          (request.acceptedWorkItemId && !workItem ? "accepted_work_item_missing" : null),
+        key: request.requestId,
+        objective: agent?.task ?? request.requestKind,
+        ordinal: recovered.length + 1,
+        role: request.requestedRole,
+        statusOverride,
+        workItemId: request.acceptedWorkItemId,
+      });
+    }
+  }
+  return recovered;
+}
+
+function recoveredStageTeamDispatchStartedAt(
+  model: StageTeamReadModel,
+  controllerWorkerRunId: string
+): number | null {
+  let earliest = Number.POSITIVE_INFINITY;
+  for (const unit of model.units) {
+    for (const request of unit.plan?.requests ?? []) {
+      if (request.parentWorkerRunId !== controllerWorkerRunId) continue;
+      const createdAt = Date.parse(request.createdAt);
+      if (Number.isFinite(createdAt)) earliest = Math.min(earliest, createdAt);
+    }
+  }
+  return Number.isFinite(earliest) ? earliest : null;
+}
+
+export function resolveRecoveredDispatchTimelineIndex(
+  entries: readonly SubAgentEntry[],
+  toolCalls: readonly Pick<SubAgentToolCall, "id" | "startedAt">[],
+  recoveredDispatchStartedAt: number | null
+): number {
+  if (recoveredDispatchStartedAt == null) return entries.length;
+  const toolStartedAt = new Map(
+    toolCalls.map((tool) => {
+      const timestamp = Date.parse(tool.startedAt);
+      return [tool.id, Number.isFinite(timestamp) ? timestamp : null] as const;
+    })
+  );
+
+  const insertionIndex = entries.findIndex((entry) => {
+    const entryStartedAt =
+      entry.kind === "thinking"
+        ? entry.startedAt
+        : entry.kind === "tool_call" && entry.toolCallId
+          ? toolStartedAt.get(entry.toolCallId)
+          : null;
+    return entryStartedAt != null && entryStartedAt >= recoveredDispatchStartedAt;
+  });
+  return insertionIndex < 0 ? entries.length : insertionIndex;
 }
 
 export function parseStageRunOrgRequestId(
@@ -1847,6 +2169,7 @@ function limitLiveOutputForRender(text: string, isLive: boolean): string {
 
 export const SubAgentDetailView = memo(function SubAgentDetailView({
   sessionId,
+  stageTeamReadApi = defaultStageTeamReadApi,
 }: SubAgentDetailViewProps) {
   const { t } = useTranslation();
   const setDetailViewMode = useStore((s) => s.setDetailViewMode);
@@ -1875,6 +2198,107 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
     [targetRequestId, sessionStageRuns, sessionStageRun]
   );
   const parentStagePassed = parentStageRunStatus === "passed";
+  const hasVisibleDispatchTool = Boolean(
+    subAgent?.toolCalls.some((tool) => tool.name === "stage_team_dispatch_workers")
+  );
+  const hasDetachedStageWorker = useMemo(() => {
+    const visibleToolIds = new Set(subAgent?.toolCalls.map((tool) => tool.id) ?? []);
+    return subAgents.some((agent) => {
+      const dispatchToolId = agent.parentRequestId.match(/^(.+)::worker:[^:]+$/)?.[1];
+      return Boolean(dispatchToolId && !visibleToolIds.has(dispatchToolId));
+    });
+  }, [subAgent?.toolCalls, subAgents]);
+  const shouldRecoverDispatch = Boolean(
+    subAgent &&
+      isCompanyControllerAgentRequestId(subAgent.parentRequestId) &&
+      !hasVisibleDispatchTool &&
+      hasDetachedStageWorker
+  );
+  const recoveredDispatchPointer = useMemo(
+    () =>
+      shouldRecoverDispatch
+        ? resolveRecoveredStageTeamDispatchPointer(
+            targetRequestId,
+            sessionStageRuns,
+            sessionStageRun
+          )
+        : null,
+    [shouldRecoverDispatch, targetRequestId, sessionStageRuns, sessionStageRun]
+  );
+  const [recoveredDispatchRefresh, setRecoveredDispatchRefresh] = useState(0);
+  const [recoveredDispatchState, setRecoveredDispatchState] = useState<RecoveredDispatchReadState>({
+    status: "idle",
+    model: null,
+    error: null,
+  });
+  const recoveredOperationId = recoveredDispatchPointer?.operationId ?? null;
+  const recoveredStageExecutionId = recoveredDispatchPointer?.stageExecutionId ?? null;
+  const recoveredControllerWorkerRunId = recoveredDispatchPointer?.controllerWorkerRunId ?? null;
+
+  useEffect(() => {
+    if (
+      !shouldRecoverDispatch ||
+      !recoveredOperationId ||
+      !recoveredStageExecutionId ||
+      !recoveredControllerWorkerRunId
+    ) {
+      setRecoveredDispatchState({ status: "idle", model: null, error: null });
+      return;
+    }
+
+    let cancelled = false;
+    setRecoveredDispatchState({ status: "loading", model: null, error: null });
+    stageTeamReadApi
+      .getReadModel({
+        operationId: recoveredOperationId,
+        stageExecutionId: recoveredStageExecutionId,
+      })
+      .then((model) => {
+        if (cancelled) return;
+        if (
+          model.operationId !== recoveredOperationId ||
+          model.stageExecutionId !== recoveredStageExecutionId
+        ) {
+          setRecoveredDispatchState({
+            status: "error",
+            model: null,
+            error: "Stage Team read model identity mismatch",
+          });
+          return;
+        }
+        setRecoveredDispatchState({ status: "success", model, error: null });
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        setRecoveredDispatchState({
+          status: "error",
+          model: null,
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    recoveredControllerWorkerRunId,
+    recoveredDispatchRefresh,
+    recoveredOperationId,
+    recoveredStageExecutionId,
+    shouldRecoverDispatch,
+    stageTeamReadApi,
+  ]);
+
+  const recoveredDispatchAssignments = useMemo(
+    () =>
+      recoveredDispatchState.status === "success" && recoveredControllerWorkerRunId
+        ? recoveredStageTeamDispatchAssignments(
+            recoveredDispatchState.model,
+            recoveredControllerWorkerRunId,
+            subAgents
+          )
+        : [],
+    [recoveredControllerWorkerRunId, recoveredDispatchState, subAgents]
+  );
   const parentStageRunToolStatus = useStore((s) => {
     const parsed = parseStageRunOrgRequestId(targetRequestId);
     if (!parsed) return null;
@@ -1919,6 +2343,25 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
     : t("ai.toolDetail.backToTerminal");
 
   const detailEntries = subAgent ? normalizeSubAgentEntriesForDetail(subAgent.entries) : [];
+  const timelineEntries: SubAgentEntry[] =
+    detailEntries.length > 0
+      ? detailEntries
+      : (subAgent?.toolCalls ?? []).map((tool) => ({
+          kind: "tool_call",
+          toolCallId: tool.id,
+        }));
+  const recoveredDispatchStartedAt =
+    recoveredDispatchState.status === "success" && recoveredControllerWorkerRunId
+      ? recoveredStageTeamDispatchStartedAt(
+          recoveredDispatchState.model,
+          recoveredControllerWorkerRunId
+        )
+      : null;
+  const recoveredDispatchTimelineIndex = resolveRecoveredDispatchTimelineIndex(
+    timelineEntries,
+    subAgent?.toolCalls ?? [],
+    recoveredDispatchStartedAt
+  );
   const currentPlanTool = useMemo(
     () =>
       resolveLatestVisibleSubAgentUpdatePlanTool(subAgent?.toolCalls ?? [], {
@@ -1942,6 +2385,8 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
     subAgent?.toolCalls.length ?? 0,
     latestRunningTool?.id ?? "",
     latestRunningTool?.streamingOutput?.length ?? 0,
+    recoveredDispatchState.status,
+    recoveredDispatchAssignments.length,
   ].join(":");
 
   const updateStickiness = useCallback(() => {
@@ -2067,9 +2512,12 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   const displayAgentName = getSubAgentDisplayName(subAgent);
   const AgentIcon = getAgentIcon(displayAgentName);
   const agentColor = getAgentColor(displayAgentName);
-  const delegatedSubAgents = subAgent.toolCalls.flatMap((tool) =>
-    nestedSubAgentsForTool(tool, subAgents)
-  );
+  const delegatedSubAgents = [
+    ...subAgent.toolCalls.flatMap((tool) => nestedSubAgentsForTool(tool, subAgents)),
+    ...recoveredDispatchAssignments.flatMap((assignment) =>
+      assignment.agent ? [assignment.agent] : []
+    ),
+  ];
   const ownHeaderDisplayStatus = getSubAgentHeaderDisplayStatus(subAgent, { parentStageStopped });
   const headerDisplayStatus =
     ownHeaderDisplayStatus === "completed" &&
@@ -2083,7 +2531,6 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   });
   const showCoverageView = Boolean(stageCoverageContext && activeDetailTab === "coverage");
   const toolMap = new Map(subAgent.toolCalls.map((tc) => [tc.id, tc]));
-  const hasEntries = detailEntries.length > 0;
   const backgroundedToolCount = subAgent.toolCalls.filter(
     (tool) => getSubAgentToolDisplayStatus(tool, { parentStageStopped }) === "backgrounded"
   ).length;
@@ -2263,94 +2710,40 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
 
           {/* Interleaved timeline entries: agent narrative blocks + tool calls */}
           <div>
-            {hasEntries
-              ? detailEntries.map((entry, i) => {
-                  const previous = i > 0 ? detailEntries[i - 1] : null;
-                  const boundaryClass = shouldSeparateSubAgentDetailEntries(previous, entry)
-                    ? "border-t border-border/10"
-                    : "";
-                  const renderedEntry = (() => {
-                    if (entry.kind === "thinking" && entry.text) {
-                      return (
-                        <div className={SUB_AGENT_DETAIL_NARRATIVE_BLOCK_CLASS}>
-                          <ThinkingBlock
-                            content={entry.text}
-                            isActive={isRunning && i === detailEntries.length - 1}
-                            startedAt={entry.startedAt}
-                            endedAt={entry.endedAt}
-                            variant="detail"
-                          />
-                        </div>
-                      );
-                    }
-                    if (entry.kind === "text" && entry.text) {
-                      return (
-                        <AgentOutputBlock
-                          compactTop={previous?.kind === "thinking"}
-                          text={entry.text}
-                          streaming={isRunning && i === detailEntries.length - 1}
-                        />
-                      );
-                    }
-                    if (entry.kind === "tool_call" && entry.toolCallId) {
-                      const tool = toolMap.get(entry.toolCallId);
-                      if (tool?.name === "update_plan" && tool.id !== currentPlanToolId) {
-                        return null;
-                      }
-                      if (tool) {
-                        const dispatchAssignments = stageTeamDispatchAssignmentsForTool(
-                          tool,
-                          subAgents
-                        );
-                        if (dispatchAssignments.length > 0) {
-                          return (
-                            <StageTeamDispatchAssignmentList
-                              assignments={dispatchAssignments}
-                              sessionId={sessionId}
-                              toolStatus={tool.status}
-                              onOpen={openSubAgent}
-                            />
-                          );
-                        }
-                        const nestedAgents = nestedSubAgentsForTool(tool, subAgents);
-                        if (nestedAgents.length > 0) {
-                          return (
-                            <div>
-                              {nestedAgents.map((nestedAgent) => (
-                                <NestedSubAgentCard
-                                  key={nestedAgent.parentRequestId}
-                                  agent={nestedAgent}
-                                  sessionId={sessionId}
-                                  onOpen={openSubAgent}
-                                />
-                              ))}
-                            </div>
-                          );
-                        }
-                      }
-                      if (tool) {
-                        return (
-                          <AgentToolCallBlock
-                            tool={tool}
-                            parentStagePassed={parentStagePassed}
-                            parentStageStopped={parentStageStopped}
-                            visualRelation={getSubAgentToolCallVisualRelation(previous)}
-                          />
-                        );
-                      }
-                    }
-                    return null;
-                  })();
-                  if (!renderedEntry) return null;
+            {timelineEntries.map((entry, i) => {
+              const previous = i > 0 ? timelineEntries[i - 1] : null;
+              const boundaryClass = shouldSeparateSubAgentDetailEntries(previous, entry)
+                ? "border-t border-border/10"
+                : "";
+              const renderedEntry = (() => {
+                if (entry.kind === "thinking" && entry.text) {
                   return (
-                    <div key={`entry-${i}`} className={boundaryClass}>
-                      {renderedEntry}
+                    <div className={SUB_AGENT_DETAIL_NARRATIVE_BLOCK_CLASS}>
+                      <ThinkingBlock
+                        content={entry.text}
+                        isActive={isRunning && i === timelineEntries.length - 1}
+                        startedAt={entry.startedAt}
+                        endedAt={entry.endedAt}
+                        variant="detail"
+                      />
                     </div>
                   );
-                })
-              : subAgent.toolCalls.length > 0
-                ? subAgent.toolCalls.map((tool) => {
-                    if (tool.name === "update_plan" && tool.id !== currentPlanToolId) return null;
+                }
+                if (entry.kind === "text" && entry.text) {
+                  return (
+                    <AgentOutputBlock
+                      compactTop={previous?.kind === "thinking"}
+                      text={entry.text}
+                      streaming={isRunning && i === timelineEntries.length - 1}
+                    />
+                  );
+                }
+                if (entry.kind === "tool_call" && entry.toolCallId) {
+                  const tool = toolMap.get(entry.toolCallId);
+                  if (tool?.name === "update_plan" && tool.id !== currentPlanToolId) {
+                    return null;
+                  }
+                  if (tool) {
                     const dispatchAssignments = stageTeamDispatchAssignmentsForTool(
                       tool,
                       subAgents
@@ -2359,7 +2752,6 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                       return (
                         <StageTeamDispatchAssignmentList
                           assignments={dispatchAssignments}
-                          key={tool.id}
                           sessionId={sessionId}
                           toolStatus={tool.status}
                           onOpen={openSubAgent}
@@ -2367,27 +2759,66 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                       );
                     }
                     const nestedAgents = nestedSubAgentsForTool(tool, subAgents);
-                    return nestedAgents.length > 0 ? (
-                      <div key={tool.id}>
-                        {nestedAgents.map((nestedAgent) => (
-                          <NestedSubAgentCard
-                            key={nestedAgent.parentRequestId}
-                            agent={nestedAgent}
-                            sessionId={sessionId}
-                            onOpen={openSubAgent}
-                          />
-                        ))}
-                      </div>
-                    ) : (
+                    if (nestedAgents.length > 0) {
+                      return (
+                        <div>
+                          {nestedAgents.map((nestedAgent) => (
+                            <NestedSubAgentCard
+                              key={nestedAgent.parentRequestId}
+                              agent={nestedAgent}
+                              sessionId={sessionId}
+                              onOpen={openSubAgent}
+                            />
+                          ))}
+                        </div>
+                      );
+                    }
+                  }
+                  if (tool) {
+                    return (
                       <AgentToolCallBlock
-                        key={tool.id}
                         tool={tool}
                         parentStagePassed={parentStagePassed}
                         parentStageStopped={parentStageStopped}
+                        visualRelation={getSubAgentToolCallVisualRelation(previous)}
                       />
                     );
-                  })
-                : null}
+                  }
+                }
+                return null;
+              })();
+              const renderRecoveredDispatchHere =
+                shouldRecoverDispatch && recoveredDispatchTimelineIndex === i;
+              if (!renderedEntry && !renderRecoveredDispatchHere) return null;
+              return (
+                <Fragment key={`entry-${i}`}>
+                  {renderRecoveredDispatchHere && (
+                    <RecoveredStageTeamDispatchBlock
+                      assignments={recoveredDispatchAssignments}
+                      hasPointer={Boolean(recoveredDispatchPointer)}
+                      readState={recoveredDispatchState}
+                      sessionId={sessionId}
+                      shouldRecover={shouldRecoverDispatch}
+                      onOpen={openSubAgent}
+                      onRetry={() => setRecoveredDispatchRefresh((version) => version + 1)}
+                    />
+                  )}
+                  {renderedEntry && <div className={boundaryClass}>{renderedEntry}</div>}
+                </Fragment>
+              );
+            })}
+
+            {shouldRecoverDispatch && recoveredDispatchTimelineIndex === timelineEntries.length && (
+              <RecoveredStageTeamDispatchBlock
+                assignments={recoveredDispatchAssignments}
+                hasPointer={Boolean(recoveredDispatchPointer)}
+                readState={recoveredDispatchState}
+                sessionId={sessionId}
+                shouldRecover={shouldRecoverDispatch}
+                onOpen={openSubAgent}
+                onRetry={() => setRecoveredDispatchRefresh((version) => version + 1)}
+              />
+            )}
           </div>
 
           {/* Error */}

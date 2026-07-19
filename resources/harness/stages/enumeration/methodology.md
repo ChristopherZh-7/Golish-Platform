@@ -1,7 +1,10 @@
 **Goal:** enumerate CONTENT on the services EAS already mapped — JavaScript/API
 endpoints, directories/paths, and parameters. Port/service discovery is already
-done in EAS; do NOT re-port-scan here. The units you enumerate (endpoints, params)
-become the coverage denominator for `vuln_triage`.
+done in EAS; do NOT re-port-scan here. Successful browser/static producers publish
+an operation-bound exact-origin endpoint/parameter manifest. That normalized
+manifest—not a guessed fixed list—determines which `vuln_triage` checks are
+applicable. A raw `api_endpoints` row without this operation relation is not a
+downstream scan input.
 
 **Recommended sequence (only on live web services from EAS):**
 
@@ -171,7 +174,12 @@ become the coverage denominator for `vuln_triage`.
    sibling evidence/outcome writes before publishing them in one transaction;
    any prepare failure publishes both as `partial`, while a transaction failure
    leaves the initial partial pair authoritative. An unresolved endpoint
-   candidate is incomplete, not an empty terminal result.
+   candidate is incomplete, not an empty terminal result. Every persisted
+   endpoint must also be related to the trusted Enumeration operation and exact
+   `web_origin_id`; query parameters and body/form parameters are stored with
+   distinct locations and no captured value. A relation/parameter-manifest
+   persistence error is an endpoint persistence error and prevents terminal
+   JSAPI/PARAM coverage.
 7. Batch route probe — run `route_probe_paths` in BATCH
    (`targets=[{target_id, base_url}, ...]`) over the same page, with explicit
    bounded concurrency such as `batch_concurrency=4` unless the worklist is
@@ -225,8 +233,10 @@ become the coverage denominator for `vuln_triage`.
 8. Parameter discovery — derive parameters from observed browser requests,
    crawler (browser + enum_crawl_same_origin_urls) URLs with query strings, HTML forms, and targeted
    `js_extract_apis` `param_hints` after reviewing saved JS. Persist parameter
-   names into `api_endpoints.params`; do not default to active hidden-parameter
-   brute-force.
+   names into `api_endpoints.params` and the normalized operation manifest; do
+   not default to active hidden-parameter brute-force. Only a GET query parameter
+   becomes an executable Nuclei DAST input in the next stage. Body/form/path/header
+   names remain inventory until a typed safe request model exists.
 9. Slim submit — call `stage_worklist_status` and `check_stage_asset_coverage`.
    If either says `ready_to_submit=false`, call `stage_worklist_next` again and
    close only the named cells. Once the newest previews say

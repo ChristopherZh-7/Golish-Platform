@@ -44,8 +44,10 @@
 
 ## 注意事项 / 坑
 
+- bound Worker 的 generic tool begin wrapper不能从任意 `anyhow` error推断 lease loss。concrete `BoundWorkerToolLifecycle` 必须先按 typed repository error更新 shared bound flag；pre-dispatch storage/transient failure保留 lease可落，让上层结束当前 attempt并重排稳定 WorkItem。finish failure仍按未知结果策略封住 stale landing。
+
 - `timeout_secs=None` = 有进展就一直跑（靠 idle/per-tool/max_iterations 兜底）；改超时语义别让 sub-agent 永久挂起。
-- Prober/Enumerator 的 idle timeout 不能再充当 guarded EAS wrapper 的总墙钟截止：`eas_probe_http_liveness` / `eas_discover_ports` / `eas_fingerprint_services` / `eas_fingerprint_web_stack` 与既有 browser/JS/route direct tools 一样绕过 `tokio::time::timeout` 外层截断，继续由 shared cancellation 和工具自己的 bounded command timeout 收口。否则 drop future 会切断后续 authorized landing / evidence / outcome。
+- Prober/Enumerator 的 idle timeout 不能再充当 guarded EAS wrapper 的总墙钟截止：`eas_probe_http_liveness` / `eas_discover_ports` / `eas_fingerprint_services` / `eas_fingerprint_web_stack` 与既有 browser/JS/route direct tools 一样绕过 `tokio::time::timeout` 外层截断，继续由 shared cancellation 和工具自己的 bounded command timeout 收口。Vuln 的 `vuln_nuclei_general` / `vuln_nuclei_fingerprint_targeted` 同样是 self-bounded foreground wrapper：它们接受后端校验的最长 600 秒预算，必须保有 future 直到 runner timeout/完成、解析与 DB landing 全部结束；SubAgent 的 300 秒 fallback 不得提前 drop。超时结果仍为 partial/error，不能升级成 checked-empty。否则 drop future 会切断后续 authorized landing / evidence / outcome，并诱发同一 target 的重叠重试。
 - `SubAgentExecutorContext.cancelled` 借用顶层 `AgentBridge` cancel flag；worker loop 在每轮开始、LLM stream 等待、工具 dispatch 前/等待工具时都要检查它。不要让 nested sub-agent 清掉该 flag，用户 Stop 必须能打断 stage_run 的 per-org worker。
 - 工具经 `ToolProvider` 注入（保持 L2 不反向依赖上层 runtime）；barrier 工具是 sub-agent 与主 agent 的交接点。
 - `SubAgentExecutorContext.active_org_id_override` 是 stage-run per-org 硬隔离通道：registry fallback 执行 `manage_targets` / `manage_organizations`，以及 Enumeration 的 `enum_crawl_same_origin_urls` / `browser_collect_js_api` / `js_extract_apis` / `route_probe_paths` 时都会注入内部隐藏 `__harness_org_id`，让工具按当前 org 子树过滤/绑定；不要把这件事退化成 prompt 约束。
@@ -80,3 +82,16 @@
 ```bash
 cd backend && cargo nextest run -p golish-sub-agents executor
 ```
+
+## Stage Team canonical dispatch contract（2026-07-17）
+
+- `stage_team_dispatch_workers.workers[].subject_refs[]` 给模型公开的 target selector 必须是精确
+  `{kind:"target",target_id:"<uuid>"}`；`target_url` 只能留在 bounded objective/tool 参数中，不能成为
+  authorization ref。整公司 assignment 才可省略 `subject_refs`。
+- schema 保持 provider-compatible 的单一 object shape，不使用 `oneOf` / `anyOf`；host/runtime 与 DB 仍会
+  重验 frozen operation、organization、project path 和 scope。
+
+## Self-bounded Vuln wrapper cancellation（2026-07-19）
+
+- 两个 Nuclei wrapper 不使用 generic per-tool outer timeout；它们自己的 foreground deadline是唯一扫描预算。executor 为 active wrapper安装 task-local cancellation，收到 Stop 后先 signal，再 await wrapper future、tool lifecycle finish和证据/outcome landing，最后才结束当前 sub-agent dispatch。
+- 默认 Vuln Scanner 没有整段 wall-clock timeout；新的 formulaic Nuclei path更进一步绕过 LLM worker，由 runtime host直接调用 wrapper。普通工具和 anonymous-access仍保留有界 generic timeout，不继承 Nuclei 的特殊所有权。

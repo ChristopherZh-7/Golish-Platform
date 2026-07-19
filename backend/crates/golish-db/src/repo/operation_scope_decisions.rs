@@ -165,6 +165,60 @@ pub async fn derive_exact(
     derive_exact_with_connection(&mut connection, input).await
 }
 
+/// Authorize the one pre-freeze passive recon action needed by Scoping.
+///
+/// The requested organization id is untrusted model input until this query
+/// binds it to the exact operation, Scoping execution, project root and latest
+/// successful human subsidiary choice. Identity mismatches are ordinary
+/// denials so callers can fail closed without leaking cross-operation detail.
+pub async fn scoping_passive_recon_organization_authorized(
+    pool: &PgPool,
+    operation_id: Uuid,
+    stage_execution_id: Uuid,
+    root_organization_id: Uuid,
+) -> Result<bool, ScopeDecisionError> {
+    let mut connection = pool.acquire().await?;
+    let exact_root_exists = sqlx::query_scalar::<_, bool>(
+        r#"SELECT TRUE
+             FROM operation_state AS operation
+             JOIN project_scopes AS project
+               ON project.project_scope_id = operation.project_scope_id
+              AND project.retired_at IS NULL
+             JOIN stage_runs AS execution
+               ON execution.id = $2
+              AND execution.operation_id = operation.operation_id
+              AND execution.stage_kind = 'scoping'
+              AND execution.status = 'started'
+             JOIN organizations AS organization
+               ON organization.id = $3
+              AND organization.project_path = project.canonical_project_path
+              AND organization.parent_id IS NULL
+            WHERE operation.operation_id = $1
+              AND operation.current_stage = 'scoping'
+              AND operation.superseded_by IS NULL"#,
+    )
+    .bind(operation_id)
+    .bind(stage_execution_id)
+    .bind(root_organization_id)
+    .fetch_optional(&mut *connection)
+    .await?
+    .is_some();
+    if !exact_root_exists {
+        return Ok(false);
+    }
+
+    let lifecycle = tool_calls::scoping_lifecycle_for_execution_with_connection(
+        &mut connection,
+        operation_id,
+        stage_execution_id,
+    )
+    .await?;
+    Ok(matches!(
+        latest_subsidiary_choice(&lifecycle, root_organization_id),
+        Some((_, SubsidiaryChoice::Included))
+    ))
+}
+
 pub async fn derive_exact_with_connection(
     connection: &mut PgConnection,
     input: &ExactScopeDecisionInput,
@@ -183,6 +237,7 @@ pub async fn derive_exact_with_connection(
              JOIN organizations AS organization
                ON organization.id = $4
               AND organization.project_path = project.canonical_project_path
+              AND organization.parent_id IS NULL
             WHERE operation.operation_id = $1
               AND operation.project_scope_id = $2
               AND operation.current_stage = 'scoping'
@@ -205,18 +260,10 @@ pub async fn derive_exact_with_connection(
         input.stage_execution_id,
     )
     .await?;
-    let choices = lifecycle
-        .iter()
-        .filter_map(|row| {
-            parse_subsidiary_choice(row, input.root_organization_id).map(|choice| (row, choice))
-        })
-        .collect::<Vec<_>>();
-    if choices.len() != 1 {
-        return Err(ScopeDecisionError::Conflict {
-            code: "scope_decision_choice_ambiguous",
-        });
-    }
-    let (choice_row, choice) = choices[0];
+    let (choice_row, choice) = latest_subsidiary_choice(&lifecycle, input.root_organization_id)
+        .ok_or(ScopeDecisionError::Missing {
+            entity: "scope_decision_choice",
+        })?;
 
     let root_unit = ApprovedOrgUnit {
         decision_row_id: format!("root:{}", input.root_organization_id),
@@ -474,6 +521,18 @@ pub async fn load_for_execution_with_connection(
     .bind(stage_execution_id)
     .fetch_optional(connection)
     .await?)
+}
+
+fn latest_subsidiary_choice(
+    lifecycle: &[ExactScopingLifecycleRow],
+    root_organization_id: Uuid,
+) -> Option<(&ExactScopingLifecycleRow, SubsidiaryChoice)> {
+    lifecycle
+        .iter()
+        .filter_map(|row| {
+            parse_subsidiary_choice(row, root_organization_id).map(|choice| (row, choice))
+        })
+        .next_back()
 }
 
 fn parse_subsidiary_choice(

@@ -37,6 +37,16 @@ const REQUEST_COLUMNS: &str = r#"id,team_plan_id,operation_id,stage_execution_id
     expected_output_schema,budget_hint,dedupe_key,request_payload_hash,status,
     decision_reason_code,accepted_work_item_id,created_at"#;
 
+/// Company Controller plans are bounded by exact scope/epoch admission, live
+/// concurrency and per-WorkItem attempts. Their historical lifetime totals
+/// remain frozen only so an already-running TeamPlan can replay byte-for-byte.
+pub(crate) fn enforces_lifetime_worker_total(dynamic_request_policy: &Value) -> bool {
+    dynamic_request_policy
+        .get("coordination_mode")
+        .and_then(Value::as_str)
+        != Some("company_controller")
+}
+
 const RECOVERY_DECISION_COLUMNS: &str = r#"id,request_id,team_plan_id,work_item_id,
     worker_run_id,tool_call_record_id,operation_id,stage_execution_id,stage_run_unit_id,
     scope_snapshot_id,organization_id,expected_work_item_row_version,expected_checkpoint_version,
@@ -2009,13 +2019,17 @@ pub async fn retry_stage_worker(
         });
     }
 
-    let total_workers: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE stage_run_unit_id=$1")
-            .bind(plan.stage_run_unit_id)
-            .fetch_one(&mut *tx)
-            .await?;
-    let retry_scheduled =
-        attempts_used < max_attempts && total_workers < i64::from(plan.max_workers_total);
+    let lifetime_total_available = if enforces_lifetime_worker_total(&plan.dynamic_request_policy) {
+        let total_workers: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stage_worker_runs WHERE stage_run_unit_id=$1")
+                .bind(plan.stage_run_unit_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        total_workers < i64::from(plan.max_workers_total)
+    } else {
+        true
+    };
+    let retry_scheduled = attempts_used < max_attempts && lifetime_total_available;
 
     let worker = stage_worker_runs::finish_attempt_cas(
         &mut *tx,
