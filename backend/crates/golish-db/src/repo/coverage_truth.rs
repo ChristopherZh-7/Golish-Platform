@@ -56,6 +56,17 @@ pub struct ConfirmedOpenServicePorts {
     pub ports: Vec<u16>,
 }
 
+/// Exact per-asset service-fingerprint work remaining after subtracting both
+/// port-scoped terminal Nmap fingerprint/attempt rows from the current EAS
+/// freshness epoch. Embedded port service labels are intentionally not enough:
+/// they carry no per-port observation timestamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceFingerprintPortPlan {
+    pub asset: String,
+    pub confirmed_ports: Vec<u16>,
+    pub pending_ports: Vec<u16>,
+}
+
 /// 内容枚举 technique id（enumeration）。
 /// JS 资产收集（design 2026-07-01 §4.1）：真值 = 该 host 已落 js_analysis_results 行。
 pub const TECH_ENUM_JS: &str = "GOLISH-ENUM-JS";
@@ -206,6 +217,7 @@ fn informative_service_sql(port_alias: &str) -> String {
         "NULLIF(trim({port_alias}->>'service'), '') IS NOT NULL
             AND lower(split_part(trim({port_alias}->>'service'), ' ', 1))
                 NOT IN ('tcpwrapped', 'unknown', 'open', 'filtered', 'closed')
+            AND right(lower(split_part(trim({port_alias}->>'service'), ' ', 1)), 1) <> '?'
             AND {port_alias}->>'port' <> '53'"
     )
 }
@@ -290,7 +302,8 @@ fn port_has_service_surface_json(entry: &serde_json::Value) -> bool {
             !matches!(
                 first.as_str(),
                 "tcpwrapped" | "unknown" | "open" | "filtered" | "closed"
-            ) && port_number_from_json(entry) != Some(53)
+            ) && !first.ends_with('?')
+                && port_number_from_json(entry) != Some(53)
         })
         .unwrap_or(false);
     informative_service
@@ -346,6 +359,29 @@ pub fn missing_service_fingerprint_ports_from_ports_json(ports: &serde_json::Val
         out.insert(port);
     }
     out.into_iter().collect()
+}
+
+pub fn service_fingerprint_port_plan_from_ports_json(
+    asset: &str,
+    ports: &serde_json::Value,
+    terminal_nmap_ports: &BTreeSet<u16>,
+) -> ServiceFingerprintPortPlan {
+    let confirmed_ports = confirmed_open_service_ports_from_ports_json(ports);
+    // Embedded service fields have no per-port observation timestamp. A fresh
+    // port-discovery merge can retain an old service label while advancing the
+    // target-level ports timestamp, so those labels cannot safely suppress the
+    // current EAS epoch's -sV work. Only a fresh exact-port Nmap fingerprint or
+    // service_attempt marker supplied by the SQL caller closes this worklist.
+    let pending_ports = confirmed_ports
+        .iter()
+        .copied()
+        .filter(|port| !terminal_nmap_ports.contains(port))
+        .collect();
+    ServiceFingerprintPortPlan {
+        asset: asset.to_string(),
+        confirmed_ports,
+        pending_ports,
+    }
 }
 
 fn port_has_nmap_fingerprint_sql(
@@ -915,6 +951,32 @@ const CONFIRMED_OPEN_SERVICE_PORTS_FOR_ASSETS_SQL: &str = r#"
            AND ($3::text IS NULL OR t.project_path = $3)
         "#;
 
+const SERVICE_FINGERPRINT_PORT_PLAN_FOR_ASSETS_SQL: &str = r#"
+        SELECT t.value,
+               CASE
+                 WHEN jsonb_typeof(t.ports) = 'array' THEN t.ports
+                 ELSE '[]'::jsonb
+               END AS ports,
+               COALESCE(ARRAY(
+                   SELECT DISTINCT (f.evidence->>'port')::int
+                     FROM fingerprints f
+                    WHERE f.target_id = t.id
+                      AND f.project_path IS NOT DISTINCT FROM t.project_path
+                      AND lower(COALESCE(f.source, '')) = 'nmap'
+                      AND f.detected_at >= $4
+                      AND COALESCE(f.evidence->>'port', '') ~ '^[0-9]+$'
+                      AND (f.evidence->>'port')::int BETWEEN 1 AND 65535
+                      AND (NULLIF(trim(f.name), '') IS NOT NULL
+                           OR NULLIF(trim(f.version), '') IS NOT NULL)
+               ), ARRAY[]::int[]) AS terminal_nmap_ports
+          FROM targets t
+         WHERE t.scope::text = 'in'
+           AND t.value = ANY($1)
+           AND t.organization_id = $2
+           AND t.project_path = $3
+         ORDER BY t.value
+        "#;
+
 pub async fn confirmed_open_service_ports_for_assets(
     pool: &PgPool,
     org_id: Option<Uuid>,
@@ -947,6 +1009,43 @@ pub async fn confirmed_open_service_ports_for_assets(
                 asset,
                 ports: ports.into_iter().collect(),
             })
+        })
+        .collect())
+}
+
+/// Return the exact server-owned service-fingerprint worklist for authorized
+/// in-scope assets. Unlike the legacy confirmed-port helper, this subtracts
+/// exact port-scoped Nmap terminal attempts observed at or after `fresh_after`
+/// and requires an exact org/project owner; callers cannot use it as a
+/// cross-workspace discovery query.
+pub async fn service_fingerprint_port_plan_for_assets(
+    pool: &PgPool,
+    org_id: Uuid,
+    project_path: &str,
+    assets: &[String],
+    fresh_after: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<ServiceFingerprintPortPlan>> {
+    if assets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(String, serde_json::Value, Vec<i32>)> =
+        sqlx::query_as(SERVICE_FINGERPRINT_PORT_PLAN_FOR_ASSETS_SQL)
+            .bind(assets)
+            .bind(org_id)
+            .bind(project_path)
+            .bind(fresh_after)
+            .fetch_all(pool)
+            .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(asset, ports, terminal_ports)| {
+            let terminal_ports = terminal_ports
+                .into_iter()
+                .filter_map(|port| u16::try_from(port).ok())
+                .filter(|port| *port > 0)
+                .collect::<BTreeSet<_>>();
+            service_fingerprint_port_plan_from_ports_json(&asset, &ports, &terminal_ports)
         })
         .collect())
 }
@@ -1376,14 +1475,50 @@ mod tests {
             {"port": "80", "state": "open", "service": "http"},
             {"port": "81", "state": "open", "service": "open"},
             {"port": "82", "state": "open", "service": "tcpwrapped"},
+            {"port": "85", "state": "open", "service": "smtp?"},
             {"port": "83", "state": "open", "technologies": ["nginx"]},
             {"port": "84", "state": "open", "version": "1.2.3"}
         ]);
 
         assert_eq!(
             missing_service_fingerprint_ports_from_ports_json(&ports),
-            vec![81, 82]
+            vec![81, 82, 85]
         );
+    }
+
+    #[test]
+    fn service_fingerprint_port_plan_subtracts_exact_terminal_nmap_attempts() {
+        let ports = serde_json::json!([
+            {"port": "22", "state": "open", "service": "ssh"},
+            {"port": "25", "state": "open", "service": "smtp?"},
+            {"port": "26", "state": "open", "service": ""},
+            {"port": "53", "state": "open", "service": "domain"},
+            {"port": "443", "state": "filtered", "service": "https"}
+        ]);
+
+        let plan = service_fingerprint_port_plan_from_ports_json(
+            "192.0.2.30",
+            &ports,
+            &BTreeSet::from([25]),
+        );
+
+        assert_eq!(plan.asset, "192.0.2.30");
+        assert_eq!(plan.confirmed_ports, vec![22, 25, 26]);
+        assert_eq!(plan.pending_ports, vec![22, 26]);
+    }
+
+    #[test]
+    fn service_fingerprint_port_plan_sql_is_exact_owner_project_and_port_scoped() {
+        let sql = SERVICE_FINGERPRINT_PORT_PLAN_FOR_ASSETS_SQL;
+
+        assert!(sql.contains("t.scope::text = 'in'"));
+        assert!(sql.contains("t.organization_id = $2"));
+        assert!(sql.contains("t.project_path = $3"));
+        assert!(sql.contains("f.target_id = t.id"));
+        assert!(sql.contains("f.project_path IS NOT DISTINCT FROM t.project_path"));
+        assert!(sql.contains("lower(COALESCE(f.source, '')) = 'nmap'"));
+        assert!(sql.contains("f.detected_at >= $4"));
+        assert!(sql.contains("f.evidence->>'port'"));
     }
 
     #[test]

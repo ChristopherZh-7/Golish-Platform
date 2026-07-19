@@ -257,7 +257,9 @@ fn test_prober_prompt_is_active_surface() {
     assert!(prompt.contains("All four wrappers are forced foreground"));
     assert!(prompt.contains("guarded business rows and evidence have synchronously landed"));
     assert!(prompt.contains("legacy `background` compatibility field is deprecated and ignored"));
-    assert!(prompt.contains("retry only the corresponding unfinished asset-technique cells"));
+    assert!(prompt.contains("Usually omit `ports`"));
+    assert!(prompt.contains("Do not pass or increase a timeout"));
+    assert!(prompt.contains("already isolates slow IPs"));
     assert!(!prompt.contains("background:true"));
     assert!(!prompt.contains("soft timeout"));
     assert!(!prompt.contains("wait_for_background_jobs"));

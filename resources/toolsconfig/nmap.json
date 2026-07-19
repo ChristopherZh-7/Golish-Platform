@@ -168,7 +168,7 @@
     "output": {
       "format": "text",
       "produces": ["host", "port", "service", "version", "state", "liveness"],
-      "detect": "Nmap scan report|PORT\\s+STATE\\s+SERVICE",
+      "detect": "Nmap scan report|PORT\\s+STATE\\s+SERVICE|<nmaprun",
       "db_action": "target_update_recon",
       "patterns": [
         {

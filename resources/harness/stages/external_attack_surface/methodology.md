@@ -71,12 +71,14 @@ evidence ledger / `technique_outcomes` for the exact asset and technique.
    IP/CIDR range row must have a fresh port terminal result; discovered child IPs
    continue in their own supplemental wave.
 6. Service/version fingerprint — call `eas_fingerprint_services` only for
-   concrete IP targets with confirmed open ports. The wrapper owns the
-   `nmap -sV -Pn -iL ... -p ... -T3` recipe and rejects raw domains, URL strings,
-   and CIDR ranges. Every confirmed open port, including ports discovered later
-   in this stage, must get one fingerprint attempt unless a concrete blocker
-   makes it impossible; if new ports are added after the first fingerprint pass,
-   run the wrapper again for only those new ports. Close blocked concrete-host
+   concrete IP targets with confirmed open ports. Normally pass only `targets[]`:
+   the wrapper reads the exact DB-owned pending ports for each IP, splits them
+   into bounded chunks, runs small chunks concurrently, isolates slow IPs, and
+   performs at most one smaller recovery pass for ports whose complete XML did
+   not land. Optional `ports[]` can only narrow the pending set; callers cannot
+   expand the scan surface or override server-owned deadlines. It rejects raw
+   domains, URL strings, and CIDR ranges. Do not regroup IPs by matching port
+   sets, raise a timeout, or blindly replay a timed-out batch. Close blocked concrete-host
    SERVICE cells with a concrete note. A port-scoped nmap terminal result such
    as `tcpwrapped` closes that port for coverage even though it is not a strong
    service identity; do not keep rerunning it without a new reason. Bare DNS/53

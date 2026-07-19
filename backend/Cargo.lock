@@ -3146,6 +3146,7 @@ dependencies = [
  "golish-shell-exec",
  "libc",
  "pathdiff",
+ "quick-xml 0.39.2",
  "regex",
  "reqwest 0.13.3",
  "serde",

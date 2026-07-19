@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.12",
-  "last_updated": "2026-07-19",
+  "last_updated": "2026-07-20",
   "notes": "同一时间只能有一个 status=in_progress 的条目；当前 Target Intel / EAS / Enumeration / Vuln 四个按公司执行的普通阶段均为每公司一个 Codex 式 Company Controller，由 Controller 动态调用 0..N durable SubAgent 并自己提交 Gate。Candidate/Verification 仍保留 Wave/CandidateAttempt 合同，真实主动阶段仍要求 exact authorized target。CLI/GUI shared-DB post-Scoping stage fork 已通过定向验证。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -10,6 +10,28 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "eas-adaptive-service-fingerprinting-2026-07-20",
+      "priority": 0,
+      "area": "backend: EAS guarded service fingerprint scheduler, Nmap parser/output landing, DB coverage truth and Prober repair guidance",
+      "title": "Make EAS service fingerprinting backend-owned, adaptive and resistant to slow targets.",
+      "user_visible_behavior": "One EAS service-fingerprint call scans only exact missing confirmed-open ports, lets small targets finish while slow targets are isolated, records completed chunks immediately, distinguishes probed services from port-table guesses, performs only bounded server-owned recovery, and reports exact completed/weak/remaining ports without asking the Agent to guess a larger timeout.",
+      "status": "passing",
+      "design": "docs/design/2026-07-20-eas-adaptive-service-fingerprinting.md",
+      "plan": "docs/superpowers/plans/2026-07-20-eas-adaptive-service-fingerprinting.md",
+      "verification": [
+        "cd backend && cargo nextest run -p golish-db -E 'test(service_fingerprint_port_plan) | test(confirmed_open_service_ports) | test(weak_service_names)' --status-level fail",
+        "cd backend && cargo nextest run -p golish-pentest -E 'test(nmap_xml) | test(nmap_weak_service) | test(nmap_table_guess) | test(nmap_closed) | test(tcpwrapped_and_pseudo_services)' --status-level fail",
+        "cd backend && cargo nextest run -p golish-pentest-app -E 'test(service_fingerprint)' --status-level fail",
+        "cd backend && cargo nextest run -p golish-agent-kit -E 'test(eas_coverage_gap_instruction_is_batch_first)' --status-level fail",
+        "cd backend && cargo nextest run -p golish-sub-agents -E 'test(test_prober_prompt_is_active_surface)' --status-level fail",
+        "cd backend && cargo clippy -p golish-db -p golish-pentest -p golish-pentest-app -p golish-agent-kit -p golish-sub-agents --all-targets -- -D warnings",
+        "cargo fmt --manifest-path backend/Cargo.toml --all -- --check",
+        "jq empty feature_list.json resources/toolsconfig/nmap.json resources/harness/stages/external_attack_surface/spec.json && test $(jq '[.features[] | select(.status == \"in_progress\")] | length' feature_list.json) -eq 0 && git diff --check"
+      ],
+      "evidence": "PASS 2026-07-20. Runtime evidence: the prior 9-IP EAS run serialized 6 batches, three 57-58-port IPs hit 300s and were replayed at 600s; authorized direct Nmap timings on 150.138.234.105 showed state scan ~1s, version-intensity 0 ~49s, intensity 2 ~71s, and default -sV ~493s. Focused TDD first produced expected failures for Nmap XML/table guesses/truncation (run 88aeee16-6a0d-44fc-a509-b345d79fe799), missing DB worklist APIs, missing adaptive plan APIs, and stale StageRefiner text (run ac80ec4f-f990-4ff8-9b2f-fa68482da1e6). Final fresh checks: golish-db run 62e1ac03-4c55-4cb5-99fa-c433ee7826ea 5/5; golish-pentest run 58aaec1c-444f-4117-b989-504ac43dccc4 7/7; golish-pentest-app run a6c791b6-48d1-4115-9c9c-6c3303994f42 7/7; golish-agent-kit run 82c80d0a-c63a-474c-9947-253eb0e5fe9e 1/1; golish-sub-agents run 101db56f-e641-4fa4-a315-618b462fd158 1/1. Five affected crates passed all-target Clippy with -D warnings; cargo fmt --check, JSON parse and git diff --check passed. The implementation uses exact org/project/current-EAS-epoch pending ports, caller intersection only, per-IP sequential 16-port queues with cross-IP concurrency 3, server-owned fast/recovery/deep budgets, complete XML incremental guarded landing, strong/weak/closed attempt separation, one recovery pass, and per-target remaining-port partial semantics.",
+      "notes": "No schema/migration or new active-scan authority was added. Existing target guards, evidence ledger and deterministic Gate remain authoritative. Per AGENTS.md §0.1, init.sh, just precommit and full workspace test suites were not authorized and were not run."
+    },
     {
       "id": "organization-delete-quiescent-stage-task-convergence-2026-07-19",
       "priority": 0,

@@ -6,6 +6,17 @@
 
 ---
 
+#### 2026-07-20 · EAS 自适应服务指纹调度（PASS）
+
+- **本轮目标**：按用户授权，把 `eas_fingerprint_services` 从模型控制 timeout、相同端口集合串行批处理和整批原样重试，改成后端拥有 pending-port、有限并发、fast/recovery/deep预算、结构化强弱指纹、增量 landing 与 per-target remaining状态的通用能力。
+- **已完成**：新增 exact org/project/scope/current-EAS-epoch 的 DB service-fingerprint worklist；只有 `detected_at >= stage_started_at` 的 exact-port Nmap marker可跳过本轮探测，历史内嵌service不能制造fresh假完成，caller `ports` 只可取 pending交集。生产调度按单 IP 最多16端口分片，不同 IP固定并发3、同 IP顺序执行并在 launch/landing 分别刷新 TargetWriteGuard；fast=Nmap XML/intensity2/T4/max-retries1，未落地端口只做一次4-port intensity0 recovery，最多8个弱端口做 bounded deep enrichment。模型 schema移除 service timeout所有权。每个完整、未截断、exact-IP XML chunk立即 guarded landing，最终按 target聚合 strong/weak/completed/remaining与 found/empty/partial outcome；不完整/截断/授权漂移只保持 partial/error。Nmap XML保留 method/conf/product/version；table猜测、尾随`?`、pseudo service和non-open观测只写port-scoped `service_attempt`，且closed/filtered不覆盖confirmed-open port truth。Prober、StageRefiner、methodology、toolsconfig detector与五张模块卡/INDEX均同步。
+- **运行过的验证**：每条Cargo前 `just space-guard`。focused RED包括 Nmap XML/table/truncation run `88aeee16-6a0d-44fc-a509-b345d79fe799`、缺DB planner/API与缺adaptive plan/observation的compile exit101，以及旧StageRefiner文本 run `ac80ec4f-f990-4ff8-9b2f-fa68482da1e6` 1/1 expected fail。最终 `golish-db` run `62e1ac03-4c55-4cb5-99fa-c433ee7826ea` 5/5、`golish-pentest` run `58aaec1c-444f-4117-b989-504ac43dccc4` 7/7、`golish-pentest-app` run `a6c791b6-48d1-4115-9c9c-6c3303994f42` 7/7、`golish-agent-kit` run `82c80d0a-c63a-474c-9947-253eb0e5fe9e` 1/1、`golish-sub-agents` run `101db56f-e641-4fa4-a315-618b462fd158` 1/1；五个受影响crate all-target Clippy `-D warnings`、workspace rustfmt check、JSON parse与`git diff --check`均exit 0。
+- **已记录证据**：原真实9-IP run被拆6批串行，三个57–58端口IP先后占满300秒并被模型整批改为600秒重试；用户授权IP `150.138.234.105` 的直接诊断为state scan约1秒、intensity0约49秒、intensity2约71秒、默认完整`-sV`约493秒，证明尾延迟来自版本探针而非端口状态。新测试确定性证明58端口拆4块、小目标队列优先、跨IP并发/同IP串行、caller不能扩标、recovery只含未land端口、deep只含少量weak、timeout只有完整XML可land、closed观测不降级open truth。
+- **提交记录**：优化前共享工作树checkpoint为 `ea9595cb chore: checkpoint stage runtime and vuln workflow`；本功能准备按用户“直接commit”要求作为独立本地提交，不push、不建PR。根目录既有未跟踪审计报告DOCX继续明确排除。
+- **已知风险或未解决问题**：本功能没有已知正确性 blocker，未改schema/migration或主动扫描授权边界。按AGENTS.md §0.1未获授权，未运行`init.sh`、`just precommit`或全workspace测试；也未用开发实例再发一次真实外部EAS调用，剩余风险仅为未覆盖的完整进程/真实DB组合集成，当前由production compile、scoped Clippy、parser/output-store/planner/repair focused tests与既有真实Nmap timing覆盖。
+- **下一步最佳动作**：让开发实例加载新binary后，对一个已授权、包含快慢IP的普通EAS batch调用一次`eas_fingerprint_services(targets=[...])`且省略ports/timeout；在tool result核对`network_jobs`和每target completed/weak/remaining，并确认慢IP不再阻塞其它IP。无需再把timeout从300改600。
+- **以下文件已修改但未提交**：本条记录落盘时，本功能的Rust/JSON/提示词/设计计划/模块卡/状态文件尚待本地commit；用户既有未跟踪 `Golish-审计报告-Scoping到Candidate-20260719.docx` 不属于本功能且不会纳入提交。
+
 #### 2026-07-20 · EAS 优化前共享工作树安全 checkpoint
 
 - **本轮目标**：按用户明确要求，在开始修改通用 EAS/Nmap 指纹调度逻辑前，先把当前共享工作树中已累积的源码、测试、migration、设计/计划、模块卡与状态记录做成一个可恢复的本地 checkpoint；本轮不实现新的 EAS 行为。

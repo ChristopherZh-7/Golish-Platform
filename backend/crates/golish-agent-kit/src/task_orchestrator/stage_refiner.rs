@@ -267,10 +267,12 @@ impl RepairDirective {
         }
         if services_total > 0 {
             out.push_str(&format!(
-                "\n- SERVICE/eas_fingerprint_services: group hosts that share the same open-port set \
-                 and run one wrapper call per group with targets[] plus the confirmed ports[]. \
-                 Every confirmed open port, including ports discovered after the first pass, must \
-                 get one fingerprint attempt. Use eas_fingerprint_web_stack only for confirmed \
+                "\n- SERVICE/eas_fingerprint_services: use one wrapper call with the concrete-IP \
+                 targets[] and normally omit ports[]. The backend reads exact pending confirmed-open \
+                 ports per IP, chunks and schedules them concurrently, isolates slow targets, and \
+                 performs one bounded recovery pass. ports[] can only narrow that server-owned set. \
+                 Do not group by shared ports, increase timeouts, or replay an entire timed-out batch. \
+                 Use eas_fingerprint_web_stack only for confirmed \
                  HTTP(S) web origins; never use web fingerprinting for DNS/MySQL/SSH/non-HTTP \
                  service gaps. \
                  Do not include unresolved hosts or assets with no confirmed open ports; close \
@@ -698,7 +700,7 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
         ),
         (StageKind::ExternalAttackSurface, "eas_fingerprint_services", _) => {
             format!(
-                "eas_fingerprint_services wrapper: include {asset} in targets[] only after confirmed open ports exist; pass ports[] for the confirmed-open port set so every new IP:port gets an nmap service/version attempt"
+                "eas_fingerprint_services wrapper: include {asset} in targets[] only after confirmed open ports exist; normally omit ports[] because the backend selects pending ports per IP, isolates slow chunks, and performs one bounded recovery pass"
             )
         }
         (StageKind::ExternalAttackSurface, "eas_fingerprint_web_stack", _) => format!(
@@ -1372,7 +1374,9 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("eas_fingerprint_services wrapper:"));
-        assert!(instruction.contains("confirmed ports[]"));
+        assert!(instruction.contains("normally omit ports[]"));
+        assert!(instruction.contains("isolates slow targets"));
+        assert!(instruction.contains("Do not group by shared ports, increase timeouts"));
         assert!(instruction.contains("Do not include unresolved hosts"));
         assert!(instruction.contains("run once per confirmed Host/SNI origin"));
         assert!(d.actions[3]
