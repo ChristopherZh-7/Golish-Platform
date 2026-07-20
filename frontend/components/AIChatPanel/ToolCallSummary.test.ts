@@ -1,9 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  stageRunBlockedCopy,
   stageRunResultPassed,
   toolResultIsBackgrounded,
   toolResultIsFailure,
 } from "./ToolCallSummary";
+
+describe("stageRunBlockedCopy", () => {
+  it("directs a blocked continue card into its recovery details", () => {
+    expect(stageRunBlockedCopy(1)).toEqual({
+      detailLabel: "处理阻塞 →",
+      summaryLabel: "1 阻塞 · 点此卡处理",
+    });
+    expect(stageRunBlockedCopy(0)).toEqual({
+      detailLabel: "Details →",
+      summaryLabel: null,
+    });
+  });
+});
 
 describe("toolResultIsFailure", () => {
   it("flags a rejected status body as a failure (shows ❌ not ✅)", () => {

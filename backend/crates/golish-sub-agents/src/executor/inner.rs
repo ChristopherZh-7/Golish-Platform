@@ -43,6 +43,31 @@ use super::stream_processing::process_llm_stream;
 use super::tool_setup::build_tool_definitions;
 use super::CheckpointedChainId;
 
+const MAX_BOUND_STAGE_SUBMIT_REPROMPTS: usize = 2;
+
+fn bound_stage_submit_reprompt(
+    bound_worker: bool,
+    tools: &[rig::completion::ToolDefinition],
+    reprompts_used: usize,
+) -> Option<String> {
+    if !bound_worker
+        || reprompts_used >= MAX_BOUND_STAGE_SUBMIT_REPROMPTS
+        || !tools
+            .iter()
+            .any(|tool| tool.name == "submit_stage_deliverable")
+    {
+        return None;
+    }
+    Some(
+        "BOUND STAGE SUBMISSION REQUIRED: your previous response ended without calling \
+         submit_stage_deliverable, so the deterministic per-organization gate received nothing. \
+         Do not narrate, restate the manifest, list keys in prose, or stop with a summary. Your \
+         entire next response must be one submit_stage_deliverable tool call. Copy exact \
+         server-provided identities directly into compact structured fields and submit now."
+            .to_string(),
+    )
+}
+
 /// Classify provider failures that deterministically mean the request history
 /// exceeds the model's input window. Keep this deliberately narrower than
 /// generic HTTP 400 handling: malformed requests, auth failures, and rate
@@ -212,6 +237,7 @@ where
 
     let mut accumulated_response = String::new();
     let mut iteration = 0;
+    let mut bound_stage_submit_reprompts = 0;
     // Stage-stall circuit breaker: a weak worker can re-submit the SAME stage
     // gate BLOCK every turn until it burns the whole iteration cap (observed:
     // 22× "never attempted" on one org). Bail after N identical blocks.
@@ -583,6 +609,27 @@ where
                 content: OneOrMany::many(assistant_content)
                     .expect("non-empty assistant content was checked above"),
             });
+            if let Some(directive) = bound_stage_submit_reprompt(
+                ctx.bound_worker_chain.is_some(),
+                &tools,
+                bound_stage_submit_reprompts,
+            ) {
+                bound_stage_submit_reprompts += 1;
+                chat_history.push(Message::User {
+                    content: OneOrMany::one(UserContent::Text(Text { text: directive })),
+                });
+                accumulated_response.clear();
+                let durable_chain_id =
+                    checkpoint_chain(&ctx, chain_id, &chat_history, agent_id).await?;
+                checkpointed_chain_id.publish(durable_chain_id);
+                tracing::warn!(
+                    target: "harness::hook",
+                    agent_id = %agent_id,
+                    reprompt = bound_stage_submit_reprompts,
+                    "bound stage worker returned prose without a StageDeliverable; continuing the same durable chain"
+                );
+                continue;
+            }
             break;
         }
 
@@ -829,7 +876,10 @@ mod tests {
     use tokio::sync::{mpsc, RwLock};
     use uuid::Uuid;
 
-    use super::is_provider_context_limit_error;
+    use super::{
+        bound_stage_submit_reprompt, is_provider_context_limit_error,
+        MAX_BOUND_STAGE_SUBMIT_REPROMPTS,
+    };
     use crate::definition::{SubAgentContext, SubAgentDefinition};
     use crate::executor_types::{
         BoundWorkerChainContext, SubAgentChainPersistence, SubAgentExecutorContext, ToolProvider,
@@ -837,6 +887,28 @@ mod tests {
     use golish_core::events::AiEvent;
     use golish_tools::ToolRegistry;
     use rig::completion::request::ToolDefinition;
+
+    #[test]
+    fn bound_stage_worker_gets_a_bounded_submit_reprompt_only_when_the_tool_is_visible() {
+        let tools = vec![ToolDefinition {
+            name: "submit_stage_deliverable".to_string(),
+            description: "submit".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+
+        let directive = bound_stage_submit_reprompt(true, &tools, 0)
+            .expect("bound stage worker must not terminate on prose before submission");
+        assert!(directive.contains("entire next response"));
+        assert!(directive.contains("submit_stage_deliverable"));
+        assert!(bound_stage_submit_reprompt(false, &tools, 0).is_none());
+        assert!(bound_stage_submit_reprompt(true, &[], 0).is_none());
+        assert!(bound_stage_submit_reprompt(
+            true,
+            &tools,
+            MAX_BOUND_STAGE_SUBMIT_REPROMPTS
+        )
+        .is_none());
+    }
 
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
     struct SingleToolStreamResponse;

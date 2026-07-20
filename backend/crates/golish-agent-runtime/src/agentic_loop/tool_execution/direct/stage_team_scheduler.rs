@@ -63,11 +63,13 @@ const VULN_GENERAL_DAST_TECHNIQUES: &[&str] = &["WSTG-INPV-05", "WSTG-INPV-01", 
 const VULN_ANONYMOUS_TECHNIQUE: &str = "WSTG-ATHN-04";
 const VULN_NDAY_TECHNIQUE: &str = "GOLISH-NDAY";
 const MAX_VULN_AUTOMATIC_ATTEMPTS: u32 = 3;
+const VULN_BUDGET_RECOVERY_ATTEMPT: u32 = MAX_VULN_AUTOMATIC_ATTEMPTS + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum VulnShardShape {
     Primary,
     Narrowed,
+    BudgetRecovery,
 }
 
 impl VulnShardShape {
@@ -75,6 +77,7 @@ impl VulnShardShape {
         match self {
             Self::Primary => "primary",
             Self::Narrowed => "narrowed",
+            Self::BudgetRecovery => "budget_recovery",
         }
     }
 }
@@ -251,32 +254,44 @@ pub(super) fn build_vuln_worklist_shards(
                 .get("state")
                 .and_then(Value::as_str)
                 .unwrap_or("pending");
-            let shape = match state {
-                "pending" => VulnShardShape::Primary,
-                "partial" | "error" => VulnShardShape::Narrowed,
+            let (shape, recovery_attempt) = match state {
+                "pending" => (VulnShardShape::Primary, 1),
+                "partial" | "error" => {
+                    let prior_attempt = cell
+                        .pointer("/details/attempt_ordinal")
+                        .and_then(Value::as_u64)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .filter(|value| *value > 0)
+                        .unwrap_or(1);
+                    let retry_disabled = cell
+                        .pointer("/details/automatic_retry_allowed")
+                        .and_then(Value::as_bool)
+                        == Some(false);
+                    let legacy_budget_recovery = retry_disabled
+                        && prior_attempt == MAX_VULN_AUTOMATIC_ATTEMPTS
+                        && matches!(
+                            tool_name,
+                            "vuln_nuclei_general" | "vuln_nuclei_fingerprint_targeted"
+                        )
+                        && cell
+                            .pointer("/details/failure_owner")
+                            .and_then(Value::as_str)
+                            == Some("scanner_runtime")
+                        && cell
+                            .pointer("/details/failure_class")
+                            .and_then(Value::as_str)
+                            == Some("scan_budget_exhausted");
+                    if legacy_budget_recovery {
+                        (VulnShardShape::BudgetRecovery, VULN_BUDGET_RECOVERY_ATTEMPT)
+                    } else {
+                        if retry_disabled || prior_attempt >= MAX_VULN_AUTOMATIC_ATTEMPTS {
+                            continue;
+                        }
+                        (VulnShardShape::Narrowed, prior_attempt.saturating_add(1))
+                    }
+                }
                 "found" | "checked_empty" | "blocked" | "not_applicable" => continue,
                 _ => return Err("vuln_worklist_state_invalid"),
-            };
-            let recovery_attempt = if shape == VulnShardShape::Narrowed {
-                if cell
-                    .pointer("/details/automatic_retry_allowed")
-                    .and_then(Value::as_bool)
-                    == Some(false)
-                {
-                    continue;
-                }
-                let prior_attempt = cell
-                    .pointer("/details/attempt_ordinal")
-                    .and_then(Value::as_u64)
-                    .and_then(|value| u32::try_from(value).ok())
-                    .filter(|value| *value > 0)
-                    .unwrap_or(1);
-                if prior_attempt >= MAX_VULN_AUTOMATIC_ATTEMPTS {
-                    continue;
-                }
-                prior_attempt.saturating_add(1)
-            } else {
-                1
             };
             let key = VulnShardGroupKey {
                 target_id,
@@ -285,7 +300,7 @@ pub(super) fn build_vuln_worklist_shards(
                 capability_family,
                 shape,
                 recovery_attempt,
-                narrowed_technique: (shape == VulnShardShape::Narrowed)
+                narrowed_technique: (shape != VulnShardShape::Primary)
                     .then(|| technique.to_string()),
             };
             grouped
@@ -1286,6 +1301,53 @@ mod tests {
         let shards = build_vuln_worklist_shards(&snapshot).expect("valid exhausted worklist");
 
         assert!(shards.is_empty());
+    }
+
+    #[test]
+    fn vuln_worklist_shard_reopens_one_legacy_scan_budget_exhaustion_at_max_budget() {
+        let mut snapshot = vuln_snapshot_with_cells(
+            Uuid::new_v4(),
+            "https://budget-recovery.example:443",
+            &[("WSTG-CONF-05", "partial")],
+        );
+        snapshot["assets"][0]["coverage"][0]["details"] = json!({
+            "attempt_ordinal": MAX_VULN_AUTOMATIC_ATTEMPTS,
+            "automatic_retry_allowed": false,
+            "failure_owner": "scanner_runtime",
+            "failure_class": "scan_budget_exhausted"
+        });
+
+        let shards = build_vuln_worklist_shards(&snapshot).expect("valid recovery worklist");
+
+        assert_eq!(shards.len(), 1);
+        assert_eq!(shards[0].shape.as_str(), "budget_recovery");
+        assert_eq!(shards[0].recovery_attempt, 4);
+        assert_eq!(shards[0].techniques, ["WSTG-CONF-05"]);
+    }
+
+    #[test]
+    fn vuln_worklist_shard_never_reopens_budget_recovery_or_other_runtime_failures() {
+        for (attempt_ordinal, failure_class) in [
+            (MAX_VULN_AUTOMATIC_ATTEMPTS, "runner_failure"),
+            (MAX_VULN_AUTOMATIC_ATTEMPTS, "operator_cancelled"),
+            (4, "scan_budget_exhausted"),
+        ] {
+            let mut snapshot = vuln_snapshot_with_cells(
+                Uuid::new_v4(),
+                "https://still-exhausted.example:443",
+                &[("WSTG-CONF-05", "partial")],
+            );
+            snapshot["assets"][0]["coverage"][0]["details"] = json!({
+                "attempt_ordinal": attempt_ordinal,
+                "automatic_retry_allowed": false,
+                "failure_owner": "scanner_runtime",
+                "failure_class": failure_class
+            });
+
+            let shards = build_vuln_worklist_shards(&snapshot).expect("valid exhausted worklist");
+
+            assert!(shards.is_empty(), "unexpected retry for {failure_class}");
+        }
     }
 
     #[test]

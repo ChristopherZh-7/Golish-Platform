@@ -28,7 +28,10 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use anyhow::Result;
-use futures::{future::join_all, stream, StreamExt};
+use futures::{
+    stream::{self, FuturesUnordered},
+    StreamExt,
+};
 use rig::completion::{CompletionModel as RigCompletionModel, Message};
 use rig::message::{Text, UserContent};
 use rig::one_or_many::OneOrMany;
@@ -37,14 +40,15 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use golish_agent_kit::db_traits::{
-    AgentType, AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveUnitStateView,
-    BindStageTeamLeaderFinalSubmitter, CandidateExecutionContinuationView,
-    CandidateTerminalIntentStatus, CheckpointBoundWorkerChain, CheckpointCandidateTerminalBarrier,
-    ClaimStageAggregator, ClaimStageTeamLeader, ClaimStageWorkItem, ClaimWorkerAndBindChain,
-    ClaimedStageWorkItemView, CloseAttackV2VerificationUnit, CloseStageRequestEpoch,
-    CloseWaveGatePass, ClosedWaveGatePass, CompleteStageWorker, ControlCandidateAttempt,
-    DbRepoProvider, FinalizeStageTeamUnit, FinishWorkerAttempt, LoadInheritedStageHandoffs,
-    LoadStageTeamBarrier, LoadWorkerCheckpoint, OrgScopeUnit, ParkStageTeamLeader,
+    AdoptLegacyVulnTerminalOutcomes, AgentType, AttackV2WaveAuthorityView, AttackV2WaveEntryView,
+    AttackV2WaveUnitStateView, BindStageTeamLeaderFinalSubmitter,
+    CandidateExecutionContinuationView, CandidateTerminalIntentStatus, CheckpointBoundWorkerChain,
+    CheckpointCandidateTerminalBarrier, ClaimStageAggregator, ClaimStageTeamLeader,
+    ClaimStageWorkItem, ClaimWorkerAndBindChain, ClaimedStageWorkItemView,
+    CloseAttackV2VerificationUnit, CloseStageRequestEpoch, CloseWaveGatePass, ClosedWaveGatePass,
+    CompleteStageWorker, ControlCandidateAttempt, DbRepoProvider, FinalizeStageTeamUnit,
+    FinishWorkerAttempt, LoadInheritedStageHandoffs, LoadStageTeamBarrier, LoadWorkerCheckpoint,
+    OrgScopeUnit, ParkStageTeamFinalizerAfterFailure, ParkStageTeamLeader,
     RecoverCandidateTerminalIntent, ReopenStageTeamLeaderAfterGateBlock,
     ReopenedStageTeamLeaderAfterGateBlockView, RequestStageWorker, RetryStageWorker,
     RuntimeExpiredWorkerDisposition, RuntimeMemoryError, RuntimeMemoryRecordSource,
@@ -60,7 +64,9 @@ use golish_agent_kit::harness::handoff_catalog::{
 };
 use golish_agent_kit::harness::org_gate::{
     completion_is_fresh_for_stage, decide_org_verdict, fanout_completion_scope_ids,
-    stage_pass_token, target_intel_organization_asset_key, STAGE_COMPLETION_TTL_SECS,
+    stage_pass_token, target_intel_organization_asset_key,
+    trusted_vuln_surface_not_applicable_from_snapshot,
+    validated_exact_web_origin_axis_from_coverage_snapshot, STAGE_COMPLETION_TTL_SECS,
     STAGE_RUN_PASS_TOKEN_KIND,
 };
 use golish_agent_kit::harness::{
@@ -156,7 +162,13 @@ fn candidate_manifest_instruction(manifest: &CandidateManifestSnapshot) -> anyho
          safety policy. Submit exactly one terminal candidate/no_candidate decision for every \
          `work_item_key`. Concrete typed observations are the only candidate-capable items; inspect \
          and prioritize them before generic surface cells, keep their frozen `technique`, and cite \
-         only evidence from that exact item. A `surface_analysis_v1` item is context-only: use its \
+         only evidence from that exact item. For a large manifest, use the submit tool's \
+         `candidate_decision_groups` compact form: group only items that genuinely share the same \
+         terminal decision and rationale. Use exact `work_item_keys` for exceptions and canonical \
+         manifest-kind `work_item_key_prefixes` such as `surface_analysis:` or \
+         `scanner_observation:` for homogeneous groups. The server expands only the immutable \
+         manifest and attaches each item's frozen evidence before running the unchanged exact-item \
+         Gate. Do not re-list keys in prose. A `surface_analysis_v1` item is context-only: use its \
          server-provided `target_live_id` with read-only `query_target_data` only to explain an \
          evidenced no_candidate decision with reason code `typed_observation_required`. Never turn \
          a generic surface item into a Candidate, and never duplicate a lead already represented by \
@@ -432,6 +444,83 @@ fn summarize_stage_team_child_batch(
         }
     }
     summary
+}
+
+async fn drain_rolling_stage_team_work<
+    Work,
+    Claim,
+    ClaimFuture,
+    Execute,
+    ExecuteFuture,
+    Cancelled,
+>(
+    concurrency: usize,
+    mut claim: Claim,
+    mut execute: Execute,
+    cancelled: Cancelled,
+) -> anyhow::Result<usize>
+where
+    Claim: FnMut(usize) -> ClaimFuture,
+    ClaimFuture: std::future::Future<Output = anyhow::Result<Option<Work>>>,
+    Execute: FnMut(Work) -> ExecuteFuture,
+    ExecuteFuture: std::future::Future<Output = anyhow::Result<StageTeamChildExecution>>,
+    Cancelled: Fn() -> bool,
+{
+    anyhow::ensure!(
+        concurrency > 0,
+        "Stage Team child concurrency must be positive"
+    );
+
+    let mut in_flight = FuturesUnordered::new();
+    let mut completed = 0usize;
+    let mut claim_sequence = 0usize;
+    let mut first_execution_error = None;
+    let mut terminal_error = None;
+
+    loop {
+        if terminal_error.is_none() && cancelled() {
+            terminal_error = Some(anyhow::anyhow!(
+                "Stage Team child drain cancelled after the active tool reached its landing boundary"
+            ));
+        }
+
+        while terminal_error.is_none() && in_flight.len() < concurrency {
+            if cancelled() {
+                terminal_error = Some(anyhow::anyhow!(
+                    "Stage Team child drain cancelled after the active tool reached its landing boundary"
+                ));
+                break;
+            }
+            match claim(claim_sequence).await {
+                Ok(Some(work)) => {
+                    claim_sequence = claim_sequence.saturating_add(1);
+                    in_flight.push(execute(work));
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    terminal_error = Some(error);
+                    break;
+                }
+            }
+        }
+
+        if in_flight.is_empty() {
+            return match terminal_error.or(first_execution_error) {
+                Some(error) => Err(error),
+                None => Ok(completed),
+            };
+        }
+
+        let result = in_flight
+            .next()
+            .await
+            .expect("a non-empty Stage Team rolling drain must yield a child result");
+        let summary = summarize_stage_team_child_batch([result]);
+        completed = completed.saturating_add(summary.completed);
+        if first_execution_error.is_none() {
+            first_execution_error = summary.first_error;
+        }
+    }
 }
 
 fn stage_child_completion_landing_violation(
@@ -714,6 +803,26 @@ fn company_stage_runtime_rejection_result(
     }
 }
 
+fn stage_team_checkpoint_chain(
+    checkpoint: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let Some(retry_marker) = checkpoint.get("_runtime_stage_team_finalization_retry") else {
+        return Ok(checkpoint.clone());
+    };
+    anyhow::ensure!(
+        retry_marker.is_object(),
+        "parked Stage Team finalizer retry marker is malformed"
+    );
+    let chain = checkpoint
+        .get("chain")
+        .ok_or_else(|| anyhow::anyhow!("parked Stage Team finalizer checkpoint has no chain"))?;
+    anyhow::ensure!(
+        chain.is_array() || chain.is_object(),
+        "parked Stage Team finalizer checkpoint chain has an invalid shape"
+    );
+    Ok(chain.clone())
+}
+
 fn bind_claimed_stage_team_worker(
     repository: Arc<dyn RuntimeMemoryRepository>,
     tracker: golish_agent_kit::db_tracking::DbTracker,
@@ -741,6 +850,7 @@ fn bind_claimed_stage_team_worker(
         "claimed Team Worker/WorkItem/Plan identity mismatch"
     );
     let stage_team_leader = stage_team_leader_binding_for_claim(&claimed.plan, &claimed.work_item);
+    let checkpoint_chain = stage_team_checkpoint_chain(&claimed.worker.checkpoint)?;
     let mut bound = BoundWorkerChainContext {
         operation_id: claimed.worker.operation_id,
         stage_execution_id: claimed.worker.stage_execution_id,
@@ -759,13 +869,13 @@ fn bind_claimed_stage_team_worker(
         session_id: tracker.session_uuid(),
         agent_type: executor_specialist.to_string(),
         runtime_memory_source: Some(BoundWorkerRuntimeMemorySource::V2),
-        initial_chain: claimed.worker.checkpoint.clone(),
+        initial_chain: checkpoint_chain.clone(),
         // Team claims intentionally seed an empty durable chain because the
         // exact WorkItem is selected inside the claim transaction. The precise
         // objective is appended/checkpointed immediately before provider use.
         initial_prompt_already_checkpointed: false,
         checkpoint_version: Arc::new(AtomicI64::new(claimed.worker.checkpoint_version)),
-        checkpoint_body: Arc::new(StdRwLock::new(claimed.worker.checkpoint.clone())),
+        checkpoint_body: Arc::new(StdRwLock::new(checkpoint_chain)),
         lease_lost: Arc::new(AtomicBool::new(false)),
         mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
         tool_lifecycle: None,
@@ -892,6 +1002,10 @@ struct V2CoverageSealMaterial {
     run_id: String,
     cells: Vec<V2AuthoritativeSealCell>,
     waves: Vec<V2AuthoritativeSealWave>,
+    /// Server-booked evidence that attests to an exact authoritative Gate
+    /// snapshot even when the producer returned no model-selected evidence.
+    #[serde(default)]
+    attestation_evidence_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -951,6 +1065,7 @@ fn final_seal_evidence_ids(
                     .iter()
                     .flat_map(|cell| cell.evidence_ids.iter().copied()),
             )
+            .chain(material.attestation_evidence_ids.iter().copied())
             .filter(|id| *id > 0)
             .collect::<Vec<_>>(),
         V2AuthoritativeSealMaterial::AttackCandidate(material) => material
@@ -1248,6 +1363,7 @@ fn authoritative_seal_material_from_snapshot(
             run_id,
             cells,
             waves,
+            attestation_evidence_ids: Vec::new(),
         },
     ))
 }
@@ -1279,15 +1395,109 @@ fn terminal_materialization_run_id(
 
 fn company_controller_terminal_materialization_run_id(
     stage: StageKind,
+    operation_id: uuid::Uuid,
     session_id: Option<&str>,
-) -> anyhow::Result<Option<&str>> {
+) -> anyhow::Result<Option<String>> {
     match stage {
         StageKind::TargetIntel | StageKind::ExternalAttackSurface => {
-            terminal_materialization_run_id(stage, session_id).map(Some)
+            terminal_materialization_run_id(stage, session_id)
+                .map(str::to_string)
+                .map(Some)
         }
-        StageKind::Enumeration | StageKind::VulnTriage => Ok(None),
+        StageKind::Enumeration => Ok(None),
+        StageKind::VulnTriage => Ok(Some(operation_id.to_string())),
         _ => anyhow::bail!("Team Scheduler does not admit stage '{}'", stage.as_str()),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VulnSurfaceApplicabilityLineage {
+    handoff_id: uuid::Uuid,
+    operation_id: uuid::Uuid,
+    organization_id: uuid::Uuid,
+    scope_snapshot_id: uuid::Uuid,
+    authority_kind: String,
+    scope_hash: String,
+    payload_sha256: String,
+    unit_gate_decision_hash: String,
+    gate_passed_at: chrono::DateTime<chrono::Utc>,
+    schema_version: i32,
+    source_evidence_ids: Vec<i64>,
+}
+
+async fn trusted_vuln_surface_materialization_lineage(
+    repository: &dyn RuntimeMemoryRepository,
+    operation_id: uuid::Uuid,
+    organization_id: uuid::Uuid,
+    scope_snapshot_id: uuid::Uuid,
+    scope_hash: &str,
+) -> anyhow::Result<VulnSurfaceApplicabilityLineage> {
+    let handoffs = repository
+        .load_inherited_stage_handoffs(LoadInheritedStageHandoffs {
+            operation_id,
+            organization_id,
+            source_stage_kinds: vec![StageKind::Enumeration.as_str().to_string()],
+        })
+        .await?;
+    trusted_vuln_surface_materialization_lineage_from_handoffs(
+        &handoffs,
+        operation_id,
+        organization_id,
+        scope_snapshot_id,
+        scope_hash,
+    )
+}
+
+fn trusted_vuln_surface_materialization_lineage_from_handoffs(
+    handoffs: &[RuntimeStageHandoffView],
+    operation_id: uuid::Uuid,
+    organization_id: uuid::Uuid,
+    scope_snapshot_id: uuid::Uuid,
+    scope_hash: &str,
+) -> anyhow::Result<VulnSurfaceApplicabilityLineage> {
+    let [handoff] = handoffs else {
+        anyhow::bail!(
+            "trusted Vuln surface applicability requires exactly one final-sealed Enumeration handoff"
+        );
+    };
+    anyhow::ensure!(
+        handoff.operation_id == operation_id
+            && handoff.organization_id == organization_id
+            && handoff.scope_snapshot_id == scope_snapshot_id
+            && handoff.scope_hash == scope_hash
+            && handoff.from_stage_kind == StageKind::Enumeration.as_str()
+            && matches!(
+                handoff.authority_kind.as_str(),
+                "deliverable_final_seal" | "stage_fork_final_seal"
+            )
+            && handoff.schema_version > 0,
+        "trusted Vuln surface applicability Enumeration handoff identity mismatch"
+    );
+    let evidence_ids = handoff
+        .evidence_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    anyhow::ensure!(
+        !evidence_ids.is_empty()
+            && evidence_ids.len() == handoff.evidence_ids.len()
+            && evidence_ids.len() <= MAX_EVIDENCE_IDS
+            && evidence_ids.iter().all(|evidence_id| *evidence_id > 0),
+        "trusted Vuln surface applicability Enumeration handoff evidence is invalid"
+    );
+    Ok(VulnSurfaceApplicabilityLineage {
+        handoff_id: handoff.id,
+        operation_id,
+        organization_id,
+        scope_snapshot_id,
+        authority_kind: handoff.authority_kind.clone(),
+        scope_hash: handoff.scope_hash.clone(),
+        payload_sha256: handoff.payload_sha256.clone(),
+        unit_gate_decision_hash: handoff.unit_gate_decision_hash.clone(),
+        gate_passed_at: handoff.gate_passed_at,
+        schema_version: handoff.schema_version,
+        source_evidence_ids: evidence_ids.into_iter().collect(),
+    })
 }
 
 async fn authoritative_candidate_seal_material(
@@ -1339,17 +1549,19 @@ fn merge_authoritative_seal_material(
     previous: Option<V2AuthoritativeSealMaterial>,
     current: V2AuthoritativeSealMaterial,
 ) -> anyhow::Result<V2AuthoritativeSealMaterial> {
-    let (previous_run_id, previous_cells, previous_waves) = match previous {
-        None => (None, Vec::new(), Vec::new()),
-        Some(V2AuthoritativeSealMaterial::InformationCoverage(material)) => (
-            (!material.run_id.trim().is_empty()).then_some(material.run_id),
-            material.cells,
-            material.waves,
-        ),
-        Some(V2AuthoritativeSealMaterial::AttackCandidate(_)) => {
-            anyhow::bail!("Candidate final-seal material cannot enter a coverage wave merge")
-        }
-    };
+    let (previous_run_id, previous_cells, previous_waves, previous_attestation_evidence_ids) =
+        match previous {
+            None => (None, Vec::new(), Vec::new(), Vec::new()),
+            Some(V2AuthoritativeSealMaterial::InformationCoverage(material)) => (
+                (!material.run_id.trim().is_empty()).then_some(material.run_id),
+                material.cells,
+                material.waves,
+                material.attestation_evidence_ids,
+            ),
+            Some(V2AuthoritativeSealMaterial::AttackCandidate(_)) => {
+                anyhow::bail!("Candidate final-seal material cannot enter a coverage wave merge")
+            }
+        };
     let V2AuthoritativeSealMaterial::InformationCoverage(current) = current else {
         anyhow::bail!("non-coverage final-seal material cannot enter a coverage wave merge")
     };
@@ -1393,6 +1605,13 @@ fn merge_authoritative_seal_material(
             run_id: current.run_id,
             cells: cells.into_values().collect(),
             waves: waves.into_values().collect(),
+            attestation_evidence_ids: {
+                let mut ids = previous_attestation_evidence_ids;
+                ids.extend(current.attestation_evidence_ids);
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            },
         },
     ))
 }
@@ -2848,6 +3067,7 @@ struct GateTerminalOutcome {
     asset: String,
     technique: String,
     outcome: &'static str,
+    source: &'static str,
     note: String,
     evidence_ids: Vec<i64>,
 }
@@ -2867,6 +3087,7 @@ trait GateTerminalMaterializationStore: Sync {
     #[allow(clippy::too_many_arguments)]
     async fn terminal_materialization_snapshot(
         &self,
+        operation_id: Option<uuid::Uuid>,
         organization_id: uuid::Uuid,
         stage: &str,
         session_id: Option<&str>,
@@ -2887,6 +3108,20 @@ trait GateTerminalMaterializationStore: Sync {
         query: Option<&str>,
         evidence_ids: &[i64],
     ) -> anyhow::Result<bool>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn terminal_materialization_append_evidence(
+        &self,
+        operation_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+        stage_run_id: uuid::Uuid,
+        session_id: &str,
+        project_path: &str,
+        tool_name: &str,
+        kind: &str,
+        subject: &str,
+        raw_output: &str,
+    ) -> anyhow::Result<i64>;
 }
 
 #[async_trait::async_trait]
@@ -2896,6 +3131,7 @@ where
 {
     async fn terminal_materialization_snapshot(
         &self,
+        operation_id: Option<uuid::Uuid>,
         organization_id: uuid::Uuid,
         stage: &str,
         session_id: Option<&str>,
@@ -2903,7 +3139,8 @@ where
         current_wave_target_ids: Option<Vec<uuid::Uuid>>,
         current_wave_asset_values: Option<Vec<String>>,
     ) -> anyhow::Result<Value> {
-        self.stage_asset_coverage(
+        self.stage_asset_coverage_for_operation(
+            operation_id,
             organization_id,
             stage,
             session_id,
@@ -2937,21 +3174,202 @@ where
         )
         .await
     }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn terminal_materialization_append_evidence(
+        &self,
+        operation_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+        stage_run_id: uuid::Uuid,
+        session_id: &str,
+        project_path: &str,
+        tool_name: &str,
+        kind: &str,
+        subject: &str,
+        raw_output: &str,
+    ) -> anyhow::Result<i64> {
+        self.evidence_append_for_organization(
+            operation_id,
+            organization_id,
+            Some(stage_run_id),
+            Some(session_id),
+            Some(project_path),
+            tool_name,
+            kind,
+            subject,
+            raw_output,
+            None,
+        )
+        .await
+    }
+}
+
+const MAX_VULN_SURFACE_ATTESTATION_BYTES: usize = 64 * 1024;
+
+#[allow(clippy::too_many_arguments)]
+async fn attest_target_intel_final_seal<S>(
+    repo: &S,
+    material: &mut V2AuthoritativeSealMaterial,
+    operation_id: uuid::Uuid,
+    organization_id: uuid::Uuid,
+    stage_run_unit_id: uuid::Uuid,
+    deliverable_submission_id: uuid::Uuid,
+    session_id: &str,
+    project_path: &str,
+) -> anyhow::Result<()>
+where
+    S: GateTerminalMaterializationStore + ?Sized,
+{
+    let V2AuthoritativeSealMaterial::InformationCoverage(coverage) = material else {
+        anyhow::bail!("Target Intel final seal requires information coverage material")
+    };
+    if !coverage.attestation_evidence_ids.is_empty() {
+        anyhow::ensure!(
+            coverage
+                .attestation_evidence_ids
+                .iter()
+                .all(|evidence_id| *evidence_id > 0),
+            "Target Intel final-seal attestation contains an invalid evidence id"
+        );
+        return Ok(());
+    }
+    anyhow::ensure!(
+        !session_id.trim().is_empty() && !project_path.trim().is_empty(),
+        "Target Intel final-seal attestation has no exact session/project identity"
+    );
+    let attestation = json!({
+        "schema": "target_intel_gate_snapshot_attestation_v1",
+        "operation_id": operation_id,
+        "organization_id": organization_id,
+        "stage_run_unit_id": stage_run_unit_id,
+        "deliverable_submission_id": deliverable_submission_id,
+        "coverage": coverage,
+    });
+    let raw_output = serde_json::to_string(&attestation)?;
+    anyhow::ensure!(
+        raw_output.len() <= MAX_VULN_SURFACE_ATTESTATION_BYTES,
+        "Target Intel final-seal attestation exceeds its bounded payload"
+    );
+    let evidence_id = repo
+        .terminal_materialization_append_evidence(
+            operation_id,
+            organization_id,
+            stage_run_unit_id,
+            session_id,
+            project_path,
+            "target_intel_gate_snapshot_attestation",
+            "target_intel_gate_snapshot",
+            "target_intel:authoritative_gate_snapshot",
+            &raw_output,
+        )
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("Target Intel Gate attestation could not be booked: {error}")
+        })?;
+    anyhow::ensure!(
+        evidence_id > 0,
+        "Target Intel Gate attestation returned no real evidence id"
+    );
+    coverage.attestation_evidence_ids = vec![evidence_id];
+    Ok(())
 }
 
 fn gate_terminal_outcomes_to_materialize(
     stage: StageKind,
     deliverable: &StageDeliverable,
     snapshot: &Value,
-) -> Vec<GateTerminalOutcome> {
+) -> anyhow::Result<Vec<GateTerminalOutcome>> {
+    if stage == StageKind::VulnTriage {
+        let trusted = trusted_vuln_surface_not_applicable_from_snapshot(snapshot)
+            .map_err(|error| {
+                anyhow::anyhow!("trusted Vuln surface applicability is invalid: {error}")
+            })?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut seen = BTreeSet::new();
+        let mut outcomes = Vec::with_capacity(trusted.len());
+        for row in snapshot
+            .get("assets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if row.get("exact_web_origin").and_then(Value::as_bool) != Some(true) {
+                continue;
+            }
+            let value = row
+                .get("value")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("trusted Vuln surface applicability row has no exact origin")
+                })?;
+            for cell in row
+                .get("coverage")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(technique) = cell.get("technique").and_then(Value::as_str) else {
+                    continue;
+                };
+                if cell.get("state").and_then(Value::as_str) != Some("not_applicable")
+                    || cell.get("source").and_then(Value::as_str)
+                        != Some("enumeration_surface_manifest")
+                    || cell
+                        .get("details")
+                        .and_then(|details| details.get("authority"))
+                        .and_then(Value::as_str)
+                        != Some("enumeration_surface_manifest")
+                {
+                    continue;
+                }
+                // The agent-kit authority parser canonicalizes every trusted
+                // origin before returning `trusted`. Exact string membership
+                // here therefore also rejects a non-canonical snapshot value.
+                let key = (value.to_string(), technique.to_string());
+                if !trusted.contains(&key) {
+                    continue;
+                }
+                anyhow::ensure!(
+                    seen.insert(key.clone()),
+                    "trusted Vuln surface applicability contains a duplicate canonical cell"
+                );
+                let note = cell
+                    .get("note")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|note| !note.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "trusted Vuln surface applicability cell has no server-authored note"
+                        )
+                    })?;
+                outcomes.push(GateTerminalOutcome {
+                    asset: key.0,
+                    technique: key.1,
+                    outcome: "not_applicable",
+                    source: "enumeration_surface_manifest",
+                    note: note.to_string(),
+                    evidence_ids: Vec::new(),
+                });
+            }
+        }
+        anyhow::ensure!(
+            seen == trusted,
+            "trusted Vuln surface applicability could not be mapped back to exact coverage cells"
+        );
+        return Ok(outcomes);
+    }
     if !matches!(
         stage,
         StageKind::TargetIntel | StageKind::ExternalAttackSurface
     ) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let Some(assets) = snapshot.get("assets").and_then(Value::as_array) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut seen = BTreeSet::new();
     let mut outcomes = Vec::new();
@@ -3005,6 +3423,7 @@ fn gate_terminal_outcomes_to_materialize(
             asset: materialized_asset.to_string(),
             technique: submitted.technique.clone(),
             outcome,
+            source: "submit_stage_deliverable",
             note: note.to_string(),
             evidence_ids: submitted
                 .evidence_refs
@@ -3013,13 +3432,18 @@ fn gate_terminal_outcomes_to_materialize(
                 .collect(),
         });
     }
-    outcomes
+    Ok(outcomes)
 }
 
 async fn materialize_passed_gate_terminal_outcomes<S>(
     repo: &S,
+    operation_id: Option<uuid::Uuid>,
     organization_id: uuid::Uuid,
-    session_id: &str,
+    coverage_session_id: &str,
+    outcome_run_id: &str,
+    stage_run_unit_id: Option<uuid::Uuid>,
+    project_path: Option<&str>,
+    vuln_surface_lineage: Option<&VulnSurfaceApplicabilityLineage>,
     stage: StageKind,
     stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
     current_wave: Option<&StageAssetWaveView>,
@@ -3030,15 +3454,16 @@ where
 {
     if !matches!(
         stage,
-        StageKind::TargetIntel | StageKind::ExternalAttackSurface
+        StageKind::TargetIntel | StageKind::ExternalAttackSurface | StageKind::VulnTriage
     ) {
         return Ok(GateTerminalMaterializationSummary::default());
     }
     let snapshot = repo
         .terminal_materialization_snapshot(
+            operation_id,
             organization_id,
             stage.as_str(),
-            Some(session_id),
+            Some(coverage_session_id),
             stage_started_at,
             current_wave.map(|wave| wave.target_ids.clone()),
             current_wave.map(|wave| wave.asset_values.clone()),
@@ -3047,7 +3472,119 @@ where
         .map_err(|error| {
             anyhow::anyhow!("final gate terminal coverage snapshot could not be re-read: {error}")
         })?;
-    let outcomes = gate_terminal_outcomes_to_materialize(stage, deliverable, &snapshot);
+    if stage == StageKind::VulnTriage {
+        validated_exact_web_origin_axis_from_coverage_snapshot(
+            &snapshot,
+            stage,
+            organization_id,
+            Some(coverage_session_id),
+        )
+        .map_err(|error| {
+            anyhow::anyhow!("trusted Vuln terminal materialization snapshot is invalid: {error}")
+        })?;
+    }
+    let mut outcomes = gate_terminal_outcomes_to_materialize(stage, deliverable, &snapshot)?;
+    if stage == StageKind::VulnTriage && !outcomes.is_empty() {
+        let operation_id = operation_id.ok_or_else(|| {
+            anyhow::anyhow!("trusted Vuln surface applicability has no exact operation identity")
+        })?;
+        anyhow::ensure!(
+            outcome_run_id == operation_id.to_string(),
+            "trusted Vuln surface applicability outcome run is not the exact operation"
+        );
+        let stage_run_unit_id = stage_run_unit_id.ok_or_else(|| {
+            anyhow::anyhow!("trusted Vuln surface applicability has no exact Unit identity")
+        })?;
+        let project_path = project_path
+            .map(str::trim)
+            .filter(|project_path| !project_path.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("trusted Vuln surface applicability has no exact project identity")
+            })?;
+        let lineage = vuln_surface_lineage.ok_or_else(|| {
+            anyhow::anyhow!(
+                "trusted Vuln surface applicability has no final-sealed Enumeration lineage"
+            )
+        })?;
+        anyhow::ensure!(
+            lineage.operation_id == operation_id
+                && lineage.organization_id == organization_id
+                && !lineage.scope_hash.trim().is_empty()
+                && !lineage.payload_sha256.trim().is_empty()
+                && !lineage.unit_gate_decision_hash.trim().is_empty(),
+            "trusted Vuln surface applicability Enumeration lineage identity is invalid"
+        );
+        let mut ordered_outcomes = outcomes.iter().collect::<Vec<_>>();
+        ordered_outcomes.sort_by(|left, right| {
+            left.asset
+                .cmp(&right.asset)
+                .then_with(|| left.technique.cmp(&right.technique))
+        });
+        let cells = ordered_outcomes
+            .into_iter()
+            .map(|outcome| {
+                json!({
+                    "asset": outcome.asset,
+                    "technique": outcome.technique,
+                    "state": outcome.outcome,
+                    "note": outcome.note,
+                })
+            })
+            .collect::<Vec<_>>();
+        let attestation = json!({
+            "schema": "vuln_surface_applicability_attestation_v1",
+            "operation_id": operation_id,
+            "organization_id": organization_id,
+            "coverage_session_id": coverage_session_id,
+            "source_handoff": {
+                "handoff_id": lineage.handoff_id,
+                "scope_snapshot_id": lineage.scope_snapshot_id,
+                "authority_kind": lineage.authority_kind,
+                "scope_hash": lineage.scope_hash,
+                "payload_sha256": lineage.payload_sha256,
+                "unit_gate_decision_hash": lineage.unit_gate_decision_hash,
+                "gate_passed_at": lineage.gate_passed_at,
+                "schema_version": lineage.schema_version,
+                "source_evidence_ids": lineage.source_evidence_ids,
+            },
+            "not_applicable_cells": cells,
+        });
+        let raw_output = serde_json::to_string(&attestation)?;
+        anyhow::ensure!(
+            raw_output.len() <= MAX_VULN_SURFACE_ATTESTATION_BYTES,
+            "trusted Vuln surface applicability attestation exceeds its bounded payload"
+        );
+        let evidence_id = repo
+            .terminal_materialization_append_evidence(
+                operation_id,
+                organization_id,
+                stage_run_unit_id,
+                coverage_session_id,
+                project_path,
+                "vuln_surface_applicability_attestation",
+                "vuln_surface_applicability",
+                "vuln_triage:enumeration_surface_manifest",
+                &raw_output,
+            )
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "trusted Vuln surface applicability attestation could not be booked: {error}"
+                )
+            })?;
+        anyhow::ensure!(
+            evidence_id > 0,
+            "trusted Vuln surface applicability attestation returned no real evidence id"
+        );
+        for outcome in &mut outcomes {
+            outcome.evidence_ids = vec![evidence_id];
+        }
+    } else if stage != StageKind::VulnTriage {
+        anyhow::ensure!(
+            vuln_surface_lineage.is_none() && stage_run_unit_id.is_none(),
+            "non-Vuln terminal materialization received Vuln surface lineage"
+        );
+    }
     let submitted = outcomes.len();
     let mut applied = 0usize;
     let mut producer_terminal_won = 0usize;
@@ -3055,11 +3592,11 @@ where
         let changed = repo
             .terminal_materialization_upsert(
                 organization_id,
-                session_id,
+                outcome_run_id,
                 &outcome.asset,
                 &outcome.technique,
                 outcome.outcome,
-                Some("submit_stage_deliverable"),
+                Some(outcome.source),
                 Some(&outcome.note),
                 &outcome.evidence_ids,
             )
@@ -5152,6 +5689,15 @@ struct CompanyControllerFinalSealFailed {
     detail: String,
 }
 
+fn is_company_controller_runtime_replaced(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<RuntimeMemoryError>(),
+        Some(RuntimeMemoryError::Conflict {
+            code: "stage_team_final_submitter_runtime_replaced"
+        })
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompanyControllerWaitingAction {
     DrainChildren,
@@ -5435,6 +5981,14 @@ struct ServerVulnFormulaicAssignment {
     timeout_secs: u64,
 }
 
+fn server_vuln_formulaic_timeout_secs(shape: &str) -> Option<u64> {
+    match shape {
+        "primary" => Some(300),
+        "narrowed" | "budget_recovery" => Some(600),
+        _ => None,
+    }
+}
+
 async fn wait_for_server_vuln_cancellation(cancelled: Option<&Arc<AtomicBool>>) {
     let Some(cancelled) = cancelled else {
         std::future::pending::<()>().await;
@@ -5533,16 +6087,15 @@ fn server_vuln_formulaic_assignment(
         "server Vuln shard tool/capability/origin/technique assignment is invalid"
     );
     let shape = objective.get("shape").and_then(Value::as_str);
-    anyhow::ensure!(
-        matches!(shape, Some("primary" | "narrowed")),
-        "server Vuln shard has an invalid shape"
-    );
+    let timeout_secs = shape
+        .and_then(server_vuln_formulaic_timeout_secs)
+        .ok_or_else(|| anyhow::anyhow!("server Vuln shard has an invalid shape"))?;
     Ok(Some(ServerVulnFormulaicAssignment {
         tool_name,
         target_id,
         target_url,
         techniques,
-        timeout_secs: if shape == Some("primary") { 300 } else { 180 },
+        timeout_secs,
     }))
 }
 
@@ -6037,13 +6590,49 @@ where
             "Team Scheduler does not admit stage '{}'",
             spec.kind.as_str()
         );
-        if let Some(run_id) =
-            company_controller_terminal_materialization_run_id(spec.kind, ctx.events.session_id)?
-        {
+        if let Some(run_id) = company_controller_terminal_materialization_run_id(
+            spec.kind,
+            team.unit.operation_id,
+            ctx.events.session_id,
+        )? {
+            let coverage_session_id = final_seal_coverage_session_id(ctx.events.session_id)?;
+            let vuln_surface_lineage = if spec.kind == StageKind::VulnTriage {
+                Some(
+                    trusted_vuln_surface_materialization_lineage(
+                        repository.as_ref(),
+                        team.unit.operation_id,
+                        team.unit.organization_id,
+                        team.unit.scope_snapshot_id,
+                        &team.scope_hash,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let project_path = if spec.kind == StageKind::VulnTriage {
+                Some(
+                    ctx.events
+                        .db_tracker
+                        .and_then(|tracker| tracker.project_path())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "trusted Vuln surface applicability has no DB project identity"
+                            )
+                        })?,
+                )
+            } else {
+                None
+            };
             materialize_passed_gate_terminal_outcomes(
                 gate_repository,
+                Some(team.unit.operation_id),
                 team.unit.organization_id,
-                run_id,
+                coverage_session_id,
+                &run_id,
+                (spec.kind == StageKind::VulnTriage).then_some(team.unit.id),
+                project_path,
+                vuln_surface_lineage.as_ref(),
                 spec.kind,
                 active_stage_skip_floor(ctx, spec.kind).await,
                 None,
@@ -6062,13 +6651,36 @@ where
                 None,
             )
             .await?;
-        let material = authoritative_seal_material_from_snapshot(
+        let mut material = authoritative_seal_material_from_snapshot(
             &snapshot,
             spec.kind,
             team.unit.operation_id,
             team.unit.organization_id,
             None,
         )?;
+        if spec.kind == StageKind::TargetIntel {
+            let session_id = final_seal_coverage_session_id(ctx.events.session_id)?;
+            let project_path = ctx
+                .events
+                .db_tracker
+                .and_then(|tracker| tracker.project_path())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Target Intel Gate attestation has no exact DB project identity"
+                    )
+                })?;
+            attest_target_intel_final_seal(
+                gate_repository,
+                &mut material,
+                team.unit.operation_id,
+                team.unit.organization_id,
+                team.unit.id,
+                deliverable_submission_id,
+                session_id,
+                project_path,
+            )
+            .await?;
+        }
         team.unit.status = RuntimeStageUnitStatus::Running;
         let seeded = SeededStageRuntime {
             unit: team.unit.clone(),
@@ -6105,12 +6717,32 @@ where
         Ok(CompanyControllerFinalExecution::Passed(Box::new(finalized)))
     }
     .await;
-    finalization.map_err(|error: anyhow::Error| {
-        CompanyControllerFinalSealFailed {
-            detail: error.to_string(),
+    match finalization {
+        Ok(finalized) => Ok(finalized),
+        Err(error) => {
+            let detail = error.to_string();
+            let _mutation_guard = worker.bound.mutation_lock.lock().await;
+            anyhow::ensure!(
+                !worker.bound.lease_is_lost(),
+                "Company Controller lease was lost before finalization failure could be parked"
+            );
+            repository
+                .park_stage_team_finalizer_after_failure(ParkStageTeamFinalizerAfterFailure {
+                    fence: stage_team_worker_fence(&worker),
+                    stage_team_plan_id: team.plan.id,
+                    leader_work_item_id: worker.claimed.work_item.id,
+                    deliverable_submission_id,
+                    expected_work_item_row_version: worker.claimed.work_item.row_version,
+                    expected_dispatch_epoch: barrier.dispatch_epoch,
+                    expected_manifest_sha256: barrier.manifest_sha256.clone(),
+                    checkpoint: worker.bound.current_checkpoint_body(),
+                    failure_detail: detail.clone(),
+                })
+                .await
+                .map_err(anyhow::Error::from)?;
+            Err(CompanyControllerFinalSealFailed { detail }.into())
         }
-        .into()
-    })
+    }
 }
 
 /// Emit an immutable DB refresh pointer for one durable Team unit. The status
@@ -6178,74 +6810,61 @@ where
 {
     let child_cap = usize::try_from(team.plan.max_workers_active.saturating_sub(1).max(1))
         .map_err(|_| anyhow::anyhow!("invalid per-company child concurrency"))?;
-    let mut completed = 0usize;
-    let mut claim_round = 0usize;
-    let mut first_error = None;
-    loop {
-        anyhow::ensure!(
-            !ctx.cancelled
-                .is_some_and(|cancelled| cancelled.load(Ordering::SeqCst)),
-            "Stage Team child drain cancelled after the active tool reached its landing boundary"
-        );
-        let mut batch = Vec::new();
-        for slot in 0..child_cap {
-            let claimed = repository
-                .claim_stage_work_item(team_claim_input(
+    drain_rolling_stage_team_work(
+        child_cap,
+        {
+            let repository = repository.clone();
+            let tracker = tracker.clone();
+            move |claim_sequence| {
+                let repository = repository.clone();
+                let tracker = tracker.clone();
+                let claim = team_claim_input(
                     team,
-                    tracker,
-                    format!("{parent_request_id}:child:{claim_round}:{slot}"),
+                    &tracker,
+                    format!("{parent_request_id}:child:{claim_sequence}"),
                     ctx.llm.provider_name,
                     ctx.llm.model_name,
-                ))
-                .await?;
-            let Some(claimed) = claimed else {
-                break;
-            };
-            batch.push(bind_claimed_stage_team_worker(
-                repository.clone(),
-                tracker.clone(),
-                claimed,
-            )?);
-        }
-        if batch.is_empty() {
-            return match first_error {
-                Some(error) => Err(error),
-                None => Ok(completed),
-            };
-        }
-        let executions = batch.into_iter().map(|worker| {
-            let repository = repository.clone();
-            let permits = provider_permits.clone();
-            async move {
-                let _permit = permits
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| anyhow::anyhow!("global provider semaphore closed"))?;
-                execute_stage_team_child(
-                    repository,
-                    worker,
-                    ctx,
-                    model,
-                    context,
-                    spec,
-                    &team.organization_name,
-                    parent_request_id,
-                )
-                .await
+                );
+                async move {
+                    let claimed = repository.claim_stage_work_item(claim).await?;
+                    claimed
+                        .map(|claimed| {
+                            bind_claimed_stage_team_worker(repository.clone(), tracker, claimed)
+                        })
+                        .transpose()
+                }
             }
-        });
-        let summary = summarize_stage_team_child_batch(join_all(executions).await);
-        completed = completed.saturating_add(summary.completed);
-        if first_error.is_none() {
-            first_error = summary.first_error;
-        }
-        anyhow::ensure!(
-            !ctx.cancelled
-                .is_some_and(|cancelled| cancelled.load(Ordering::SeqCst)),
-            "Stage Team child drain cancelled after the active tool reached its landing boundary"
-        );
-        claim_round = claim_round.saturating_add(1);
-    }
+        },
+        {
+            let repository = repository.clone();
+            move |worker| {
+                let repository = repository.clone();
+                let permits = provider_permits.clone();
+                async move {
+                    let _permit = permits
+                        .acquire_owned()
+                        .await
+                        .map_err(|_| anyhow::anyhow!("global provider semaphore closed"))?;
+                    execute_stage_team_child(
+                        repository,
+                        worker,
+                        ctx,
+                        model,
+                        context,
+                        spec,
+                        &team.organization_name,
+                        parent_request_id,
+                    )
+                    .await
+                }
+            }
+        },
+        || {
+            ctx.cancelled
+                .is_some_and(|cancelled| cancelled.load(Ordering::SeqCst))
+        },
+    )
+    .await
 }
 
 async fn execute_company_controller_unit<M>(
@@ -6415,6 +7034,26 @@ where
             "claimed leader did not receive Company Controller authority"
         );
         let controller_turn = if company_controller_uses_server_vuln_worklist(&team.plan) {
+            let adopted = repository
+                .adopt_legacy_vuln_terminal_outcomes(AdoptLegacyVulnTerminalOutcomes {
+                    fence: stage_team_worker_fence(&leader),
+                    stage_team_plan_id: leader.claimed.plan.id,
+                    leader_work_item_id: leader.claimed.work_item.id,
+                })
+                .await?;
+            if adopted.adopted_cells > 0 {
+                emit_stage_team_progress(
+                    ctx,
+                    spec,
+                    &team,
+                    parent_request_id,
+                    "running",
+                    Some(format!(
+                        "restored {} exact terminal cell(s) from immutable pre-rollover evidence; no scanner retry was dispatched",
+                        adopted.adopted_cells
+                    )),
+                );
+            }
             let snapshot = gate_repository
                 .stage_asset_coverage_for_operation(
                     Some(team.unit.operation_id),
@@ -6797,6 +7436,7 @@ where
             }
             Err(error) => {
                 let detail = error.to_string();
+                let runtime_recovered = is_company_controller_runtime_replaced(&error);
                 let recovery_required_workers = error
                     .downcast_ref::<CompanyControllerOperatorRecoveryRequired>()
                     .map(|recovery| recovery.recovery_required_workers);
@@ -6816,30 +7456,37 @@ where
                 );
                 gaps.push(
                     match (
+                        runtime_recovered,
                         recovery_required_workers,
                         final_submission_missing,
                         final_seal_failed,
                     ) {
-                        (Some(recovery_required_workers), _, _) => json!({
+                        (true, _, _, _) => json!({
+                            "code": "COMPANY_CONTROLLER_RUNTIME_RECOVERED",
+                            "detail": detail,
+                            "organization_id": organization_id,
+                            "parent_request_id": parent_request_id,
+                        }),
+                        (false, Some(recovery_required_workers), _, _) => json!({
                             "code": "STAGE_TEAM_OPERATOR_RECOVERY_REQUIRED",
                             "detail": detail,
                             "organization_id": organization_id,
                             "parent_request_id": parent_request_id,
                             "recovery_required_workers": recovery_required_workers,
                         }),
-                        (None, true, _) => json!({
+                        (false, None, true, _) => json!({
                             "code": "COMPANY_CONTROLLER_FINAL_SUBMISSION_MISSING",
                             "detail": detail,
                             "organization_id": organization_id,
                             "parent_request_id": parent_request_id,
                         }),
-                        (None, false, true) => json!({
+                        (false, None, false, true) => json!({
                             "code": "COMPANY_CONTROLLER_FINAL_SEAL_FAILED",
                             "detail": detail,
                             "organization_id": organization_id,
                             "parent_request_id": parent_request_id,
                         }),
-                        (None, false, false) => json!({
+                        (false, None, false, false) => json!({
                             "code": "COMPANY_CONTROLLER_FAILED",
                             "detail": detail,
                             "organization_id": organization_id,
@@ -6964,6 +7611,9 @@ fn company_controller_scheduler_result(
         gap.get("code").and_then(Value::as_str)
             == Some("COMPANY_CONTROLLER_FINAL_SUBMISSION_MISSING")
     });
+    let runtime_recovered = gaps.iter().any(|gap| {
+        gap.get("code").and_then(Value::as_str) == Some("COMPANY_CONTROLLER_RUNTIME_RECOVERED")
+    });
     let finalization_failed = gaps.iter().any(|gap| {
         matches!(
             gap.get("code").and_then(Value::as_str),
@@ -6990,6 +7640,11 @@ fn company_controller_scheduler_result(
             "stage_run stopped on durable outcome-unknown child tool state; explicit operator recovery is required before the same Controller and child chain can continue"
                 .to_string(),
         )
+    } else if runtime_recovered {
+        Some(
+            "the stale failed/exhausted Company Controller runtime was replaced atomically; existing operation facts and evidence were preserved"
+                .to_string(),
+        )
     } else if final_submission_missing {
         Some(
             "the Company Controller final submission was not persisted; the same final submitter WorkerRun and message chain are preserved for an exact continuation"
@@ -7010,6 +7665,8 @@ fn company_controller_scheduler_result(
     };
     let halt_reason = if operator_recovery_required {
         Some("operator_recovery_required")
+    } else if runtime_recovered {
+        Some("company_controller_runtime_recovered")
     } else if final_submission_missing {
         Some("company_controller_final_submission_missing")
     } else if finalization_failed {
@@ -7022,6 +7679,10 @@ fn company_controller_scheduler_result(
     let next_action = if operator_recovery_required {
         Some(
             "Do not call stage_run or substitute direct tools again in this top-level request. Resolve the listed Stage Team operator recovery item from the DB-backed recovery control, then send a separate continue request to resume the same worker chain.",
+        )
+    } else if runtime_recovered {
+        Some(
+            "End this top-level request, then send a separate continue request. The replacement stage execution will reuse the preserved DB facts; do not restart the operation from Scoping.",
         )
     } else if final_submission_missing {
         Some(
@@ -8463,8 +9124,13 @@ where
                             };
                             if let Err(error) = materialize_passed_gate_terminal_outcomes(
                                 repo,
+                                None,
                                 organization_id,
                                 terminal_run_id,
+                                terminal_run_id,
+                                None,
+                                None,
+                                None,
                                 stage,
                                 worklist_started_at,
                                 current_wave.as_ref(),
@@ -8515,7 +9181,7 @@ where
                                     "V2 final seal requires the authoritative DB coverage repository"
                                 )
                             })?;
-                            match stage {
+                            let mut material = match stage {
                                 StageKind::TargetIntel
                                 | StageKind::ExternalAttackSurface
                                 | StageKind::Enumeration
@@ -8573,7 +9239,36 @@ where
                                     "stage {} has no authoritative V2 final-seal material contract",
                                     stage.as_str()
                                 ),
+                            }?;
+                            if stage == StageKind::TargetIntel {
+                                let session_id =
+                                    final_seal_coverage_session_id(ctx.events.session_id)?;
+                                let project_path = ctx
+                                    .events
+                                    .db_tracker
+                                    .and_then(|tracker| tracker.project_path())
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "Target Intel Gate attestation has no exact DB project identity"
+                                        )
+                                    })?;
+                                attest_target_intel_final_seal(
+                                    repo,
+                                    &mut material,
+                                    seeded.unit.operation_id,
+                                    seeded.unit.organization_id,
+                                    seeded.unit.id,
+                                    v2_deliverable_submission_id.ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "Target Intel Gate attestation has no exact deliverable submission"
+                                        )
+                                    })?,
+                                    session_id,
+                                    project_path,
+                                )
+                                .await?;
                             }
+                            Ok::<_, anyhow::Error>(material)
                         }
                         .await;
                         match material_result {
@@ -9330,12 +10025,46 @@ mod tests {
     use golish_agent_kit::harness::org_gate::completion_is_fresh;
     use golish_agent_kit::harness::CoverageGapAction;
     use std::collections::VecDeque;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::Mutex;
+    use tokio::sync::{Notify, Semaphore};
+    use tokio::time::{timeout, Duration};
+
+    #[test]
+    fn parked_stage_team_finalizer_restores_the_provider_chain() {
+        let chain = json!([
+            {"role": "system", "content": "controller"},
+            {"role": "assistant", "content": "retry final seal"}
+        ]);
+        let parked = json!({
+            "_runtime_stage_team_finalization_retry": {
+                "code": "company_controller_final_seal_failed",
+                "schema_version": 1
+            },
+            "chain": chain.clone()
+        });
+
+        assert_eq!(
+            stage_team_checkpoint_chain(&parked).expect("unwrap parked checkpoint"),
+            chain
+        );
+    }
 
     #[test]
     fn vuln_handoff_evidence_taxonomy_tracks_anonymous_access_not_idor() {
         assert_eq!(technique_evidence_kinds("WSTG-ATHN-04"), &["vuln_finding"]);
         assert!(technique_evidence_kinds("WSTG-ATHZ-04").is_empty());
+    }
+
+    #[test]
+    fn server_vuln_formulaic_timeout_uses_full_budget_for_recovery_shapes() {
+        assert_eq!(server_vuln_formulaic_timeout_secs("primary"), Some(300));
+        assert_eq!(server_vuln_formulaic_timeout_secs("narrowed"), Some(600));
+        assert_eq!(
+            server_vuln_formulaic_timeout_secs("budget_recovery"),
+            Some(600)
+        );
+        assert_eq!(server_vuln_formulaic_timeout_secs("unknown"), None);
     }
 
     #[test]
@@ -9903,23 +10632,76 @@ mod tests {
         Failed(&'static str),
     }
 
+    #[derive(Debug)]
+    enum FakeTerminalEvidence {
+        Booked(i64),
+        Failed(&'static str),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TerminalMaterializationSnapshotCall {
+        operation_id: Option<uuid::Uuid>,
+        organization_id: uuid::Uuid,
+        stage: String,
+        session_id: Option<String>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TerminalMaterializationWriteCall {
+        organization_id: uuid::Uuid,
+        run_id: String,
+        asset: String,
+        technique: String,
+        outcome: String,
+        source: Option<String>,
+        query: Option<String>,
+        evidence_ids: Vec<i64>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TerminalMaterializationEvidenceCall {
+        operation_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+        stage_run_id: uuid::Uuid,
+        session_id: String,
+        project_path: String,
+        tool_name: String,
+        kind: String,
+        subject: String,
+        raw_output: Value,
+    }
+
     struct FakeTerminalMaterializationStore {
         snapshot: Value,
         snapshot_error: Option<&'static str>,
         writes: Mutex<VecDeque<FakeTerminalWrite>>,
+        evidence_results: Mutex<VecDeque<FakeTerminalEvidence>>,
+        snapshot_calls: Mutex<Vec<TerminalMaterializationSnapshotCall>>,
+        write_calls: Mutex<Vec<TerminalMaterializationWriteCall>>,
+        evidence_calls: Mutex<Vec<TerminalMaterializationEvidenceCall>>,
     }
 
     #[async_trait::async_trait]
     impl GateTerminalMaterializationStore for FakeTerminalMaterializationStore {
         async fn terminal_materialization_snapshot(
             &self,
-            _organization_id: uuid::Uuid,
-            _stage: &str,
-            _session_id: Option<&str>,
+            operation_id: Option<uuid::Uuid>,
+            organization_id: uuid::Uuid,
+            stage: &str,
+            session_id: Option<&str>,
             _stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
             _current_wave_target_ids: Option<Vec<uuid::Uuid>>,
             _current_wave_asset_values: Option<Vec<String>>,
         ) -> anyhow::Result<Value> {
+            self.snapshot_calls
+                .lock()
+                .unwrap()
+                .push(TerminalMaterializationSnapshotCall {
+                    operation_id,
+                    organization_id,
+                    stage: stage.to_string(),
+                    session_id: session_id.map(str::to_string),
+                });
             match self.snapshot_error {
                 Some(message) => Err(anyhow::anyhow!(message)),
                 None => Ok(self.snapshot.clone()),
@@ -9929,19 +10711,66 @@ mod tests {
         #[allow(clippy::too_many_arguments)]
         async fn terminal_materialization_upsert(
             &self,
-            _organization_id: uuid::Uuid,
-            _run_id: &str,
-            _asset: &str,
-            _technique: &str,
-            _outcome: &str,
-            _source: Option<&str>,
-            _query: Option<&str>,
-            _evidence_ids: &[i64],
+            organization_id: uuid::Uuid,
+            run_id: &str,
+            asset: &str,
+            technique: &str,
+            outcome: &str,
+            source: Option<&str>,
+            query: Option<&str>,
+            evidence_ids: &[i64],
         ) -> anyhow::Result<bool> {
+            self.write_calls
+                .lock()
+                .unwrap()
+                .push(TerminalMaterializationWriteCall {
+                    organization_id,
+                    run_id: run_id.to_string(),
+                    asset: asset.to_string(),
+                    technique: technique.to_string(),
+                    outcome: outcome.to_string(),
+                    source: source.map(str::to_string),
+                    query: query.map(str::to_string),
+                    evidence_ids: evidence_ids.to_vec(),
+                });
             match self.writes.lock().unwrap().pop_front() {
                 Some(FakeTerminalWrite::ProducerTerminalWon) => Ok(false),
                 Some(FakeTerminalWrite::Failed(message)) => Err(anyhow::anyhow!(message)),
                 None => panic!("unexpected terminal materialization write"),
+            }
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        async fn terminal_materialization_append_evidence(
+            &self,
+            operation_id: uuid::Uuid,
+            organization_id: uuid::Uuid,
+            stage_run_id: uuid::Uuid,
+            session_id: &str,
+            project_path: &str,
+            tool_name: &str,
+            kind: &str,
+            subject: &str,
+            raw_output: &str,
+        ) -> anyhow::Result<i64> {
+            self.evidence_calls
+                .lock()
+                .unwrap()
+                .push(TerminalMaterializationEvidenceCall {
+                    operation_id,
+                    organization_id,
+                    stage_run_id,
+                    session_id: session_id.to_string(),
+                    project_path: project_path.to_string(),
+                    tool_name: tool_name.to_string(),
+                    kind: kind.to_string(),
+                    subject: subject.to_string(),
+                    raw_output: serde_json::from_str(raw_output)?,
+                });
+            match self.evidence_results.lock().unwrap().pop_front() {
+                Some(FakeTerminalEvidence::Booked(evidence_id)) => Ok(evidence_id),
+                Some(FakeTerminalEvidence::Failed(message)) => Err(anyhow::anyhow!(message)),
+                None => panic!("unexpected terminal materialization evidence append"),
             }
         }
     }
@@ -9979,18 +10808,221 @@ mod tests {
         })
     }
 
+    fn vuln_terminal_materialization_snapshot(
+        organization_id: uuid::Uuid,
+        session_id: &str,
+    ) -> Value {
+        json!({
+            "stage": "vuln_triage",
+            "organization_id": organization_id,
+            "session_id": session_id,
+            "assets": [{
+                "value": "https://app.example:443",
+                "exact_web_origin": true,
+                "coverage": [{
+                    "technique": "WSTG-INPV-05",
+                    "state": "not_applicable",
+                    "source": "enumeration_surface_manifest",
+                    "note": "Enumeration found no executable GET query parameter on this exact origin",
+                    "details": {"authority": "enumeration_surface_manifest"}
+                }]
+            }]
+        })
+    }
+
+    fn vuln_surface_lineage(
+        operation_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+        scope_snapshot_id: uuid::Uuid,
+    ) -> VulnSurfaceApplicabilityLineage {
+        VulnSurfaceApplicabilityLineage {
+            handoff_id: uuid::Uuid::new_v4(),
+            operation_id,
+            organization_id,
+            scope_snapshot_id,
+            authority_kind: "deliverable_final_seal".to_string(),
+            scope_hash: "scope-hash".to_string(),
+            payload_sha256: "payload-sha256".to_string(),
+            unit_gate_decision_hash: "gate-decision-sha256".to_string(),
+            gate_passed_at: chrono::Utc::now() - chrono::Duration::minutes(1),
+            schema_version: 1,
+            source_evidence_ids: vec![5, 6],
+        }
+    }
+
+    fn vuln_surface_handoff(
+        operation_id: uuid::Uuid,
+        organization_id: uuid::Uuid,
+        scope_snapshot_id: uuid::Uuid,
+    ) -> RuntimeStageHandoffView {
+        RuntimeStageHandoffView {
+            id: uuid::Uuid::new_v4(),
+            operation_id,
+            organization_id,
+            scope_snapshot_id,
+            from_stage_kind: StageKind::Enumeration.as_str().to_string(),
+            stage_execution_id: uuid::Uuid::new_v4(),
+            source_stage_run_unit_id: uuid::Uuid::new_v4(),
+            deliverable_submission_id: None,
+            authority_kind: "deliverable_final_seal".to_string(),
+            scope_hash: "scope-hash".to_string(),
+            payload: json!({}),
+            payload_sha256: "payload-sha256".to_string(),
+            evidence_ids: vec![5, 6],
+            coverage_watermark: json!({}),
+            unit_gate_decision_hash: "gate-decision-sha256".to_string(),
+            aggregate_pass_token_hash: None,
+            gate_passed_at: chrono::Utc::now() - chrono::Duration::minutes(1),
+            schema_version: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn target_intel_final_seal_books_and_reuses_real_gate_attestation() {
+        let store = FakeTerminalMaterializationStore {
+            snapshot: Value::Null,
+            snapshot_error: None,
+            writes: Mutex::new(VecDeque::new()),
+            evidence_results: Mutex::new(VecDeque::from([FakeTerminalEvidence::Booked(41)])),
+            snapshot_calls: Mutex::new(Vec::new()),
+            write_calls: Mutex::new(Vec::new()),
+            evidence_calls: Mutex::new(Vec::new()),
+        };
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let unit_id = uuid::Uuid::new_v4();
+        let submission_id = uuid::Uuid::new_v4();
+        let mut material =
+            V2AuthoritativeSealMaterial::InformationCoverage(V2CoverageSealMaterial {
+                run_id: operation_id.to_string(),
+                cells: vec![V2AuthoritativeSealCell {
+                    asset: "Example Company".to_string(),
+                    technique: "GOLISH-INTEL-WHOIS".to_string(),
+                    state: "checked_empty".to_string(),
+                    evidence_ids: Vec::new(),
+                }],
+                waves: Vec::new(),
+                attestation_evidence_ids: Vec::new(),
+            });
+
+        attest_target_intel_final_seal(
+            &store,
+            &mut material,
+            operation_id,
+            organization_id,
+            unit_id,
+            submission_id,
+            "stage-run-session",
+            "/fixture/project",
+        )
+        .await
+        .expect("book exact Target Intel Gate attestation");
+        attest_target_intel_final_seal(
+            &store,
+            &mut material,
+            operation_id,
+            organization_id,
+            unit_id,
+            submission_id,
+            "stage-run-session",
+            "/fixture/project",
+        )
+        .await
+        .expect("replay reuses checkpointed attestation id");
+
+        assert_eq!(
+            final_seal_evidence_ids(&terminal_materialization_deliverable(), &material),
+            vec![41]
+        );
+        let calls = store.evidence_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].operation_id, operation_id);
+        assert_eq!(calls[0].organization_id, organization_id);
+        assert_eq!(calls[0].stage_run_id, unit_id);
+        assert_eq!(
+            calls[0].raw_output.get("schema").and_then(Value::as_str),
+            Some("target_intel_gate_snapshot_attestation_v1")
+        );
+        assert_eq!(
+            calls[0]
+                .raw_output
+                .get("deliverable_submission_id")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            Some(submission_id.to_string())
+        );
+    }
+
+    #[test]
+    fn vuln_surface_lineage_rejects_wrong_scope_or_authority() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let valid = vuln_surface_handoff(operation_id, organization_id, scope_snapshot_id);
+
+        let lineage = trusted_vuln_surface_materialization_lineage_from_handoffs(
+            std::slice::from_ref(&valid),
+            operation_id,
+            organization_id,
+            scope_snapshot_id,
+            "scope-hash",
+        )
+        .expect("exact final-sealed Enumeration lineage is valid");
+        assert_eq!(lineage.handoff_id, valid.id);
+        assert_eq!(lineage.source_evidence_ids, vec![5, 6]);
+
+        let mut forked = valid.clone();
+        forked.authority_kind = "stage_fork_final_seal".to_string();
+        assert!(trusted_vuln_surface_materialization_lineage_from_handoffs(
+            &[forked],
+            operation_id,
+            organization_id,
+            scope_snapshot_id,
+            "scope-hash",
+        )
+        .is_ok());
+
+        assert!(trusted_vuln_surface_materialization_lineage_from_handoffs(
+            std::slice::from_ref(&valid),
+            operation_id,
+            organization_id,
+            uuid::Uuid::new_v4(),
+            "scope-hash",
+        )
+        .is_err());
+        let mut forged = valid;
+        forged.authority_kind = "model_submission".to_string();
+        assert!(trusted_vuln_surface_materialization_lineage_from_handoffs(
+            &[forged],
+            operation_id,
+            organization_id,
+            scope_snapshot_id,
+            "scope-hash",
+        )
+        .is_err());
+    }
+
     #[tokio::test]
     async fn passed_gate_terminal_materialization_fails_closed_on_snapshot_error() {
         let store = FakeTerminalMaterializationStore {
             snapshot: Value::Null,
             snapshot_error: Some("snapshot unavailable"),
             writes: Mutex::new(VecDeque::new()),
+            evidence_results: Mutex::new(VecDeque::new()),
+            snapshot_calls: Mutex::new(Vec::new()),
+            write_calls: Mutex::new(Vec::new()),
+            evidence_calls: Mutex::new(Vec::new()),
         };
 
         let error = materialize_passed_gate_terminal_outcomes(
             &store,
+            None,
             uuid::Uuid::from_u128(1),
             "run-current",
+            "run-current",
+            None,
+            None,
+            None,
             StageKind::TargetIntel,
             None,
             None,
@@ -10010,12 +11042,21 @@ mod tests {
             writes: Mutex::new(VecDeque::from([FakeTerminalWrite::Failed(
                 "write unavailable",
             )])),
+            evidence_results: Mutex::new(VecDeque::new()),
+            snapshot_calls: Mutex::new(Vec::new()),
+            write_calls: Mutex::new(Vec::new()),
+            evidence_calls: Mutex::new(Vec::new()),
         };
 
         let error = materialize_passed_gate_terminal_outcomes(
             &store,
+            None,
             uuid::Uuid::from_u128(1),
             "run-current",
+            "run-current",
+            None,
+            None,
+            None,
             StageKind::TargetIntel,
             None,
             None,
@@ -10033,12 +11074,21 @@ mod tests {
             snapshot: terminal_materialization_snapshot(),
             snapshot_error: None,
             writes: Mutex::new(VecDeque::from([FakeTerminalWrite::ProducerTerminalWon])),
+            evidence_results: Mutex::new(VecDeque::new()),
+            snapshot_calls: Mutex::new(Vec::new()),
+            write_calls: Mutex::new(Vec::new()),
+            evidence_calls: Mutex::new(Vec::new()),
         };
 
         let summary = materialize_passed_gate_terminal_outcomes(
             &store,
+            None,
             uuid::Uuid::from_u128(1),
             "run-current",
+            "run-current",
+            None,
+            None,
+            None,
             StageKind::TargetIntel,
             None,
             None,
@@ -10124,7 +11174,8 @@ mod tests {
         });
 
         let outcomes =
-            gate_terminal_outcomes_to_materialize(StageKind::TargetIntel, &deliverable, &snapshot);
+            gate_terminal_outcomes_to_materialize(StageKind::TargetIntel, &deliverable, &snapshot)
+                .expect("Target Intel terminal exceptions are valid");
 
         assert_eq!(outcomes.len(), 3);
         assert_eq!(outcomes[0].asset, "moresec.cn");
@@ -10140,7 +11191,381 @@ mod tests {
             &deliverable,
             &snapshot
         )
+        .expect("Enumeration does not materialize submit exceptions")
         .is_empty());
+    }
+
+    #[test]
+    fn vuln_gate_materializes_only_trusted_surface_manifest_not_applicable_cells() {
+        let deliverable: StageDeliverable = serde_json::from_value(json!({
+            "stage_id": "vuln_triage",
+            "stage_run_id": "11111111-1111-1111-1111-111111111111",
+            "claims": [],
+            "evidence_refs": [],
+            "findings": [],
+            "coverage": [{
+                "asset": "https://forged.example:443",
+                "technique": "WSTG-INPV-05",
+                "status": "not_applicable",
+                "note": "model-authored Vuln N/A must not be materialized"
+            }],
+            "skipped_checks": [],
+            "required_checks_done": []
+        }))
+        .unwrap();
+        let snapshot = json!({
+            "stage": "vuln_triage",
+            "assets": [{
+                "value": "https://app.example:443",
+                "exact_web_origin": true,
+                "coverage": [
+                    {
+                        "technique": "WSTG-INPV-05",
+                        "state": "not_applicable",
+                        "source": "enumeration_surface_manifest",
+                        "note": "Enumeration found no executable GET query parameter on this exact origin",
+                        "details": {"authority": "enumeration_surface_manifest"}
+                    },
+                    {
+                        "technique": "WSTG-ATHN-04",
+                        "state": "not_applicable",
+                        "source": "enumeration_surface_manifest",
+                        "note": "Enumeration published no HTTP endpoint for anonymous-access review on this exact origin",
+                        "details": {"authority": "enumeration_surface_manifest"}
+                    },
+                    {
+                        "technique": "WSTG-INPV-01",
+                        "state": "not_applicable",
+                        "source": "submit_stage_deliverable",
+                        "note": "forged source",
+                        "details": {"authority": "enumeration_surface_manifest"}
+                    }
+                ]
+            }]
+        });
+
+        let outcomes =
+            gate_terminal_outcomes_to_materialize(StageKind::VulnTriage, &deliverable, &snapshot)
+                .expect("trusted backend surface applicability is valid");
+
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|outcome| {
+            outcome.asset == "https://app.example:443" && outcome.outcome == "not_applicable"
+        }));
+        assert_eq!(outcomes[0].technique, "WSTG-INPV-05");
+        assert_eq!(outcomes[1].technique, "WSTG-ATHN-04");
+    }
+
+    #[test]
+    fn vuln_surface_extractor_rejects_duplicate_key_note_borrowing() {
+        let organization_id = uuid::Uuid::new_v4();
+        let mut snapshot =
+            vuln_terminal_materialization_snapshot(organization_id, "chat-evidence-session");
+        let duplicate = snapshot["assets"][0]["coverage"][0].clone();
+        snapshot["assets"][0]["coverage"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+
+        let error = gate_terminal_outcomes_to_materialize(
+            StageKind::VulnTriage,
+            &terminal_materialization_deliverable(),
+            &snapshot,
+        )
+        .expect_err("duplicate trusted cells must not borrow or race server notes");
+
+        assert!(error.to_string().contains("duplicate canonical cell"));
+    }
+
+    #[tokio::test]
+    async fn vuln_terminal_materialization_uses_operation_run_and_exact_coverage_identity() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let stage_run_unit_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let lineage = vuln_surface_lineage(operation_id, organization_id, scope_snapshot_id);
+        let store = FakeTerminalMaterializationStore {
+            snapshot: vuln_terminal_materialization_snapshot(
+                organization_id,
+                "chat-evidence-session",
+            ),
+            snapshot_error: None,
+            writes: Mutex::new(VecDeque::from([FakeTerminalWrite::ProducerTerminalWon])),
+            evidence_results: Mutex::new(VecDeque::from([FakeTerminalEvidence::Booked(17)])),
+            snapshot_calls: Mutex::new(Vec::new()),
+            write_calls: Mutex::new(Vec::new()),
+            evidence_calls: Mutex::new(Vec::new()),
+        };
+
+        let summary = materialize_passed_gate_terminal_outcomes(
+            &store,
+            Some(operation_id),
+            organization_id,
+            "chat-evidence-session",
+            &operation_id.to_string(),
+            Some(stage_run_unit_id),
+            Some("/project"),
+            Some(&lineage),
+            StageKind::VulnTriage,
+            None,
+            None,
+            &terminal_materialization_deliverable(),
+        )
+        .await
+        .expect("trusted Vuln surface N/A must materialize before final seal");
+
+        assert_eq!(summary.submitted, 1);
+        assert_eq!(summary.producer_terminal_won, 1);
+        let evidence_calls = store.evidence_calls.lock().unwrap();
+        assert_eq!(evidence_calls.len(), 1);
+        let evidence_call = &evidence_calls[0];
+        assert_eq!(evidence_call.operation_id, operation_id);
+        assert_eq!(evidence_call.organization_id, organization_id);
+        assert_eq!(evidence_call.stage_run_id, stage_run_unit_id);
+        assert_eq!(evidence_call.session_id, "chat-evidence-session");
+        assert_eq!(evidence_call.project_path, "/project");
+        assert_eq!(
+            evidence_call.tool_name,
+            "vuln_surface_applicability_attestation"
+        );
+        assert_eq!(evidence_call.kind, "vuln_surface_applicability");
+        assert_eq!(
+            evidence_call.raw_output["source_handoff"]["handoff_id"],
+            json!(lineage.handoff_id)
+        );
+        assert_eq!(
+            evidence_call.raw_output["source_handoff"]["source_evidence_ids"],
+            json!([5, 6])
+        );
+        drop(evidence_calls);
+        assert_eq!(
+            store.snapshot_calls.lock().unwrap().as_slice(),
+            [TerminalMaterializationSnapshotCall {
+                operation_id: Some(operation_id),
+                organization_id,
+                stage: "vuln_triage".to_string(),
+                session_id: Some("chat-evidence-session".to_string()),
+            }]
+        );
+        assert_eq!(
+            store.write_calls.lock().unwrap().as_slice(),
+            [TerminalMaterializationWriteCall {
+                organization_id,
+                run_id: operation_id.to_string(),
+                asset: "https://app.example:443".to_string(),
+                technique: "WSTG-INPV-05".to_string(),
+                outcome: "not_applicable".to_string(),
+                source: Some("enumeration_surface_manifest".to_string()),
+                query: Some(
+                    "Enumeration found no executable GET query parameter on this exact origin"
+                        .to_string(),
+                ),
+                evidence_ids: vec![17],
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn vuln_terminal_materialization_rejects_snapshot_identity_mismatch() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let lineage = vuln_surface_lineage(operation_id, organization_id, uuid::Uuid::new_v4());
+        let store = FakeTerminalMaterializationStore {
+            snapshot: vuln_terminal_materialization_snapshot(
+                organization_id,
+                "different-chat-session",
+            ),
+            snapshot_error: None,
+            writes: Mutex::new(VecDeque::new()),
+            evidence_results: Mutex::new(VecDeque::new()),
+            snapshot_calls: Mutex::new(Vec::new()),
+            write_calls: Mutex::new(Vec::new()),
+            evidence_calls: Mutex::new(Vec::new()),
+        };
+
+        let error = materialize_passed_gate_terminal_outcomes(
+            &store,
+            Some(operation_id),
+            organization_id,
+            "chat-evidence-session",
+            &operation_id.to_string(),
+            Some(uuid::Uuid::new_v4()),
+            Some("/project"),
+            Some(&lineage),
+            StageKind::VulnTriage,
+            None,
+            None,
+            &terminal_materialization_deliverable(),
+        )
+        .await
+        .expect_err("a foreign snapshot session must block final materialization");
+
+        assert!(error.to_string().contains("session_id"));
+        assert!(store.write_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn vuln_terminal_materialization_requires_final_sealed_enumeration_lineage() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let store = FakeTerminalMaterializationStore {
+            snapshot: vuln_terminal_materialization_snapshot(
+                organization_id,
+                "chat-evidence-session",
+            ),
+            snapshot_error: None,
+            writes: Mutex::new(VecDeque::new()),
+            evidence_results: Mutex::new(VecDeque::new()),
+            snapshot_calls: Mutex::new(Vec::new()),
+            write_calls: Mutex::new(Vec::new()),
+            evidence_calls: Mutex::new(Vec::new()),
+        };
+
+        let error = materialize_passed_gate_terminal_outcomes(
+            &store,
+            Some(operation_id),
+            organization_id,
+            "chat-evidence-session",
+            &operation_id.to_string(),
+            Some(uuid::Uuid::new_v4()),
+            Some("/project"),
+            None,
+            StageKind::VulnTriage,
+            None,
+            None,
+            &terminal_materialization_deliverable(),
+        )
+        .await
+        .expect_err("Vuln surface N/A without sealed Enumeration lineage must fail closed");
+
+        assert!(error.to_string().contains("Enumeration lineage"));
+        assert!(store.evidence_calls.lock().unwrap().is_empty());
+        assert!(store.write_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn vuln_terminal_materialization_rejects_operation_run_mismatch_before_append() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let lineage = vuln_surface_lineage(operation_id, organization_id, uuid::Uuid::new_v4());
+        let store = FakeTerminalMaterializationStore {
+            snapshot: vuln_terminal_materialization_snapshot(
+                organization_id,
+                "chat-evidence-session",
+            ),
+            snapshot_error: None,
+            writes: Mutex::new(VecDeque::new()),
+            evidence_results: Mutex::new(VecDeque::new()),
+            snapshot_calls: Mutex::new(Vec::new()),
+            write_calls: Mutex::new(Vec::new()),
+            evidence_calls: Mutex::new(Vec::new()),
+        };
+
+        let error = materialize_passed_gate_terminal_outcomes(
+            &store,
+            Some(operation_id),
+            organization_id,
+            "chat-evidence-session",
+            "foreign-run",
+            Some(uuid::Uuid::new_v4()),
+            Some("/project"),
+            Some(&lineage),
+            StageKind::VulnTriage,
+            None,
+            None,
+            &terminal_materialization_deliverable(),
+        )
+        .await
+        .expect_err("Vuln materialization must use the exact operation run id");
+
+        assert!(error.to_string().contains("outcome run"));
+        assert!(store.evidence_calls.lock().unwrap().is_empty());
+        assert!(store.write_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn vuln_terminal_materialization_rejects_attestation_error_or_zero_id() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let lineage = vuln_surface_lineage(operation_id, organization_id, uuid::Uuid::new_v4());
+        for evidence_result in [
+            FakeTerminalEvidence::Failed("ledger unavailable"),
+            FakeTerminalEvidence::Booked(0),
+        ] {
+            let store = FakeTerminalMaterializationStore {
+                snapshot: vuln_terminal_materialization_snapshot(
+                    organization_id,
+                    "chat-evidence-session",
+                ),
+                snapshot_error: None,
+                writes: Mutex::new(VecDeque::new()),
+                evidence_results: Mutex::new(VecDeque::from([evidence_result])),
+                snapshot_calls: Mutex::new(Vec::new()),
+                write_calls: Mutex::new(Vec::new()),
+                evidence_calls: Mutex::new(Vec::new()),
+            };
+
+            materialize_passed_gate_terminal_outcomes(
+                &store,
+                Some(operation_id),
+                organization_id,
+                "chat-evidence-session",
+                &operation_id.to_string(),
+                Some(uuid::Uuid::new_v4()),
+                Some("/project"),
+                Some(&lineage),
+                StageKind::VulnTriage,
+                None,
+                None,
+                &terminal_materialization_deliverable(),
+            )
+            .await
+            .expect_err("missing fresh attestation evidence must block outcome writes");
+
+            assert_eq!(store.evidence_calls.lock().unwrap().len(), 1);
+            assert!(store.write_calls.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn vuln_terminal_materialization_empty_na_skips_attestation() {
+        let operation_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let store = FakeTerminalMaterializationStore {
+            snapshot: json!({
+                "stage": "vuln_triage",
+                "organization_id": organization_id,
+                "session_id": "chat-evidence-session",
+                "assets": []
+            }),
+            snapshot_error: None,
+            writes: Mutex::new(VecDeque::new()),
+            evidence_results: Mutex::new(VecDeque::new()),
+            snapshot_calls: Mutex::new(Vec::new()),
+            write_calls: Mutex::new(Vec::new()),
+            evidence_calls: Mutex::new(Vec::new()),
+        };
+
+        let summary = materialize_passed_gate_terminal_outcomes(
+            &store,
+            Some(operation_id),
+            organization_id,
+            "chat-evidence-session",
+            &operation_id.to_string(),
+            None,
+            None,
+            None,
+            StageKind::VulnTriage,
+            None,
+            None,
+            &terminal_materialization_deliverable(),
+        )
+        .await
+        .expect("no trusted structural N/A means there is nothing to re-anchor");
+
+        assert_eq!(summary, GateTerminalMaterializationSummary::default());
+        assert!(store.evidence_calls.lock().unwrap().is_empty());
+        assert!(store.write_calls.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -10172,7 +11597,8 @@ mod tests {
         });
 
         let outcomes =
-            gate_terminal_outcomes_to_materialize(StageKind::TargetIntel, &deliverable, &snapshot);
+            gate_terminal_outcomes_to_materialize(StageKind::TargetIntel, &deliverable, &snapshot)
+                .expect("Target Intel organization coverage is valid");
 
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].asset, "广州有创网络科技有限公司");
@@ -11731,6 +13157,38 @@ mod tests {
     }
 
     #[test]
+    fn company_controller_runtime_recovery_preserves_facts_and_stops_old_execution() {
+        let result = company_controller_scheduler_result(
+            StageKind::VulnTriage,
+            vec![json!({
+                "code": "COMPANY_CONTROLLER_RUNTIME_RECOVERED",
+                "detail": "stage_team_final_submitter_runtime_replaced",
+                "organization_id": uuid::Uuid::new_v4(),
+            })],
+            0,
+            None,
+            false,
+        );
+
+        assert_eq!(result.value["passed"], false);
+        assert_eq!(result.value["retry_budget_exhausted"], true);
+        assert_eq!(
+            result.value["runtime_control"],
+            json!({
+                "kind": "halt_current_request",
+                "reason": "company_controller_runtime_recovered",
+            })
+        );
+        assert!(result.value["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("facts and evidence were preserved")));
+        assert!(result.value["next_action"]
+            .as_str()
+            .is_some_and(|next| next.contains("separate continue request")
+                && next.contains("do not restart the operation from Scoping")));
+    }
+
+    #[test]
     fn company_controller_missing_submission_reports_final_submitter_resume_not_gate_block() {
         let result = company_controller_scheduler_result(
             StageKind::Enumeration,
@@ -11858,6 +13316,299 @@ mod tests {
             summary.first_error.as_ref().map(ToString::to_string),
             Some("first child lost its lease".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn rolling_stage_team_child_drain_refills_before_slow_sibling_finishes() {
+        let queued = Arc::new(Mutex::new(VecDeque::from([1_u8, 2, 3])));
+        let claimed = Arc::new(Mutex::new(Vec::new()));
+        let slow_release = Arc::new(Notify::new());
+        let third_started = Arc::new(Notify::new());
+
+        let drain = tokio::spawn(drain_rolling_stage_team_work(
+            2,
+            {
+                let queued = queued.clone();
+                let claimed = claimed.clone();
+                move |_claim_sequence| {
+                    let work = queued.lock().unwrap().pop_front();
+                    if let Some(work) = work {
+                        claimed.lock().unwrap().push(work);
+                    }
+                    std::future::ready(Ok(work))
+                }
+            },
+            {
+                let slow_release = slow_release.clone();
+                let third_started = third_started.clone();
+                move |work| {
+                    let slow_release = slow_release.clone();
+                    let third_started = third_started.clone();
+                    async move {
+                        match work {
+                            2 => slow_release.notified().await,
+                            3 => third_started.notify_one(),
+                            _ => {}
+                        }
+                        Ok(StageTeamChildExecution::Completed)
+                    }
+                }
+            },
+            || false,
+        ));
+
+        timeout(Duration::from_secs(1), third_started.notified())
+            .await
+            .expect("the third child should refill the slot while child 2 is still blocked");
+        assert_eq!(*claimed.lock().unwrap(), vec![1, 2, 3]);
+
+        slow_release.notify_one();
+        let completed = drain
+            .await
+            .expect("rolling drain task should not panic")
+            .expect("all fake children should complete");
+        assert_eq!(completed, 3);
+    }
+
+    #[tokio::test]
+    async fn rolling_stage_team_child_drain_never_exceeds_cap() {
+        let queued = Arc::new(Mutex::new(VecDeque::from_iter(1_u8..=8)));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let first_pair_started = Arc::new(Notify::new());
+        let first_pair_release = Arc::new(Semaphore::new(0));
+
+        let drain = tokio::spawn(drain_rolling_stage_team_work(
+            2,
+            {
+                let queued = queued.clone();
+                move |_claim_sequence| std::future::ready(Ok(queued.lock().unwrap().pop_front()))
+            },
+            {
+                let active = active.clone();
+                let peak = peak.clone();
+                let first_pair_started = first_pair_started.clone();
+                let first_pair_release = first_pair_release.clone();
+                move |work| {
+                    let active = active.clone();
+                    let peak = peak.clone();
+                    let first_pair_started = first_pair_started.clone();
+                    let first_pair_release = first_pair_release.clone();
+                    async move {
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(current, Ordering::SeqCst);
+                        if current == 2 {
+                            first_pair_started.notify_one();
+                        }
+                        if work <= 2 {
+                            first_pair_release
+                                .acquire()
+                                .await
+                                .expect("test release semaphore should stay open")
+                                .forget();
+                        } else {
+                            tokio::task::yield_now().await;
+                        }
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        Ok(StageTeamChildExecution::Completed)
+                    }
+                }
+            },
+            || false,
+        ));
+
+        timeout(Duration::from_secs(1), first_pair_started.notified())
+            .await
+            .expect("the initial two child slots should both start");
+        assert_eq!(active.load(Ordering::SeqCst), 2);
+        first_pair_release.add_permits(2);
+
+        let completed = drain
+            .await
+            .expect("rolling drain task should not panic")
+            .expect("all fake children should complete");
+        assert_eq!(completed, 8);
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn rolling_stage_team_child_drain_records_error_and_finishes_siblings() {
+        let queued = Arc::new(Mutex::new(VecDeque::from([1_u8, 2, 3, 4])));
+        let executed = Arc::new(Mutex::new(Vec::new()));
+
+        let error = drain_rolling_stage_team_work(
+            2,
+            {
+                let queued = queued.clone();
+                move |_claim_sequence| std::future::ready(Ok(queued.lock().unwrap().pop_front()))
+            },
+            {
+                let executed = executed.clone();
+                move |work| {
+                    let executed = executed.clone();
+                    async move {
+                        executed.lock().unwrap().push(work);
+                        if work == 1 {
+                            Err(anyhow::anyhow!("first child lost its lease"))
+                        } else {
+                            Ok(StageTeamChildExecution::Completed)
+                        }
+                    }
+                }
+            },
+            || false,
+        )
+        .await
+        .expect_err("the first execution error should surface after all queued siblings drain");
+
+        let mut executed = executed.lock().unwrap().clone();
+        executed.sort_unstable();
+        assert_eq!(executed, vec![1, 2, 3, 4]);
+        assert_eq!(error.to_string(), "first child lost its lease");
+    }
+
+    #[tokio::test]
+    async fn rolling_stage_team_child_drain_stops_refill_on_cancel_but_awaits_started_work() {
+        let queued = Arc::new(Mutex::new(VecDeque::from([1_u8, 2, 3])));
+        let claimed = Arc::new(Mutex::new(Vec::new()));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(AtomicUsize::new(0));
+        let first_pair_started = Arc::new(Notify::new());
+        let one_finished = Arc::new(Notify::new());
+        let release = Arc::new(Semaphore::new(0));
+
+        let mut drain = tokio::spawn(drain_rolling_stage_team_work(
+            2,
+            {
+                let queued = queued.clone();
+                let claimed = claimed.clone();
+                move |_claim_sequence| {
+                    let work = queued.lock().unwrap().pop_front();
+                    if let Some(work) = work {
+                        claimed.lock().unwrap().push(work);
+                    }
+                    std::future::ready(Ok(work))
+                }
+            },
+            {
+                let cancelled = cancelled.clone();
+                let started = started.clone();
+                let finished = finished.clone();
+                let first_pair_started = first_pair_started.clone();
+                let one_finished = one_finished.clone();
+                let release = release.clone();
+                move |_work| {
+                    let cancelled = cancelled.clone();
+                    let started = started.clone();
+                    let finished = finished.clone();
+                    let first_pair_started = first_pair_started.clone();
+                    let one_finished = one_finished.clone();
+                    let release = release.clone();
+                    async move {
+                        if started.fetch_add(1, Ordering::SeqCst) + 1 == 2 {
+                            cancelled.store(true, Ordering::SeqCst);
+                            first_pair_started.notify_one();
+                        }
+                        release
+                            .acquire()
+                            .await
+                            .expect("test release semaphore should stay open")
+                            .forget();
+                        finished.fetch_add(1, Ordering::SeqCst);
+                        one_finished.notify_one();
+                        Ok(StageTeamChildExecution::Completed)
+                    }
+                }
+            },
+            {
+                let cancelled = cancelled.clone();
+                move || cancelled.load(Ordering::SeqCst)
+            },
+        ));
+
+        timeout(Duration::from_secs(1), first_pair_started.notified())
+            .await
+            .expect("the initial two children should start before cancellation is observed");
+        release.add_permits(1);
+        timeout(Duration::from_secs(1), one_finished.notified())
+            .await
+            .expect("one already-started child should finish");
+        assert!(
+            !drain.is_finished(),
+            "the second started child must still be awaited"
+        );
+        assert_eq!(*claimed.lock().unwrap(), vec![1, 2]);
+
+        release.add_permits(1);
+        let error = (&mut drain)
+            .await
+            .expect("rolling drain task should not panic")
+            .expect_err("cancellation should surface after both started children land");
+        assert_eq!(finished.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            error.to_string(),
+            "Stage Team child drain cancelled after the active tool reached its landing boundary"
+        );
+    }
+
+    #[tokio::test]
+    async fn rolling_stage_team_child_drain_claim_error_awaits_started_work() {
+        let claim_count = Arc::new(AtomicUsize::new(0));
+        let slow_release = Arc::new(Semaphore::new(0));
+        let slow_finished = Arc::new(Notify::new());
+
+        let error = drain_rolling_stage_team_work(
+            2,
+            {
+                let claim_count = claim_count.clone();
+                move |_claim_sequence| {
+                    let claim = claim_count.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(match claim {
+                        0 => Ok(Some(1_u8)),
+                        1 => Ok(Some(2_u8)),
+                        _ => Err(anyhow::anyhow!("claim storage unavailable")),
+                    })
+                }
+            },
+            {
+                let slow_release = slow_release.clone();
+                let slow_finished = slow_finished.clone();
+                move |work| {
+                    let slow_release = slow_release.clone();
+                    let slow_finished = slow_finished.clone();
+                    async move {
+                        if work == 2 {
+                            slow_release
+                                .acquire()
+                                .await
+                                .expect("test release semaphore should stay open")
+                                .forget();
+                            slow_finished.notify_one();
+                        }
+                        Ok(StageTeamChildExecution::Completed)
+                    }
+                }
+            },
+            || false,
+        );
+        tokio::pin!(error);
+
+        assert!(
+            timeout(Duration::from_millis(50), &mut error)
+                .await
+                .is_err(),
+            "a claim error must not drop the already-started slow sibling"
+        );
+        slow_release.add_permits(1);
+        let error = error
+            .await
+            .expect_err("claim failure should surface after started work lands");
+        timeout(Duration::from_secs(1), slow_finished.notified())
+            .await
+            .expect("the already-started slow child should reach its landing boundary");
+        assert_eq!(error.to_string(), "claim storage unavailable");
+        assert_eq!(claim_count.load(Ordering::SeqCst), 3);
     }
 
     #[test]
@@ -12037,28 +13788,32 @@ mod tests {
     }
 
     #[test]
-    fn company_controller_materializes_submit_exceptions_only_for_intel_and_eas() {
+    fn company_controller_materializes_submit_exceptions_and_trusted_vuln_surface_na() {
+        let operation_id = uuid::Uuid::new_v4();
         let chat_session_id = "stage-run-chat-evidence-session";
 
         assert_eq!(
             company_controller_terminal_materialization_run_id(
                 StageKind::TargetIntel,
+                operation_id,
                 Some(chat_session_id)
             )
             .unwrap(),
-            Some(chat_session_id)
+            Some(chat_session_id.to_string())
         );
         assert_eq!(
             company_controller_terminal_materialization_run_id(
                 StageKind::ExternalAttackSurface,
+                operation_id,
                 Some(chat_session_id)
             )
             .unwrap(),
-            Some(chat_session_id)
+            Some(chat_session_id.to_string())
         );
         assert_eq!(
             company_controller_terminal_materialization_run_id(
                 StageKind::Enumeration,
+                operation_id,
                 Some(chat_session_id)
             )
             .unwrap(),
@@ -12067,10 +13822,11 @@ mod tests {
         assert_eq!(
             company_controller_terminal_materialization_run_id(
                 StageKind::VulnTriage,
+                operation_id,
                 Some(chat_session_id)
             )
             .unwrap(),
-            None
+            Some(operation_id.to_string())
         );
     }
 
@@ -12294,6 +14050,7 @@ mod tests {
                 evidence_ids: Vec::new(),
             }],
             waves: Vec::new(),
+            attestation_evidence_ids: Vec::new(),
         });
 
         let (keys, total) = deterministic_canonical_fact_keys(
@@ -12344,6 +14101,7 @@ mod tests {
             run_id,
             cells,
             waves: Vec::new(),
+            attestation_evidence_ids: Vec::new(),
         });
         let outcomes = vec![
             TechniqueOutcomeFact::new(
@@ -12456,6 +14214,7 @@ mod tests {
                 })
                 .collect(),
             waves: Vec::new(),
+            attestation_evidence_ids: Vec::new(),
         });
         let materialized_outcomes = deliverable
             .coverage
@@ -12574,6 +14333,7 @@ mod tests {
             run_id: run_id.clone(),
             cells,
             waves: Vec::new(),
+            attestation_evidence_ids: Vec::new(),
         });
 
         let (keys, total) = deterministic_canonical_fact_keys(

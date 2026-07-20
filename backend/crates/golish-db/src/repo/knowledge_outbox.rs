@@ -232,6 +232,42 @@ pub async fn activate_paused_projector(
     Ok(false)
 }
 
+/// Re-open only deliveries that were terminally suppressed because no local
+/// embedding provider existed. The successful Document dependency is rechecked
+/// in the same statement; invalidated, policy-suppressed and failed deliveries
+/// are never widened by provider activation.
+pub async fn requeue_provider_unconfigured_embeddings(
+    pool: &PgPool,
+) -> Result<u64, KnowledgeOutboxError> {
+    let projector = ProjectorId::EmbeddingProjectorV1;
+    let document = ProjectorId::DocumentProjectorV1;
+    let result = sqlx::query(
+        r#"UPDATE knowledge_projection_deliveries AS embedding
+              SET status='pending', available_at=NOW(), lease_owner=NULL,
+                  lease_expires_at=NULL, terminal_reason=NULL, completed_at=NULL,
+                  updated_at=NOW()
+            WHERE embedding.projector_name=$1
+              AND embedding.projector_schema_version=$2
+              AND embedding.status='succeeded_suppressed'
+              AND embedding.terminal_reason='memory_embedding_provider_unconfigured'
+              AND EXISTS (
+                    SELECT 1
+                      FROM knowledge_projection_deliveries AS document
+                     WHERE document.event_id=embedding.event_id
+                       AND document.projector_name=$3
+                       AND document.projector_schema_version=$4
+                       AND document.status='succeeded'
+              )"#,
+    )
+    .bind(projector.name())
+    .bind(projector.schema_version())
+    .bind(document.name())
+    .bind(document.schema_version())
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 pub async fn append_event_with_catalog_deliveries(
     tx: &mut Transaction<'_, Postgres>,
     event: &KnowledgeEventEnvelopeV1,

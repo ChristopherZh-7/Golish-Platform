@@ -302,6 +302,9 @@ pub struct AgentState {
     /// Process-shared canonical Memory Fabric UoW. Per-session bridge setup may
     /// clone this handle but never owns or starts projector workers.
     pub knowledge_memory: Arc<dyn golish_memory_app::KnowledgeUnitOfWork>,
+    /// The same local-only provider used by the Embedding Projector, shared
+    /// with ContextPack VectorPrior retrieval.
+    pub knowledge_query_embedding: Option<Arc<dyn golish_memory_app::QueryEmbeddingProvider>>,
     /// Server-owned local actor identity. Privileged commands resolve this
     /// provider instead of accepting actor UUIDs in request DTOs.
     pub operator_principal_provider: Arc<dyn TrustedOperatorPrincipalProvider>,

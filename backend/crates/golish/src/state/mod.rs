@@ -179,6 +179,7 @@ impl AppState {
             db_pool: self.db_pool.clone(),
             db_ready: self.db_ready.clone(),
             knowledge_memory: self.memory_supervisor.unit_of_work(),
+            knowledge_query_embedding: self.memory_supervisor.query_embedding_provider(),
             operator_principal_provider: std::sync::Arc::new(
                 golish_agent_app::DbTrustedOperatorPrincipalProvider::new(
                     self.db_pool.clone(),

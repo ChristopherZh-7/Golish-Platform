@@ -28,6 +28,9 @@
 | `pentest/` / `target-panel/` / `timeline/` | pentest 视图模型 / 目标面板 / 时间线 |
 | `models/` / `settings/` / `theme/` / `i18n/` / `terminal/` / `ui-state/` / `serde_json/` | 模型 / 设置 / 主题 / 国际化 / 终端 / UI 状态 / JSON 工具 |
 
+`stage-reset.ts` 是 ChatPanel dev full reset 的共享纯协议层：集中定义四个可原地重置的 Company stage、全部已知 harness stage、完整 committed receipt校验、local DAG suffix、current reset stage推断与selected stage v0 `in_progress` seed。组件、Zustand和localStorage persistence必须复用它；malformed/null receipt也先按本地suffix回卷，persistence再以自身stageOrder补齐durable-only descendants，不能分别手写stage列表或在plan缺席时用线性first-unpassed fallback猜current。
+`api/harness-dev.ts` 只返回ts-rs生成的 `HarnessDevStageCheckpointResetResult`；wrapper不得丢弃`affectedStages/currentStage/refreshedStageCursor/resetGraphFlow/purgedFacts/purgeScopeOrgCount/purgeCounts/purgeNote`。前端以IPC返回作为backend commit边界，但仍通过`stage-reset.ts`验证业务回执后才auto-resume。
+
 `ai/streaming-buffer.ts` 是流式更新的节流入口：text delta、reasoning/thinking、sub-agent thinking、tool output chunk、聊天气泡 thinking 都应先进入 16ms batch，再统一写 store；非文本边界事件（tool request/result/completed/error）前要 flush 对应 session/conv，保证显示顺序不漂。
 `ai/execution-mode.ts` 是 execution mode/profile 的共享归一入口：`task` 是 legacy Task engine alias，恢复或写入持久化前必须用 `normalizeExecutionModeId` 转成具体 harness profile id（优先 last profile，否则 `assessment`）。`lastExecutionMode` localStorage 也存 profile id，不存裸 `task`，避免 reopen 后 UI 只显示普通 Task。
 `scroll-stickiness.ts` 是 live detail / thinking panes 的贴底判定：向上滚动是用户接管信号，必须暂停 auto-follow；只有滚回底部阈值内才重新启用。

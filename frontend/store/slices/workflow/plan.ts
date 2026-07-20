@@ -1,4 +1,5 @@
 import { planStepsStructurallyChanged } from "@/lib/plan-structural-change";
+import { createResetStageSeed } from "@/lib/stage-reset";
 import type { TaskPlan } from "../../store-types";
 import type { ImmerSet } from "../types";
 import type { WorkflowStoreDraft } from "./types";
@@ -149,6 +150,28 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
         };
         if (!session.passedStages) session.passedStages = [];
         if (!session.passedStages.includes(stageId)) session.passedStages.push(stageId);
+      }),
+
+    rewindStagePlans: (sessionId: string, affectedStages: string[], selectedStage: string) =>
+      set((state) => {
+        if (
+          !sessionId ||
+          !selectedStage ||
+          affectedStages.length === 0 ||
+          !affectedStages.includes(selectedStage)
+        ) {
+          return;
+        }
+        const session = state.sessions[sessionId];
+        if (!session) return;
+        const affected = new Set(affectedStages);
+        if (!session.plansByStage) session.plansByStage = {};
+        for (const stage of affected) delete session.plansByStage[stage];
+        session.plansByStage[selectedStage] = createResetStageSeed(selectedStage);
+
+        session.stageOrder = (session.stageOrder ?? []).filter((stage) => !affected.has(stage));
+        session.stageOrder.push(selectedStage);
+        session.passedStages = (session.passedStages ?? []).filter((stage) => !affected.has(stage));
       }),
   };
 }

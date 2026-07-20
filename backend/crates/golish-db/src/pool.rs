@@ -135,9 +135,11 @@ struct ChecksumRepairAllowance {
 /// values after the corresponding schema postcondition has been audited.
 ///
 /// These entries repair only the audited local drift chain. Higher forward
-/// migrations install every differing postcondition; the third pair changes
-/// only new-install idempotence, and the last pair removes one trailing blank
-/// line after its schema and SQL bytes were proven otherwise identical.
+/// migrations install every differing postcondition; the scheduler forward
+/// pair changes only new-install idempotence, the operation-turn pair removes
+/// one trailing blank line, and the Enumeration pair was accepted only after
+/// its complete live catalog matched the current tables, constraints, indexes,
+/// triggers and functions.
 const CHECKSUM_REPAIR_ALLOWLIST: &[ChecksumRepairAllowance] = &[ChecksumRepairAllowance {
     version: 20260714000002,
     description: "candidate verification recovery",
@@ -158,6 +160,11 @@ const CHECKSUM_REPAIR_ALLOWLIST: &[ChecksumRepairAllowance] = &[ChecksumRepairAl
     description: "operation turn resume",
     old_checksum: b"\x65\xda\x58\xcb\xb7\xe3\x21\x81\x26\x37\x7c\x76\xf5\x0a\x17\x14\x45\xb7\xc5\x19\x6e\x68\x62\x64\x0a\xd5\x7d\xf6\xd3\x16\x14\x21\xbd\x99\xf6\xab\xe4\x97\x29\x3e\x10\xc9\xf1\x0e\xfa\xe8\x39\xe1",
     new_checksum: b"\x7d\x2e\x22\x4c\x84\xe9\x3f\x19\xc6\xe9\xd4\xd9\x46\xd6\xf2\x2d\x42\xcf\x73\x7b\xba\x06\x89\xfe\x42\xd0\xa4\x14\xf9\x74\x9c\x03\x54\xb0\x59\x27\x2a\xe7\x0f\x67\x79\x8e\x71\x8c\xde\x1a\xf5\xcf",
+}, ChecksumRepairAllowance {
+    version: 20260717000003,
+    description: "enumeration surface manifest",
+    old_checksum: b"\xf4\xe7\x8f\xc3\x87\xf3\xd4\xe5\x67\x54\x20\x02\x9a\x4f\x9f\xd1\x30\x51\x4b\x9b\xc7\xb7\xdb\xa4\xea\x99\x57\x6e\xb4\xc4\x12\x8b\x30\xcb\x85\xc4\x75\x41\xad\x28\x07\x82\x00\x22\xbb\xef\xbf\xd9",
+    new_checksum: b"\x5a\x79\x44\x7d\x34\x51\x89\x3b\x8a\x7d\x1a\x3b\x3d\x56\xf2\x7b\x79\x9f\x00\xb4\x38\x62\x8e\xbe\x70\xe0\x24\xa6\x86\x9b\xa0\x3a\xc6\x7c\x7c\xbc\xbf\xd3\x6d\x30\x9a\x25\xb9\x2e\x83\x28\x38\xa7",
 }];
 
 /// Plan only migration-specific checksum repairs whose exact old/new SHA-384
@@ -572,6 +579,26 @@ mod tests {
 
         let repairs = plan_checksum_repairs(&records, &migrator)
             .expect("the audited trailing-newline drift must be exactly repairable");
+
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].version, applied.version);
+        assert_eq!(repairs[0].description, applied.description);
+        assert_eq!(repairs[0].old_checksum, old_checksum);
+        assert_eq!(repairs[0].new_checksum, applied.checksum.as_ref());
+    }
+
+    #[test]
+    fn enumeration_surface_manifest_audited_checksum_drift_is_exactly_repairable() {
+        let migrator = sqlx::migrate!("./migrations");
+        let applied = migrator
+            .iter()
+            .find(|migration| migration.version == 20260717000003)
+            .expect("enumeration surface manifest migration must exist");
+        let old_checksum = b"\xf4\xe7\x8f\xc3\x87\xf3\xd4\xe5\x67\x54\x20\x02\x9a\x4f\x9f\xd1\x30\x51\x4b\x9b\xc7\xb7\xdb\xa4\xea\x99\x57\x6e\xb4\xc4\x12\x8b\x30\xcb\x85\xc4\x75\x41\xad\x28\x07\x82\x00\x22\xbb\xef\xbf\xd9";
+        let records = vec![metadata(applied, true, old_checksum)];
+
+        let repairs = plan_checksum_repairs(&records, &migrator)
+            .expect("the catalog-audited manifest drift must be exactly repairable");
 
         assert_eq!(repairs.len(), 1);
         assert_eq!(repairs[0].version, applied.version);

@@ -345,6 +345,13 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         sidecar_state.clone(),
         "cli",
         Some(memory_supervisor.unit_of_work()),
+        Some(std::sync::Arc::new(
+            golish_agent_app::ai::db_bridge::knowledge_context::PgKnowledgeContextAdapter::with_query_embedding(
+                cleanup_pool.clone(),
+                memory_supervisor.query_embedding_provider(),
+            )
+            .context("initialize exact-scope CLI ContextPack adapter")?,
+        )),
     )
     .await;
     let (bridge, mcp_manager) = match agent {

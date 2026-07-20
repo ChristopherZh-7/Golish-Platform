@@ -59,6 +59,13 @@ type StageTeamWorkItem = NonNullable<
   StageTeamReadModel["units"][number]["plan"]
 >["workItems"][number];
 
+interface RecoveryEntry {
+  unit: StageTeamReadModel["units"][number];
+  plan: NonNullable<StageTeamReadModel["units"][number]["plan"]>;
+  item: StageTeamWorkItem;
+  worker: StageTeamWorkItem["workers"][number];
+}
+
 function message(error: unknown): string {
   if (error instanceof ApiError) {
     return translateErrorCode(error.code, error.message);
@@ -143,6 +150,47 @@ function companyGateState(unit: StageTeamReadModel["units"][number]): {
   return { label: "Gate 未完成", className: "text-slate-300" };
 }
 
+function vulnGateState(unit: StageTeamReadModel["units"][number]): {
+  label: string;
+  className: string;
+} {
+  if (unit.status === "passed" && unit.gate.finalHandoffId) {
+    return { label: "证据门禁已通过", className: "text-emerald-300" };
+  }
+  if (unit.status.includes("blocked") || unit.gate.status.includes("blocked")) {
+    return { label: "证据门禁已阻塞", className: "text-amber-300" };
+  }
+  return { label: "证据门禁未完成", className: "text-slate-300" };
+}
+
+function vulnSchedulerState(
+  unit: StageTeamReadModel["units"][number],
+  children: StageTeamWorkItem[]
+): { label: string; status: string; className: string } {
+  if (unit.status === "passed" && unit.gate.finalHandoffId) {
+    return { label: "扫描已完成", status: "completed", className: "text-emerald-300" };
+  }
+  if (
+    children.some(
+      (item) =>
+        item.status.includes("blocked") ||
+        item.status === "recovery_required" ||
+        item.status === "exhausted"
+    )
+  ) {
+    return { label: "扫描队列需要处理", status: "blocked", className: "text-amber-300" };
+  }
+  if (children.some((item) => item.status === "running" || item.status === "claimed")) {
+    return { label: "正在执行扫描分片", status: "running", className: "text-violet-200" };
+  }
+  if (
+    children.some((item) => ["queued", "retry_pending", "waiting_dependency"].includes(item.status))
+  ) {
+    return { label: "扫描分片排队中", status: "queued", className: "text-indigo-300" };
+  }
+  return { label: "正在核对证据门禁", status: "running", className: "text-violet-200" };
+}
+
 function currentWorker(item: StageTeamWorkItem) {
   return (
     item.workers.find((worker) =>
@@ -198,6 +246,9 @@ export function StageTeamRunView({
   const [coverageError, setCoverageError] = useState<string | null>(null);
   const [showSchedulerDetails, setShowSchedulerDetails] = useState(false);
   const [recoveryActions, setRecoveryActions] = useState<Record<string, RecoveryActionState>>({});
+  const [recoveryNotice, setRecoveryNotice] = useState<{ identity: string; text: string } | null>(
+    null
+  );
   const recoveryRequestIds = useRef(new Map<string, string>());
   const sequence = useRef(0);
   const identity = `${operationId}:${stageExecutionId}`;
@@ -272,11 +323,12 @@ export function StageTeamRunView({
         requestId = newRecoveryRequestId(worker.workerRunId);
         recoveryRequestIds.current.set(worker.workerRunId, requestId);
       }
+      setRecoveryNotice(null);
       setRecoveryActions((current) => ({
         ...current,
         [worker.workerRunId]: {
           status: "loading",
-          message: "Recording blocked outcome unknown; the tool will never be replayed…",
+          message: "正在安全封存这次没有确认结果的调用，不会自动重放工具…",
         },
       }));
       try {
@@ -294,14 +346,17 @@ export function StageTeamRunView({
           expectedCheckpointVersion: worker.checkpointVersion,
           expectedAttemptEpoch: worker.attemptEpoch,
         });
-        recoveryRequestIds.current.delete(worker.workerRunId);
         setRecoveryActions((current) => ({
           ...current,
           [worker.workerRunId]: {
             status: "success",
-            message: "Blocked outcome unknown recorded; reloading durable state…",
+            message: "本项已安全记为结果未知，正在重新读取状态…",
           },
         }));
+        setRecoveryNotice({
+          identity,
+          text: "本项已安全记为结果未知且不会重放。若仍有待恢复项，请逐一处理；全部处理后可发送“继续”恢复剩余任务，或使用“重置阶段”重新开始。",
+        });
         await load();
       } catch (cause) {
         setRecoveryActions((current) => ({
@@ -313,8 +368,14 @@ export function StageTeamRunView({
         }));
       }
     },
-    [api, load, operationId, stageExecutionId]
+    [api, identity, load, operationId, stageExecutionId]
   );
+
+  useEffect(() => {
+    setRecoveryActions({});
+    setRecoveryNotice(null);
+    recoveryRequestIds.current.clear();
+  }, [identity]);
 
   useEffect(() => {
     void refreshVersion;
@@ -370,7 +431,45 @@ export function StageTeamRunView({
       remaining: cells.length - terminal,
     };
   }, [coverageByOrg]);
-  const schedulerDetailsVisible = showSchedulerDetails || summary.recovery > 0;
+  const isVulnStage = model?.stageKind === "vuln_triage";
+  const schedulerDetailsVisible = !isVulnStage && (showSchedulerDetails || summary.recovery > 0);
+  const recoveryEntries = useMemo<RecoveryEntry[]>(
+    () =>
+      model?.units.flatMap((unit) => {
+        if (!unit.plan) return [];
+        const plan = unit.plan;
+        return plan.workItems.flatMap((item) =>
+          item.workers
+            .filter(
+              (worker) =>
+                worker.recoveryState === "manual_required" && worker.activeToolCallId !== null
+            )
+            .map((worker) => ({ unit, plan, item, worker }))
+        );
+      }) ?? [],
+    [model]
+  );
+  const hasDurableRecoveryBlock =
+    recoveryEntries.length === 0 &&
+    !summary.stagePassed &&
+    (model?.units.some((unit) =>
+      unit.plan?.workItems.some((item) =>
+        item.output?.blockerCodes.includes("STAGE_TEAM_ACTIVE_TOOL_RECOVERY_BLOCKED")
+      )
+    ) ??
+      false);
+
+  useEffect(() => {
+    const activeWorkerIds = new Set(recoveryEntries.map(({ worker }) => worker.workerRunId));
+    for (const workerRunId of recoveryRequestIds.current.keys()) {
+      if (!activeWorkerIds.has(workerRunId)) recoveryRequestIds.current.delete(workerRunId);
+    }
+    setRecoveryActions((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([workerRunId]) => activeWorkerIds.has(workerRunId))
+      )
+    );
+  }, [recoveryEntries]);
 
   if (model === undefined && error === null) {
     return (
@@ -410,36 +509,45 @@ export function StageTeamRunView({
   return (
     <section className="space-y-2 rounded border border-border/30 bg-muted/10 p-2.5">
       <header className="flex flex-wrap items-center gap-2 text-[11px]">
-        <Workflow className="h-3.5 w-3.5 text-cyan-300" />
-        <h3 className="font-semibold">任务执行进度</h3>
-        <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-cyan-300">
-          采集 {summary.returned}/{summary.items} 已返回
+        {isVulnStage ? (
+          <ShieldCheck className="h-3.5 w-3.5 text-violet-300" />
+        ) : (
+          <Workflow className="h-3.5 w-3.5 text-cyan-300" />
+        )}
+        <h3 className="font-semibold">{isVulnStage ? "漏洞扫描进度" : "任务执行进度"}</h3>
+        <span
+          className={cn(
+            "rounded px-1.5 py-0.5",
+            isVulnStage ? "bg-violet-500/10 text-violet-200" : "bg-cyan-500/10 text-cyan-300"
+          )}
+        >
+          {isVulnStage ? "扫描分片" : "采集"} {summary.returned}/{summary.items} 已返回
         </span>
         {model.stageKind === "vuln_triage" && coverageLoading && (
           <span className="inline-flex items-center gap-1 rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-300">
-            <Loader2 className="h-3 w-3 animate-spin" /> 正在读取 DB worklist
+            <Loader2 className="h-3 w-3 animate-spin" /> 正在读取扫描进度
           </span>
         )}
         {model.stageKind === "vuln_triage" && coverageError && (
           <span role="alert" className="rounded bg-red-500/10 px-1.5 py-0.5 text-red-300">
-            worklist 读取失败：{coverageError}
+            扫描进度读取失败：{coverageError}
           </span>
         )}
         {model.stageKind === "vuln_triage" && !coverageLoading && !coverageError && (
           <span className="rounded bg-violet-500/10 px-1.5 py-0.5 font-medium text-violet-200">
             {coverageSummary.total === 0
-              ? "DB worklist 暂无 cells"
+              ? "当前没有待扫描项"
               : `${coverageSummary.terminal}/${coverageSummary.total} cells 终态 · 剩余 ${coverageSummary.remaining}`}
           </span>
         )}
         {summary.collecting > 0 && (
           <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-300">
-            {summary.collecting} 个采集中
+            {summary.collecting} 个{isVulnStage ? "执行中" : "采集中"}
           </span>
         )}
         {summary.blocked > 0 && (
           <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300">
-            {summary.blocked} 个阻塞
+            {summary.blocked} 个{isVulnStage ? "需处理" : "阻塞"}
           </span>
         )}
         <span
@@ -453,20 +561,28 @@ export function StageTeamRunView({
           )}
         >
           {summary.stagePassed
-            ? "阶段已通过"
+            ? isVulnStage
+              ? "证据门禁已通过"
+              : "阶段已通过"
             : summary.stageBlocked
-              ? "阶段被 Gate 阻塞"
-              : "阶段未完成"}
+              ? isVulnStage
+                ? "证据门禁已阻塞"
+                : "阶段被 Gate 阻塞"
+              : isVulnStage
+                ? "证据门禁未完成"
+                : "阶段未完成"}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
-          <button
-            type="button"
-            className="rounded border border-border/30 px-2 py-1 text-muted-foreground hover:text-foreground"
-            aria-expanded={schedulerDetailsVisible}
-            onClick={() => setShowSchedulerDetails((current) => !current)}
-          >
-            {schedulerDetailsVisible ? "收起调度详情" : "展开调度详情"}
-          </button>
+          {!isVulnStage && (
+            <button
+              type="button"
+              className="rounded border border-border/30 px-2 py-1 text-muted-foreground hover:text-foreground"
+              aria-expanded={schedulerDetailsVisible}
+              onClick={() => setShowSchedulerDetails((current) => !current)}
+            >
+              {schedulerDetailsVisible ? "收起调度详情" : "展开调度详情"}
+            </button>
+          )}
           <button
             type="button"
             aria-label="刷新任务进度"
@@ -478,6 +594,111 @@ export function StageTeamRunView({
           </button>
         </div>
       </header>
+
+      {isVulnStage && !coverageLoading && !coverageError && coverageSummary.total > 0 && (
+        <div className="rounded border border-violet-500/20 bg-violet-500/[0.04] px-2.5 py-2">
+          <div className="mb-1.5 flex items-center gap-2 text-[10px]">
+            <span className="font-medium text-violet-100">证据覆盖</span>
+            <span className="text-muted-foreground">
+              {coverageSummary.terminal}/{coverageSummary.total} cells
+            </span>
+            <span className="ml-auto text-violet-200">{coverageSummary.remaining} 待检查</span>
+          </div>
+          <div
+            role="progressbar"
+            aria-label="证据覆盖"
+            aria-valuemin={0}
+            aria-valuemax={coverageSummary.total}
+            aria-valuenow={coverageSummary.terminal}
+            className="h-1.5 overflow-hidden rounded-full bg-violet-950/70"
+          >
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-[width]"
+              style={{
+                width: `${Math.round((coverageSummary.terminal / coverageSummary.total) * 100)}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {recoveryEntries.length > 0 && (
+        <section
+          aria-label="中断恢复"
+          className="rounded border border-amber-500/35 bg-amber-500/[0.07] p-2.5 text-[11px]"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+            <div className="min-w-0 flex-1">
+              <h4 className="font-semibold text-amber-100">检测到上次运行中断</h4>
+              <p className="mt-1 text-amber-100/80">
+                有工具在应用关闭前没有返回可确认的结果。请逐项解除中断状态；系统会把本次结果安全标记为未知，不会自动重放工具。
+              </p>
+              <div className="mt-2 space-y-2">
+                {recoveryEntries.map(({ unit, plan, item, worker }) => {
+                  const recoveryAction = recoveryActions[worker.workerRunId];
+                  const isPending =
+                    recoveryAction?.status === "loading" || recoveryAction?.status === "success";
+                  return (
+                    <div
+                      key={worker.workerRunId}
+                      className="rounded border border-amber-400/20 bg-background/35 p-2"
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground">
+                        <span className="font-medium text-foreground/85">
+                          {unit.organizationName}
+                        </span>
+                        <span>
+                          {item.role} · {item.kind}
+                        </span>
+                        <span>Worker {short(worker.workerRunId)}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="mt-1.5 rounded border border-amber-400/40 px-2 py-1 text-left text-amber-200 disabled:cursor-wait disabled:opacity-60"
+                        disabled={isPending}
+                        onClick={() => void resolveRecovery(unit, plan, item, worker)}
+                      >
+                        {recoveryAction?.status === "loading"
+                          ? "正在安全封存未知结果…"
+                          : recoveryAction?.status === "error"
+                            ? "重试解除中断状态"
+                            : recoveryAction?.status === "success"
+                              ? "正在确认中断状态…"
+                              : "解除中断状态"}
+                      </button>
+                      {recoveryAction && (
+                        <div
+                          role={recoveryAction.status === "error" ? "alert" : "status"}
+                          className={cn(
+                            "mt-1",
+                            recoveryAction.status === "error"
+                              ? "text-red-300"
+                              : "text-muted-foreground"
+                          )}
+                        >
+                          {recoveryAction.message}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {(recoveryNotice?.identity === identity || hasDurableRecoveryBlock) && (
+        <div
+          role="status"
+          className="rounded border border-emerald-500/30 bg-emerald-500/[0.06] px-2.5 py-2 text-[11px] text-emerald-200"
+        >
+          {recoveryNotice?.identity === identity
+            ? recoveryNotice.text
+            : "此前的中断项已安全记为结果未知且不会重放。现在可发送“继续”恢复剩余任务，或使用“重置阶段”重新开始。"}
+        </div>
+      )}
 
       <div className="space-y-2">
         {model.units.map((unit) => (
@@ -510,10 +731,11 @@ export function StageTeamRunView({
                   const controllerRequestId = controllerWorker
                     ? agentRequestIdsByWorker[controllerWorker.workerRunId]
                     : undefined;
-                  const controllerDisplay = companyControllerState(controller);
-                  const gateDisplay = companyGateState(unit);
                   const activeChildren = children.filter(
                     (item) => item.status === "running" || item.status === "claimed"
+                  ).length;
+                  const queuedChildren = children.filter((item) =>
+                    ["queued", "retry_pending", "waiting_dependency"].includes(item.status)
                   ).length;
                   const completedChildren = children.filter(
                     (item) => item.status === "completed"
@@ -547,12 +769,29 @@ export function StageTeamRunView({
                   const historicalFailedAttempts = unitCoverage
                     ? historicalFailedCells
                     : workerHistoricalFailedAttempts;
+                  const controllerDisplay = isVulnStage
+                    ? vulnSchedulerState(unit, children)
+                    : companyControllerState(controller);
+                  const gateDisplay = isVulnStage ? vulnGateState(unit) : companyGateState(unit);
                   return (
-                    <div className="mt-2 rounded border border-cyan-500/25 bg-cyan-500/[0.04] px-2.5 py-2.5 text-[11px]">
+                    <div
+                      className={cn(
+                        "mt-2 rounded px-2.5 py-2.5 text-[11px]",
+                        isVulnStage
+                          ? "border border-violet-500/25 bg-violet-500/[0.04]"
+                          : "border border-cyan-500/25 bg-cyan-500/[0.04]"
+                      )}
+                    >
                       <div className="flex flex-wrap items-center gap-2">
                         <StatusMark status={controllerDisplay.status} />
-                        <Bot className="h-3.5 w-3.5 text-cyan-300" />
-                        <span className="font-medium">Company Controller</span>
+                        {isVulnStage ? (
+                          <Workflow className="h-3.5 w-3.5 text-violet-300" />
+                        ) : (
+                          <Bot className="h-3.5 w-3.5 text-cyan-300" />
+                        )}
+                        <span className="font-medium">
+                          {isVulnStage ? "漏洞扫描调度器" : "Company Controller"}
+                        </span>
                         <span
                           className={cn(
                             "rounded bg-muted/35 px-1.5 py-0.5",
@@ -564,11 +803,16 @@ export function StageTeamRunView({
                         {onOpenAgent && controllerRequestId && (
                           <button
                             type="button"
-                            aria-label="查看 Controller 运行流"
-                            className="rounded border border-cyan-400/30 px-1.5 py-0.5 text-cyan-300 hover:text-cyan-200"
+                            aria-label={isVulnStage ? "查看 AI 运行流" : "查看 Controller 运行流"}
+                            className={cn(
+                              "rounded px-1.5 py-0.5",
+                              isVulnStage
+                                ? "border border-violet-400/30 text-violet-200 hover:text-violet-100"
+                                : "border border-cyan-400/30 text-cyan-300 hover:text-cyan-200"
+                            )}
                             onClick={() => onOpenAgent(controllerRequestId)}
                           >
-                            查看 Controller 运行流
+                            {isVulnStage ? "查看 AI 运行流" : "查看 Controller 运行流"}
                           </button>
                         )}
                         <span className={cn("ml-auto font-medium", gateDisplay.className)}>
@@ -577,11 +821,11 @@ export function StageTeamRunView({
                       </div>
                       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-muted-foreground">
                         <span className="rounded bg-muted/30 px-1.5 py-0.5">
-                          {children.length} 个 SubAgent
+                          {children.length} 个{isVulnStage ? "扫描分片" : " SubAgent"}
                         </span>
                         {activeChildren > 0 && (
                           <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-300">
-                            {activeChildren} 个运行中
+                            {activeChildren} 个{isVulnStage ? "执行中" : "运行中"}
                           </span>
                         )}
                         {completedChildren > 0 && (
@@ -589,9 +833,14 @@ export function StageTeamRunView({
                             {completedChildren} 个已完成
                           </span>
                         )}
+                        {isVulnStage && queuedChildren > 0 && (
+                          <span className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-indigo-300">
+                            {queuedChildren} 个排队中
+                          </span>
+                        )}
                         {blockedChildren > 0 && (
                           <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300">
-                            {blockedChildren} 个阻塞
+                            {blockedChildren} 个{isVulnStage ? "需处理" : "阻塞"}
                           </span>
                         )}
                         {unitCoverage && (
@@ -603,16 +852,22 @@ export function StageTeamRunView({
                       </div>
                       {model.stageKind === "vuln_triage" && (
                         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                          <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-red-300">
-                            历史 attempt 失败 {historicalFailedAttempts}
-                            {unitCoverage ? " cells" : ""}
-                          </span>
-                          <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-300">
-                            当前 retry {currentRetries}
-                          </span>
-                          <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300">
-                            operator recovery {operatorRecoveries}
-                          </span>
+                          {historicalFailedAttempts > 0 && (
+                            <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-red-300">
+                              历史失败 {historicalFailedAttempts}
+                              {unitCoverage ? " cells" : ""}
+                            </span>
+                          )}
+                          {currentRetries > 0 && (
+                            <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-300">
+                              自动重试 {currentRetries}
+                            </span>
+                          )}
+                          {operatorRecoveries > 0 && (
+                            <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300">
+                              待人工恢复 {operatorRecoveries}
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
@@ -731,11 +986,7 @@ export function StageTeamRunView({
                         {item.workers.length > 0 && (
                           <div className="mt-1.5 space-y-1 border-l border-border/30 pl-2">
                             {item.workers.map((worker) => {
-                              const recoveryAction = recoveryActions[worker.workerRunId];
                               const attemptLane = workerAttemptLane(item, worker);
-                              const canResolveRecovery =
-                                worker.recoveryState === "manual_required" &&
-                                worker.activeToolCallId !== null;
                               return (
                                 <div key={worker.workerRunId} className="space-y-1">
                                   <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground">
@@ -783,39 +1034,6 @@ export function StageTeamRunView({
                                         </button>
                                       )}
                                   </div>
-                                  {canResolveRecovery && (
-                                    <div className="rounded border border-amber-500/30 bg-amber-500/[0.06] p-1.5">
-                                      <button
-                                        type="button"
-                                        className="rounded border border-amber-400/40 px-2 py-1 text-left text-amber-200 disabled:cursor-wait disabled:opacity-60"
-                                        disabled={recoveryAction?.status === "loading"}
-                                        onClick={() =>
-                                          void resolveRecovery(unit, unit.plan!, item, worker)
-                                        }
-                                      >
-                                        {recoveryAction?.status === "loading"
-                                          ? "Recording blocked outcome unknown — never replay tool…"
-                                          : recoveryAction?.status === "error"
-                                            ? "Retry: mark blocked outcome unknown — never replay tool"
-                                            : "Mark blocked outcome unknown — never replay tool"}
-                                      </button>
-                                      {recoveryAction && (
-                                        <div
-                                          role={
-                                            recoveryAction.status === "error" ? "alert" : "status"
-                                          }
-                                          className={cn(
-                                            "mt-1",
-                                            recoveryAction.status === "error"
-                                              ? "text-red-300"
-                                              : "text-muted-foreground"
-                                          )}
-                                        >
-                                          {recoveryAction.message}
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
                                 </div>
                               );
                             })}

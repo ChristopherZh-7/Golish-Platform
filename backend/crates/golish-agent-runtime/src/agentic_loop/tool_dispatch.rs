@@ -22,6 +22,9 @@ use golish_agent_kit::system_hooks::{format_system_hooks, HookRegistry};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolDispatchHaltReason {
     CompanyControllerBlocked,
+    CompanyControllerFinalizationFailed,
+    CompanyControllerFinalSubmissionMissing,
+    CompanyControllerRuntimeRecovered,
     OperatorRecoveryRequired,
     StageRunReentryBlocked,
 }
@@ -30,6 +33,11 @@ impl ToolDispatchHaltReason {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::CompanyControllerBlocked => "company_controller_blocked",
+            Self::CompanyControllerFinalizationFailed => "company_controller_finalization_failed",
+            Self::CompanyControllerFinalSubmissionMissing => {
+                "company_controller_final_submission_missing"
+            }
+            Self::CompanyControllerRuntimeRecovered => "company_controller_runtime_recovered",
             Self::OperatorRecoveryRequired => "operator_recovery_required",
             Self::StageRunReentryBlocked => "stage_run_reentry_blocked",
         }
@@ -93,6 +101,60 @@ fn stage_run_halt_reason(tool_name: &str, content: &UserContent) -> Option<ToolD
                     == Some("company_controller_v1") =>
         {
             Some(ToolDispatchHaltReason::OperatorRecoveryRequired)
+        }
+        Some("company_controller_runtime_recovered")
+            if value
+                .get("operator_recovery_required")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+                && value
+                    .get("retry_budget_exhausted")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && value.get("passed").and_then(serde_json::Value::as_bool) == Some(false)
+                && value.get("scheduler").and_then(serde_json::Value::as_str)
+                    == Some("company_controller_v1")
+                && value
+                    .get("gaps")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|gaps| {
+                        gaps.iter().any(|gap| {
+                            gap.get("code").and_then(serde_json::Value::as_str)
+                                == Some("COMPANY_CONTROLLER_RUNTIME_RECOVERED")
+                        })
+                    }) =>
+        {
+            Some(ToolDispatchHaltReason::CompanyControllerRuntimeRecovered)
+        }
+        Some("company_controller_final_submission_missing")
+            if value
+                .get("operator_recovery_required")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+                && value
+                    .get("retry_budget_exhausted")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && value.get("passed").and_then(serde_json::Value::as_bool) == Some(false)
+                && value.get("scheduler").and_then(serde_json::Value::as_str)
+                    == Some("company_controller_v1") =>
+        {
+            Some(ToolDispatchHaltReason::CompanyControllerFinalSubmissionMissing)
+        }
+        Some("company_controller_finalization_failed")
+            if value
+                .get("operator_recovery_required")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+                && value
+                    .get("retry_budget_exhausted")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && value.get("passed").and_then(serde_json::Value::as_bool) == Some(false)
+                && value.get("scheduler").and_then(serde_json::Value::as_str)
+                    == Some("company_controller_v1") =>
+        {
+            Some(ToolDispatchHaltReason::CompanyControllerFinalizationFailed)
         }
         Some("company_controller_blocked")
             if value
@@ -660,6 +722,47 @@ mod tests {
             stage_run_halt_reason("stage_run", &ordinary_company_block),
             Some(ToolDispatchHaltReason::CompanyControllerBlocked)
         );
+
+        for (reason, gap_code, expected) in [
+            (
+                "company_controller_finalization_failed",
+                "COMPANY_CONTROLLER_FINAL_SEAL_FAILED",
+                ToolDispatchHaltReason::CompanyControllerFinalizationFailed,
+            ),
+            (
+                "company_controller_final_submission_missing",
+                "COMPANY_CONTROLLER_FINAL_SUBMISSION_MISSING",
+                ToolDispatchHaltReason::CompanyControllerFinalSubmissionMissing,
+            ),
+            (
+                "company_controller_runtime_recovered",
+                "COMPANY_CONTROLLER_RUNTIME_RECOVERED",
+                ToolDispatchHaltReason::CompanyControllerRuntimeRecovered,
+            ),
+        ] {
+            let closeout_halt = UserContent::ToolResult(ToolResult {
+                id: format!("stage-run-{reason}"),
+                call_id: Some(format!("provider-stage-run-{reason}")),
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: serde_json::json!({
+                        "gaps": [{"code": gap_code}],
+                        "operator_recovery_required": false,
+                        "passed": false,
+                        "retry_budget_exhausted": true,
+                        "runtime_control": {
+                            "kind": "halt_current_request",
+                            "reason": reason,
+                        },
+                        "scheduler": "company_controller_v1",
+                    })
+                    .to_string(),
+                })),
+            });
+            assert_eq!(
+                stage_run_halt_reason("stage_run", &closeout_halt),
+                Some(expected)
+            );
+        }
 
         let lookalike = UserContent::ToolResult(ToolResult {
             id: "stage-run-lookalike".to_string(),

@@ -14,6 +14,7 @@
  * access is best-effort: a missing or corrupt entry just yields `null`.
  */
 
+import { createResetStageSeed, localResetAffectedStages } from "@/lib/stage-reset";
 import type { TaskPlan } from "@/store/store-types";
 
 /** localStorage key holding the `{ [conversationId]: snapshot }` map. */
@@ -87,4 +88,54 @@ export function clearStagePlans(conversationId: string): void {
   } catch {
     // best-effort only
   }
+}
+
+/**
+ * Apply a committed backend reset receipt to the durable roadmap snapshot.
+ * Unlike `writeStagePlans`, an empty remaining order is meaningful here and
+ * must replace the old snapshot rather than be treated as uninitialized state.
+ */
+export function rewindPersistedStagePlans(
+  conversationId: string,
+  affectedStages: string[],
+  selectedStage: string,
+  updatedAt?: string
+): string[] {
+  if (
+    !conversationId ||
+    !selectedStage ||
+    affectedStages.length === 0 ||
+    !affectedStages.includes(selectedStage)
+  ) {
+    return affectedStages;
+  }
+  let reconciledAffectedStages = [...new Set(affectedStages)];
+  try {
+    const map = readMap();
+    const stored = map[conversationId];
+    const snapshot = isPersistedStagePlans(stored)
+      ? stored
+      : { stageOrder: [], plansByStage: {}, passedStages: [] };
+    reconciledAffectedStages = [
+      ...new Set([
+        ...reconciledAffectedStages,
+        ...localResetAffectedStages(snapshot.stageOrder, selectedStage),
+      ]),
+    ];
+    const affected = new Set(reconciledAffectedStages);
+    const plansByStage = { ...snapshot.plansByStage };
+    for (const stage of affected) delete plansByStage[stage];
+    plansByStage[selectedStage] = createResetStageSeed(selectedStage, updatedAt);
+    const stageOrder = snapshot.stageOrder.filter((stage) => !affected.has(stage));
+    stageOrder.push(selectedStage);
+    map[conversationId] = {
+      stageOrder,
+      plansByStage,
+      passedStages: snapshot.passedStages.filter((stage) => !affected.has(stage)),
+    };
+    globalThis.localStorage?.setItem(STAGE_PLAN_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // localStorage unavailable — in-memory rewind still remains authoritative.
+  }
+  return reconciledAffectedStages;
 }

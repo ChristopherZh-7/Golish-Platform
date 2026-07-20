@@ -1,5 +1,7 @@
 # Stage purge 原子性与 technique 精确作用域
 
+> Partially superseded by [`2026-07-20-chatpanel-stage-reset-consistency.md`](2026-07-20-chatpanel-stage-reset-consistency.md): technique filtering remains, but scope now comes from the sealed frozen snapshot, run-owned rows also require current operation/session aliases, and fact purge shares the runtime/state/graph/cursor transaction rather than only a standalone purge transaction.
+
 - 日期：2026-07-10
 - 状态：已实施（focused verification 通过）
 - 关联：`docs/design/2026-06-30-stage-reset-full-purge.md`

@@ -9,10 +9,11 @@ use golish_db::repo::{
 use golish_graphiti::TemporalGraphClient;
 use golish_memory_app::projectors::document::DOCUMENT_PROJECTION_SCHEMA_V1;
 use golish_memory_app::{
-    DocumentProjectionPort, DocumentProjector, GraphAssertionReader, GraphDeliveryOutcome,
-    GraphProjectionDelivery, GraphProjectionDeliveryPort, GraphProjector, GraphProjectorTick,
-    GraphRebuildScope, KnowledgeProjectorSupervisor, KnowledgeProjectorWorker, KnowledgeUnitOfWork,
-    MemoryError, ProjectedDocument, ProjectorRunState, SupervisorStartOutcome,
+    ContextError, DocumentProjectionPort, DocumentProjector, GraphAssertionReader,
+    GraphDeliveryOutcome, GraphProjectionDelivery, GraphProjectionDeliveryPort, GraphProjector,
+    GraphProjectorTick, GraphRebuildScope, KnowledgeProjectorSupervisor, KnowledgeProjectorWorker,
+    KnowledgeUnitOfWork, MemoryError, ProjectedDocument, ProjectorRunState, QueryEmbeddingProvider,
+    SupervisorStartOutcome,
 };
 use golish_memory_domain::assertion::{
     AssertionIdentity, AssertionKind, AssertionObject, AssertionStatus, KnowledgeAssertionDraft,
@@ -95,6 +96,32 @@ impl KnowledgeEmbeddingProvider {
             provider_name,
             embedder,
         })
+    }
+}
+
+#[async_trait]
+impl QueryEmbeddingProvider for KnowledgeEmbeddingProvider {
+    fn dimension(&self) -> usize {
+        self.embedder.dimension()
+    }
+
+    fn requires_external_data_egress(&self) -> bool {
+        false
+    }
+
+    async fn embed_query(&self, query: &str) -> Result<Vec<f32>, ContextError> {
+        let embedding =
+            self.embedder.embed(query).await.map_err(|_| {
+                ContextError::Source("knowledge_query_embedding_failed".to_string())
+            })?;
+        if embedding.len() != EMBEDDING_DIMENSION_V1
+            || embedding.iter().any(|value| !value.is_finite())
+        {
+            return Err(ContextError::Source(
+                "knowledge_query_embedding_invalid".to_string(),
+            ));
+        }
+        Ok(embedding)
     }
 }
 
@@ -884,10 +911,14 @@ impl PgKnowledgeMemory {
 pub struct KnowledgeMemoryRuntime {
     adapter: Arc<PgKnowledgeMemory>,
     supervisor: KnowledgeProjectorSupervisor,
+    query_embedding: Option<Arc<dyn QueryEmbeddingProvider>>,
 }
 
 impl KnowledgeMemoryRuntime {
     pub fn new(pool: Arc<PgPool>, embedding: Option<KnowledgeEmbeddingProvider>) -> Self {
+        let query_embedding = embedding
+            .clone()
+            .map(|provider| Arc::new(provider) as Arc<dyn QueryEmbeddingProvider>);
         let adapter = Arc::new(PgKnowledgeMemory::new(pool, embedding));
         let process_id = Uuid::new_v4();
         let workers = [
@@ -915,32 +946,38 @@ impl KnowledgeMemoryRuntime {
         Self {
             adapter,
             supervisor,
+            query_embedding,
         }
     }
 
     pub fn from_settings(pool: Arc<PgPool>, settings: &golish_settings::GolishSettings) -> Self {
         let embedding = settings
             .ai
-            .openai
-            .api_key
+            .ollama
+            .embedding_model
             .as_deref()
-            .filter(|key| !key.trim().is_empty())
-            .map(|key| {
-                let base = settings
-                    .ai
-                    .openai
-                    .base_url
-                    .as_deref()
-                    .unwrap_or("https://api.openai.com/v1");
-                let embedder: Arc<dyn Embedder> =
-                    Arc::new(golish_db::embeddings::HttpEmbedder::new(
-                        base,
-                        key,
-                        "text-embedding-3-small",
-                        EMBEDDING_DIMENSION_V1,
-                    ));
-                KnowledgeEmbeddingProvider::new("openai-compatible", embedder)
-                    .expect("fixed OpenAI embedding configuration is valid")
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .and_then(|model| {
+                match golish_db::embeddings::HttpEmbedder::local_openai_compatible(
+                    &settings.ai.ollama.base_url,
+                    model,
+                    EMBEDDING_DIMENSION_V1,
+                ) {
+                    Ok(embedder) => KnowledgeEmbeddingProvider::new(
+                        "ollama-loopback",
+                        Arc::new(embedder) as Arc<dyn Embedder>,
+                    )
+                    .ok(),
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "harness::knowledge_memory",
+                            %error,
+                            "local embedding configuration rejected; vector projection remains disabled"
+                        );
+                        None
+                    }
+                }
             });
         Self::new(pool, embedding)
     }
@@ -951,6 +988,10 @@ impl KnowledgeMemoryRuntime {
 
     pub fn unit_of_work(&self) -> Arc<dyn KnowledgeUnitOfWork> {
         self.adapter.clone()
+    }
+
+    pub fn query_embedding_provider(&self) -> Option<Arc<dyn QueryEmbeddingProvider>> {
+        self.query_embedding.clone()
     }
 
     pub async fn start(&self) -> Result<SupervisorStartOutcome, MemoryError> {
@@ -990,6 +1031,19 @@ impl KnowledgeProjectorWorker for PgKnowledgeProjectorWorker {
         knowledge_outbox::activate_paused_projector(self.adapter.pool(), self.projector)
             .await
             .map_err(outbox_error)?;
+        if self.projector == ProjectorId::EmbeddingProjectorV1 && self.adapter.embedding.is_some() {
+            let requeued =
+                knowledge_outbox::requeue_provider_unconfigured_embeddings(self.adapter.pool())
+                    .await
+                    .map_err(outbox_error)?;
+            if requeued > 0 {
+                tracing::info!(
+                    target: "harness::knowledge_memory",
+                    requeued,
+                    "requeued embeddings suppressed before the local provider was configured"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1978,6 +2032,31 @@ mod static_composition_tests {
         assert!(!runtime.is_running());
         assert_eq!(runtime.start_count(), 0);
         assert_eq!(runtime.owner_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn runtime_settings_share_one_explicit_loopback_embedding_provider() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://golish:golish@127.0.0.1:1/golish")
+            .expect("construct lazy pool without network I/O");
+        let mut settings = golish_settings::GolishSettings::default();
+        let disabled = KnowledgeMemoryRuntime::from_settings(Arc::new(pool.clone()), &settings);
+        assert!(disabled.query_embedding_provider().is_none());
+
+        settings.ai.ollama.base_url = "http://127.0.0.1:11434/v1".to_string();
+        settings.ai.ollama.embedding_model = Some("qwen3-embedding:4b".to_string());
+        let enabled = KnowledgeMemoryRuntime::from_settings(Arc::new(pool.clone()), &settings);
+        assert_eq!(
+            enabled
+                .query_embedding_provider()
+                .expect("explicit local provider is shared with query retrieval")
+                .dimension(),
+            EMBEDDING_DIMENSION_V1
+        );
+
+        settings.ai.ollama.base_url = "http://192.0.2.1:11434/v1".to_string();
+        let rejected = KnowledgeMemoryRuntime::from_settings(Arc::new(pool), &settings);
+        assert!(rejected.query_embedding_provider().is_none());
     }
 
     #[test]

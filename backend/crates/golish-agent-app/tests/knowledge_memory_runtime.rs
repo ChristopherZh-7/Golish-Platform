@@ -557,10 +557,15 @@ async fn crashed_projector_retries_and_two_sessions_keep_one_owner() {
             let deliveries = knowledge_outbox::list_deliveries(db.pool(), typed_event.event_id)
                 .await
                 .expect("load delivery states");
-            if deliveries.iter().any(|delivery| {
+            let document_succeeded = deliveries.iter().any(|delivery| {
                 delivery.projector_name == "document-projector"
                     && delivery.status == knowledge_outbox::DeliveryStatus::Succeeded
-            }) {
+            });
+            let graph_succeeded = deliveries.iter().any(|delivery| {
+                delivery.projector_name == "graph-projector"
+                    && delivery.status == knowledge_outbox::DeliveryStatus::Succeeded
+            });
+            if document_succeeded && graph_succeeded {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -573,6 +578,17 @@ async fn crashed_projector_retries_and_two_sessions_keep_one_owner() {
         .await
         .expect("count deterministic documents");
     assert_eq!(documents, 1);
+    let active_graph_entities: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM knowledge_graph_entities entity
+             JOIN knowledge_graph_generations generation
+               ON generation.generation_id=entity.generation_id
+            WHERE generation.status='active'"#,
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("count active temporal graph entities");
+    assert_eq!(active_graph_entities, 1);
 
     runtime.shutdown().await.expect("graceful CLI shutdown");
     assert!(!runtime.is_running());

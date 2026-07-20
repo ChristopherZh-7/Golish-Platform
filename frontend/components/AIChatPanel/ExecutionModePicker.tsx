@@ -124,12 +124,14 @@ function resolveItemActiveClass(badgeColor: string): string {
 
 interface ExecutionModePickerProps {
   chatExecutionMode: string;
+  disabled?: boolean;
   onExecutionModeChange: (mode: string) => void;
   onAgentModeChange: (mode: AgentMode) => void;
 }
 
 export const ExecutionModePicker = memo(function ExecutionModePicker({
   chatExecutionMode,
+  disabled = false,
   onExecutionModeChange,
   onAgentModeChange,
 }: ExecutionModePickerProps) {
@@ -185,12 +187,13 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
     if (activeProfileId && activeProfile) rememberProfile(activeProfileId);
   }, [activeProfileId, activeProfile, rememberProfile]);
   useEffect(() => {
-    if (chatExecutionMode !== "task" || !activeProfileId) return;
+    if (disabled || chatExecutionMode !== "task" || !activeProfileId) return;
     rememberProfile(activeProfileId);
     onExecutionModeChange(activeProfileId);
     onAgentModeChange("auto-approve");
   }, [
     chatExecutionMode,
+    disabled,
     activeProfileId,
     rememberProfile,
     onExecutionModeChange,
@@ -203,13 +206,14 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
   );
 
   const selectChat = useCallback(() => {
-    if (chatExecutionMode === "chat") return;
+    if (disabled || chatExecutionMode === "chat") return;
     onExecutionModeChange("chat");
     onAgentModeChange("default");
-  }, [chatExecutionMode, onExecutionModeChange, onAgentModeChange]);
+  }, [chatExecutionMode, disabled, onExecutionModeChange, onAgentModeChange]);
 
   // Clicking the Task row itself enters Task using the remembered profile.
   const selectTask = useCallback(() => {
+    if (disabled) return;
     const target = pickTaskProfile(lastProfileId, profiles);
     if (!target) return;
     rememberProfile(target);
@@ -220,6 +224,7 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
     lastProfileId,
     profiles,
     chatExecutionMode,
+    disabled,
     onExecutionModeChange,
     onAgentModeChange,
     rememberProfile,
@@ -227,12 +232,13 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
 
   const selectProfile = useCallback(
     (id: string) => {
+      if (disabled) return;
       rememberProfile(id);
       if (id === chatExecutionMode) return;
       onExecutionModeChange(id);
       onAgentModeChange("auto-approve");
     },
-    [chatExecutionMode, onExecutionModeChange, onAgentModeChange, rememberProfile]
+    [chatExecutionMode, disabled, onExecutionModeChange, onAgentModeChange, rememberProfile]
   );
 
   const TriggerIcon = isTask ? Zap : resolveIcon(chat?.icon ?? "MessageSquare");
@@ -247,9 +253,11 @@ export const ExecutionModePicker = memo(function ExecutionModePicker({
         <button
           type="button"
           aria-label="Execution mode"
+          disabled={disabled}
           className={cn(
             "flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors",
-            resolveTriggerClass(triggerBadgeColor, isTask)
+            resolveTriggerClass(triggerBadgeColor, isTask),
+            "disabled:cursor-not-allowed disabled:opacity-40"
           )}
         >
           <TriggerIcon className="w-3 h-3" />

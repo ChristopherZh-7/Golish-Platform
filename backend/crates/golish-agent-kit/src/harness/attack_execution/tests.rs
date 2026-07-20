@@ -185,6 +185,47 @@ fn directory_entry_candidate_fixture() -> CandidateClassificationInput {
     }
 }
 
+fn directory_entry_set_candidate_fixture() -> CandidateClassificationInput {
+    let target_id = Uuid::from_u128(91);
+    let directory_entry_id = Uuid::from_u128(92);
+    let row = serde_json::json!({
+        "content_length": 74,
+        "content_type": "application/json",
+        "id": directory_entry_id,
+        "status_code": 200,
+        "target_id": target_id,
+        "tool": "route_probe",
+        "url": "https://example.com/config.json",
+    });
+    let observation = serde_json::json!({
+        "schema": "directory_entry_set_v1",
+        "target_id": target_id,
+        "origin": "https://example.com:443",
+        "entry_count": 1,
+        "entry_set_sha256": observation_hash(&serde_json::json!([row.clone()])),
+        "entries_preview": [row],
+        "preview_count": 1,
+        "preview_truncated": false,
+        "method": "GET",
+        "source_tool": "route_probe",
+        "source_evidence_ids": [20],
+        "network_attempted": true,
+        "authority_current_after": true,
+    });
+    CandidateClassificationInput {
+        candidate_id: Uuid::from_u128(74),
+        target_live_id: Some(target_id),
+        target_identity_hash: "sha256:directory-set-target".to_string(),
+        target_class: CandidateTargetClass::Url,
+        target_value: "https://example.com:443".to_string(),
+        hypothesis: "The exact config path may disclose deployment information".to_string(),
+        technique: "WSTG-INFO".to_string(),
+        observation_hash: observation_hash(&observation),
+        observation,
+        prior_refs: vec!["audit:20".to_string()],
+    }
+}
+
 #[test]
 fn verified_requires_proof_and_finding_draft() {
     let mut result = result_fixture(AttemptDisposition::Verified);
@@ -530,6 +571,63 @@ fn classifier_directory_entry_observation_freezes_exact_read_only_replay() {
     assert_eq!(
         action.canonical_args["source_evidence_id"],
         candidate.observation["source_evidence_id"]
+    );
+}
+
+#[test]
+fn classifier_directory_entry_set_selects_one_frozen_preview_row_for_exact_replay() {
+    let candidate = directory_entry_set_candidate_fixture();
+    let plan = classify_candidate(&candidate)
+        .expect("target-bound directory set should have a typed exact replay plan");
+    let action = &plan.actions[0];
+
+    assert_eq!(action.capability_id, "verify.directory_entry_replay");
+    assert_eq!(action.action_kind, "directory_entry_replay");
+    assert_eq!(action.canonical_args["background"], false);
+    assert_eq!(action.canonical_args["method"], "GET");
+    assert_eq!(
+        action.canonical_args["directory_entry_id"],
+        candidate.observation["entries_preview"][0]["id"]
+    );
+    assert_eq!(
+        action.canonical_args["url"],
+        "https://example.com/config.json"
+    );
+    assert_eq!(action.canonical_args["source_evidence_id"], 20);
+    assert_eq!(
+        action.canonical_args["observation"],
+        candidate.observation
+    );
+    assert_eq!(
+        action.canonical_args["observation_hash"],
+        candidate.observation_hash
+    );
+}
+
+#[test]
+fn classifier_directory_entry_set_rejects_preview_or_evidence_drift() {
+    let mut missing_ref = directory_entry_set_candidate_fixture();
+    missing_ref.prior_refs.clear();
+    assert_eq!(
+        classify_candidate(&missing_ref).unwrap_err().code(),
+        "ATTACK_OBSERVATION_INVALID"
+    );
+
+    let mut foreign_origin = directory_entry_set_candidate_fixture();
+    foreign_origin.observation["entries_preview"][0]["url"] =
+        serde_json::json!("https://foreign.example/config.json");
+    foreign_origin.observation_hash = observation_hash(&foreign_origin.observation);
+    assert_eq!(
+        classify_candidate(&foreign_origin).unwrap_err().code(),
+        "ATTACK_OBSERVATION_IDENTITY_MISMATCH"
+    );
+
+    let mut count_drift = directory_entry_set_candidate_fixture();
+    count_drift.observation["preview_count"] = serde_json::json!(2);
+    count_drift.observation_hash = observation_hash(&count_drift.observation);
+    assert_eq!(
+        classify_candidate(&count_drift).unwrap_err().code(),
+        "ATTACK_OBSERVATION_INVALID"
     );
 }
 

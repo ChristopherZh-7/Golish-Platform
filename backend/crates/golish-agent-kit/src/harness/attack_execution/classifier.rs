@@ -503,6 +503,236 @@ pub fn classify_candidate(
                     })),
                 )
             }
+            Some("directory_entry_set_v1") => {
+                if recipe.technique != "WSTG-INFO" {
+                    return Err(observation_identity_mismatch(
+                        "directory-entry set requires the frozen WSTG-INFO technique",
+                    ));
+                }
+                let expected_target_id = candidate
+                    .target_live_id
+                    .filter(|id| !id.is_nil())
+                    .ok_or_else(|| {
+                        observation_identity_mismatch(
+                            "directory-entry set requires a frozen live target id",
+                        )
+                    })?;
+                let target_id = required_observation_uuid(&candidate.observation, "target_id")?;
+                if target_id != expected_target_id {
+                    return Err(observation_identity_mismatch(
+                        "directory-entry set target differs from the frozen Candidate",
+                    ));
+                }
+                let origin = required_observation_str(&candidate.observation, "origin")?;
+                let candidate_origin = golish_pentest_domain::canonical_web_origin(
+                    candidate.target_value.trim(),
+                )
+                .ok_or_else(|| {
+                    observation_identity_mismatch(
+                        "directory-entry set Candidate target is not an exact HTTP(S) origin",
+                    )
+                })?;
+                let observed_origin = golish_pentest_domain::canonical_web_origin(origin)
+                    .ok_or_else(|| observation_invalid("directory-entry set origin is malformed"))?;
+                if observed_origin.key != candidate_origin.key || origin != candidate.target_value.trim()
+                {
+                    return Err(observation_identity_mismatch(
+                        "directory-entry set origin differs from the frozen Candidate",
+                    ));
+                }
+                let entry_count = candidate
+                    .observation
+                    .get("entry_count")
+                    .and_then(Value::as_u64)
+                    .filter(|count| *count > 0)
+                    .ok_or_else(|| {
+                        observation_invalid("directory-entry set requires a positive entry count")
+                    })?;
+                let entry_set_sha256 =
+                    required_observation_str(&candidate.observation, "entry_set_sha256")?;
+                if !entry_set_sha256.starts_with("sha256:") || !valid_sha256(entry_set_sha256) {
+                    return Err(observation_invalid(
+                        "directory-entry set requires a canonical set digest",
+                    ));
+                }
+                let entries_preview = candidate
+                    .observation
+                    .get("entries_preview")
+                    .and_then(Value::as_array)
+                    .filter(|entries| !entries.is_empty() && entries.len() <= 32)
+                    .ok_or_else(|| {
+                        observation_invalid(
+                            "directory-entry set requires a bounded non-empty preview",
+                        )
+                    })?;
+                let preview_count = candidate
+                    .observation
+                    .get("preview_count")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| {
+                        observation_invalid("directory-entry set preview count is missing")
+                    })?;
+                let preview_truncated = candidate
+                    .observation
+                    .get("preview_truncated")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        observation_invalid("directory-entry set truncation marker is missing")
+                    })?;
+                if preview_count != entries_preview.len() as u64
+                    || preview_count > entry_count
+                    || preview_truncated != (preview_count < entry_count)
+                {
+                    return Err(observation_invalid(
+                        "directory-entry set preview metadata is inconsistent",
+                    ));
+                }
+                let evidence_ids = candidate
+                    .observation
+                    .get("source_evidence_ids")
+                    .and_then(Value::as_array)
+                    .filter(|ids| !ids.is_empty())
+                    .ok_or_else(|| {
+                        observation_invalid("directory-entry set requires producer evidence")
+                    })?;
+                let mut parsed_evidence_ids = Vec::with_capacity(evidence_ids.len());
+                for id in evidence_ids {
+                    let id = id.as_i64().filter(|id| *id > 0).ok_or_else(|| {
+                        observation_invalid("directory-entry set has invalid producer evidence")
+                    })?;
+                    if parsed_evidence_ids.last().is_some_and(|previous| *previous >= id) {
+                        return Err(observation_invalid(
+                            "directory-entry set producer evidence must be sorted and unique",
+                        ));
+                    }
+                    let evidence_ref = format!("audit:{id}");
+                    if !prior_refs.iter().any(|reference| reference == &evidence_ref) {
+                        return Err(observation_invalid(
+                            "directory-entry set lacks its exact producer evidence",
+                        ));
+                    }
+                    parsed_evidence_ids.push(id);
+                }
+                if candidate
+                    .observation
+                    .get("method")
+                    .and_then(Value::as_str)
+                    != Some("GET")
+                    || candidate
+                        .observation
+                        .get("source_tool")
+                        .and_then(Value::as_str)
+                        != Some("route_probe")
+                    || candidate
+                        .observation
+                        .get("network_attempted")
+                        .and_then(Value::as_bool)
+                        != Some(true)
+                    || candidate
+                        .observation
+                        .get("authority_current_after")
+                        .and_then(Value::as_bool)
+                        != Some(true)
+                {
+                    return Err(observation_invalid(
+                        "directory-entry set lacks its exact safe producer contract",
+                    ));
+                }
+
+                // Candidate stores the complete row-set digest but gives the model only a
+                // security-ranked preview. Replay the first frozen preview row so the
+                // verifier stays one-action, read-only, and exact-row bound.
+                let selected = entries_preview
+                    .first()
+                    .expect("non-empty preview was checked above");
+                let directory_entry_id = required_observation_uuid(selected, "id")?;
+                let selected_target_id = required_observation_uuid(selected, "target_id")?;
+                if selected_target_id != target_id {
+                    return Err(observation_identity_mismatch(
+                        "directory-entry set preview target differs from the frozen Candidate",
+                    ));
+                }
+                let url = required_observation_str(selected, "url")?;
+                let status_code = selected
+                    .get("status_code")
+                    .and_then(Value::as_i64)
+                    .filter(|status| (200..=299).contains(status))
+                    .ok_or_else(|| {
+                        observation_invalid("directory-entry set preview has invalid status")
+                    })?;
+                let content_length = selected
+                    .get("content_length")
+                    .and_then(Value::as_i64)
+                    .filter(|length| (0..=i64::from(i32::MAX)).contains(length))
+                    .ok_or_else(|| {
+                        observation_invalid("directory-entry set preview has invalid length")
+                    })?;
+                let content_type = selected
+                    .get("content_type")
+                    .and_then(Value::as_str)
+                    .filter(|value| {
+                        value.len() <= 256
+                            && !value
+                                .chars()
+                                .any(|character| matches!(character, '\0' | '\r' | '\n'))
+                    })
+                    .ok_or_else(|| {
+                        observation_invalid(
+                            "directory-entry set preview has invalid content type",
+                        )
+                    })?;
+                let source_tool = required_observation_str(selected, "tool")?;
+                if source_tool != "route_probe" {
+                    return Err(observation_invalid(
+                        "directory-entry set preview has an invalid producer",
+                    ));
+                }
+                validate_directory_entry_url(candidate.target_value.trim(), url)?;
+                let directory_entry_row_sha256 = directory_entry_row_sha256(
+                    directory_entry_id,
+                    target_id,
+                    url,
+                    status_code,
+                    content_length,
+                    content_type,
+                    source_tool,
+                )?;
+                let source_evidence_id = parsed_evidence_ids[0];
+                (
+                    "verify.directory_entry_replay",
+                    "directory_entry_replay",
+                    CANDIDATE_RECIPE_VERSION_DIRECTORY_ENTRY_REPLAY_V2,
+                    CANDIDATE_EXECUTOR_CONTRACT_DIRECTORY_ENTRY_REPLAY_V2,
+                    canonicalize_json(&json!({
+                        "authority_current_after": true,
+                        "background": false,
+                        "content_length": content_length,
+                        "content_type": content_type,
+                        "directory_entry_id": directory_entry_id,
+                        "directory_entry_row_sha256": directory_entry_row_sha256,
+                        "directory_entry_selection": "security_ranked_preview_first_v1",
+                        "entry_set_sha256": entry_set_sha256,
+                        "executor_contract_version": CANDIDATE_EXECUTOR_CONTRACT_DIRECTORY_ENTRY_REPLAY_V2,
+                        "follow_redirects": false,
+                        "hypothesis": candidate.hypothesis.trim(),
+                        "method": "GET",
+                        "network_attempted": true,
+                        "no_auth": true,
+                        "observation": candidate.observation.clone(),
+                        "observation_hash": candidate.observation_hash.trim(),
+                        "prior_refs": prior_refs,
+                        "recipe_version": CANDIDATE_RECIPE_VERSION_DIRECTORY_ENTRY_REPLAY_V2,
+                        "source_evidence_id": source_evidence_id,
+                        "source_evidence_ids": parsed_evidence_ids,
+                        "source_tool": source_tool,
+                        "status_code": status_code,
+                        "target": candidate.target_value.trim(),
+                        "target_id": target_id,
+                        "technique": recipe.technique,
+                        "url": url,
+                    })),
+                )
+            }
             Some(schema @ ("surface_analysis_v1" | "surface_analysis_v2")) => {
                 validate_surface_analysis_identity(candidate)?;
                 if schema == "surface_analysis_v2" {
@@ -746,6 +976,34 @@ fn validate_directory_entry_row_hash(
     source_tool: &str,
     declared_hash: &str,
 ) -> Result<(), AttackExecutionError> {
+    let actual_hash = directory_entry_row_sha256(
+        directory_entry_id,
+        target_id,
+        url,
+        status_code,
+        content_length,
+        content_type,
+        source_tool,
+    )?;
+    if declared_hash != actual_hash {
+        return Err(AttackExecutionError::new(
+            "ATTACK_OBSERVATION_HASH_MISMATCH",
+            "directory-entry observation does not match its frozen row hash",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn directory_entry_row_sha256(
+    directory_entry_id: uuid::Uuid,
+    target_id: uuid::Uuid,
+    url: &str,
+    status_code: i64,
+    content_length: i64,
+    content_type: &str,
+    source_tool: &str,
+) -> Result<String, AttackExecutionError> {
     let material = canonicalize_json(&json!({
         "content_length": content_length,
         "content_type": content_type,
@@ -761,13 +1019,7 @@ fn validate_directory_entry_row_hash(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    if declared_hash != format!("sha256:{digest}") {
-        return Err(AttackExecutionError::new(
-            "ATTACK_OBSERVATION_HASH_MISMATCH",
-            "directory-entry observation does not match its frozen row hash",
-        ));
-    }
-    Ok(())
+    Ok(format!("sha256:{digest}"))
 }
 
 fn canonicalize_json(value: &Value) -> Value {

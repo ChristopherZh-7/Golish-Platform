@@ -1831,6 +1831,13 @@ async fn candidate_final_seal_is_atomic_uses_exact_predecessor_evidence_and_keep
         "dual_write_read_legacy",
     )
     .await;
+    // The frozen Candidate identity may be a contextual URL while the live
+    // pointer is the in-scope base asset that produced the observation.
+    sqlx::query("UPDATE targets SET target_type='domain',value='shared.example.test' WHERE id=$1")
+        .bind(fixture.org_a.target_id)
+        .execute(db.pool())
+        .await
+        .expect("model contextual URL on an in-scope base target");
     insert_exact_enumeration_predecessor(db.pool(), &fixture).await;
     sqlx::query("UPDATE stage_run_units SET started_at=NOW(),updated_at=NOW() WHERE id=$1")
         .bind(fixture.org_a.stage_run_unit_id)

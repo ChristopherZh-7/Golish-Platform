@@ -46,6 +46,8 @@ use golish_agent_kit::harness::{
 use golish_agent_kit::runtime_memory::RuntimeMemoryWriteStrategy;
 use golish_core::Tool;
 
+const MAX_CANDIDATE_DECISION_GROUPS: usize = 100;
+
 /// Narrow read-only seam over the evidence ledger so the submit tool can run the
 /// fabricated-evidence cross-check without depending on the whole
 /// `DbRepoProvider` surface (and so it is trivially mockable in tests). The app
@@ -682,6 +684,227 @@ impl SubmitStageDeliverableTool {
 
     pub fn captured_submission_handle(&self) -> Arc<RwLock<Option<CapturedStageSubmission>>> {
         Arc::clone(&self.captured_submission)
+    }
+
+    /// Expand the compact model-facing Candidate decision groups into the
+    /// existing exact one-draft-per-work-item gate contract. The model may name
+    /// exact frozen keys or one canonical manifest-kind prefix (for example,
+    /// `scanner_observation:`); prefixes are expanded only against the trusted
+    /// immutable manifest. Evidence ids are copied from that same manifest so
+    /// repeated ids never consume model output and cannot drift across items.
+    async fn expand_candidate_decision_groups(&self, args: &mut Value) -> Result<(), String> {
+        let Some(object) = args.as_object_mut() else {
+            return Ok(());
+        };
+        let Some(groups) = object.remove("candidate_decision_groups") else {
+            return Ok(());
+        };
+        if object.get("stage_id").and_then(Value::as_str)
+            != Some(StageKind::AttackCandidate.as_str())
+        {
+            return Err(
+                "candidate_decision_groups is available only for attack_candidate".to_string(),
+            );
+        }
+        if object
+            .get("candidate_decisions")
+            .and_then(Value::as_array)
+            .is_some_and(|decisions| !decisions.is_empty())
+        {
+            return Err(
+                "use candidate_decisions or candidate_decision_groups, never both".to_string(),
+            );
+        }
+        let groups = groups
+            .as_array()
+            .ok_or_else(|| "candidate_decision_groups must be a non-empty array".to_string())?;
+        if groups.is_empty() || groups.len() > MAX_CANDIDATE_DECISION_GROUPS {
+            return Err(
+                "candidate_decision_groups must contain 1..=100 bounded groups".to_string(),
+            );
+        }
+
+        let repo = self.evidence_repo.as_ref().ok_or_else(|| {
+            "Candidate decision-group expansion requires the trusted DB repository".to_string()
+        })?;
+        let context = golish_core::current_agent_tool_context().ok_or_else(|| {
+            "Candidate decision-group expansion requires trusted tool context".to_string()
+        })?;
+        let operation_id = context.operation_id.ok_or_else(|| {
+            "Candidate decision-group expansion requires operation identity".to_string()
+        })?;
+        let stage_run_unit_id = context.stage_run_unit_id.ok_or_else(|| {
+            "Candidate decision-group expansion requires StageRunUnit identity".to_string()
+        })?;
+        let organization_id = context.organization_id.ok_or_else(|| {
+            "Candidate decision-group expansion requires organization identity".to_string()
+        })?;
+        let manifest = repo
+            .candidate_manifest_for_unit(operation_id, stage_run_unit_id, organization_id)
+            .await
+            .map_err(|error| format!("Candidate manifest load failed: {error}"))?;
+        if manifest.operation_id != operation_id || manifest.organization_id != organization_id {
+            return Err(
+                "Candidate manifest returned a foreign operation or organization".to_string(),
+            );
+        }
+        let manifest_by_key = manifest
+            .work_items
+            .iter()
+            .map(|item| (item.work_item_key.as_str(), item))
+            .collect::<HashMap<_, _>>();
+        if manifest_by_key.len() != manifest.work_items.len() {
+            return Err("Candidate manifest contains duplicate work-item keys".to_string());
+        }
+
+        const GROUP_FIELDS: &[&str] = &[
+            "work_item_keys",
+            "work_item_key_prefixes",
+            "decision",
+            "hypothesis",
+            "rationale",
+            "no_candidate_reason_code",
+        ];
+        let mut expanded = Vec::new();
+        let mut seen = HashSet::new();
+        for group in groups {
+            let group = group
+                .as_object()
+                .ok_or_else(|| "each Candidate decision group must be an object".to_string())?;
+            if group
+                .keys()
+                .any(|key| !GROUP_FIELDS.contains(&key.as_str()))
+            {
+                return Err("Candidate decision groups contain an unsupported field".to_string());
+            }
+            let work_item_keys = group
+                .get("work_item_keys")
+                .and_then(Value::as_array)
+                .filter(|keys| !keys.is_empty());
+            let work_item_key_prefixes = group
+                .get("work_item_key_prefixes")
+                .and_then(Value::as_array)
+                .filter(|prefixes| !prefixes.is_empty());
+            if work_item_keys.is_some() == work_item_key_prefixes.is_some() {
+                return Err(
+                    "each Candidate decision group needs exactly one selector: work_item_keys or work_item_key_prefixes"
+                        .to_string(),
+                );
+            }
+            let decision = group
+                .get("decision")
+                .and_then(Value::as_str)
+                .filter(|value| matches!(*value, "candidate" | "no_candidate"))
+                .ok_or_else(|| {
+                    "each Candidate decision group needs candidate/no_candidate".to_string()
+                })?;
+            let rationale = group
+                .get("rationale")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    "each Candidate decision group needs a non-empty rationale".to_string()
+                })?;
+            let selected_keys = if let Some(work_item_keys) = work_item_keys {
+                work_item_keys
+                    .iter()
+                    .map(|key| {
+                        key.as_str()
+                            .filter(|value| !value.trim().is_empty())
+                            .ok_or_else(|| {
+                                "Candidate decision-group keys must be non-empty strings"
+                                    .to_string()
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                let prefixes =
+                    work_item_key_prefixes.expect("exactly one selector was checked above");
+                if prefixes.len() > 3 {
+                    return Err(
+                        "Candidate decision groups accept at most three manifest-kind prefixes"
+                            .to_string(),
+                    );
+                }
+                let manifest_kind_prefixes = manifest
+                    .work_items
+                    .iter()
+                    .filter_map(|item| {
+                        item.work_item_key
+                            .split_once(':')
+                            .map(|(kind, _)| format!("{kind}:"))
+                    })
+                    .collect::<HashSet<_>>();
+                let mut requested_prefixes = HashSet::new();
+                for prefix in prefixes {
+                    let prefix = prefix
+                        .as_str()
+                        .filter(|value| !value.trim().is_empty())
+                        .ok_or_else(|| {
+                            "Candidate decision-group prefixes must be non-empty strings"
+                                .to_string()
+                        })?;
+                    if !manifest_kind_prefixes.contains(prefix) {
+                        return Err(format!(
+                            "Candidate decision-group prefix {prefix} is not a canonical manifest-kind prefix"
+                        ));
+                    }
+                    if !requested_prefixes.insert(prefix) {
+                        return Err(format!(
+                            "Candidate decision-group prefix {prefix} is duplicated"
+                        ));
+                    }
+                }
+                let selected = manifest
+                    .work_items
+                    .iter()
+                    .filter(|item| {
+                        requested_prefixes
+                            .iter()
+                            .any(|prefix| item.work_item_key.starts_with(*prefix))
+                    })
+                    .map(|item| item.work_item_key.as_str())
+                    .collect::<Vec<_>>();
+                if selected.is_empty() {
+                    return Err(
+                        "Candidate decision-group prefixes selected no frozen work items"
+                            .to_string(),
+                    );
+                }
+                selected
+            };
+            for key in selected_keys {
+                if !seen.insert(key.to_string()) {
+                    return Err(format!(
+                        "Candidate work item {key} appears in more than one decision group"
+                    ));
+                }
+                let item = manifest_by_key.get(key).ok_or_else(|| {
+                    format!("Candidate decision group named unknown work item {key}")
+                })?;
+                if item.evidence_ids.is_empty() {
+                    return Err(format!(
+                        "Candidate work item {key} has no frozen decision evidence"
+                    ));
+                }
+                let mut draft = serde_json::Map::new();
+                draft.insert("work_item_key".to_string(), json!(key));
+                draft.insert("decision".to_string(), json!(decision));
+                draft.insert("rationale".to_string(), json!(rationale));
+                draft.insert("evidence_refs".to_string(), json!(item.evidence_ids));
+                for optional in ["hypothesis", "no_candidate_reason_code"] {
+                    if let Some(value) = group.get(optional).filter(|value| !value.is_null()) {
+                        draft.insert(optional.to_string(), value.clone());
+                    }
+                }
+                expanded.push(Value::Object(draft));
+            }
+        }
+        if expanded.len() > MAX_CANDIDATE_DECISION_GROUPS {
+            return Err("Candidate decision groups expand beyond 100 work items".to_string());
+        }
+        object.insert("candidate_decisions".to_string(), Value::Array(expanded));
+        Ok(())
     }
 
     async fn attack_execution_contract(&self) -> Result<golish_core::AttackExecutionContract> {
@@ -1819,6 +2042,25 @@ impl Tool for SubmitStageDeliverableTool {
                         "required": ["work_item_key", "decision", "rationale", "evidence_refs"]
                     }
                 },
+                "candidate_decision_groups": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "description": "attack_candidate compact form for large manifests. Group only work items that genuinely share one decision and rationale. Select each group with either exact work_item_keys or canonical manifest-kind work_item_key_prefixes such as surface_analysis:, scanner_observation:, or directory_entry_set:. Prefixes expand only against the trusted frozen manifest; the unchanged Gate still requires exactly one terminal decision for every exact item. The server supplies each item's frozen evidence ids. Use this instead of candidate_decisions, never together.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "work_item_keys": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 } },
+                            "work_item_key_prefixes": { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-z0-9_]+:$" } },
+                            "decision": { "type": "string", "enum": ["candidate", "no_candidate"] },
+                            "hypothesis": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Required only for a candidate group." },
+                            "rationale": { "type": "string", "minLength": 1, "maxLength": 8192 },
+                            "no_candidate_reason_code": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9_]+$", "description": "Required only for a no_candidate group." }
+                        },
+                        "required": ["decision", "rationale"]
+                    }
+                },
                 "coverage": {
                     "type": "array",
                     "description": "Coverage matrix for stages whose contract still requires model-authored terminal cells. Call check_stage_asset_coverage before submit. ENUMERATION IS FULLY AUTHORITATIVE: always submit coverage=[]; current-run producer evidence owns found/checked_empty, while current-target blocked evidence is limited to enum_preflight_web_origins on all four axes, route_probe_paths recovery on DIR, and browser_collect_js_api recovery on JS/JSAPI/PARAM. Non-web/rootless hosts are excluded before the exact-origin denominator is built. Enumeration model-authored coverage cannot close a cell. Other DB-truth stages should omit DB-derived found cells and include only contract-permitted terminal exceptions. Stages that run no tools submit []. For non-DB-truth stages, missing expected asset × technique cells fail the gate. EAS example: SERVICE-FINGERPRINT tested_units = open ports fingerprinted and total_units = open ports discovered. Evidence ids are optional internal refs; never invent them. Omit optional fields you do not use and never pass null.",
@@ -1875,7 +2117,13 @@ impl Tool for SubmitStageDeliverableTool {
     }
 
     async fn execute(&self, args: Value, _workspace: &Path) -> Result<Value> {
-        let args = canonicalize_model_submit_args(args);
+        let mut args = canonicalize_model_submit_args(args);
+        if let Err(reason) = self.expand_candidate_decision_groups(&mut args).await {
+            return Ok(json!({
+                "status": "rejected",
+                "reason": reason,
+            }));
+        }
         // Force structured emission: parse the args into the canonical type. A
         // prose / malformed submission is rejected with actionable feedback so
         // the model retries with real fields (immediate-feedback = option 甲).
@@ -2624,6 +2872,23 @@ mod tests {
         assert!(schema["properties"].get("candidates").is_none());
         assert_eq!(schema["properties"]["candidate_decisions"]["maxItems"], 100);
         assert_eq!(
+            schema["properties"]["candidate_decision_groups"]["maxItems"],
+            100
+        );
+        assert_eq!(
+            schema["properties"]["candidate_decision_groups"]["items"]["additionalProperties"],
+            false
+        );
+        assert_eq!(
+            schema["properties"]["candidate_decision_groups"]["items"]["properties"]
+                ["work_item_key_prefixes"]["maxItems"],
+            3
+        );
+        assert_eq!(
+            schema["properties"]["candidate_decision_groups"]["items"]["required"],
+            json!(["decision", "rationale"])
+        );
+        assert_eq!(
             schema["properties"]["candidate_decisions"]["items"]["additionalProperties"],
             false
         );
@@ -3182,6 +3447,256 @@ mod tests {
                 evidence_ids: (41..=50).collect(),
             }],
         }
+    }
+
+    #[tokio::test]
+    async fn candidate_decision_groups_expand_exact_keys_with_server_frozen_evidence() {
+        let operation_id = Uuid::new_v4();
+        let organization_id = Uuid::new_v4();
+        let stage_run_unit_id = Uuid::new_v4();
+        let work_item_key = "surface_analysis:sha256:b950";
+        let manifest = candidate_manifest_fixture(operation_id, organization_id, work_item_key);
+        let tool = SubmitStageDeliverableTool::new(handles().0, handles().1).with_evidence_repo(
+            Arc::new(CandidateManifestMock {
+                manifest,
+                existing: (41..=50).collect(),
+            }),
+        );
+        let context = golish_core::AgentToolContext {
+            request_id: "candidate-groups".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: Some(stage_run_unit_id),
+            organization_id: Some(organization_id),
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let mut args = json!({
+            "stage_id": "attack_candidate",
+            "claims": [],
+            "candidate_decision_groups": [{
+                "work_item_keys": [work_item_key],
+                "decision": "no_candidate",
+                "rationale": "Context-only cell has no typed observation.",
+                "no_candidate_reason_code": "typed_observation_required"
+            }]
+        });
+
+        golish_core::with_agent_tool_context(
+            Some(context),
+            tool.expand_candidate_decision_groups(&mut args),
+        )
+        .await
+        .expect("trusted exact-key group expands");
+
+        assert!(args.get("candidate_decision_groups").is_none());
+        assert_eq!(args["candidate_decisions"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            args["candidate_decisions"][0]["evidence_refs"],
+            json!([41, 42, 43, 44, 45, 46, 47, 48, 49, 50])
+        );
+        assert_eq!(
+            args["candidate_decisions"][0]["work_item_key"],
+            work_item_key
+        );
+    }
+
+    #[tokio::test]
+    async fn candidate_decision_groups_reject_duplicate_or_unknown_keys() {
+        let operation_id = Uuid::new_v4();
+        let organization_id = Uuid::new_v4();
+        let stage_run_unit_id = Uuid::new_v4();
+        let work_item_key = "surface_analysis:sha256:b950";
+        let manifest = candidate_manifest_fixture(operation_id, organization_id, work_item_key);
+        let tool = SubmitStageDeliverableTool::new(handles().0, handles().1).with_evidence_repo(
+            Arc::new(CandidateManifestMock {
+                manifest,
+                existing: (41..=50).collect(),
+            }),
+        );
+        let context = golish_core::AgentToolContext {
+            request_id: "candidate-groups-invalid".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: Some(stage_run_unit_id),
+            organization_id: Some(organization_id),
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let mut duplicate = json!({
+            "stage_id": "attack_candidate",
+            "claims": [],
+            "candidate_decision_groups": [{
+                "work_item_keys": [work_item_key, work_item_key],
+                "decision": "no_candidate",
+                "rationale": "Context only.",
+                "no_candidate_reason_code": "typed_observation_required"
+            }]
+        });
+        let error = golish_core::with_agent_tool_context(
+            Some(context.clone()),
+            tool.expand_candidate_decision_groups(&mut duplicate),
+        )
+        .await
+        .expect_err("duplicate key must fail closed");
+        assert!(error.contains("more than one decision group"));
+
+        let mut unknown = json!({
+            "stage_id": "attack_candidate",
+            "claims": [],
+            "candidate_decision_groups": [{
+                "work_item_keys": ["surface_analysis:sha256:unknown"],
+                "decision": "no_candidate",
+                "rationale": "Context only.",
+                "no_candidate_reason_code": "typed_observation_required"
+            }]
+        });
+        let error = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.expand_candidate_decision_groups(&mut unknown),
+        )
+        .await
+        .expect_err("unknown key must fail closed");
+        assert!(error.contains("unknown work item"));
+    }
+
+    #[tokio::test]
+    async fn candidate_decision_groups_expand_manifest_kind_prefixes_exactly() {
+        let operation_id = Uuid::new_v4();
+        let organization_id = Uuid::new_v4();
+        let stage_run_unit_id = Uuid::new_v4();
+        let mut manifest = candidate_manifest_fixture(
+            operation_id,
+            organization_id,
+            "surface_analysis:sha256:first",
+        );
+        let mut second = manifest.work_items[0].clone();
+        second.work_item_id = Uuid::new_v4();
+        second.work_item_key = "surface_analysis:sha256:second".to_string();
+        second.evidence_ids = vec![51];
+        manifest.work_items.push(second);
+        let tool = SubmitStageDeliverableTool::new(handles().0, handles().1).with_evidence_repo(
+            Arc::new(CandidateManifestMock {
+                manifest,
+                existing: (41..=51).collect(),
+            }),
+        );
+        let context = golish_core::AgentToolContext {
+            request_id: "candidate-prefix-groups".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: Some(stage_run_unit_id),
+            organization_id: Some(organization_id),
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let mut args = json!({
+            "stage_id": "attack_candidate",
+            "claims": [],
+            "candidate_decision_groups": [{
+                "work_item_key_prefixes": ["surface_analysis:"],
+                "decision": "no_candidate",
+                "rationale": "Context-only observations have no exact verifier input.",
+                "no_candidate_reason_code": "typed_observation_required"
+            }]
+        });
+
+        golish_core::with_agent_tool_context(
+            Some(context),
+            tool.expand_candidate_decision_groups(&mut args),
+        )
+        .await
+        .expect("manifest-kind prefix expands through the trusted frozen manifest");
+
+        let decisions = args["candidate_decisions"].as_array().unwrap();
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(
+            decisions
+                .iter()
+                .map(|decision| decision["work_item_key"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "surface_analysis:sha256:first",
+                "surface_analysis:sha256:second"
+            ]
+        );
+        assert_eq!(
+            decisions[0]["evidence_refs"],
+            json!([41, 42, 43, 44, 45, 46, 47, 48, 49, 50])
+        );
+        assert_eq!(decisions[1]["evidence_refs"], json!([51]));
+    }
+
+    #[tokio::test]
+    async fn candidate_decision_groups_reject_mixed_or_noncanonical_prefix_selectors() {
+        let operation_id = Uuid::new_v4();
+        let organization_id = Uuid::new_v4();
+        let stage_run_unit_id = Uuid::new_v4();
+        let work_item_key = "surface_analysis:sha256:b950";
+        let manifest = candidate_manifest_fixture(operation_id, organization_id, work_item_key);
+        let tool = SubmitStageDeliverableTool::new(handles().0, handles().1).with_evidence_repo(
+            Arc::new(CandidateManifestMock {
+                manifest,
+                existing: (41..=50).collect(),
+            }),
+        );
+        let context = golish_core::AgentToolContext {
+            request_id: "candidate-prefix-groups-invalid".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: Some(stage_run_unit_id),
+            organization_id: Some(organization_id),
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let mut mixed = json!({
+            "stage_id": "attack_candidate",
+            "claims": [],
+            "candidate_decision_groups": [{
+                "work_item_keys": [work_item_key],
+                "work_item_key_prefixes": ["surface_analysis:"],
+                "decision": "no_candidate",
+                "rationale": "Context only.",
+                "no_candidate_reason_code": "typed_observation_required"
+            }]
+        });
+        let error = golish_core::with_agent_tool_context(
+            Some(context.clone()),
+            tool.expand_candidate_decision_groups(&mut mixed),
+        )
+        .await
+        .expect_err("mixed exact-key and prefix selectors must fail closed");
+        assert!(error.contains("exactly one selector"));
+
+        let mut noncanonical = json!({
+            "stage_id": "attack_candidate",
+            "claims": [],
+            "candidate_decision_groups": [{
+                "work_item_key_prefixes": ["surface_analysis:sha256:"],
+                "decision": "no_candidate",
+                "rationale": "Context only.",
+                "no_candidate_reason_code": "typed_observation_required"
+            }]
+        });
+        let error = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.expand_candidate_decision_groups(&mut noncanonical),
+        )
+        .await
+        .expect_err("partial hash prefixes must not become selector authority");
+        assert!(error.contains("canonical manifest-kind prefix"));
     }
 
     #[tokio::test]

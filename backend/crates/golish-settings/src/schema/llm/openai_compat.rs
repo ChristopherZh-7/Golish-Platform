@@ -59,6 +59,11 @@ pub struct OllamaSettings {
     /// Whether to show this provider's models in the model selector
     #[serde(default = "default_true")]
     pub show_in_selector: bool,
+
+    /// Explicit local-only Memory Fabric embedding model. `None` keeps vector
+    /// projection and VectorPrior querying disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
 }
 
 /// Groq API settings.
@@ -215,6 +220,7 @@ impl Default for OllamaSettings {
         Self {
             base_url: "http://localhost:11434".to_string(),
             show_in_selector: true,
+            embedding_model: None,
         }
     }
 }

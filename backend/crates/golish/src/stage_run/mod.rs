@@ -1338,6 +1338,18 @@ impl StageRunDbConfig {
 
 fn prepare_stage_run_db(args: &Args) -> Result<StageRunDbConfig> {
     let mut config = golish_db::DbConfig::default();
+    if let Some(database) = args.stage_run_test_database.as_deref() {
+        let valid = database.starts_with("golish_gatefix_")
+            && database.len() <= 63
+            && database
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+        anyhow::ensure!(
+            valid,
+            "--stage-run-test-database accepts only lowercase golish_gatefix_* database names"
+        );
+        config.database = database.to_string();
+    }
     if !args.ephemeral_db {
         return Ok(StageRunDbConfig {
             config,
@@ -1539,6 +1551,13 @@ pub async fn run(args: Args) -> Result<()> {
         app_state.sidecar_state.clone(),
         &session_id,
         Some(app_state.memory_supervisor.unit_of_work()),
+        Some(Arc::new(
+            golish_agent_app::ai::db_bridge::knowledge_context::PgKnowledgeContextAdapter::with_query_embedding(
+                app_state.db_pool.clone(),
+                app_state.memory_supervisor.query_embedding_provider(),
+            )
+            .context("build stage-run ContextPack adapter")?,
+        )),
     )
     .await
     .context("build agent bridge")
@@ -1972,6 +1991,13 @@ async fn run_fork(mut args: Args) -> Result<()> {
             app_state.sidecar_state.clone(),
             &session_id,
             Some(app_state.memory_supervisor.unit_of_work()),
+            Some(Arc::new(
+                golish_agent_app::ai::db_bridge::knowledge_context::PgKnowledgeContextAdapter::with_query_embedding(
+                    app_state.db_pool.clone(),
+                    app_state.memory_supervisor.query_embedding_provider(),
+                )
+                .context("build stage-fork ContextPack adapter")?,
+            )),
         )
         .await
         .context("build stage fork agent bridge")?;
@@ -2242,6 +2268,13 @@ async fn run_resume(mut args: Args) -> Result<()> {
             app_state.sidecar_state.clone(),
             &target.chat_session_key,
             Some(app_state.memory_supervisor.unit_of_work()),
+            Some(Arc::new(
+                golish_agent_app::ai::db_bridge::knowledge_context::PgKnowledgeContextAdapter::with_query_embedding(
+                    app_state.db_pool.clone(),
+                    app_state.memory_supervisor.query_embedding_provider(),
+                )
+                .context("build exact-resume ContextPack adapter")?,
+            )),
         )
         .await
         .context("build exact-resume agent bridge")?;
@@ -4722,6 +4755,23 @@ mod tests {
             default_config.pg_bin_cache_dir
         );
         assert!(stage_db.config.port > 0);
+    }
+
+    #[test]
+    fn stage_run_db_accepts_only_explicit_gatefix_clone_names() {
+        let args = Args::parse_from([
+            "golish",
+            "--stage-run-resume",
+            "stage-run-test",
+            "--stage-run-test-database",
+            "golish_gatefix_20260720",
+        ]);
+        let stage_db = prepare_stage_run_db(&args).expect("isolated clone db config");
+        assert_eq!(stage_db.config.database, "golish_gatefix_20260720");
+
+        let mut invalid = args;
+        invalid.stage_run_test_database = Some("golish".to_string());
+        assert!(prepare_stage_run_db(&invalid).is_err());
     }
 
     #[test]

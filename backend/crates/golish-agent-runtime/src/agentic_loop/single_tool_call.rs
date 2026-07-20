@@ -634,6 +634,7 @@ where
                 &sub_agent_context.original_request,
                 ctx.harness_org_id,
                 ctx.worker_lease.as_ref().map(|lease| lease.worker_run_id),
+                None,
             )
             .await
             {

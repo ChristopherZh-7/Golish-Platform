@@ -36,7 +36,7 @@ use golish_sub_agents::{
     STAGE_TEAM_UPDATE_PLAN_TOOL_NAME,
 };
 
-use super::super::super::context::retrieve_scoped_context_data;
+use super::super::super::context::{retrieve_scoped_context_data, BoundScopedContextIdentity};
 use super::super::super::llm_helpers::runtime_supervisor_one_shot;
 use super::super::super::sub_agent_dispatch::{
     build_sub_agent_briefing, execute_sub_agent_with_client,
@@ -1350,8 +1350,23 @@ where
             .as_ref()
             .map(|bound| bound.worker_lease.worker_run_id)
             .or_else(|| ctx.worker_lease.as_ref().map(|lease| lease.worker_run_id));
-        match retrieve_scoped_context_data(ctx, task_desc, effective_harness_org_id, worker_run_id)
-            .await
+        let bound_identity = bound_worker_chain
+            .as_ref()
+            .map(|bound| BoundScopedContextIdentity {
+                operation_id: bound.operation_id,
+                stage_execution_id: bound.stage_execution_id,
+                stage_run_unit_id: bound.worker_lease.stage_run_unit_id,
+                worker_run_id: bound.worker_lease.worker_run_id,
+                organization_id: bound.organization_id,
+            });
+        match retrieve_scoped_context_data(
+            ctx,
+            task_desc,
+            effective_harness_org_id,
+            worker_run_id,
+            bound_identity,
+        )
+        .await
         {
             Ok(context) => context,
             Err(error) => {

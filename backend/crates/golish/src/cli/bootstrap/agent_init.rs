@@ -35,6 +35,7 @@ pub(crate) async fn initialize_agent(
     sidecar_state: Arc<SidecarState>,
     event_session_id: &str,
     knowledge_memory: Option<Arc<dyn golish_memory_app::KnowledgeUnitOfWork>>,
+    knowledge_context: Option<Arc<dyn golish_memory_app::ContextPackProvider>>,
 ) -> Result<(AgentBridge, Option<Arc<golish_mcp::McpManager>>)> {
     // Resolve and validate the same typed provider configuration consumed by
     // the GUI. Unknown provider names fail here instead of silently becoming
@@ -61,6 +62,9 @@ pub(crate) async fn initialize_agent(
     // Inject dependencies (same as init_ai_agent command in Tauri)
     if let Some(knowledge_memory) = knowledge_memory {
         bridge.set_knowledge_memory(knowledge_memory);
+    }
+    if let Some(knowledge_context) = knowledge_context {
+        bridge.set_knowledge_context(knowledge_context);
     }
     bridge.set_indexer_state(indexer_state);
     let sidecar_backend: std::sync::Arc<

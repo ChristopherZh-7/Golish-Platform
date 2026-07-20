@@ -31,6 +31,8 @@
 | `harness`（`gate` / `graph_engine` / `handoff_catalog` / `knowledge_context`） | stage harness gate + canonical handoff keys + prompt-safe ContextPack renderer；Candidate classifier 将冻结 observation/hash 映射为 exact replay capability；`StageSpec.runtime_memory` 声明 Unit owner/final-seal，`StageSpec.team_scheduler` 以 closed policy声明 V2 sibling roles、K、dynamic request 与 risk lane；Vuln final seal 用一个可重算的 `TechniqueOutcomeSet` 证明完整 outcome 集合，独立 Finding 仍单独引用 |
 | `db_traits` / `db_tracking` / `db_shim` / `memory_*` | repo/tracking 抽象 + 长期记忆；runtime-aware tool start 固定 exact operation task owner；org-bound evidence append显式携带 trusted organization witness；RuntimeMemory trait暴露 Stage Team plan/claim/output/barrier/repair/operator recovery、Candidate TerminalIntent/barrier/recovery，以及 immutable `StageForkCreate` exact-lineage contract |
 
+`RuntimeMemoryRepository::park_stage_team_finalizer_after_failure` 是 closed Company Controller 的 closeout retry seam：只携带 exact Worker fence、plan/item、durable submission、barrier manifest 与 server checkpoint；生产 bridge 必须原子清租约并排回同一 WorkerRun/message chain，不能把 final-seal failure 当 producer retry。
+
 Company Controller StageSpec 的 C/G/K 是真实并发权威；历史 `max_dynamic_requests` 只保留在冻结序列化形状中支持旧 TeamPlan exact replay，不再代表 child lifetime admission。完成权威仍是 DB worklist/evidence/Gate，不是 child 数量。
 | `SharedComponentsConfig` / `ExecutionMode` / `AgentMode`（re-export） | llm-client 配置 / 执行模式 |
 | `SessionCaptureBackend` | per-bridge sidecar lifecycle/capture；restore 支持 end/find/resume/start，禁止回退到 app-global sidecar |
@@ -77,6 +79,7 @@ Company Controller StageSpec 的 C/G/K 是真实并发权威；历史 `max_dynam
 - crate 级 `#![allow(too_many_arguments / needless_borrow / manual_async_fn)]` 是有意保留（宽 context 透传 / object-safe trait）。
 - `SessionCaptureBackend` 是 bridge-owned session truth；新增实现必须实现 legacy match + resume，full restore 不能绕过 trait 操作另一个全局实例。
 - `V2Only` 与已整源选择 V2 的 `DualWriteV2Preferred` 都以 relational runtime 为恢复源。metalcraft graph 起点只能从 persisted `current_stage` 构造为空默认状态，不能读取、修复或回写 legacy `state_blob`；preferred legacy fallback 必须显式标成 `LegacyFallback`。
+- legacy Vuln terminal adoption只通过`RuntimeMemoryRepository`的server-owned Controller fence seam暴露；kit不选择旧execution/evidence，也不根据adoption返回值直接判Gate PASS。
 
 ## 测试入口
 

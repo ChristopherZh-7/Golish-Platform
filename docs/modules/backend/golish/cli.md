@@ -42,6 +42,7 @@
 - **与 GUI 共享逻辑**：经 `GolishRuntime` 抽象，别为 CLI 复制一套 agent 逻辑。
 - Provider route 必须先解析为 `AiProvider`/`ProviderConfig`，再走 app shared normalizer；未知/拼错 provider fail closed，禁止 fallback 成 OpenRouter。CLI flag 的 provider/model/API key 优先级保留，但 endpoint/reasoning/web-search/preferences/location/thoughts/Ollama base/model override/context config 不得在 CLI 另写一份 settings 规则。
 - `--stage-run` 由 `stage_run` 模块承载；CLI 只 dispatch。
+- hidden `--stage-run-test-database` 仅用于已有 shared-DB operation 的隔离验收，可与 exact resume 或 immutable-source fork 同用；值只接受小写 `golish_gatefix_*`、安全字符且不超过 63 字节。它不会自动创建/复制数据库，也不能选择默认 production 库。
 - `--stage-run-fork <operation|session|chat-key>` 只 dispatch 到 `stage_run`。它必须配 `--only` 或完整 `--from/--to`，拒绝 Scoping、ephemeral DB 与 profile/org/target/subsidiary 覆盖；默认数据库因此与 GUI 相同。
 - `--approve-phase-boundaries` 是兼容参数：当前内置 flow 的常规人工确认只在 Scoping，post-Scoping 不再产生 generic phase confirmation。该 flag 即使与 `--auto-approve` 同用也不授权 target scope、Candidate plan 或高风险 tool call。
 - `--stage-run-resume <stage-run-key|session UUID|operation UUID>` 同样只 dispatch
@@ -63,4 +64,5 @@
 ```bash
 cd backend && cargo nextest run -p golish cli
 # 参数层：cargo test -p golish cli::args::tests::test_args_stage_run_resume --lib
+# 隔离库名护栏：cargo nextest run -p golish -E 'test(stage_run_db_accepts_only_explicit_gatefix_clone_names)'
 ```

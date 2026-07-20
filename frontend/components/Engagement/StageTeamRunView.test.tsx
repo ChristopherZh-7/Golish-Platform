@@ -259,17 +259,127 @@ describe("StageTeamRunView", () => {
       />
     );
 
-    expect(await screen.findByText("历史 attempt 失败 20 cells")).toBeInTheDocument();
+    expect(await screen.findByText("漏洞扫描进度")).toBeInTheDocument();
+    expect(screen.getByText("漏洞扫描调度器")).toBeInTheDocument();
+    expect(screen.getByText("2 个扫描分片")).toBeInTheDocument();
+    expect(screen.getByText("证据覆盖")).toBeInTheDocument();
+    expect(screen.getByText("20 待检查")).toBeInTheDocument();
+    expect(screen.queryByText("Company Controller")).not.toBeInTheDocument();
+    expect(screen.queryByText(/个 SubAgent/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /调度详情|扫描队列/ })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Plan v1")).not.toBeInTheDocument();
+    expect(screen.queryByText(/active workers max/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/chain leader-chain/)).not.toBeInTheDocument();
+    expect(screen.getByText("历史失败 20 cells")).toBeInTheDocument();
     expect(screen.getByText("340/360 cells 终态 · 剩余 20")).toBeInTheDocument();
     expect(screen.getByText("340/360 cells · 剩余 20")).toBeInTheDocument();
-    expect(screen.getByText("当前 retry 1")).toBeInTheDocument();
-    expect(screen.getByText("operator recovery 1")).toBeInTheDocument();
+    expect(screen.getByText("自动重试 1")).toBeInTheDocument();
+    expect(screen.getByText("待人工恢复 1")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "检测到上次运行中断" })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "解除中断状态" })).toBeInTheDocument();
+    expect(screen.getByText(/不会自动重放/)).toBeInTheDocument();
     expect(api.getCoverage).toHaveBeenCalledWith({
       operationId: "operation-1",
       organizationId: "org-1",
       stage: "vuln_triage",
       stageStartedAt: "2026-07-14T00:00:00Z",
     });
+  });
+
+  it("keeps Vuln recovery reachable and guides continue or reset after exact recovery", async () => {
+    const recoveryModel = model();
+    recoveryModel.stageKind = "vuln_triage";
+    recoveryModel.units[0].stageKind = "vuln_triage";
+    addCompanyController(recoveryModel);
+    const recoveryItem = recoveryModel.units[0].plan!.workItems[1];
+    const recoveryWorker = recoveryItem.workers[0];
+    recoveryItem.status = "recovery_required";
+    recoveryWorker.status = "recovery_required";
+    recoveryWorker.leaseState = "expired";
+    recoveryWorker.recoveryState = "manual_required";
+    recoveryModel.units[0].plan!.barrier.recoveryRequiredWorkers = 1;
+
+    const resolvedModel = structuredClone(recoveryModel);
+    const resolvedItem = resolvedModel.units[0].plan!.workItems[1];
+    const resolvedWorker = resolvedItem.workers[0];
+    resolvedItem.status = "exhausted";
+    resolvedWorker.status = "failed";
+    resolvedWorker.hasActiveTool = false;
+    resolvedWorker.activeToolCallId = null;
+    resolvedWorker.recoveryState = "none";
+    resolvedItem.output = {
+      outputId: "output-1",
+      workerRunId: resolvedWorker.workerRunId,
+      outputSchema: resolvedItem.outputSchema,
+      outputVersion: 1,
+      businessDisposition: "blocked",
+      canonicalFactRefCount: 0,
+      evidenceIds: [],
+      checkedEmptyCellCount: 0,
+      blockerCodes: ["STAGE_TEAM_ACTIVE_TOOL_RECOVERY_BLOCKED"],
+      outputSha256: `sha256:${"f".repeat(64)}`,
+      createdAt: "2026-07-14T00:00:05Z",
+    };
+    resolvedModel.units[0].plan!.barrier.recoveryRequiredWorkers = 0;
+
+    const getReadModel = vi
+      .fn()
+      .mockResolvedValueOnce(recoveryModel)
+      .mockResolvedValueOnce(resolvedModel);
+    const resolveRecovery = vi.fn().mockResolvedValue({
+      decisionId: "decision-1",
+      decisionSha256: `sha256:${"e".repeat(64)}`,
+      workItemStatus: "exhausted",
+      workerStatus: "failed",
+      outputId: "output-1",
+      blockerCode: "STAGE_TEAM_ACTIVE_TOOL_RECOVERY_BLOCKED",
+      replayed: false,
+    });
+
+    const active = render(
+      <StageTeamRunView
+        operationId="operation-1"
+        stageExecutionId="execution-1"
+        api={{ getReadModel, resolveRecovery }}
+      />
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "解除中断状态" }));
+    await waitFor(() => expect(resolveRecovery).toHaveBeenCalledTimes(1));
+    expect(resolveRecovery.mock.calls[0][0]).toMatchObject({
+      operationId: "operation-1",
+      stageExecutionId: "execution-1",
+      stageRunUnitId: "unit-1",
+      scopeSnapshotId: "snapshot-1",
+      stageTeamPlanId: "plan-1",
+      workItemId: "item-1",
+      workerRunId: "worker-1",
+      toolCallRecordId: "tool-call-1",
+      expectedWorkItemRowVersion: 3,
+      expectedCheckpointVersion: 4,
+      expectedAttemptEpoch: 1,
+    });
+    expect(
+      await screen.findByText(/发送“继续”恢复剩余任务，或使用“重置阶段”/)
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "解除中断状态" })).not.toBeInTheDocument();
+
+    active.unmount();
+    render(
+      <StageTeamRunView
+        operationId="operation-1"
+        stageExecutionId="execution-1"
+        api={{ getReadModel: vi.fn().mockResolvedValue(resolvedModel), resolveRecovery }}
+      />
+    );
+    expect(
+      await screen.findByText(/此前的中断项已安全记为结果未知且不会重放/)
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "解除中断状态" })).not.toBeInTheDocument();
   });
 
   it("renders Vuln worklist loading, error, and empty states separately", async () => {
@@ -288,7 +398,7 @@ describe("StageTeamRunView", () => {
         }}
       />
     );
-    expect(await screen.findByText("正在读取 DB worklist")).toBeInTheDocument();
+    expect(await screen.findByText("正在读取扫描进度")).toBeInTheDocument();
     pending.unmount();
 
     const failed = render(
@@ -302,7 +412,7 @@ describe("StageTeamRunView", () => {
         }}
       />
     );
-    expect(await screen.findByText("worklist 读取失败：coverage unavailable")).toBeInTheDocument();
+    expect(await screen.findByText("扫描进度读取失败：coverage unavailable")).toBeInTheDocument();
     failed.unmount();
 
     render(
@@ -329,7 +439,7 @@ describe("StageTeamRunView", () => {
         }}
       />
     );
-    expect(await screen.findByText("DB worklist 暂无 cells")).toBeInTheDocument();
+    expect(await screen.findByText("当前没有待扫描项")).toBeInTheDocument();
   });
 
   it("renders Unit to Plan to WorkItem to Worker and Request/Barrier from DB truth", async () => {
@@ -638,7 +748,7 @@ describe("StageTeamRunView", () => {
         workerStatus: "failed",
         outputId: "output-1",
         blockerCode: "STAGE_TEAM_ACTIVE_TOOL_RECOVERY_BLOCKED",
-        replayed: false,
+        replayed: true,
       });
     const getReadModel = vi.fn().mockResolvedValue(recoveryModel);
     const api: StageTeamReadApi = { getReadModel, resolveRecovery };
@@ -651,17 +761,17 @@ describe("StageTeamRunView", () => {
     );
 
     const action = await screen.findByRole("button", {
-      name: "Mark blocked outcome unknown — never replay tool",
+      name: "解除中断状态",
     });
     fireEvent.click(action);
     expect(
       screen.getByRole("button", {
-        name: "Recording blocked outcome unknown — never replay tool…",
+        name: "正在安全封存未知结果…",
       })
     ).toBeDisabled();
 
-    await act(async () => rejectFirst(new Error("CAS changed")));
-    expect(await screen.findByRole("alert")).toHaveTextContent("CAS changed");
+    await act(async () => rejectFirst(new Error("response lost")));
+    expect(await screen.findByRole("alert")).toHaveTextContent("response lost");
     const firstRequest = resolveRecovery.mock.calls[0][0];
     expect(firstRequest).toMatchObject({
       operationId: "operation-1",
@@ -679,11 +789,55 @@ describe("StageTeamRunView", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Retry: mark blocked outcome unknown — never replay tool",
+        name: "重试解除中断状态",
       })
     );
     await waitFor(() => expect(resolveRecovery).toHaveBeenCalledTimes(2));
     expect(resolveRecovery.mock.calls[1][0].requestId).toBe(firstRequest.requestId);
     await waitFor(() => expect(getReadModel).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps multiple interrupted workers independently recoverable", async () => {
+    const recoveryModel = model();
+    const plan = recoveryModel.units[0].plan!;
+    const firstItem = plan.workItems[0];
+    const firstWorker = firstItem.workers[0];
+    firstItem.status = "recovery_required";
+    firstWorker.status = "recovery_required";
+    firstWorker.leaseState = "expired";
+    firstWorker.recoveryState = "manual_required";
+
+    const secondItem = structuredClone(firstItem);
+    secondItem.workItemId = "item-2";
+    secondItem.stableKey = "provider:quake";
+    secondItem.role = "intel_coverage_critic";
+    secondItem.workers[0].workerRunId = "worker-2";
+    secondItem.workers[0].activeToolCallId = "tool-call-2";
+    plan.workItems.push(secondItem);
+    plan.barrier.recoveryRequiredWorkers = 2;
+
+    const firstAttempt = new Promise<never>(() => undefined);
+    const resolveRecovery = vi.fn((request: { workerRunId: string }) => {
+      if (request.workerRunId === "worker-1") return firstAttempt;
+      return Promise.reject(new Error("second recovery failed"));
+    });
+    render(
+      <StageTeamRunView
+        operationId="operation-1"
+        stageExecutionId="execution-1"
+        api={{ getReadModel: vi.fn().mockResolvedValue(recoveryModel), resolveRecovery }}
+      />
+    );
+
+    const actions = await screen.findAllByRole("button", { name: "解除中断状态" });
+    expect(actions).toHaveLength(2);
+    fireEvent.click(actions[0]);
+    expect(screen.getByRole("button", { name: "正在安全封存未知结果…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "解除中断状态" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "解除中断状态" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("second recovery failed");
+    expect(screen.getByRole("button", { name: "正在安全封存未知结果…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重试解除中断状态" })).toBeEnabled();
   });
 });

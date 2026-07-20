@@ -118,6 +118,12 @@ pub trait KnowledgeContextSource: Send + Sync {
 #[async_trait]
 pub trait QueryEmbeddingProvider: Send + Sync {
     fn dimension(&self) -> usize;
+    /// Whether embedding the query sends customer data outside the local
+    /// process/host boundary. Defaulting to `true` keeps new providers
+    /// fail-closed until they explicitly prove local-only transport.
+    fn requires_external_data_egress(&self) -> bool {
+        true
+    }
     async fn embed_query(&self, query: &str) -> Result<Vec<f32>, ContextError>;
 }
 

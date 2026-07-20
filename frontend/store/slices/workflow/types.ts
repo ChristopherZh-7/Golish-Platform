@@ -120,6 +120,8 @@ export interface WorkflowActions {
    * stage shows done only after the deterministic gate accepts it.
    */
   markStagePassed: (sessionId: string, stageId: string) => void;
+  /** Rewind affected roadmap markers and seed the committed selected frontier. */
+  rewindStagePlans: (sessionId: string, affectedStages: string[], selectedStage: string) => void;
 }
 
 export interface WorkflowSlice extends WorkflowState, WorkflowActions {}

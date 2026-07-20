@@ -868,6 +868,39 @@ pub struct ParkedStageTeamLeaderView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParkStageTeamFinalizerAfterFailure {
+    pub fence: RuntimeWorkerFence,
+    pub stage_team_plan_id: Uuid,
+    pub leader_work_item_id: Uuid,
+    pub deliverable_submission_id: Uuid,
+    pub expected_work_item_row_version: i64,
+    pub expected_dispatch_epoch: i64,
+    pub expected_manifest_sha256: String,
+    pub checkpoint: Value,
+    pub failure_detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParkedStageTeamFinalizerAfterFailureView {
+    pub work_item: StageWorkItemView,
+    pub worker: RuntimeWorkerView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdoptLegacyVulnTerminalOutcomes {
+    pub fence: RuntimeWorkerFence,
+    pub stage_team_plan_id: Uuid,
+    pub leader_work_item_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdoptedLegacyVulnTerminalOutcomesView {
+    pub adopted_cells: usize,
+    pub source_stage_execution_id: Option<Uuid>,
+    pub source_stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindStageTeamLeaderFinalSubmitter {
     pub fence: RuntimeWorkerFence,
     pub stage_team_plan_id: Uuid,
@@ -1678,6 +1711,32 @@ pub trait RuntimeMemoryRepository: Send + Sync {
     ) -> Result<ParkedStageTeamLeaderView, RuntimeMemoryError> {
         let _ = input;
         Err(RuntimeMemoryError::Unavailable)
+    }
+
+    /// Release the exact closed-plan final submitter after deterministic
+    /// closeout failure. The durable submission remains immutable and the same
+    /// WorkerRun/message chain is queued without spending producer retry fuel.
+    async fn park_stage_team_finalizer_after_failure(
+        &self,
+        input: ParkStageTeamFinalizerAfterFailure,
+    ) -> Result<ParkedStageTeamFinalizerAfterFailureView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    /// Repair only the legacy no-purge Vuln rollover shape by adopting exact,
+    /// complete producer evidence from its superseded stage window. Normal and
+    /// already-fixed executions return an explicit zero-cell no-op.
+    async fn adopt_legacy_vuln_terminal_outcomes(
+        &self,
+        input: AdoptLegacyVulnTerminalOutcomes,
+    ) -> Result<AdoptedLegacyVulnTerminalOutcomesView, RuntimeMemoryError> {
+        let _ = input;
+        Ok(AdoptedLegacyVulnTerminalOutcomesView {
+            adopted_cells: 0,
+            source_stage_execution_id: None,
+            source_stage_started_at: None,
+        })
     }
 
     /// Bind the already-running Controller as the sole final submitter after

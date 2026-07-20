@@ -427,10 +427,15 @@ pub async fn active_documents(
                  SELECT assertion.source_operation_id,
                         assertion.source_scope_snapshot_hash,
                         assertion.organization_id_at_time,
-                        array_agg(DISTINCT evidence_id ORDER BY evidence_id) AS evidence_refs
-                   FROM unnest(document.assertion_ids) AS assertion_id
-                   JOIN knowledge_assertions AS assertion ON assertion.assertion_id=assertion_id
-                   CROSS JOIN LATERAL unnest(assertion.evidence_refs) AS evidence_id
+                        array_agg(
+                            DISTINCT evidence_ref.evidence_id
+                            ORDER BY evidence_ref.evidence_id
+                        ) AS evidence_refs
+                   FROM unnest(document.assertion_ids) AS assertion_ref(assertion_id)
+                   JOIN knowledge_assertions AS assertion
+                     ON assertion.assertion_id=assertion_ref.assertion_id
+                   CROSS JOIN LATERAL unnest(assertion.evidence_refs)
+                     AS evidence_ref(evidence_id)
                   WHERE assertion.project_scope_id=$1
                     AND assertion.organization_id_at_time=$2
                     AND assertion.status='active'
@@ -453,8 +458,9 @@ pub async fn active_documents(
               AND document.redacted_content ILIKE '%' || $5 || '%'
               AND NOT EXISTS (
                   SELECT 1
-                    FROM unnest(document.assertion_ids) AS other_id
-                    JOIN knowledge_assertions AS other ON other.assertion_id=other_id
+                    FROM unnest(document.assertion_ids) AS other_ref(assertion_id)
+                    JOIN knowledge_assertions AS other
+                      ON other.assertion_id=other_ref.assertion_id
                    WHERE other.project_scope_id IS DISTINCT FROM $1
                       OR other.organization_id_at_time IS DISTINCT FROM $2
               )
@@ -503,10 +509,16 @@ pub async fn vector_documents(
                      SELECT assertion.source_operation_id,
                             assertion.source_scope_snapshot_hash,
                             assertion.organization_id_at_time,
-                            array_agg(DISTINCT evidence_id ORDER BY evidence_id) AS evidence_refs
-                       FROM unnest(document.assertion_ids) AS assertion_id
-                       JOIN knowledge_assertions AS assertion ON assertion.assertion_id=assertion_id
-                       CROSS JOIN LATERAL unnest(assertion.evidence_refs) AS evidence_id
+                            array_agg(
+                                DISTINCT evidence_ref.evidence_id
+                                ORDER BY evidence_ref.evidence_id
+                            ) AS evidence_refs
+                       FROM unnest(document.assertion_ids)
+                         AS assertion_ref(assertion_id)
+                       JOIN knowledge_assertions AS assertion
+                         ON assertion.assertion_id=assertion_ref.assertion_id
+                       CROSS JOIN LATERAL unnest(assertion.evidence_refs)
+                         AS evidence_ref(evidence_id)
                       WHERE assertion.project_scope_id=$1
                         AND assertion.organization_id_at_time=$2
                         AND assertion.status='active'
@@ -531,32 +543,40 @@ pub async fn vector_documents(
                       END
                   AND NOT EXISTS (
                       SELECT 1
-                        FROM unnest(document.assertion_ids) AS other_id
-                        JOIN knowledge_assertions AS other ON other.assertion_id=other_id
+                        FROM unnest(document.assertion_ids) AS other_ref(assertion_id)
+                        JOIN knowledge_assertions AS other
+                          ON other.assertion_id=other_ref.assertion_id
                        WHERE other.project_scope_id IS DISTINCT FROM $1
                           OR other.organization_id_at_time IS DISTINCT FROM $2
                   )
+           ), ranked AS (
+               SELECT scoped.*, scoped.embedding <=> $5::vector AS distance
+                 FROM scoped
            )
-           SELECT 'vector:' || scoped.document_id::text AS item_id,
+           SELECT 'vector:' || ranked.document_id::text AS item_id,
                   'text'::text AS value_kind,
-                  scoped.redacted_content AS text_value,
+                  ranked.redacted_content AS text_value,
                   NULL::jsonb AS json_value,
                   NULL::uuid AS vault_ref,
-                  'knowledge_vector:' || scoped.document_type AS source_label,
-                  scoped.project_scope_id,
-                  scoped.source_operation_id,
+                  'knowledge_vector:' || ranked.document_type AS source_label,
+                  ranked.project_scope_id,
+                  ranked.source_operation_id,
                   NULL::uuid AS scope_snapshot_id,
-                  scoped.source_scope_snapshot_hash AS scope_snapshot_hash,
-                  scoped.organization_id_at_time,
-                  scoped.classification,
-                  scoped.evidence_refs,
-                  scoped.valid_from,
-                  scoped.valid_to,
-                  scoped.content_hash,
-                  ((1.0 - (scoped.embedding <=> $5::vector)) * 1000000)::bigint AS score_micros,
+                  ranked.source_scope_snapshot_hash AS scope_snapshot_hash,
+                  ranked.organization_id_at_time,
+                  ranked.classification,
+                  ranked.evidence_refs,
+                  ranked.valid_from,
+                  ranked.valid_to,
+                  ranked.content_hash,
+                  (
+                      GREATEST(-1.0, LEAST(1.0, 1.0 - ranked.distance))
+                      * 1000000
+                  )::bigint AS score_micros,
                   true AS must_revalidate
-             FROM scoped
-            ORDER BY scoped.embedding <=> $5::vector, scoped.document_id
+             FROM ranked
+            WHERE ranked.distance <> 'NaN'::double precision
+            ORDER BY ranked.distance, ranked.document_id
             LIMIT $6"#,
     )
     .bind(project_scope_id)

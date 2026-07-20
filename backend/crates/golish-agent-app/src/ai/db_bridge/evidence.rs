@@ -181,6 +181,12 @@ fn strict_evidence_asset_key(asset: &str, technique: &str) -> Option<String> {
     None
 }
 
+fn terminal_materialization_asset_key(asset: &str, technique: &str) -> String {
+    strict_evidence_asset_key(asset, technique)
+        .or_else(|| golish_pentest_domain::canonical_asset_key(asset).map(|key| key.key))
+        .unwrap_or_else(|| asset.to_string())
+}
+
 fn dns_empty_outcome_hosts(
     summary: &golish_recon_app::organization_recon::PerAssetLandingSummary,
 ) -> &[String] {
@@ -688,15 +694,7 @@ impl GolishDbRepoProvider {
         query: Option<&str>,
         evidence_ids: &[i64],
     ) -> anyhow::Result<bool> {
-        let canonical = if technique == golish_agent_kit::harness::evidence_facts::TECH_EAS_LIVENESS
-        {
-            golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key(asset)
-                .unwrap_or_else(|| asset.to_string())
-        } else {
-            golish_pentest_domain::canonical_asset_key(asset)
-                .map(|key| key.key)
-                .unwrap_or_else(|| asset.to_string())
-        };
+        let canonical = terminal_materialization_asset_key(asset, technique);
         let write = golish_db::repo::technique_outcomes::TechniqueOutcomeWrite {
             organization_id,
             run_id: run_id.to_string(),
@@ -1534,7 +1532,7 @@ mod tests {
         dns_empty_outcome_hosts, dns_error_outcome_hosts, dns_found_outcome_hosts,
         dns_partial_outcome_hosts, eas_target_bound_evidence_facts, enumeration_evidence_fact_set,
         enumeration_target_bound_evidence_fact_set, projected_technique_outcome_evidence_id,
-        vuln_target_bound_evidence_fact_set,
+        terminal_materialization_asset_key, vuln_target_bound_evidence_fact_set,
     };
     use uuid::Uuid;
 
@@ -2320,6 +2318,24 @@ mod tests {
                 "a sibling origin must not reuse exact-origin evidence"
             );
         }
+    }
+
+    #[test]
+    fn vuln_terminal_materialization_keeps_sibling_origins_distinct() {
+        let technique = "WSTG-ATHN-04";
+
+        assert_eq!(
+            terminal_materialization_asset_key("http://app.example.com/", technique),
+            "http://app.example.com:80"
+        );
+        assert_eq!(
+            terminal_materialization_asset_key("https://app.example.com/", technique),
+            "https://app.example.com:443"
+        );
+        assert_eq!(
+            terminal_materialization_asset_key("https://app.example.com:8443/path", technique),
+            "https://app.example.com:8443"
+        );
     }
 
     #[test]

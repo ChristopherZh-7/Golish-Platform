@@ -18,12 +18,13 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function setup(chatExecutionMode: string) {
+function setup(chatExecutionMode: string, disabled = false) {
   const onExecutionModeChange = vi.fn();
   const onAgentModeChange = vi.fn();
   render(
     <ExecutionModePicker
       chatExecutionMode={chatExecutionMode}
+      disabled={disabled}
       onExecutionModeChange={onExecutionModeChange}
       onAgentModeChange={onAgentModeChange}
     />
@@ -42,6 +43,11 @@ describe("ExecutionModePicker", () => {
   it("labels the trigger with the active profile in a Task profile mode", () => {
     setup("pentest");
     expect(screen.getByRole("button", { name: "Execution mode" })).toHaveTextContent("Pentest");
+  });
+
+  it("disables profile changes while a destructive stage reset owns the send lane", () => {
+    setup("pentest", true);
+    expect(screen.getByRole("button", { name: "Execution mode" })).toBeDisabled();
   });
 
   it("remembers the active Task profile in localStorage", async () => {

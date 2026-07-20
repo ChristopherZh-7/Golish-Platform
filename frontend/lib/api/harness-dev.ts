@@ -1,3 +1,4 @@
+import type { HarnessDevStageCheckpointResetResult } from "../generated/HarnessDevStageCheckpointResetResult";
 import { invoke } from "./client";
 
 export type HarnessDevStageCheckpointResetMode =
@@ -23,8 +24,8 @@ export async function resetHarnessStageCheckpoint({
   organizationId,
   stage,
   mode,
-}: HarnessDevResetStageCheckpointArgs): Promise<void> {
-  await invoke("harness_dev_reset_stage_checkpoint", {
+}: HarnessDevResetStageCheckpointArgs): Promise<HarnessDevStageCheckpointResetResult> {
+  return invoke<HarnessDevStageCheckpointResetResult>("harness_dev_reset_stage_checkpoint", {
     operationId: operationId ?? null,
     sessionId: sessionId ?? null,
     organizationId: organizationId ?? null,

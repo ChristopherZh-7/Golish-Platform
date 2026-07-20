@@ -3,6 +3,7 @@ import type { TaskPlan } from "@/store/store-types";
 import {
   clearStagePlans,
   readStagePlans,
+  rewindPersistedStagePlans,
   STAGE_PLAN_STORAGE_KEY,
   writeStagePlans,
 } from "./stagePlanPersistence";
@@ -59,6 +60,61 @@ describe("stagePlanPersistence", () => {
     writeStagePlans("conv-1", SNAPSHOT);
     clearStagePlans("conv-1");
     expect(readStagePlans("conv-1")).toBeNull();
+  });
+
+  it("atomically rewinds affected stages in the persisted roadmap", () => {
+    writeStagePlans("conv-1", SNAPSHOT);
+    const affected = rewindPersistedStagePlans(
+      "conv-1",
+      ["target_intel", "reporting"],
+      "target_intel",
+      "reset-epoch"
+    );
+
+    expect(affected).toEqual(["target_intel", "reporting"]);
+    expect(readStagePlans("conv-1")).toEqual({
+      stageOrder: ["scoping", "target_intel"],
+      plansByStage: {
+        scoping: SNAPSHOT.plansByStage.scoping,
+        target_intel: {
+          version: 0,
+          explanation: null,
+          updated_at: "reset-epoch",
+          steps: [{ step: "target_intel", status: "in_progress" }],
+          summary: { total: 1, completed: 0, in_progress: 1, pending: 0 },
+        },
+      },
+      passedStages: ["scoping"],
+    });
+  });
+
+  it("also removes descendants known only by the durable snapshot", () => {
+    writeStagePlans("conv-1", {
+      stageOrder: ["scoping", "external_attack_surface", "enumeration", "vuln_triage"],
+      plansByStage: {
+        scoping: plan(1),
+        external_attack_surface: plan(2),
+        enumeration: plan(3),
+        vuln_triage: plan(4),
+      },
+      passedStages: ["scoping", "external_attack_surface", "enumeration"],
+    });
+
+    const affected = rewindPersistedStagePlans(
+      "conv-1",
+      ["external_attack_surface"],
+      "external_attack_surface",
+      "reset-epoch"
+    );
+
+    expect(affected).toEqual(["external_attack_surface", "enumeration", "vuln_triage"]);
+    expect(readStagePlans("conv-1")?.stageOrder).toEqual([
+      "scoping",
+      "external_attack_surface",
+    ]);
+    expect(readStagePlans("conv-1")?.plansByStage.enumeration).toBeUndefined();
+    expect(readStagePlans("conv-1")?.plansByStage.vuln_triage).toBeUndefined();
+    expect(readStagePlans("conv-1")?.passedStages).toEqual(["scoping"]);
   });
 
   it("returns null when the stored payload is corrupt", () => {

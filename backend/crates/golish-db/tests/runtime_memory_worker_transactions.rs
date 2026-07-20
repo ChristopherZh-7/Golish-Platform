@@ -2,7 +2,7 @@ use golish_db::models::{AgentType, NewSession, ToolcallStatus};
 use golish_db::repo::{
     canonical_fact_refs, message_chains, operation_state, project_scopes, runtime_memory_rollout,
     runtime_memory_tx, sessions, stage_asset_waves, stage_deliverable_submissions, stage_handoffs,
-    stage_run_units, stage_teams, stage_worker_runs, tasks, tool_calls,
+    stage_run_units, stage_runs, stage_teams, stage_worker_runs, tasks, tool_calls,
 };
 use golish_db::{DbConfig, GolishDb};
 use serial_test::serial;
@@ -4413,55 +4413,22 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
         runtime_memory_rollout::RuntimeMemoryContract::V2Only,
     )
     .await;
-    let seeded = runtime_memory_tx::seed_stage_team_runtime(
+    let mut controller_seed = stage_team_controller_seed(&roots);
+    controller_seed.work_items[0].attempt_policy = serde_json::json!({"max_attempts": 1});
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &controller_seed)
+        .await
+        .expect("seed Company Controller recovery Team")
+        .remove(0);
+    let controller_claim = stage_team_claim_input(&roots, &seeded, "stable-aggregator");
+    let leader = runtime_memory_tx::claim_stage_team_leader(
         db.pool(),
-        &stage_team_lifecycle_seed(&roots, 2),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: controller_claim.clone(),
+        },
     )
     .await
-    .expect("seed aggregator recovery Team")
-    .remove(0);
-    for owner in ["aggregator-producer", "aggregator-helper"] {
-        let claimed = runtime_memory_tx::claim_stage_work_item(
-            db.pool(),
-            &stage_team_claim_input(&roots, &seeded, owner),
-        )
-        .await
-        .expect("claim producer before Aggregator")
-        .expect("producer WorkItem remains");
-        let evidence_id = sqlx::query_scalar::<_, i64>(
-            r#"INSERT INTO audit_log (
-                   action,category,details,project_path,source,audit_role,detail,run_id,created_at
-               ) VALUES (
-                   'aggregator recovery producer evidence','harness','fresh producer evidence',
-                   '/tmp/runtime-worker','harness','evidence',$1,$2,NOW()
-               ) RETURNING id"#,
-        )
-        .bind(serde_json::json!({"organization_id": roots.organization_id}))
-        .bind(roots.operation_id)
-        .fetch_one(db.pool())
-        .await
-        .expect("insert fresh Team producer evidence");
-        let mut completion = stage_teams::CompleteStageWorkerRow {
-            fence: stage_team_fence(&roots, &seeded, &claimed),
-            team_plan_id: seeded.plan.id,
-            work_item_id: claimed.work_item.id,
-            expected_work_item_row_version: claimed.work_item.row_version,
-            output_schema: claimed.work_item.output_schema.clone(),
-            business_disposition: "found".to_string(),
-            canonical_output: serde_json::json!({"summary": "producer complete"}),
-            canonical_fact_refs: serde_json::json!([]),
-            evidence_ids: vec![evidence_id],
-            checked_empty_cells: serde_json::json!([]),
-            blocker_codes: Vec::new(),
-            output_hash: String::new(),
-            terminal_checkpoint: serde_json::json!({"done": true}),
-            evidence_watermark: Some(evidence_id),
-        };
-        refresh_stage_worker_output_hash(&mut completion);
-        stage_teams::complete_stage_worker(db.pool(), completion)
-            .await
-            .expect("complete producer before Aggregator");
-    }
+    .expect("claim Company Controller leader")
+    .expect("Company Controller leader is runnable");
     let closed = runtime_memory_tx::close_stage_request_epoch(
         db.pool(),
         &runtime_memory_tx::CloseStageRequestEpochRow {
@@ -4470,20 +4437,110 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
             stage_run_unit_id: seeded.unit.id,
             stage_team_plan_id: seeded.plan.id,
             expected_dispatch_epoch: seeded.plan.dispatch_epoch,
-            expected_plan_row_version: seeded.plan.row_version,
+            expected_plan_row_version: leader.plan.row_version,
         },
     )
     .await
-    .expect("close producer epoch before Aggregator");
+    .expect("close Company Controller request epoch");
     assert!(closed.barrier.ready_to_finalize());
+    let bound = runtime_memory_tx::bind_stage_team_leader_final_submitter(
+        db.pool(),
+        &runtime_memory_tx::BindStageTeamLeaderFinalSubmitterRow {
+            fence: stage_team_fence(&roots, &seeded, &leader),
+            stage_team_plan_id: seeded.plan.id,
+            leader_work_item_id: leader.work_item.id,
+            expected_plan_row_version: closed.plan.row_version,
+            expected_dispatch_epoch: closed.barrier.dispatch_epoch,
+            expected_manifest_hash: closed.barrier.manifest_hash.clone(),
+        },
+    )
+    .await
+    .expect("bind Company Controller as exact final submitter");
     let aggregator_claim = runtime_memory_tx::ClaimStageAggregatorRow {
-        claim: stage_team_claim_input(&roots, &seeded, "stable-aggregator"),
+        claim: controller_claim,
         expected_dispatch_epoch: closed.barrier.dispatch_epoch,
         expected_manifest_hash: closed.barrier.manifest_hash.clone(),
     };
     let first = runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
         .await
         .expect("claim first Aggregator");
+    assert_eq!(
+        bound.plan.final_submitter_worker_run_id,
+        Some(first.worker.id)
+    );
+    let (first_submission, controller_after_submission) = persist_stage_team_submission(
+        &db,
+        &roots,
+        &seeded,
+        &first,
+        "aggregator-finalization-retry-submit-1",
+    )
+    .await;
+    let parked = runtime_memory_tx::park_stage_team_finalizer_after_failure(
+        db.pool(),
+        &runtime_memory_tx::ParkStageTeamFinalizerAfterFailureRow {
+            fence: runtime_memory_tx::RuntimeMemoryTxFence {
+                operation_id: roots.operation_id,
+                stage_execution_id: roots.stage_execution_id,
+                stage_run_unit_id: seeded.unit.id,
+                worker_run_id: first.worker.id,
+                lease_token: controller_after_submission
+                    .lease_token
+                    .expect("finalizer lease remains after submission"),
+                attempt_epoch: controller_after_submission.attempt_epoch,
+                expected_checkpoint_version: controller_after_submission.checkpoint_version,
+            },
+            stage_team_plan_id: seeded.plan.id,
+            leader_work_item_id: first.work_item.id,
+            deliverable_submission_id: first_submission.id,
+            expected_work_item_row_version: first.work_item.row_version,
+            expected_dispatch_epoch: closed.barrier.dispatch_epoch,
+            expected_manifest_hash: closed.barrier.manifest_hash.clone(),
+            checkpoint: serde_json::json!([
+                {"role": "system", "content": "controller"},
+                {"role": "assistant", "content": "final"}
+            ]),
+            failure_detail: "injected deterministic final seal failure".to_string(),
+        },
+    )
+    .await
+    .expect("park exact finalizer after deterministic closeout failure");
+    assert_eq!(parked.work_item.status, "queued");
+    assert_eq!(parked.worker.status, "queued");
+    assert_eq!(parked.worker.lease_token, None);
+    assert_eq!(parked.worker.message_chain_id, Some(first.message_chain_id));
+    assert_eq!(
+        parked.worker.checkpoint["_runtime_stage_team_finalization_retry"]
+            ["deliverable_submission_id"],
+        serde_json::json!(first_submission.id)
+    );
+    assert_eq!(
+        parked.worker.checkpoint["chain"],
+        serde_json::json!([
+            {"role": "system", "content": "controller"},
+            {"role": "assistant", "content": "final"}
+        ])
+    );
+    let resumed_after_finalization_failure =
+        runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
+            .await
+            .expect("resume parked finalizer on exact chain");
+    assert_eq!(
+        resumed_after_finalization_failure.worker.id,
+        first.worker.id
+    );
+    assert_eq!(
+        resumed_after_finalization_failure.message_chain_id,
+        first.message_chain_id
+    );
+    let (_second_submission, controller_after_second_submission) = persist_stage_team_submission(
+        &db,
+        &roots,
+        &seeded,
+        &resumed_after_finalization_failure,
+        "aggregator-finalization-retry-submit-2",
+    )
+    .await;
     sqlx::query(
         r#"UPDATE stage_worker_runs
               SET lease_acquired_at=NOW()-INTERVAL '2 hours',
@@ -4491,7 +4548,7 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
                   heartbeat_at=NOW()-INTERVAL '1 hour'
             WHERE id=$1"#,
     )
-    .bind(first.worker.id)
+    .bind(controller_after_second_submission.id)
     .execute(db.pool())
     .await
     .expect("expire first Aggregator");
@@ -4532,16 +4589,286 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
             .status,
         "queued"
     );
+    assert!(
+        stage_teams::list_outputs_with_executor(db.pool(), seeded.plan.id)
+            .await
+            .expect("load finalizer outputs after startup retry")
+            .is_empty(),
+        "deterministic closeout retry must not forge a producer exhaustion output"
+    );
     let resumed = runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
         .await
         .expect("resume startup-reaped Aggregator");
     assert_eq!(resumed.worker.id, first.worker.id);
     assert_eq!(resumed.message_chain_id, first.message_chain_id);
-    assert_eq!(resumed.worker.attempt_epoch, first.worker.attempt_epoch + 1);
+    assert_eq!(
+        resumed.worker.attempt_epoch,
+        resumed_after_finalization_failure.worker.attempt_epoch + 1
+    );
     assert_eq!(
         resumed.plan.final_submitter_worker_run_id,
         Some(resumed.worker.id)
     );
+
+    // Model the already-shipped bug: an older binary let startup consume the
+    // exact finalizer's producer fuel and wrote an immutable exhausted output.
+    // Recovery must preserve that history and replace only the runtime shell.
+    let (_third_submission, controller_after_third_submission) = persist_stage_team_submission(
+        &db,
+        &roots,
+        &seeded,
+        &resumed,
+        "aggregator-legacy-terminalized-submit",
+    )
+    .await;
+    let attempts_used = controller_after_third_submission.attempt_epoch;
+    let canonical_output = serde_json::json!({
+        "attempts_used": attempts_used,
+        "failure_code": "stage_team_worker_lease_expired",
+        "kind": "stage_team_attempts_exhausted",
+        "max_attempts": 1,
+        "schema_version": 1,
+        "stable_work_key": resumed.work_item.stable_key,
+    });
+    let mut terminal_output = stage_teams::CompleteStageWorkerRow {
+        fence: runtime_memory_tx::RuntimeMemoryTxFence {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            worker_run_id: resumed.worker.id,
+            lease_token: controller_after_third_submission
+                .lease_token
+                .expect("legacy finalizer lease"),
+            attempt_epoch: controller_after_third_submission.attempt_epoch,
+            expected_checkpoint_version: controller_after_third_submission.checkpoint_version,
+        },
+        team_plan_id: seeded.plan.id,
+        work_item_id: resumed.work_item.id,
+        expected_work_item_row_version: resumed.work_item.row_version,
+        output_schema: resumed.work_item.output_schema.clone(),
+        business_disposition: "blocked".to_string(),
+        canonical_output: canonical_output.clone(),
+        canonical_fact_refs: serde_json::json!([]),
+        evidence_ids: Vec::new(),
+        checked_empty_cells: serde_json::json!([]),
+        blocker_codes: vec!["STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED".to_string()],
+        output_hash: String::new(),
+        terminal_checkpoint: serde_json::json!({}),
+        evidence_watermark: None,
+    };
+    refresh_stage_worker_output_hash(&mut terminal_output);
+    let immutable_output_id = Uuid::new_v4();
+    let mut historical_tx = db.pool().begin().await.expect("begin historical fixture");
+    sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET status='failed',checkpoint=$2,checkpoint_version=checkpoint_version+1,
+                  lease_token=NULL,lease_owner=NULL,lease_acquired_at=NULL,
+                  lease_expires_at=NULL,heartbeat_at=NULL,terminal_at=NOW(),updated_at=NOW()
+            WHERE id=$1 AND status='running'"#,
+    )
+    .bind(resumed.worker.id)
+    .bind(serde_json::json!({
+        "stage_team_execution_failure": {
+            "attempts_used": attempts_used,
+            "code": "stage_team_worker_lease_expired",
+            "max_attempts": 1,
+            "schema_version": 1,
+        }
+    }))
+    .execute(&mut *historical_tx)
+    .await
+    .expect("model legacy failed finalizer");
+    sqlx::query(
+        r#"UPDATE stage_work_items
+              SET status='exhausted',row_version=row_version+1,terminal_at=NOW(),updated_at=NOW()
+            WHERE id=$1 AND status='running'"#,
+    )
+    .bind(resumed.work_item.id)
+    .execute(&mut *historical_tx)
+    .await
+    .expect("model legacy exhausted finalizer item");
+    sqlx::query(
+        r#"INSERT INTO stage_worker_outputs(
+               id,team_plan_id,work_item_id,worker_run_id,operation_id,
+               stage_execution_id,stage_run_unit_id,scope_snapshot_id,organization_id,
+               output_schema,output_version,business_disposition,canonical_output,
+               canonical_fact_refs,evidence_ids,checked_empty_cells,blocker_codes,output_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,'blocked',$11,'[]',
+                    ARRAY[]::BIGINT[],'[]',$12,$13)"#,
+    )
+    .bind(immutable_output_id)
+    .bind(seeded.plan.id)
+    .bind(resumed.work_item.id)
+    .bind(resumed.worker.id)
+    .bind(roots.operation_id)
+    .bind(roots.stage_execution_id)
+    .bind(seeded.unit.id)
+    .bind(roots.snapshot_id)
+    .bind(roots.organization_id)
+    .bind(&resumed.work_item.output_schema)
+    .bind(&canonical_output)
+    .bind(vec!["STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED".to_string()])
+    .bind(&terminal_output.output_hash)
+    .execute(&mut *historical_tx)
+    .await
+    .expect("persist immutable legacy exhaustion output");
+    historical_tx
+        .commit()
+        .await
+        .expect("commit historical finalizer fixture");
+    let stage_started_before_rollover = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+        "SELECT stage_started_at FROM operation_state WHERE operation_id=$1",
+    )
+    .bind(roots.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load source stage freshness epoch");
+
+    let rollover = runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
+        .await
+        .expect_err("historical terminal finalizer must replace its runtime before retry");
+    assert!(matches!(
+        rollover,
+        runtime_memory_tx::RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_final_submitter_runtime_replaced"
+        }
+    ));
+    let active = stage_runs::list_active_for_operation_with_executor(db.pool(), roots.operation_id)
+        .await
+        .expect("load replacement active execution");
+    assert_eq!(active.len(), 1);
+    assert_ne!(active[0].id, roots.stage_execution_id);
+    assert_eq!(active[0].stage_kind, seeded.unit.stage_kind);
+    let (recovered_stage_started_at, recovered_state_blob) =
+        sqlx::query_as::<_, (chrono::DateTime<chrono::Utc>, serde_json::Value)>(
+            "SELECT stage_started_at,state_blob FROM operation_state WHERE operation_id=$1",
+        )
+        .bind(roots.operation_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("load operation after no-purge finalizer rollover");
+    assert_eq!(
+        recovered_stage_started_at, stage_started_before_rollover,
+        "append-only finalizer recovery must preserve the producer freshness epoch"
+    );
+    assert_eq!(
+        recovered_state_blob["company_finalizer_no_purge_recovery"]["freshness_epoch_preserved"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        stage_worker_runs::get(db.pool(), resumed.worker.id)
+            .await
+            .expect("load historical finalizer after rollover")
+            .expect("historical finalizer remains")
+            .status,
+        "superseded"
+    );
+    assert_eq!(
+        stage_teams::list_outputs_with_executor(db.pool(), seeded.plan.id)
+            .await
+            .expect("load immutable output after rollover")[0]
+            .id,
+        immutable_output_id
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn terminalized_final_submitter_without_durable_submission_fails_closed() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let mut controller_seed = stage_team_controller_seed(&roots);
+    controller_seed.work_items[0].attempt_policy = serde_json::json!({"max_attempts": 1});
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &controller_seed)
+        .await
+        .expect("seed no-submission Controller")
+        .remove(0);
+    let claim = stage_team_claim_input(&roots, &seeded, "no-submission-finalizer");
+    let leader = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: claim.clone(),
+        },
+    )
+    .await
+    .expect("claim no-submission Controller")
+    .expect("Controller is runnable");
+    let closed = runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+            expected_plan_row_version: leader.plan.row_version,
+        },
+    )
+    .await
+    .expect("close no-submission Controller plan");
+    runtime_memory_tx::bind_stage_team_leader_final_submitter(
+        db.pool(),
+        &runtime_memory_tx::BindStageTeamLeaderFinalSubmitterRow {
+            fence: stage_team_fence(&roots, &seeded, &leader),
+            stage_team_plan_id: seeded.plan.id,
+            leader_work_item_id: leader.work_item.id,
+            expected_plan_row_version: closed.plan.row_version,
+            expected_dispatch_epoch: closed.barrier.dispatch_epoch,
+            expected_manifest_hash: closed.barrier.manifest_hash.clone(),
+        },
+    )
+    .await
+    .expect("bind no-submission finalizer");
+    sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET lease_acquired_at=NOW()-INTERVAL '2 hours',
+                  lease_expires_at=NOW()-INTERVAL '1 hour',
+                  heartbeat_at=NOW()-INTERVAL '1 hour'
+            WHERE id=$1"#,
+    )
+    .bind(leader.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("expire no-submission finalizer");
+    sqlx::query(
+        "UPDATE tasks SET status='running',updated_at=NOW()-INTERVAL '7 hours' WHERE id=$1",
+    )
+    .bind(roots.operation_id)
+    .execute(db.pool())
+    .await
+    .expect("age no-submission task");
+    let reaped = tasks::startup_reap_abandoned(db.pool(), chrono::Duration::zero())
+        .await
+        .expect("terminalize no-submission finalizer");
+    assert_eq!(reaped.workers_requeued, 0);
+
+    let error = runtime_memory_tx::claim_stage_aggregator(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageAggregatorRow {
+            claim,
+            expected_dispatch_epoch: closed.barrier.dispatch_epoch,
+            expected_manifest_hash: closed.barrier.manifest_hash,
+        },
+    )
+    .await
+    .expect_err("missing durable submission must not authorize runtime replacement");
+    assert!(matches!(
+        error,
+        runtime_memory_tx::RuntimeMemoryStoreError::Conflict {
+            code: "stage_team_final_submitter_not_replaceable"
+        }
+    ));
+    let active = stage_runs::list_active_for_operation_with_executor(db.pool(), roots.operation_id)
+        .await
+        .expect("load unchanged active execution");
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].id, roots.stage_execution_id);
 
     db.stop().await;
 }
@@ -6101,6 +6428,7 @@ async fn v2_only_developer_reset_ignores_caller_legacy_checkpoint_namespaces() {
         db.pool(),
         &runtime_memory_tx::SupersedeStageCheckpointRow {
             operation_id: runtime.roots.operation_id,
+            expected_active_stage_execution_id: None,
             expected_current_stage: "target_intel".to_string(),
             selected_stage: "target_intel".to_string(),
             affected_stage_kinds: vec!["target_intel".to_string()],
@@ -6120,6 +6448,8 @@ async fn v2_only_developer_reset_ignores_caller_legacy_checkpoint_namespaces() {
             }),
             replacement_specialist: Some("target_intel".to_string()),
             replacement_stage_execution_id: Some(replacement_stage_execution_id),
+            fact_purge: None,
+            finalizer_recovery_witness: None,
         },
     )
     .await
@@ -6164,7 +6494,7 @@ async fn v2_only_developer_reset_ignores_caller_legacy_checkpoint_namespaces() {
 
 #[tokio::test]
 #[serial]
-async fn v2_only_company_stage_reset_is_plan_first_and_closes_active_tool() {
+async fn v2_only_company_stage_reset_rejects_active_tool_until_exact_finish() {
     let (mut db, _data_dir) = fixture().await;
     let runtime = create_claimed_compound_runtime_with_contract(
         &db,
@@ -6195,17 +6525,120 @@ async fn v2_only_company_stage_reset_is_plan_first_and_closes_active_tool() {
         .await
         .expect("bind reset fixture tool");
 
+    let active_tool_lease = runtime.worker.lease_token.expect("claimed tool lease");
+    let mismatched_worker_lease = Uuid::new_v4();
+    sqlx::query("UPDATE stage_worker_runs SET lease_token=$2 WHERE id=$1")
+        .bind(runtime.worker_id)
+        .bind(mismatched_worker_lease)
+        .execute(db.pool())
+        .await
+        .expect("inject worker/tool lease mismatch");
+    let mismatch = runtime_memory_tx::supersede_stage_checkpoint(
+        db.pool(),
+        &runtime_memory_tx::SupersedeStageCheckpointRow {
+            operation_id: runtime.roots.operation_id,
+            expected_active_stage_execution_id: None,
+            expected_current_stage: "target_intel".to_string(),
+            selected_stage: "vuln_triage".to_string(),
+            affected_stage_kinds: vec!["target_intel".to_string(), "vuln_triage".to_string()],
+            next_state_blob: serde_json::json!({}),
+            replacement_specialist: Some("vuln_scanner".to_string()),
+            replacement_stage_execution_id: Some(Uuid::new_v4()),
+            fact_purge: None,
+            finalizer_recovery_witness: None,
+        },
+    )
+    .await
+    .expect_err("stale tool lease must abort the whole reset transaction");
+    assert!(matches!(
+        mismatch,
+        runtime_memory_tx::RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_checkpoint_reset_active_tool_identity_mismatch"
+        }
+    ));
+    let unchanged_worker = stage_worker_runs::get(db.pool(), runtime.worker_id)
+        .await
+        .expect("load worker after rejected reset")
+        .expect("worker remains");
+    assert_eq!(unchanged_worker.status, "running");
+    assert_eq!(unchanged_worker.active_tool_call_id, Some(tool_call_id));
+    assert_eq!(unchanged_worker.lease_token, Some(mismatched_worker_lease));
+    assert_eq!(
+        stage_runs::list_active_for_operation_with_executor(db.pool(), runtime.roots.operation_id,)
+            .await
+            .expect("load execution after rejected reset")
+            .iter()
+            .map(|run| run.id)
+            .collect::<Vec<_>>(),
+        vec![runtime.roots.stage_execution_id]
+    );
+    sqlx::query("UPDATE stage_worker_runs SET lease_token=$2 WHERE id=$1")
+        .bind(runtime.worker_id)
+        .bind(active_tool_lease)
+        .execute(db.pool())
+        .await
+        .expect("restore exact worker/tool lease identity");
+
+    let active_tool_reset = runtime_memory_tx::supersede_stage_checkpoint(
+        db.pool(),
+        &runtime_memory_tx::SupersedeStageCheckpointRow {
+            operation_id: runtime.roots.operation_id,
+            expected_active_stage_execution_id: None,
+            expected_current_stage: "target_intel".to_string(),
+            selected_stage: "vuln_triage".to_string(),
+            affected_stage_kinds: vec!["target_intel".to_string(), "vuln_triage".to_string()],
+            next_state_blob: serde_json::json!({}),
+            replacement_specialist: Some("vuln_scanner".to_string()),
+            replacement_stage_execution_id: Some(Uuid::new_v4()),
+            fact_purge: None,
+            finalizer_recovery_witness: None,
+        },
+    )
+    .await
+    .expect_err("an external tool may still land facts after reset commit");
+    assert!(matches!(
+        active_tool_reset,
+        runtime_memory_tx::RuntimeMemoryStoreError::Conflict {
+            code: "stage_checkpoint_reset_active_tool_in_flight"
+        }
+    ));
+    assert_eq!(
+        stage_runs::list_active_for_operation_with_executor(db.pool(), runtime.roots.operation_id,)
+            .await
+            .expect("load execution after active-tool rejection")
+            .iter()
+            .map(|run| run.id)
+            .collect::<Vec<_>>(),
+        vec![runtime.roots.stage_execution_id]
+    );
+    runtime_memory_tx::finish_worker_tool(db.pool(), &fence_for_claimed(&runtime), tool_call_id)
+        .await
+        .expect("clear exact completed tool fence before reset");
+    tool_calls::record_tracked_finish(
+        db.pool(),
+        tool_call_id,
+        runtime.roots.session_id,
+        "finished",
+        "{}",
+        1,
+    )
+    .await
+    .expect("record exact completed tool before reset");
+
     let replacement_stage_execution_id = Uuid::new_v4();
     runtime_memory_tx::supersede_stage_checkpoint(
         db.pool(),
         &runtime_memory_tx::SupersedeStageCheckpointRow {
             operation_id: runtime.roots.operation_id,
+            expected_active_stage_execution_id: None,
             expected_current_stage: "target_intel".to_string(),
             selected_stage: "vuln_triage".to_string(),
             affected_stage_kinds: vec!["target_intel".to_string(), "vuln_triage".to_string()],
             next_state_blob: serde_json::json!({}),
             replacement_specialist: Some("vuln_scanner".to_string()),
             replacement_stage_execution_id: Some(replacement_stage_execution_id),
+            fact_purge: None,
+            finalizer_recovery_witness: None,
         },
     )
     .await
@@ -6253,27 +6686,11 @@ async fn v2_only_company_stage_reset_is_plan_first_and_closes_active_tool() {
     assert_eq!(superseded_worker.status, "superseded");
     assert_eq!(superseded_worker.active_tool_call_id, None);
     assert_eq!(superseded_worker.active_tool_started_at, None);
-    let failed_tool = tool_calls::get(db.pool(), tool_call_id)
+    let completed_tool = tool_calls::get(db.pool(), tool_call_id)
         .await
-        .expect("load reset-terminalized tool")
+        .expect("load completed tool after reset")
         .expect("tool history remains");
-    assert_eq!(failed_tool.status, ToolcallStatus::Failed);
-    let failed_result: serde_json::Value = serde_json::from_str(
-        failed_tool
-            .result
-            .as_deref()
-            .expect("reset terminalizes the tool with a structured result"),
-    )
-    .expect("reset tool result is valid JSON");
-    assert_eq!(
-        failed_result,
-        serde_json::json!({
-            "kind": "runtime_stage_checkpoint_superseded",
-            "outcome": "unknown_not_replayed",
-            "reason": "developer_reset",
-            "schema_version": 1,
-        })
-    );
+    assert_eq!(completed_tool.status, ToolcallStatus::Finished);
 
     let controller = runtime_memory_tx::claim_stage_team_leader(
         db.pool(),
@@ -7771,5 +8188,93 @@ async fn final_seal_unit_worker_handoff_completion_and_legacy_mirror_are_atomic(
             [fixture.runtime.roots.organization_id.to_string()]["handoff_id"],
         sealed.handoff.id.to_string()
     );
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_empty_final_seal_emits_replayable_memory_attestation() {
+    let (mut db, _data_dir) = fixture().await;
+    let fixture = create_final_seal_fixture(&db).await;
+    let mut input = final_seal_input(&fixture, Vec::new());
+    input.evidence_ids.clear();
+    refresh_final_seal_material_hash(&mut input);
+
+    let sealed = runtime_memory_tx::finalize_unit_pass(db.pool(), &input)
+        .await
+        .expect("empty Target Intel truth still publishes an evidence-backed episode");
+    assert!(sealed.canonical_fact_refs.is_empty());
+    assert_eq!(sealed.handoff.evidence_ids.len(), 1);
+    let attestation_id = sealed.handoff.evidence_ids[0];
+    assert_ne!(attestation_id, fixture.evidence_id);
+
+    let attestation = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            Option<Uuid>,
+            Option<Uuid>,
+            serde_json::Value,
+        ),
+    >(
+        r#"SELECT action,tool_name,run_id,target_id,detail
+             FROM audit_log
+            WHERE id=$1 AND audit_role='evidence'"#,
+    )
+    .bind(attestation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load exact server final-seal attestation");
+    assert_eq!(attestation.0, "stage_final_seal_attested");
+    assert_eq!(attestation.1, "runtime_memory_final_seal_attestation");
+    assert_eq!(attestation.2, Some(fixture.runtime.roots.operation_id));
+    assert_eq!(attestation.3, None);
+    assert_eq!(
+        attestation.4["organization_id"],
+        fixture.runtime.roots.organization_id.to_string()
+    );
+    assert_eq!(
+        attestation.4["deliverable_submission_id"],
+        fixture.submission_id.to_string()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Vec<i64>>(
+            "SELECT evidence_refs FROM stage_episodes WHERE source_operation_id=$1"
+        )
+        .bind(fixture.runtime.roots.operation_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("load evidence-backed StageEpisode"),
+        vec![attestation_id]
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM knowledge_outbox_events WHERE source_operation_id=$1 AND event_name='StageEpisodeClosed.v1'"
+        )
+        .bind(fixture.runtime.roots.operation_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("count StageEpisode event"),
+        1
+    );
+
+    let replayed = runtime_memory_tx::finalize_unit_pass(db.pool(), &input)
+        .await
+        .expect("response-loss replay resolves the same server attestation");
+    assert!(replayed.replayed);
+    assert_eq!(replayed.handoff.id, sealed.handoff.id);
+    assert_eq!(replayed.handoff.evidence_ids, vec![attestation_id]);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM audit_log WHERE run_id=$1 AND tool_name='runtime_memory_final_seal_attestation'"
+        )
+        .bind(fixture.runtime.roots.operation_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("count idempotent server attestations"),
+        1
+    );
+
     db.stop().await;
 }

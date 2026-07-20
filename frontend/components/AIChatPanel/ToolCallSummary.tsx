@@ -153,6 +153,15 @@ export function stageRunResultPassed(result?: string): boolean {
   }
 }
 
+export function stageRunBlockedCopy(blocked: number): {
+  detailLabel: string;
+  summaryLabel: string | null;
+} {
+  return blocked > 0
+    ? { detailLabel: "处理阻塞 →", summaryLabel: `${blocked} 阻塞 · 点此卡处理` }
+    : { detailLabel: "Details →", summaryLabel: null };
+}
+
 function ToolCallCard({
   tc,
   onClick,
@@ -230,6 +239,7 @@ function ToolCallCard({
     : 0;
   const displayActiveWorkers = isExpired ? 0 : (displayStageRunSummary?.active ?? 0);
   const displayQueuedWorkers = isExpired ? 0 : (displayStageRunSummary?.queued ?? 0);
+  const blockedCopy = stageRunBlockedCopy(displayStageRunSummary?.blocked ?? 0);
 
   return (
     <div
@@ -286,7 +296,7 @@ function ToolCallCard({
             <span className="text-[10px] text-[var(--ansi-yellow)]/80">Background →</span>
           ) : (
             <span className="text-[10px] text-muted-foreground/60 group-hover:text-accent/60 transition-colors">
-              Details →
+              {blockedCopy.detailLabel}
             </span>
           )}
         </div>
@@ -311,7 +321,7 @@ function ToolCallCard({
               <span className="text-yellow-400">{stoppedWorkerCount} stopped</span>
             )}
             {displayStageRunSummary.blocked > 0 && (
-              <span className="text-amber-400">{displayStageRunSummary.blocked} 阻塞</span>
+              <span className="text-amber-400">{blockedCopy.summaryLabel}</span>
             )}
           </div>
           <div className="h-1 w-full overflow-hidden rounded-full bg-muted/40">

@@ -2659,8 +2659,9 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AgentState) {
     let db_repo: std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider> = repo_provider;
     let knowledge_context: std::sync::Arc<dyn golish_memory_app::ContextPackProvider> =
         std::sync::Arc::new(
-            crate::ai::db_bridge::knowledge_context::PgKnowledgeContextAdapter::new(
+            crate::ai::db_bridge::knowledge_context::PgKnowledgeContextAdapter::with_query_embedding(
                 state.db_pool.clone(),
+                state.knowledge_query_embedding.clone(),
             )
             .expect("fixed local-only ContextPack adapter configuration is valid"),
         );

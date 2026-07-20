@@ -39,6 +39,17 @@ const ANONYMOUS_ACCESS_TECHNIQUE: &str = "WSTG-ATHN-04";
 const ANONYMOUS_ACCESS_KIND: &str = "vuln.anonymous_access_observation";
 const ANONYMOUS_ACCESS_BATCH_SCHEMA: &str = "anonymous_access_batch_v1";
 const ANONYMOUS_ACCESS_OBSERVATION_SCHEMA: &str = "anonymous_access_v1";
+const SURFACE_APPLICABILITY_SOURCE: &str = "enumeration_surface_manifest";
+const SURFACE_APPLICABILITY_EVIDENCE_TOOL: &str = "vuln_surface_applicability_attestation";
+const SURFACE_APPLICABILITY_EVIDENCE_KIND: &str = "vuln_surface_applicability";
+const SURFACE_APPLICABILITY_EVIDENCE_SUBJECT: &str = "vuln_triage:enumeration_surface_manifest";
+const SURFACE_APPLICABILITY_SCHEMA: &str = "vuln_surface_applicability_attestation_v1";
+const SURFACE_NOT_APPLICABLE_TECHNIQUES: &[&str] = &[
+    "WSTG-INPV-05",
+    "WSTG-INPV-01",
+    "WSTG-INPV-12",
+    "WSTG-ATHN-04",
+];
 const DIRECTORY_ENTRY_SET_OBSERVATION_SCHEMA: &str = "directory_entry_set_v1";
 const MAX_DIRECTORY_ENTRY_SET_PREVIEW: usize = 32;
 type CandidateSeedProjection = (
@@ -919,6 +930,7 @@ fn validate_and_read_anonymous_access_observations(
 
 fn validate_and_read_positive_observations(
     organization_id: Uuid,
+    authority: &FormulaicHandoffAuthority,
     outcome: &FormulaicOutcomeRow,
     evidence: &FormulaicEvidenceRow,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
@@ -929,8 +941,190 @@ fn validate_and_read_positive_observations(
         Some(ANONYMOUS_ACCESS_SOURCE) => {
             validate_and_read_anonymous_access_observations(organization_id, outcome, evidence)
         }
-        _ => anyhow::bail!("formulaic outcome source has no typed Candidate adapter"),
+        Some(SURFACE_APPLICABILITY_SOURCE) => {
+            validate_surface_applicability_context(organization_id, authority, outcome, evidence)?;
+            Ok(Vec::new())
+        }
+        source => anyhow::bail!(
+            "formulaic outcome source has no typed Candidate adapter: source={source:?}, technique={}, outcome={}",
+            outcome.technique,
+            outcome.outcome
+        ),
     }
+}
+
+fn validate_surface_applicability_context(
+    organization_id: Uuid,
+    authority: &FormulaicHandoffAuthority,
+    outcome: &FormulaicOutcomeRow,
+    evidence: &FormulaicEvidenceRow,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        outcome.source.as_deref() == Some(SURFACE_APPLICABILITY_SOURCE)
+            && outcome.outcome == "not_applicable"
+            && SURFACE_NOT_APPLICABLE_TECHNIQUES.contains(&outcome.technique.as_str())
+            && outcome.result_count.is_none()
+            && outcome.confidence.is_none(),
+        "surface applicability outcome is not a trusted backend N/A cell"
+    );
+    let note = outcome
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|note| !note.is_empty() && note.len() <= 512)
+        .ok_or_else(|| anyhow::anyhow!("surface applicability outcome has no bounded note"))?;
+    let canonical_asset = golish_pentest_domain::canonical_web_origin(&outcome.asset)
+        .ok_or_else(|| anyhow::anyhow!("surface applicability asset is not an exact Web Origin"))?;
+    anyhow::ensure!(
+        canonical_asset.key == outcome.asset,
+        "surface applicability asset is not canonical"
+    );
+    anyhow::ensure!(
+        evidence.tool_name == SURFACE_APPLICABILITY_EVIDENCE_TOOL
+            && evidence.evidence_target_id.is_none()
+            && evidence.target_live_id.is_none()
+            && evidence.evidence_technique.is_none()
+            && evidence.evidence_asset.is_none()
+            && evidence.evidence_outcome.is_none()
+            && evidence.created_at <= outcome.collected_at
+            && evidence
+                .detail
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                == Some(SURFACE_APPLICABILITY_EVIDENCE_KIND)
+            && evidence
+                .detail
+                .get("subject")
+                .and_then(serde_json::Value::as_str)
+                == Some(SURFACE_APPLICABILITY_EVIDENCE_SUBJECT)
+            && evidence
+                .detail
+                .get("organization_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value == organization_id.to_string()),
+        "surface applicability evidence is not the server-owned aggregate attestation"
+    );
+    let raw_output = evidence
+        .detail
+        .get("raw_output")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("surface applicability attestation has no raw payload"))?;
+    anyhow::ensure!(
+        raw_output.len() <= MAX_TYPED_EVIDENCE_BATCH_BYTES,
+        "surface applicability attestation exceeds the Candidate entry bound"
+    );
+    let attestation: serde_json::Value = serde_json::from_str(raw_output).map_err(|error| {
+        anyhow::anyhow!("surface applicability attestation is malformed: {error}")
+    })?;
+    let operation_id = Uuid::parse_str(&outcome.run_id)
+        .map_err(|_| anyhow::anyhow!("surface applicability outcome has no operation identity"))?;
+    anyhow::ensure!(
+        attestation
+            .get("schema")
+            .and_then(serde_json::Value::as_str)
+            == Some(SURFACE_APPLICABILITY_SCHEMA)
+            && json_uuid(attestation.get("operation_id")) == Some(operation_id)
+            && json_uuid(attestation.get("organization_id")) == Some(organization_id)
+            && attestation
+                .get("coverage_session_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty() && value.len() <= 256),
+        "surface applicability attestation identity is invalid"
+    );
+    let source_handoff = attestation
+        .get("source_handoff")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            anyhow::anyhow!("surface applicability attestation has no source handoff")
+        })?;
+    let gate_passed_at = source_handoff
+        .get("gate_passed_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| value.parse::<DateTime<Utc>>().ok());
+    let authority_kind = source_handoff
+        .get("authority_kind")
+        .and_then(serde_json::Value::as_str);
+    let mut source_evidence_ids = source_handoff
+        .get("source_evidence_ids")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("surface applicability source handoff has no evidence"))
+        .and_then(|value| serde_json::from_value::<Vec<i64>>(value).map_err(Into::into))?;
+    let source_evidence_count = source_evidence_ids.len();
+    source_evidence_ids.sort_unstable();
+    source_evidence_ids.dedup();
+    let mut expected_source_evidence_ids = authority.enumeration_evidence_ids.clone();
+    expected_source_evidence_ids.sort_unstable();
+    expected_source_evidence_ids.dedup();
+    anyhow::ensure!(
+        json_uuid(source_handoff.get("handoff_id")) == Some(authority.enumeration_handoff_id)
+            && json_uuid(source_handoff.get("scope_snapshot_id"))
+                == Some(authority.scope_snapshot_id)
+            && gate_passed_at == Some(authority.enumeration_gate_passed_at)
+            && matches!(
+                authority_kind,
+                Some("deliverable_final_seal" | "stage_fork_final_seal")
+            )
+            && source_handoff
+                .get("schema_version")
+                .and_then(serde_json::Value::as_u64)
+                == Some(1)
+            && ["scope_hash", "payload_sha256", "unit_gate_decision_hash"]
+                .iter()
+                .all(|key| bounded_sha256(source_handoff.get(*key)))
+            && source_evidence_count == source_evidence_ids.len()
+            && !source_evidence_ids.is_empty()
+            && source_evidence_ids == expected_source_evidence_ids,
+        "surface applicability attestation escaped its exact Enumeration handoff"
+    );
+    let cells = attestation
+        .get("not_applicable_cells")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("surface applicability attestation has no N/A cells"))?;
+    anyhow::ensure!(
+        !cells.is_empty() && cells.len() <= MAX_ATTACK_MANIFEST_ITEMS,
+        "surface applicability attestation cell set is unbounded"
+    );
+    let mut previous_key: Option<(String, String)> = None;
+    let mut exact_matches = 0usize;
+    for cell in cells {
+        let asset = cell
+            .get("asset")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("surface applicability cell has no asset"))?;
+        let technique = cell
+            .get("technique")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("surface applicability cell has no technique"))?;
+        let cell_note = cell
+            .get("note")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.len() <= 512)
+            .ok_or_else(|| anyhow::anyhow!("surface applicability cell has no bounded note"))?;
+        let canonical = golish_pentest_domain::canonical_web_origin(asset)
+            .ok_or_else(|| anyhow::anyhow!("surface applicability cell is not a Web Origin"))?;
+        let key = (asset.to_string(), technique.to_string());
+        anyhow::ensure!(
+            canonical.key == asset
+                && SURFACE_NOT_APPLICABLE_TECHNIQUES.contains(&technique)
+                && cell.get("state").and_then(serde_json::Value::as_str) == Some("not_applicable")
+                && previous_key.as_ref().is_none_or(|previous| previous < &key),
+            "surface applicability attestation contains an invalid or duplicate cell"
+        );
+        if asset == outcome.asset && technique == outcome.technique {
+            anyhow::ensure!(
+                cell_note == note,
+                "surface applicability outcome note drifted from its attestation"
+            );
+            exact_matches += 1;
+        }
+        previous_key = Some(key);
+    }
+    anyhow::ensure!(
+        exact_matches == 1,
+        "surface applicability outcome is absent from its aggregate attestation"
+    );
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -945,6 +1139,7 @@ struct SurfaceObservationAccumulator {
 
 fn materialize_initial_candidate_observations(
     organization_id: Uuid,
+    authority: &FormulaicHandoffAuthority,
     outcomes: &[FormulaicOutcomeRow],
     evidence_rows: &[FormulaicEvidenceRow],
 ) -> anyhow::Result<Vec<SeedAttackObservation>> {
@@ -997,9 +1192,12 @@ fn materialize_initial_candidate_observations(
                 surface.live_target_ids.insert(target_live_id);
             }
             surface.evidence_ids.insert(*evidence_id);
-            for observation in
-                validate_and_read_positive_observations(organization_id, outcome, evidence)?
-            {
+            for observation in validate_and_read_positive_observations(
+                organization_id,
+                authority,
+                outcome,
+                evidence,
+            )? {
                 let observation_hash =
                     sha256_prefixed(serde_json::to_vec(&observation)?.as_slice());
                 let work_item_key = format!(
@@ -1929,6 +2127,16 @@ pub async fn seed_from_final_vuln_triage_handoff(
               AND vuln_run.operation_id=vuln_input.source_operation_id
               AND vuln_run.stage_kind='vuln_triage'
               AND vuln_run.status='completed' AND vuln_run.completed_at IS NOT NULL
+             JOIN operation_state AS source_operation
+               ON source_operation.operation_id=vuln_input.source_operation_id
+              AND source_operation.superseded_by IS NULL
+             LEFT JOIN stage_runs AS adopted_vuln_run
+               ON adopted_vuln_run.operation_id=vuln_input.source_operation_id
+              AND adopted_vuln_run.id::text=
+                    source_operation.state_blob #>>
+                    '{legacy_vuln_terminal_adoption,source_stage_execution_id}'
+              AND adopted_vuln_run.stage_kind='vuln_triage'
+              AND adopted_vuln_run.status='failed'
              JOIN stage_runs AS candidate_run
                ON candidate_run.id=$4
               AND candidate_run.operation_id=$1
@@ -1944,7 +2152,19 @@ pub async fn seed_from_final_vuln_triage_handoff(
               AND enumeration_run.operation_id=enumeration_input.source_operation_id
               AND enumeration_run.stage_kind='enumeration'
               AND enumeration_run.status='completed'
-              AND enumeration_run.completed_at=vuln_run.started_at
+              AND (
+                    enumeration_run.completed_at=vuln_run.started_at
+                    OR (
+                        source_operation.state_blob #>>
+                            '{legacy_vuln_terminal_adoption,schema_version}'='1'
+                        AND source_operation.state_blob #>>
+                            '{legacy_vuln_terminal_adoption,replacement_stage_execution_id}'=
+                            vuln_run.id::text
+                        AND adopted_vuln_run.id IS NOT NULL
+                        AND enumeration_run.completed_at=adopted_vuln_run.started_at
+                        AND adopted_vuln_run.started_at<vuln_run.started_at
+                    )
+                  )
              JOIN stage_handoffs AS vuln_handoff
                ON vuln_handoff.id=vuln_input.source_handoff_id
               AND vuln_handoff.operation_id=vuln_input.source_operation_id
@@ -1962,7 +2182,7 @@ pub async fn seed_from_final_vuln_triage_handoff(
               AND vuln_input.organization_id=$2
               AND vuln_input.source_stage_kind='vuln_triage'
             ORDER BY vuln_input.id,enumeration_input.id
-            FOR SHARE OF vuln_input,source_unit,vuln_run,candidate_run,
+            FOR SHARE OF vuln_input,source_unit,vuln_run,source_operation,candidate_run,
                          enumeration_input,enumeration_run,vuln_handoff,
                          enumeration_handoff,source_scope"#,
         )
@@ -2121,9 +2341,13 @@ pub async fn seed_from_final_vuln_triage_handoff(
     .bind(authority.gate_passed_at)
     .fetch_all(&mut *tx)
     .await?;
-    let mut observations =
-        materialize_initial_candidate_observations(organization_id, &outcomes, &evidence_rows)
-            .map_err(crate::DbError::Other)?;
+    let mut observations = materialize_initial_candidate_observations(
+        organization_id,
+        authority,
+        &outcomes,
+        &evidence_rows,
+    )
+    .map_err(crate::DbError::Other)?;
     let enumeration_support = sqlx::query_as::<_, EnumerationSupportEvidenceRow>(
         r#"SELECT evidence.run_id AS operation_id,
                   scope_snapshot.id AS scope_snapshot_id,
@@ -3225,9 +3449,10 @@ mod tests {
                 typed_match(target_live_id, technique, "fixture-two"),
             ],
         )];
+        let exact = authority(organization_id, &rows);
 
         let observations =
-            materialize_initial_candidate_observations(organization_id, &rows, &evidence)
+            materialize_initial_candidate_observations(organization_id, &exact, &rows, &evidence)
                 .expect("typed observations must materialize");
 
         assert_eq!(observations.len(), 3);
@@ -3290,9 +3515,10 @@ mod tests {
                 evidence
             })
             .collect::<Vec<_>>();
+        let exact = authority(organization_id, &rows);
 
         let observations =
-            materialize_initial_candidate_observations(organization_id, &rows, &evidence)
+            materialize_initial_candidate_observations(organization_id, &exact, &rows, &evidence)
                 .expect("negative coverage remains bounded target context");
 
         assert_eq!(observations.len(), 1);
@@ -3307,6 +3533,97 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn server_surface_applicability_attestation_becomes_context_and_rejects_note_drift() {
+        let organization_id = Uuid::new_v4();
+        let operation_id = Uuid::new_v4();
+        let asset = "https://app.example.test:443";
+        let technique = "WSTG-INPV-05";
+        let note = "Enumeration found no executable GET query parameter on this exact origin";
+        let rows = vec![FormulaicOutcomeRow {
+            organization_id,
+            run_id: operation_id.to_string(),
+            asset: asset.to_string(),
+            technique: technique.to_string(),
+            outcome: "not_applicable".to_string(),
+            source: Some(SURFACE_APPLICABILITY_SOURCE.to_string()),
+            query: Some(note.to_string()),
+            result_count: None,
+            confidence: None,
+            evidence_ids: vec![91],
+            collected_at: Utc::now() - chrono::Duration::seconds(1),
+            content: serde_json::json!({}),
+        }];
+        let mut exact = authority(organization_id, &rows);
+        exact.enumeration_evidence_ids = vec![601, 602];
+        let attestation = serde_json::json!({
+            "schema": SURFACE_APPLICABILITY_SCHEMA,
+            "operation_id": operation_id,
+            "organization_id": organization_id,
+            "coverage_session_id": "fixture-session",
+            "source_handoff": {
+                "handoff_id": exact.enumeration_handoff_id,
+                "scope_snapshot_id": exact.scope_snapshot_id,
+                "authority_kind": "deliverable_final_seal",
+                "scope_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+                "payload_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+                "unit_gate_decision_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+                "gate_passed_at": exact.enumeration_gate_passed_at,
+                "schema_version": 1,
+                "source_evidence_ids": exact.enumeration_evidence_ids,
+            },
+            "not_applicable_cells": [{
+                "asset": asset,
+                "technique": technique,
+                "state": "not_applicable",
+                "note": note,
+            }],
+        });
+        let evidence = FormulaicEvidenceRow {
+            id: 91,
+            evidence_target_id: None,
+            target_live_id: None,
+            tool_name: SURFACE_APPLICABILITY_EVIDENCE_TOOL.to_string(),
+            detail: serde_json::json!({
+                "kind": SURFACE_APPLICABILITY_EVIDENCE_KIND,
+                "subject": SURFACE_APPLICABILITY_EVIDENCE_SUBJECT,
+                "organization_id": organization_id,
+                "raw_output": attestation.to_string(),
+            }),
+            evidence_technique: None,
+            evidence_asset: None,
+            evidence_outcome: None,
+            created_at: Utc::now() - chrono::Duration::seconds(2),
+        };
+
+        let materialized = materialize_initial_candidate_observations(
+            organization_id,
+            &exact,
+            &rows,
+            std::slice::from_ref(&evidence),
+        )
+        .expect("server-owned surface applicability must remain bounded Candidate context");
+        assert_eq!(materialized.len(), 1);
+        assert_eq!(materialized[0].observation["schema"], "surface_analysis_v1");
+
+        let mut forged = evidence;
+        let mut forged_attestation: serde_json::Value = serde_json::from_str(
+            forged.detail["raw_output"]
+                .as_str()
+                .expect("fixture raw output"),
+        )
+        .expect("fixture attestation");
+        forged_attestation["not_applicable_cells"][0]["note"] = serde_json::json!("different note");
+        forged.detail["raw_output"] = serde_json::json!(forged_attestation.to_string());
+        assert!(materialize_initial_candidate_observations(
+            organization_id,
+            &exact,
+            &rows,
+            &[forged],
+        )
+        .is_err());
     }
 
     #[test]
@@ -3338,11 +3655,15 @@ mod tests {
             Vec::new(),
         );
         evidence.tool_name = "vuln_nuclei_fingerprint_targeted".to_string();
+        let exact = authority(organization_id, &rows);
 
-        assert!(
-            materialize_initial_candidate_observations(organization_id, &rows, &[evidence],)
-                .is_err()
-        );
+        assert!(materialize_initial_candidate_observations(
+            organization_id,
+            &exact,
+            &rows,
+            &[evidence],
+        )
+        .is_err());
     }
 
     #[test]
@@ -3373,11 +3694,15 @@ mod tests {
             technique,
             vec![typed_match(target_live_id, technique, "fixture-one")],
         );
+        let exact = authority(organization_id, &rows);
 
-        assert!(
-            materialize_initial_candidate_observations(organization_id, &rows, &[evidence],)
-                .is_err()
-        );
+        assert!(materialize_initial_candidate_observations(
+            organization_id,
+            &exact,
+            &rows,
+            &[evidence],
+        )
+        .is_err());
     }
 
     #[test]
@@ -3414,9 +3739,10 @@ mod tests {
                 .chain(negative)
                 .collect(),
         )];
+        let exact = authority(organization_id, &rows);
 
         let materialized =
-            materialize_initial_candidate_observations(organization_id, &rows, &evidence)
+            materialize_initial_candidate_observations(organization_id, &exact, &rows, &evidence)
                 .expect("typed anonymous-access evidence must materialize");
 
         assert_eq!(materialized.len(), 2);

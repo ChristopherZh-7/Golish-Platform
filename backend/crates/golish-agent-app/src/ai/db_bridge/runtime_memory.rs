@@ -6,6 +6,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use golish_agent_kit::db_traits::{
+    AdoptLegacyVulnTerminalOutcomes, AdoptedLegacyVulnTerminalOutcomesView,
     AttackV2WaveAuthorityView, AttackV2WaveEntryView, AttackV2WaveRuntimeUnitView,
     AttackV2WaveUnitStateView, BindStageTeamLeaderFinalSubmitter, BlockStageTeamUnit,
     BlockedStageTeamUnitView, BoundStageTeamLeaderFinalSubmitterView,
@@ -24,7 +25,8 @@ use golish_agent_kit::db_traits::{
     FrozenOrganizationScopeUnit, HeartbeatCandidateAttempt, LoadBoundWorkerChain,
     LoadInheritedStageHandoffs, LoadStageTeamBarrier, LoadWorkerCheckpoint, LoadedBoundWorkerChain,
     LoadedWorkerCheckpoint, NewStageDeliverableSubmission, OpenStageTeamRepair,
-    OpenedStageTeamRepairView, OperationStateView, ParkStageTeamLeader, ParkedStageTeamLeaderView,
+    OpenedStageTeamRepairView, OperationStateView, ParkStageTeamFinalizerAfterFailure,
+    ParkStageTeamLeader, ParkedStageTeamFinalizerAfterFailureView, ParkedStageTeamLeaderView,
     PauseWorkerForContinuation, PersistedStageDeliverableSubmission, ProjectScopeRegistration,
     ReapedRuntimeWorker, RecoverCandidateTerminalIntent, ReopenStageTeamLeaderAfterGateBlock,
     ReopenedStageTeamLeaderAfterGateBlockView, RequestStageWorker, RequestedStageWorkerView,
@@ -52,17 +54,18 @@ use golish_agent_kit::task_orchestrator::stage_execution::{
 };
 use golish_db::repo::runtime_memory_rollout::RuntimeMemoryContract as DbRuntimeMemoryContract;
 use golish_db::repo::runtime_memory_tx::{
-    BindStageTeamLeaderFinalSubmitterRow, BlockStageTeamUnitRow, CheckpointBoundWorkerChainRow,
-    ClaimStageAggregatorRow, ClaimStageTeamLeaderRow, ClaimStageWorkItemRow,
-    ClaimWorkerAndBindChainRow, CloseStageRequestEpochRow, CloseWaveGatePassRow,
-    ClosedWaveGatePassRow, CompleteTerminalStageExecutionRow, CreateRuntimeOperationRow,
-    CreatedRuntimeOperationRow, FinalizeScopingScopeRow, FinalizeStageTeamUnitRow,
-    FinalizeUnitPassRow, FinalizedScopingScopeRow, FinishWorkerAttemptRow, LoadBoundWorkerChainRow,
+    AdoptLegacyVulnTerminalOutcomesRow, BindStageTeamLeaderFinalSubmitterRow,
+    BlockStageTeamUnitRow, CheckpointBoundWorkerChainRow, ClaimStageAggregatorRow,
+    ClaimStageTeamLeaderRow, ClaimStageWorkItemRow, ClaimWorkerAndBindChainRow,
+    CloseStageRequestEpochRow, CloseWaveGatePassRow, ClosedWaveGatePassRow,
+    CompleteTerminalStageExecutionRow, CreateRuntimeOperationRow, CreatedRuntimeOperationRow,
+    FinalizeScopingScopeRow, FinalizeStageTeamUnitRow, FinalizeUnitPassRow,
+    FinalizedScopingScopeRow, FinishWorkerAttemptRow, LoadBoundWorkerChainRow,
     LoadStageTeamBarrierRow, LoadWorkerCheckpointRow, OpenStageTeamRepairRow,
-    ParkStageTeamLeaderRow, PauseWorkerForContinuationRow, ReopenStageTeamLeaderAfterGateBlockRow,
-    RequestStageWorkerRow, RuntimeMemoryStoreError, RuntimeMemoryTxFence, SeedStageRuntimeRow,
-    SeedStageTeamRuntimeRow, StageTeamPlanSeedRow, StageWorkItemSeedRow,
-    TransitionStageExecutionRow,
+    ParkStageTeamFinalizerAfterFailureRow, ParkStageTeamLeaderRow, PauseWorkerForContinuationRow,
+    ReopenStageTeamLeaderAfterGateBlockRow, RequestStageWorkerRow, RuntimeMemoryStoreError,
+    RuntimeMemoryTxFence, SeedStageRuntimeRow, SeedStageTeamRuntimeRow, StageTeamPlanSeedRow,
+    StageWorkItemSeedRow, TransitionStageExecutionRow,
 };
 use golish_db::repo::stage_teams::{
     CompleteStageWorkerRow, ResolveStageTeamRecoveryRow, RetryStageWorkerRow,
@@ -1635,6 +1638,54 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
             worker: runtime_worker_from_db(parked.worker)?,
             dependency_count: parked.dependency_count,
             plan,
+        })
+    }
+
+    async fn park_stage_team_finalizer_after_failure(
+        &self,
+        input: ParkStageTeamFinalizerAfterFailure,
+    ) -> Result<ParkedStageTeamFinalizerAfterFailureView, RuntimeMemoryError> {
+        let parked = golish_db::repo::runtime_memory_tx::park_stage_team_finalizer_after_failure(
+            &self.pool,
+            &ParkStageTeamFinalizerAfterFailureRow {
+                fence: runtime_worker_fence_to_db(input.fence),
+                stage_team_plan_id: input.stage_team_plan_id,
+                leader_work_item_id: input.leader_work_item_id,
+                deliverable_submission_id: input.deliverable_submission_id,
+                expected_work_item_row_version: input.expected_work_item_row_version,
+                expected_dispatch_epoch: input.expected_dispatch_epoch,
+                expected_manifest_hash: input.expected_manifest_sha256,
+                checkpoint: input.checkpoint,
+                failure_detail: input.failure_detail,
+            },
+        )
+        .await
+        .map_err(runtime_memory_error_from_db)?;
+        let aggregator_role = parked.work_item.role.clone();
+        Ok(ParkedStageTeamFinalizerAfterFailureView {
+            work_item: stage_work_item_from_db(parked.work_item, Some(&aggregator_role))?,
+            worker: runtime_worker_from_db(parked.worker)?,
+        })
+    }
+
+    async fn adopt_legacy_vuln_terminal_outcomes(
+        &self,
+        input: AdoptLegacyVulnTerminalOutcomes,
+    ) -> Result<AdoptedLegacyVulnTerminalOutcomesView, RuntimeMemoryError> {
+        let adopted = golish_db::repo::runtime_memory_tx::adopt_legacy_vuln_terminal_outcomes(
+            &self.pool,
+            &AdoptLegacyVulnTerminalOutcomesRow {
+                fence: runtime_worker_fence_to_db(input.fence),
+                stage_team_plan_id: input.stage_team_plan_id,
+                leader_work_item_id: input.leader_work_item_id,
+            },
+        )
+        .await
+        .map_err(runtime_memory_error_from_db)?;
+        Ok(AdoptedLegacyVulnTerminalOutcomesView {
+            adopted_cells: adopted.adopted_cells,
+            source_stage_execution_id: adopted.source_stage_execution_id,
+            source_stage_started_at: adopted.source_stage_started_at,
         })
     }
 

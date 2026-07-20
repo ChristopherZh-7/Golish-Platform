@@ -55,7 +55,7 @@
 
 ## 关键文件
 
-- `agentic_loop/tool_execution/direct/stage_run_call.rs`：Task harness `stage_run`；stage fork 进入后仍复用同一 stage/team/candidate plan，仅把 Candidate 的 initial authority识别为 exact `ForkedVulnHandoff`；legacy/dual 保留 per-org fan-out，V2 Target Intel 走 durable sibling Team queue、每个 WorkerRun 独立 SubAgent UI parent identity、producer 有界 attempt retry、唯一 Aggregator、Gate BLOCK repair generation/fresh Aggregator；Candidate Verification 走 TerminalIntent recovery与同链 submit-only continuation。
+- `agentic_loop/tool_execution/direct/stage_run_call.rs`：Task harness `stage_run`；stage fork 进入后仍复用同一 stage/team/candidate plan，仅把 Candidate 的 initial authority识别为 exact `ForkedVulnHandoff`；V2 Target Intel / EAS / Enumeration / Vuln 都走 durable Company Controller + sibling Team queue，child 在冻结 cap 内任一完成即滚动补位，每个 WorkerRun 保持独立 SubAgent UI parent identity、producer 有界 attempt retry、唯一 final submitter 与 Gate repair。Vuln Gate PASS后还会把可信 Enumeration-manifest structural N/A以当前operation/org/Unit/session/project的新鲜aggregate attestation重新锚定并物化，再做完整outcome-set final seal；Candidate Verification 走 TerminalIntent recovery与同链submit-only continuation。
 - `agentic_loop/tool_execution/direct/stage_team_scheduler.rs`：Stage Team plan/WorkItem/output/request 的确定性构造、唯一 fenced-object bounded parser、business output authority validator、stable hash 与 repair fuel；Company Controller 的历史 lifetime totals 只做 restart replay，不参与 admission/claim/retry/coordination loop。
 - `agentic_loop/tool_execution/direct/sub_agent_call.rs`：`sub_agent_*` 派发、Stage Team dispatch host router、sub-agent repair checkpoint 恢复、tool observer；零项持久化成功时返回带 request/card identity 的 terminal `dispatch_failed`，不能让前端把失败误画成 queued。
 - `test_utils.rs` / `test_utils_tests.rs`：feature gate 下的 mock 与自测。
@@ -76,7 +76,17 @@
 - Team producer 的 provider 执行失败、输出协议不合格、无 canonical fact/evidence authority 的 `found/checked_empty`，以及已登记的 dependency-not-ready blocker，不得第一次就固化成 business `blocked` output；它们必须走 `retry_stage_worker` compound API，在 frozen attempt budget 内重新排队，预算耗尽才由 repository 生成确定性 terminal blocker。合法未知 business blocker 仍是 immutable output，不能被自动重试规则吞掉。
 - 大型 Enumeration worklist 可能超过 Enumerator 单段 40 iterations；worker 无 deliverable 返回时，`stage_run` 会读取同源 DB coverage snapshot，只有 pending/error/partial 数量继续下降时才续同一精确 worker chain，最多两次。ready 但未 submit 只允许一次 submit-only continuation；停滞、取消或预算耗尽进入既有 request-scoped breaker，不能无限重开。
 - `stage_run_call::build_org_objective` 会把本次 Task 的 `SubAgentContext.original_request` 作为**有界、JSON 引用、低优先级**的 operator-constraint 摘录传给 specialist worker（最多 4096 Unicode 字符，超长保留首尾并显式标记截断）。该文本只可收紧现有执行方式（如 read-only、批次、已知不可达 exact origin、禁止某 producer），绝不能变成新的授权源：stage / authoritative org subtree / DB scope / exact-origin denominator / StageSpec tool boundary / evidence+gate contract 仍由 Rust 侧固定，冲突文字必须忽略。
-- Vuln Company Controller 是例外的 formulaic host path：runtime 从 operation-scoped coverage 生成 exact origin × capability shard，并以 canonical Target subject持久化；Nuclei shard 由 host 直调 guarded wrapper，pending 可按 capability 合并，partial/error 只生成 single-technique recovery。重复 stable request 必须区分 claimable、in-flight 与 recovery-required；scanner/runtime 耗尽保留非终态并阻止 Gate PASS，不能回退到“ALL remaining” LLM派工。
+- Vuln Company Controller 是例外的 formulaic host path：runtime 从 operation-scoped coverage 生成 exact origin × capability shard，并以 canonical Target subject持久化；Nuclei shard 由 host 直调 guarded wrapper，pending 可按 capability 合并，partial/error 只生成 single-technique recovery。primary/narrowed预算固定为300/600秒；旧代码已经停在attempt 3的精确`scanner_runtime/scan_budget_exhausted` cell可生成唯一attempt-4 `budget_recovery`，其他retry-disabled/runtime failure与attempt 4都不重开。重复 stable request 必须区分 claimable、in-flight 与 recovery-required，不能回退到“ALL remaining” LLM派工。
+- Vuln structural N/A不能直接引用早于Vuln Unit的Enumeration evidence。runtime只接受exact final-sealed Enumeration handoff的operation/org/scope/stage/schema/authority lineage，随后追加一条facts=None的新鲜attestation；其raw有界保存handoff hash/gate/source evidence与排序后的canonical N/A cell。append返回0、identity漂移、重复/伪造cell或conditional outcome upsert失败都阻止final seal，现有producer终态仍优先且不被降级。
+- Company Controller 的 child drain 对四个普通阶段共用同一个 rolling refill driver：`max_workers_active - 1` 仍是每公司 child 上限，任一 child 完成后立刻重试 durable claim，不等待慢 sibling；global provider semaphore与DB active-worker fence仍可进一步限流。execution error只记录第一项并继续排空 queued/retry工作；claim/storage error或取消停止新 claim，但已经启动的 child必须执行到既有 lifecycle/evidence landing边界后才返回错误。
+
+## Company finalizer restart recovery（2026-07-20）
+
+- Gate PASS 后的 materialization/final-seal error 会先调用 typed DB parking seam，释放 exact final submitter租约并排回同一 Worker/message chain；当前 request随后以 `company_controller_finalization_failed` halt。
+- aggregator claim收到 DB的 `stage_team_final_submitter_runtime_replaced` 时生成 `COMPANY_CONTROLLER_RUNTIME_RECOVERED`，说明旧坏 execution已追加式替换、operation facts/evidence保留，并要求下一独立“继续”；不再泛化为业务 Gate BLOCK。
+- tool dispatch识别 final submission missing、finalization failed与runtime recovered三种 closeout halt，阻止同一 tool batch继续 coverage/submit。
+- legacy no-purge replacement进入 Vuln coverage前先调用 exact adoption seam，再重新读取DB worklist；adoption不能直接声明PASS。replacement Unit 与operation共用source freshness epoch，保证coverage、Gate和final-seal resolver看到同一180-cell窗口。
+- parked finalizer checkpoint允许provider chain是JSON array或object；runtime只解开server-owned `{_runtime,chain}` wrapper后恢复原链，不能把array解析失败覆盖成新的generic closeout错误。
 
 ## 测试入口
 

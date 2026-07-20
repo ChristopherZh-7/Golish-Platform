@@ -184,6 +184,18 @@ pub struct Args {
     #[arg(long, requires = "ephemeral_db")]
     pub keep_ephemeral_db: bool,
 
+    /// Internal E2E hook: run a stage command against an already-created,
+    /// isolated database in the normal local PostgreSQL cluster. Names are
+    /// restricted to `golish_gatefix_*` so this cannot silently select the
+    /// production `golish` database.
+    #[arg(
+        long,
+        value_name = "NAME",
+        conflicts_with = "ephemeral_db",
+        hide = true
+    )]
+    pub stage_run_test_database: Option<String>,
+
     /// Print a database truth summary before `--stage-run` shuts down embedded
     /// Postgres. This is intended for real smoke tests that must prove rows
     /// landed, not just that the agent wrote a natural-language answer.

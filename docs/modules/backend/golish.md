@@ -74,6 +74,7 @@
 - `AppState` 故意留在本 crate（聚合内部子系统）；app crate 取窄 `DbState`。
 - Memory Supervisor 只由 GUI/CLI composition root 启停；AppState 持有 cancel/join owner，`AgentState`/`AgentBridge` 只拿同 adapter 的 UoW Arc。
 - `--stage-run-fork` 默认必须使用与 GUI 相同的应用 DB，并创建新 task/operation；它采用 source 的 sealed Scoping、当前 Target 快照和 strict-prefix final seals，绝不能续写或重置 source operation。
+- 测试专用 `--stage-run-test-database` 只允许显式 `golish_gatefix_*` 克隆库，可与 exact resume 或 immutable-source fork 同用；它不创建、不删除数据库，也不能指向默认 production 库。
 - Reporting artifact store factory 只在 composition root 解析 canonical project root；IPC/model 不得传路径或 content key。`ProjectReportArtifactStore::promote` 把底层 `ReservedReportArtifact` 包成 `ArtifactPublicationReservation`，让 `ReportFinalizer` 持 per-content lock 到 DB attach 提交。GUI/CLI 都在 DB ready 后启动同一 GC 语义，退出时必须在 pool 前 shutdown。Orphan GC 必须先按 `canonical_project_path` 分组，union 同一路径全部 active/retired `project_scope_id` 的 DB referenced content keys 后只扫物理目录一次，不能让 sibling scope 的局部 reference set 互删 retained blob；底层 file-storage 在 Unix 对 symlink/binding swap、在 Windows 对 symlink/reparse/junction/handle replacement 统一 fail closed，并在同一 content lock 后重查 grace。
 
 ## 测试入口

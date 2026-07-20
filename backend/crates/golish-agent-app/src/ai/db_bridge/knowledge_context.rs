@@ -6,6 +6,7 @@ use golish_graphiti::{ScopedGraphQuery, TemporalGraphClient};
 use golish_memory_app::{
     AuthorizationSnapshot, AuthorizationSnapshotReader, ContextError, ContextPack,
     ContextPackProvider, EffectiveContextQuery, KnowledgeContextSource, KnowledgeRetriever,
+    QueryEmbeddingProvider,
 };
 use golish_memory_domain::{
     ContextAuthority, ContextItem, ContextRequest, ContextSubject, KnowledgeClass,
@@ -22,6 +23,13 @@ pub struct PgKnowledgeContextAdapter {
 
 impl PgKnowledgeContextAdapter {
     pub fn new(pool: Arc<PgPool>) -> Result<Self, ContextError> {
+        Self::with_query_embedding(pool, None)
+    }
+
+    pub fn with_query_embedding(
+        pool: Arc<PgPool>,
+        query_embedding: Option<Arc<dyn QueryEmbeddingProvider>>,
+    ) -> Result<Self, ContextError> {
         let authorization = Arc::new(PgKnowledgeAuthorizationReader { pool: pool.clone() });
         let policy = Arc::new(KnowledgePolicyAdapter::new(pool.clone()));
         let source = Arc::new(PgKnowledgeContextSource {
@@ -29,7 +37,7 @@ impl PgKnowledgeContextAdapter {
             pool,
         });
         Ok(Self {
-            retriever: KnowledgeRetriever::new(authorization, policy, source, None)?,
+            retriever: KnowledgeRetriever::new(authorization, policy, source, query_embedding)?,
         })
     }
 }
@@ -401,8 +409,8 @@ fn parse_classification(value: &str) -> Result<KnowledgeClassification, ContextE
     }
 }
 
-fn database_error(_: sqlx::Error) -> ContextError {
-    ContextError::Source("knowledge_context_database_error".to_string())
+fn database_error(error: sqlx::Error) -> ContextError {
+    ContextError::Source(format!("knowledge_context_database_error:{error}"))
 }
 
 #[cfg(test)]

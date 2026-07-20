@@ -120,6 +120,30 @@ ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE SET \
   updated_at = NOW() \
 WHERE technique_outcomes.outcome IN ('partial', 'error')";
 
+/// Attempt-start marker publication is monotonic: a retry may replace a prior
+/// unfinished marker, but it must never demote durable producer truth. The
+/// caller treats a zero-row conflict update as a superseded attempt and rolls
+/// back the whole sibling batch before any scanner work starts.
+const UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_SQL: &str = "\
+INSERT INTO technique_outcomes \
+  (organization_id, run_id, asset, technique, outcome, source, query, \
+   result_count, confidence, evidence_ids, seq, collected_at) \
+VALUES \
+  ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+   (SELECT COALESCE(MAX(seq), 0) + 1 FROM technique_outcomes \
+     WHERE organization_id = $1 AND run_id = $2), \
+   $11) \
+ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE SET \
+  outcome = EXCLUDED.outcome, \
+  source = EXCLUDED.source, \
+  query = EXCLUDED.query, \
+  result_count = EXCLUDED.result_count, \
+  confidence = EXCLUDED.confidence, \
+  evidence_ids = EXCLUDED.evidence_ids, \
+  collected_at = EXCLUDED.collected_at, \
+  updated_at = NOW() \
+WHERE technique_outcomes.outcome IN ('partial', 'error')";
+
 /// 读某 run 的全部维（org 隔离，IDOR）。`seq` 只是并发写入下的排序提示；
 /// asset/technique 是确定性 tie-breaker，避免两个并发首插拿到同一 seq 时读序漂移。
 const LIST_FOR_RUN_SQL: &str = "\
@@ -194,6 +218,27 @@ where
         .execute(executor)
         .await?;
     Ok(())
+}
+
+async fn execute_attempt_marker<'e, E>(executor: E, w: &TechniqueOutcomeWrite) -> Result<bool>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let result = sqlx::query(UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_SQL)
+        .bind(w.organization_id)
+        .bind(&w.run_id)
+        .bind(&w.asset)
+        .bind(&w.technique)
+        .bind(&w.outcome)
+        .bind(w.source.as_deref())
+        .bind(w.query.as_deref())
+        .bind(w.result_count)
+        .bind(w.confidence)
+        .bind(w.evidence_ids.as_slice())
+        .bind(w.collected_at)
+        .execute(executor)
+        .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 /// Atomically upsert several outcomes. Enumeration producers use this for the
@@ -433,7 +478,10 @@ pub async fn upsert_attempt_markers_guarded_if_epoch_current(
         return Ok(ConditionalBatchUpsertResult::Superseded);
     }
     for write in writes {
-        execute_upsert(&mut *tx, write).await?;
+        if !execute_attempt_marker(&mut *tx, write).await? {
+            tx.rollback().await?;
+            return Ok(ConditionalBatchUpsertResult::Superseded);
+        }
     }
     tx.commit().await?;
     Ok(ConditionalBatchUpsertResult::Applied)
@@ -643,6 +691,16 @@ mod tests {
             .contains("WHERE technique_outcomes.outcome IN ('partial', 'error')"));
         assert!(!UPSERT_TERMINAL_IF_UNFINISHED_SQL.contains("'found'"));
         assert!(!UPSERT_TERMINAL_IF_UNFINISHED_SQL.contains("'empty'"));
+    }
+
+    #[test]
+    fn attempt_start_sql_cannot_downgrade_terminal_truth() {
+        assert!(UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_SQL
+            .contains("ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE"));
+        assert!(UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_SQL
+            .contains("WHERE technique_outcomes.outcome IN ('partial', 'error')"));
+        assert!(!UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_SQL.contains("'found'"));
+        assert!(!UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_SQL.contains("'empty'"));
     }
 
     #[test]

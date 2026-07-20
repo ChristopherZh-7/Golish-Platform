@@ -563,6 +563,73 @@ describe("Store Workflow Actions", () => {
       expect(plan?.steps[0].status).toBe("in_progress");
     });
   });
+
+  describe("rewindStagePlans (committed stage reset receipt)", () => {
+    beforeEach(() => {
+      useStore.setState({ sessions: {} });
+      for (const stage of ["scoping", "target_intel", "external_attack_surface", "enumeration"]) {
+        useStore.getState().setStagePlan(testSessionId, stage, {
+          version: 1,
+          steps: [{ step: stage, status: "completed" }],
+          summary: { total: 1, completed: 1, in_progress: 0, pending: 0 },
+          explanation: null,
+          updated_at: "old-epoch",
+        });
+        useStore.getState().markStagePassed(testSessionId, stage);
+      }
+    });
+
+    it("rewinds affected plans while immediately seeding the committed selected stage", () => {
+      useStore
+        .getState()
+        .rewindStagePlans(
+          testSessionId,
+          ["external_attack_surface", "enumeration", "reporting"],
+          "external_attack_surface"
+        );
+
+      const session = useStore.getState().sessions[testSessionId];
+      expect(session?.stageOrder).toEqual([
+        "scoping",
+        "target_intel",
+        "external_attack_surface",
+      ]);
+      expect(Object.keys(session?.plansByStage ?? {})).toEqual([
+        "scoping",
+        "target_intel",
+        "external_attack_surface",
+      ]);
+      expect(session?.plansByStage?.external_attack_surface?.version).toBe(0);
+      expect(session?.plansByStage?.external_attack_surface?.steps[0]?.status).toBe("in_progress");
+      expect(session?.passedStages).toEqual(["scoping", "target_intel"]);
+    });
+
+    it("allows the replacement v0 seed after removing the old real plan", () => {
+      useStore
+        .getState()
+        .rewindStagePlans(
+          testSessionId,
+          ["external_attack_surface"],
+          "external_attack_surface"
+        );
+      useStore.getState().setStagePlan(testSessionId, "external_attack_surface", {
+        version: 0,
+        steps: [{ step: "EAS", status: "in_progress" }],
+        summary: { total: 1, completed: 0, in_progress: 1, pending: 0 },
+        explanation: null,
+        updated_at: "new-epoch",
+      });
+
+      expect(
+        useStore.getState().sessions[testSessionId]?.plansByStage?.external_attack_surface?.version
+      ).toBe(0);
+    });
+
+    it("does not create a fake session alias while reconciling a reset", () => {
+      useStore.getState().rewindStagePlans("missing-ai-session", ["target_intel"], "target_intel");
+      expect(useStore.getState().sessions["missing-ai-session"]).toBeUndefined();
+    });
+  });
 });
 
 describe("Store Workflow Actions — sub-agent streaming entries", () => {

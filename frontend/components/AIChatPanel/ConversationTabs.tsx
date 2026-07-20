@@ -17,6 +17,8 @@ export interface ConversationTabsProps {
   conversations: ChatConversation[];
   activeConvId: string | null;
   showHistory: boolean;
+  /** Freeze conversation ownership while a destructive reset is committing/resuming. */
+  disabled?: boolean;
   onSelect: (convId: string) => void;
   onClose: (convId: string, e: React.MouseEvent) => void;
   onNewChat: () => void;
@@ -27,6 +29,7 @@ export const ConversationTabs = memo(function ConversationTabs({
   conversations,
   activeConvId,
   showHistory,
+  disabled = false,
   onSelect,
   onClose,
   onNewChat,
@@ -52,6 +55,7 @@ export const ConversationTabs = memo(function ConversationTabs({
             <button
               key={conv.id}
               type="button"
+              disabled={disabled}
               data-conv-id={conv.id}
               className={cn(
                 "group flex items-center gap-1.5 h-[28px] px-3 text-[12px] whitespace-nowrap flex-shrink-0 transition-all rounded-lg",
@@ -59,7 +63,9 @@ export const ConversationTabs = memo(function ConversationTabs({
                   ? "text-foreground bg-[var(--bg-hover)]"
                   : "text-muted-foreground hover:text-foreground/80"
               )}
-              onClick={() => onSelect(conv.id)}
+              onClick={() => {
+                if (!disabled) onSelect(conv.id);
+              }}
             >
               {conv.id === activeConvId && (
                 <div className="w-1.5 h-1.5 rounded-full bg-accent/50 flex-shrink-0" />
@@ -72,7 +78,12 @@ export const ConversationTabs = memo(function ConversationTabs({
                     ? "opacity-60 hover:opacity-100"
                     : "opacity-0 group-hover:opacity-60 hover:!opacity-100"
                 )}
-                onClick={(e) => onClose(conv.id, e)}
+                aria-disabled={disabled}
+                aria-label={`Close ${conv.title}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!disabled) onClose(conv.id, e);
+                }}
                 onKeyDown={() => {}}
                 role="button"
                 tabIndex={-1}
@@ -86,21 +97,27 @@ export const ConversationTabs = memo(function ConversationTabs({
           <button
             type="button"
             title={t("ai.newChat")}
-            className="h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
-            onClick={onNewChat}
+            disabled={disabled}
+            className="h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={() => {
+              if (!disabled) onNewChat();
+            }}
           >
             <Plus className="w-3.5 h-3.5" />
           </button>
           <button
             type="button"
             title={t("ai.history")}
+            disabled={disabled}
             className={cn(
-              "h-6 w-6 flex items-center justify-center rounded-md transition-colors",
+              "h-6 w-6 flex items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-40",
               showHistory
                 ? "text-foreground bg-[var(--bg-hover)]"
                 : "text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)]"
             )}
-            onClick={onToggleHistory}
+            onClick={() => {
+              if (!disabled) onToggleHistory();
+            }}
           >
             <Clock className="w-3.5 h-3.5" />
           </button>

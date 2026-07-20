@@ -1334,6 +1334,53 @@ pub(crate) async fn work_item_attempts_used(
     .await?)
 }
 
+async fn is_exact_closed_company_final_submitter_with_submission(
+    connection: &mut PgConnection,
+    plan: &StageTeamPlanRow,
+    item: &StageWorkItemRow,
+    worker: &stage_worker_runs::StageWorkerRunRow,
+) -> RuntimeMemoryStoreResult<bool> {
+    if plan.requests_closed_at.is_none()
+        || plan.final_submitter_worker_run_id != Some(worker.id)
+        || plan.final_submitter_kind != "worker"
+        || plan.aggregator_kind != "worker"
+        || plan.aggregator_role.as_deref() != Some(item.role.as_str())
+        || plan
+            .dynamic_request_policy
+            .get("coordination_mode")
+            .and_then(serde_json::Value::as_str)
+            != Some("company_controller")
+        || item.stable_key != "leader:primary"
+        || item.required_for_barrier
+        || worker.lease_token.is_none()
+    {
+        return Ok(false);
+    }
+
+    Ok(sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(
+               SELECT 1
+                 FROM stage_deliverable_submissions submission
+                WHERE submission.operation_id=$1
+                  AND submission.stage_execution_id=$2
+                  AND submission.stage_run_unit_id=$3
+                  AND submission.organization_id=$4
+                  AND submission.worker_run_id=$5
+                  AND submission.attempt_epoch=$6
+                  AND submission.lease_token=$7
+           )"#,
+    )
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .bind(plan.organization_id)
+    .bind(worker.id)
+    .bind(worker.attempt_epoch)
+    .bind(worker.lease_token)
+    .fetch_one(connection)
+    .await?)
+}
+
 /// Resolve one expired Team worker that has no in-flight tool.  An expired
 /// lease consumes an attempt just like an ordinary execution failure.  The
 /// stable WorkItem and WorkerRun are requeued only while the frozen attempt
@@ -1367,7 +1414,13 @@ pub(crate) async fn reap_expired_clean_stage_worker(
 
     let max_attempts = work_item_max_attempts(item)?;
     let attempts_used = work_item_attempts_used(&mut *connection, item.id).await?;
-    let retry_scheduled = attempts_used < max_attempts;
+    // A closed Company Controller with an exact durable submission is retrying
+    // deterministic closeout, not producing another coverage fact. Do not
+    // spend producer attempt fuel or forge an attempts-exhausted output for it.
+    let finalizer_retry_scheduled =
+        is_exact_closed_company_final_submitter_with_submission(connection, plan, item, worker)
+            .await?;
+    let retry_scheduled = finalizer_retry_scheduled || attempts_used < max_attempts;
 
     let (next_worker_status, next_item_status, terminal_checkpoint) = if retry_scheduled {
         ("queued", "retry_pending", worker.checkpoint.clone())

@@ -1,5 +1,7 @@
 # Company Stage Reset Plan-First Convergence Design
 
+> Partially superseded by [`2026-07-20-chatpanel-stage-reset-consistency.md`](2026-07-20-chatpanel-stage-reset-consistency.md): plan-first replacement Units remain, but reset now rejects a running/received external tool before mutation instead of terminalizing only its DB row, and commits frozen-scope fact purge in the same transaction instead of a following transaction.
+
 **Date:** 2026-07-18
 **Status:** Approved for implementation by the user
 **Scope:** Developer stage reset for V2-only Company Controller stages; no schema or migration change

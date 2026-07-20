@@ -160,14 +160,18 @@ impl KnowledgeRetriever {
             Vec::new()
         };
 
-        // Vector retrieval is always last. An unapproved external provider is
-        // never called; the policy-derived trusted context controls that choice.
+        // Vector retrieval is always last. Local-only providers are safe under
+        // the default customer-local policy; providers that require data egress
+        // are never called without policy-derived authorization.
         let vector_allowed = query
             .allowed_classes()
             .contains(&KnowledgeClass::VectorPrior);
         let query_embedding = match self.query_embedding.as_ref() {
             Some(_) if !vector_allowed => None,
-            Some(provider) if query.trusted().allows_external_embedding() => {
+            Some(provider)
+                if !provider.requires_external_data_egress()
+                    || query.trusted().allows_external_embedding() =>
+            {
                 match provider.embed_query(&query.request().query_text).await {
                     Ok(embedding) if validate_embedding_dimension(embedding.len()).is_ok() => {
                         Some(embedding)

@@ -1,5 +1,7 @@
 # 階段重置：完整清理 + 可往回跳（dev stage reset full purge）
 
+> Superseded by [`2026-07-20-chatpanel-stage-reset-consistency.md`](2026-07-20-chatpanel-stage-reset-consistency.md). The successor narrows in-place full reset to four Company stages, uses the sealed frozen scope rather than a live organization subtree, retains evidence and ownership-ambiguous immutable facts, and commits runtime/facts/state/graph/cursor atomically.
+
 - 狀態：草案（待用戶確認刪除矩陣後進入實作）
 - 日期：2026-06-30
 - 觸發：用戶反映 chatpanel 右下角「重置階段」按鈕無法把階段恢復到初始狀態（已發現的 JS / 資產等資料不會被刪），導致重測階段時不是乾淨起跑。

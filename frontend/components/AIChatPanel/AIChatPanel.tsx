@@ -7,6 +7,11 @@ import { useCreateTerminalTab } from "@/hooks/useCreateTerminalTab";
 import { respondToToolApproval } from "@/lib/ai";
 import { resetHarnessStageCheckpoint } from "@/lib/api/harness-dev";
 import { formatModelName } from "@/lib/models";
+import {
+  inferCurrentResetStage,
+  trustedResetAffectedStages,
+  validateCommittedStageResetReceipt,
+} from "@/lib/stage-reset";
 import { cn } from "@/lib/utils";
 import { type ChatMessage, useStore } from "@/store";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
@@ -33,7 +38,7 @@ import { useAiChatInit } from "./hooks/useAiChatInit";
 import { useChatConversationOps } from "./hooks/useChatConversationOps";
 import { useChatHotkeys } from "./hooks/useChatHotkeys";
 import { useChatModes } from "./hooks/useChatModes";
-import { useChatSend } from "./hooks/useChatSend";
+import { type ChatInteractionLane, useChatSend } from "./hooks/useChatSend";
 import { useChatSessionInit } from "./hooks/useChatSessionInit";
 import { useTaskPlanState } from "./hooks/useTaskPlanState";
 import { MessageBlock } from "./MessageBlock";
@@ -42,23 +47,11 @@ import { shouldShowChatRestoreLoading } from "./restoreLoadingState";
 import { StageMarker } from "./StageMarker";
 import { StageProgressBar } from "./StageProgressBar";
 import { StageResetMenu } from "./StageResetMenu";
-import type { StagePlansViewModel } from "./TaskPlan";
+import { rewindPersistedStagePlans } from "./stagePlanPersistence";
 import { useChatAutoScroll } from "./useChatAutoScroll";
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const TASK_RESUME_PROMPT = "继续跑";
-
-function currentRestartStage(stagePlans: StagePlansViewModel | null): string | null {
-  if (!stagePlans || stagePlans.stageOrder.length === 0) return null;
-  const passed = new Set(stagePlans.passedStages);
-  const activeStage = stagePlans.stageOrder.find(
-    (stageId) =>
-      !passed.has(stageId) &&
-      (stagePlans.plansByStage[stageId]?.steps.some((step) => step.status !== "pending") ?? false)
-  );
-  if (activeStage) return activeStage;
-  return stagePlans.stageOrder.find((stageId) => !passed.has(stageId)) ?? null;
-}
 
 export const AIChatPanel = memo(function AIChatPanel() {
   const { t } = useTranslation();
@@ -125,6 +118,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingMsgRef = useRef<string | null>(null);
   const taskInProgressRef = useRef(false);
+  const interactionLaneRef = useRef<ChatInteractionLane>("idle");
 
   // ── Composed hooks ───────────────────────────────────────────────────
   const { createTerminalTab } = useCreateTerminalTab();
@@ -165,6 +159,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
     streamingMsgRef,
     chatExecutionModeRef: modes.chatExecutionModeRef,
     taskInProgressRef,
+    interactionLaneRef,
     initializeSession: sessionInit.initializeSession,
     buildPentestSystemPrompt: buildSystemPrompt,
     createTerminalTab,
@@ -337,12 +332,17 @@ export const AIChatPanel = memo(function AIChatPanel() {
 
   // ── Handlers ─────────────────────────────────────────────────────────
   const handleModelSelect = useCallback((modelId: string, provider: string) => {
+    if (interactionLaneRef.current !== "idle") return;
     const sel = { model: modelId, provider };
     setSelectedModel(sel);
     useStore.getState().setSelectedAiModel(sel);
   }, []);
 
   const handleImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (interactionLaneRef.current !== "idle") {
+      e.target.value = "";
+      return;
+    }
     const files = e.target.files;
     if (!files) return;
     for (const file of Array.from(files)) {
@@ -362,6 +362,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
   }, []);
 
   const handleConvNewChat = useCallback(async () => {
+    if (interactionLaneRef.current !== "idle") return;
     await handleNewChat();
     setInput("");
     setShowHistory(false);
@@ -369,6 +370,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
   }, [handleNewChat]);
 
   const handleConvSelect = useCallback((convId: string) => {
+    if (interactionLaneRef.current !== "idle") return;
     useStore.getState().setActiveConversation(convId);
     setShowHistory(false);
     requestAnimationFrame(() => textareaRef.current?.focus());
@@ -377,42 +379,119 @@ export const AIChatPanel = memo(function AIChatPanel() {
   // ── Derived data ─────────────────────────────────────────────────────
   const currentModel = selectedModel?.model ?? "";
   const currentProvider = selectedModel?.provider ?? "";
-  const activeRestartStage = useMemo(() => currentRestartStage(stagePlans), [stagePlans]);
+  const activeRestartStage = useMemo(
+    () =>
+      stagePlans
+        ? inferCurrentResetStage(
+            stagePlans.stageOrder,
+            stagePlans.plansByStage,
+            stagePlans.passedStages
+          )
+        : null,
+    [stagePlans]
+  );
+  const handleExecutionModeChange = useCallback(
+    async (mode: string): Promise<boolean> => {
+      if (interactionLaneRef.current !== "idle") return false;
+      interactionLaneRef.current = "mode";
+      try {
+        return await modes.handleExecutionModeChange(mode);
+      } finally {
+        if (interactionLaneRef.current === "mode") interactionLaneRef.current = "idle";
+      }
+    },
+    [modes.handleExecutionModeChange]
+  );
+  const handleAgentModeChange = useCallback(
+    (mode: Parameters<typeof modes.handleAgentModeChange>[0]) => {
+      if (!(["idle", "mode"] as ChatInteractionLane[]).includes(interactionLaneRef.current)) {
+        return;
+      }
+      modes.handleAgentModeChange(mode);
+    },
+    [modes.handleAgentModeChange]
+  );
   const handleStageReset = useCallback(
     async (stage: string) => {
-      if (!activeConv || isStreaming || taskResumeBusy || !stage) return;
+      if (!activeConv || isStreaming || interactionLaneRef.current !== "idle" || !stage) return;
+      const resetConversationId = activeConv.id;
+      interactionLaneRef.current = "reset";
       setTaskResumeBusy(true);
+      let resetCommitted = false;
       try {
         // Full reset: rewind + purge the selected stage's discovered facts so the
         // re-test starts clean, then resume the task from that stage.
-        await resetHarnessStageCheckpoint({
+        const receipt = await resetHarnessStageCheckpoint({
           mode: "restart_from_stage_purge",
           sessionId: activeConv.aiSessionId,
           stage,
         });
-        if (resolveEngine(modes.chatExecutionMode) !== "task") {
+        // A resolved command means the backend transaction committed. Reconcile
+        // local state before validating diagnostic receipt fields so malformed
+        // post-commit metadata can never leave the UI pointing at stale stages.
+        resetCommitted = true;
+        const localStageOrder = stagePlans?.stageOrder ?? [stage];
+        const memoryAffectedStages = trustedResetAffectedStages(receipt, stage, localStageOrder);
+        const resetEpoch = new Date().toISOString();
+        const affectedStages = rewindPersistedStagePlans(
+          resetConversationId,
+          memoryAffectedStages,
+          stage,
+          resetEpoch
+        );
+
+        const store = useStore.getState();
+        const candidateRoadmapOwners = [
+          activeConv.aiSessionId,
+          activeConversationTerminalId,
+        ].filter((sessionId): sessionId is string => !!sessionId && !!store.sessions[sessionId]);
+        const roadmapOwner =
+          candidateRoadmapOwners.find(
+            (sessionId) => (store.sessions[sessionId]?.stageOrder?.length ?? 0) > 0
+          ) ?? candidateRoadmapOwners[0];
+        if (roadmapOwner) {
+          store.rewindStagePlans(roadmapOwner, affectedStages, stage);
+        }
+
+        const receiptError = validateCommittedStageResetReceipt(receipt, stage, affectedStages);
+        if (receiptError) throw new Error(`后端原子重置回执异常: ${receiptError}`);
+
+        if (useStore.getState().activeConversationId !== resetConversationId) {
+          throw new Error("原会话已切换；请返回该会话后继续");
+        }
+
+        if (resolveEngine(modes.chatExecutionModeRef.current) !== "task") {
           const taskMode = normalizeExecutionModeId("task");
           const changed = await modes.handleExecutionModeChange(taskMode);
           if (!changed) throw new Error("后端未接受 Task execution profile");
         }
-        await handleSend(TASK_RESUME_PROMPT);
+        const resumed = await handleSend(TASK_RESUME_PROMPT, { allowWhileBlocked: true });
+        if (!resumed) throw new Error("自动继续消息未发送");
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
-        useStore.getState().setMessageError(activeConv.id, `重置阶段失败: ${message}`);
-        setInput(TASK_RESUME_PROMPT);
-        requestAnimationFrame(() => textareaRef.current?.focus());
+        useStore
+          .getState()
+          .setMessageError(
+            activeConv.id,
+            resetCommitted ? `阶段已重置，但自动继续失败: ${message}` : `重置阶段失败: ${message}`
+          );
+        if (useStore.getState().activeConversationId === resetConversationId) {
+          setInput(TASK_RESUME_PROMPT);
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }
       } finally {
+        if (interactionLaneRef.current === "reset") interactionLaneRef.current = "idle";
         setTaskResumeBusy(false);
       }
     },
     [
       activeConv,
+      activeConversationTerminalId,
       handleSend,
       isStreaming,
-      modes.chatExecutionMode,
       modes.chatExecutionModeRef,
       modes.handleExecutionModeChange,
-      taskResumeBusy,
+      stagePlans,
     ]
   );
   const showTaskResumeButton = import.meta.env.DEV && modes.chatExecutionMode !== "chat";
@@ -450,10 +529,15 @@ export const AIChatPanel = memo(function AIChatPanel() {
         conversations={conversations}
         activeConvId={activeConvId}
         showHistory={showHistory}
+        disabled={taskResumeBusy}
         onSelect={handleConvSelect}
-        onClose={handleCloseTab}
+        onClose={(convId, event) => {
+          if (interactionLaneRef.current === "idle") handleCloseTab(convId, event);
+        }}
         onNewChat={handleConvNewChat}
-        onToggleHistory={() => setShowHistory((v) => !v)}
+        onToggleHistory={() => {
+          if (interactionLaneRef.current === "idle") setShowHistory((v) => !v);
+        }}
       />
 
       {/* History panel */}
@@ -622,8 +706,9 @@ export const AIChatPanel = memo(function AIChatPanel() {
                   />
                   <button
                     type="button"
+                    disabled={taskResumeBusy}
                     onClick={() => setImageAttachments((prev) => prev.filter((_, j) => j !== i))}
-                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <X className="w-2.5 h-2.5" />
                   </button>
@@ -639,13 +724,14 @@ export const AIChatPanel = memo(function AIChatPanel() {
             onKeyDown={handleKeyDown}
             onInput={handleTextareaInput}
             placeholder={t("ai.inputPlaceholder")}
+            disabled={taskResumeBusy}
             rows={1}
             wrap="soft"
             className={cn(
               "w-full bg-transparent border-none outline-none resize-none",
               "text-[13px] text-foreground placeholder:text-muted-foreground/40",
               "leading-relaxed max-h-[160px] px-3 pt-2.5 pb-1.5",
-              "ai-chat-input-textarea"
+              "ai-chat-input-textarea disabled:cursor-not-allowed disabled:opacity-50"
             )}
           />
           {/* Bottom toolbar */}
@@ -653,14 +739,16 @@ export const AIChatPanel = memo(function AIChatPanel() {
             <div className="flex items-center gap-1.5">
               <ExecutionModePicker
                 chatExecutionMode={modes.chatExecutionMode}
-                onExecutionModeChange={modes.handleExecutionModeChange}
-                onAgentModeChange={modes.handleAgentModeChange}
+                disabled={taskResumeBusy}
+                onExecutionModeChange={handleExecutionModeChange}
+                onAgentModeChange={handleAgentModeChange}
               />
               <ChatModelSelector
                 modelDisplay={modelDisplay}
                 currentModel={currentModel}
                 currentProvider={currentProvider}
                 configuredProviders={configuredProviders}
+                disabled={taskResumeBusy}
                 onModelSelect={handleModelSelect}
               />
             </div>
@@ -679,7 +767,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
               <button
                 type="button"
                 title={t("ai.uploadImage")}
-                className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+                disabled={taskResumeBusy}
+                className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={() => fileInputRef.current?.click()}
               >
                 <Image className="w-3.5 h-3.5" />
@@ -689,6 +778,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
                 type="file"
                 accept="image/*"
                 multiple
+                disabled={taskResumeBusy}
                 className="hidden"
                 onChange={handleImageUpload}
               />
@@ -706,10 +796,10 @@ export const AIChatPanel = memo(function AIChatPanel() {
                   type="button"
                   title={input.trim() ? t("ai.send") : ""}
                   onClick={() => void handleSend()}
-                  disabled={!input.trim()}
+                  disabled={!input.trim() || taskResumeBusy}
                   className={cn(
                     "h-6 w-6 flex items-center justify-center rounded transition-colors",
-                    input.trim()
+                    input.trim() && !taskResumeBusy
                       ? "bg-accent text-accent-foreground hover:bg-accent/80 cursor-pointer"
                       : "bg-muted text-muted-foreground cursor-default"
                   )}

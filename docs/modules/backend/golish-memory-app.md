@@ -26,7 +26,7 @@
 - C3 rebuild 从 Assertion 历史写新 generation，验证 hash/count 后才切 active；绝不从 legacy/V2 graph 倒推 canonical truth。
 - C7 先从 DB ownership snapshot + server-owned principal/data policy 构造字段私有、无公开 constructor/Deserialize 的 `TrustedAuthorizationContext`，再按 stage/request/classification 取交集；scope/classification 必须先于 canonical/runtime/handoff/assertion/document/graph/vector 查询。
 - C7 retrieval 固定 `canonical → runtime → handoff → episode → assertion → document → temporal graph → vector` 顺序；mandatory canonical/runtime 超 token cap 时 fail closed，optional layer 才可稳定截断。Graph/vector 可显式 degrade，但禁止回退 legacy global memories/wiki。
-- C7 embedding projector 只在 exact predecessor document delivery=`succeeded` 后调用 provider，并强制 provider/result 均为 1536 维；未批准外部 embedding 或 restricted classification 均 terminal suppress。
+- C7 embedding projector 只在 exact predecessor document delivery=`succeeded` 后调用 provider，并强制 provider/result 均为 1536 维；未批准外部 embedding 或 restricted classification 均 terminal suppress。`QueryEmbeddingProvider` 明确声明是否需要数据外发：loopback-only provider在默认 customer-local policy下可用于 VectorPrior，外部 provider仍必须有显式策略授权；维度/数值/调用失败只降级 optional vector layer，不影响 mandatory canonical/runtime。
 
 本 crate 不直接依赖 sqlx 或 embedding provider；local temporal graph 通过 port/typed client 注入，外部 Graphiti 不在默认实现。`KnowledgeProjectorSupervisor` 是唯一通用 worker owner：并发 `start` 幂等、panic 后保留 DB lease 等待重领、shutdown 等当前 batch。projector 是可重建 read model，**不是 Gate authority**，也不随 AI session 启停。
 

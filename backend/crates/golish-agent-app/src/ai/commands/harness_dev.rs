@@ -9,6 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::State;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::error::GolishError;
@@ -31,8 +32,8 @@ enum HarnessDevResetMode {
     RestartFromStage,
     /// Full reset: like `RestartFromStage` (cursor + checkpoint rewind to the
     /// selected stage) AND deletes the discovered facts produced by the selected
-    /// stage and its DAG descendants, in the engagement org subtree, so re-testing
-    /// the stage starts from a clean slate.
+    /// stage and its DAG descendants, in the operation's exact frozen scope, so
+    /// re-testing the stage starts from a clean slate.
     RestartFromStagePurge,
 }
 
@@ -69,31 +70,70 @@ impl HarnessDevResetMode {
     }
 }
 
-/// Data domains that map to harness stages; each is purged once even if several
-/// affected stages share it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum FactDomain {
-    TargetIntel,
-    Eas,
-    Enumeration,
-    Vuln,
-}
-
 /// Which fact domain a stage produces (None = stage has no purgeable facts).
-fn fact_domain(stage: StageKind) -> Option<FactDomain> {
+fn fact_domain(stage: StageKind) -> Option<golish_db::repo::stage_purge::StagePurgeDomain> {
+    use golish_db::repo::stage_purge::StagePurgeDomain;
+
     Some(match stage {
-        StageKind::TargetIntel => FactDomain::TargetIntel,
-        StageKind::ExternalAttackSurface => FactDomain::Eas,
-        StageKind::Enumeration => FactDomain::Enumeration,
-        StageKind::VulnTriage
+        StageKind::TargetIntel => StagePurgeDomain::TargetIntel,
+        StageKind::ExternalAttackSurface => StagePurgeDomain::Eas,
+        StageKind::Enumeration => StagePurgeDomain::Enumeration,
+        StageKind::VulnTriage => StagePurgeDomain::Vuln,
+        StageKind::Scoping
         | StageKind::AttackCandidate
         | StageKind::Verification
         | StageKind::AccessValidation
         | StageKind::InternalDiscovery
         | StageKind::ObjectivePathing
-        | StageKind::ObjectiveSimulation => FactDomain::Vuln,
-        StageKind::Scoping | StageKind::Reporting | StageKind::Cleanup => return None,
+        | StageKind::ObjectiveSimulation
+        | StageKind::Reporting
+        | StageKind::Cleanup => return None,
     })
+}
+
+fn is_in_place_company_stage(stage: StageKind) -> bool {
+    matches!(
+        stage,
+        StageKind::TargetIntel
+            | StageKind::ExternalAttackSurface
+            | StageKind::Enumeration
+            | StageKind::VulnTriage
+    )
+}
+
+fn validate_in_place_full_reset(
+    selected_stage: StageKind,
+    current_stage: StageKind,
+    reached_stages: &HashSet<StageKind>,
+    dag: &AllowedDag,
+) -> Result<(), &'static str> {
+    if !is_in_place_company_stage(selected_stage)
+        || !is_in_place_company_stage(current_stage)
+        || reached_stages
+            .iter()
+            .any(|stage| *stage != StageKind::Scoping && !is_in_place_company_stage(*stage))
+    {
+        return Err("stage_reset_requires_new_operation");
+    }
+    if !reached_stages.contains(&selected_stage) {
+        return Err("stage_reset_stage_not_reached");
+    }
+    if !dag
+        .descendants_inclusive(selected_stage)
+        .contains(&current_stage)
+    {
+        return Err("stage_reset_stage_not_ancestor");
+    }
+    Ok(())
+}
+
+fn parse_reached_stages<'a>(
+    stages: impl IntoIterator<Item = &'a str>,
+) -> Result<HashSet<StageKind>, &'static str> {
+    stages
+        .into_iter()
+        .map(|stage| StageKind::try_parse(stage).ok_or("stage_reset_unknown_history_stage"))
+        .collect()
 }
 
 /// The `targets.status` floor a target should hold at the *start* of `stage`
@@ -118,7 +158,9 @@ struct StateBlobResetStats {
     trimmed_graph_flow_applied: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../../frontend/lib/generated/")]
 pub struct HarnessDevStageCheckpointResetResult {
     pub operation_id: String,
     pub stage: String,
@@ -135,12 +177,13 @@ pub struct HarnessDevStageCheckpointResetResult {
     pub message: String,
     /// True when discovered facts were deleted (not just the resume checkpoint).
     pub purged_facts: bool,
-    /// Number of engagement-org-subtree orgs the purge was scoped to.
+    /// Number of exact frozen-scope organizations the purge was scoped to.
     pub purge_scope_org_count: usize,
-    /// Per-table affected-row counts (None unless `purged_facts`).
+    /// Per-table affected-row counts (None unless `purged_facts`). The detailed
+    /// DB counter shape remains diagnostic-only at the IPC boundary.
+    #[ts(type = "unknown")]
     pub purge_counts: Option<golish_db::repo::stage_purge::StagePurgeCounts>,
-    /// Non-fatal note (e.g. purge skipped because the operation has no engagement
-    /// org binding).
+    /// Reserved for non-fatal diagnostics. Full purge never silently skips.
     pub purge_note: Option<String>,
 }
 
@@ -179,8 +222,41 @@ pub async fn harness_dev_reset_stage_checkpoint(
         )));
     }
 
+    if mode.purges_facts() {
+        let current_stage = StageKind::try_parse(&row.current_stage).ok_or_else(|| {
+            GolishError::Validation(format!(
+                "stage_reset_requires_new_operation: current stage '{}' is not resettable in place",
+                row.current_stage
+            ))
+        })?;
+        let stage_runs =
+            golish_db::repo::stage_runs::list_for_operation(&state.db_pool, operation_id).await?;
+        let reached_stages = parse_reached_stages(
+            stage_runs.iter().map(|run| run.stage_kind.as_str()),
+        )
+        .map_err(|code| {
+            GolishError::Validation(format!(
+                "{code}: operation history contains an unknown stage and cannot be reset safely"
+            ))
+        })?;
+        validate_in_place_full_reset(stage_kind, current_stage, &reached_stages, &dag).map_err(
+            |code| {
+                let detail = match code {
+                    "stage_reset_stage_not_reached" => "selected stage was not reached by this operation",
+                    "stage_reset_stage_not_ancestor" => "selected stage is not the current stage or one of its DAG ancestors",
+                    _ => "this stage family owns immutable history; create a new test operation or stage fork",
+                };
+                GolishError::Validation(format!("{code}: {detail}"))
+            },
+        )?;
+    }
+
     let affected = affected_stages(mode, stage_kind, &dag);
     let affected_names = dag_ordered_stage_names(&dag, &affected);
+    let fact_purge = mode
+        .purges_facts()
+        .then(|| stage_checkpoint_purge_plan(&affected, &affected_names, stage_kind))
+        .transpose()?;
     let (next_blob, stats) = reset_state_blob(
         row.state_blob.clone(),
         stage_kind,
@@ -192,6 +268,7 @@ pub async fn harness_dev_reset_stage_checkpoint(
         &state.db_pool,
         &golish_db::repo::runtime_memory_tx::SupersedeStageCheckpointRow {
             operation_id,
+            expected_active_stage_execution_id: None,
             expected_current_stage: row.current_stage.clone(),
             selected_stage: stage_kind.as_str().to_string(),
             affected_stage_kinds: affected_names.clone(),
@@ -201,28 +278,27 @@ pub async fn harness_dev_reset_stage_checkpoint(
                 .and_then(|spec| spec.specialist)
                 .filter(|specialist| !specialist.trim().is_empty()),
             replacement_stage_execution_id: mode.resets_stage_cursor().then(Uuid::new_v4),
+            fact_purge,
+            finalizer_recovery_witness: None,
         },
     )
     .await
-    .map_err(|error| {
-        GolishError::Internal(format!(
+    .map_err(|error| match error {
+        golish_db::repo::runtime_memory_tx::RuntimeMemoryStoreError::Conflict {
+            code: "stage_checkpoint_reset_active_tool_in_flight",
+        } => GolishError::Validation(
+            "stage_checkpoint_reset_active_tool_in_flight: wait for or stop the active stage tool before resetting"
+                .to_string(),
+        ),
+        error => GolishError::Internal(format!(
             "atomically supersede runtime stage checkpoint: {error}"
-        ))
+        )),
     })?;
 
-    let (purged_facts, purge_scope_org_count, purge_counts, purge_note) = if mode.purges_facts() {
-        let (counts, org_count, note) = purge_stage_facts(
-            &state.db_pool,
-            operation_id,
-            row.engagement_org_id,
-            &affected,
-            stage_kind,
-        )
-        .await?;
-        (true, org_count, Some(counts), note)
-    } else {
-        (false, 0, None, None)
-    };
+    let purged_facts = mode.purges_facts();
+    let purge_scope_org_count = runtime_stats.purge_scope_org_count;
+    let purge_counts = runtime_stats.purge_counts.clone();
+    let purge_note = None;
 
     let current_stage = if mode.resets_stage_cursor() {
         stage_kind.as_str().to_string()
@@ -268,78 +344,25 @@ pub async fn harness_dev_reset_stage_checkpoint(
     })
 }
 
-/// Delete the discovered facts produced by `affected` stages (selected stage +
-/// DAG descendants), scoped to the operation's engagement org subtree, plus the
-/// per-stage completion/wave ledgers, and roll `targets.status` back to the floor
-/// of `selected_stage`. Returns the counts, the subtree org count, and an optional
-/// note (e.g. when the operation has no engagement org binding to scope by).
-async fn purge_stage_facts(
-    pool: &sqlx::PgPool,
-    operation_id: Uuid,
-    engagement_org_id: Option<Uuid>,
+fn stage_checkpoint_purge_plan(
     affected: &HashSet<StageKind>,
+    affected_names: &[String],
     selected_stage: StageKind,
-) -> Result<
-    (
-        golish_db::repo::stage_purge::StagePurgeCounts,
-        usize,
-        Option<String>,
-    ),
-    GolishError,
-> {
-    use golish_db::repo::stage_purge;
-
-    let counts = stage_purge::StagePurgeCounts::default();
-    let Some(root_org) = engagement_org_id else {
-        return Ok((
-            counts,
-            0,
-            Some(
-                "operation has no engagement org binding; reset the checkpoint only (no facts purged)"
-                    .to_string(),
-            ),
-        ));
-    };
-
-    let org_ids = golish_db::repo::organizations::subtree_ids(pool, root_org).await?;
-    let project_path = golish_db::repo::organizations::get_one(pool, root_org)
-        .await?
-        .map(|org| org.project_path);
-    let project_path = project_path.as_deref();
-
-    let mut stage_names: Vec<String> = affected.iter().map(|s| s.as_str().to_string()).collect();
-    stage_names.sort();
-    let techniques = affected_stage_techniques(affected)?;
-
-    let domains: HashSet<FactDomain> = affected.iter().copied().filter_map(fact_domain).collect();
-    let mut tx = pool.begin().await?;
-    let purge_result = purge_stage_facts_in_transaction(
-        tx.as_mut(),
-        operation_id,
-        &org_ids,
-        project_path,
-        &stage_names,
-        &techniques,
-        &domains,
-        selected_stage,
-    )
-    .await;
-    let counts = match purge_result {
-        Ok(counts) => {
-            tx.commit().await?;
-            counts
-        }
-        Err(error) => {
-            if let Err(rollback_error) = tx.rollback().await {
-                return Err(GolishError::Internal(format!(
-                    "stage fact purge failed ({error}); transaction rollback also failed: {rollback_error}"
-                )));
+) -> Result<golish_db::repo::stage_purge::StageCheckpointPurgePlan, GolishError> {
+    let mut domains = Vec::new();
+    for stage in affected {
+        if let Some(domain) = fact_domain(*stage) {
+            if !domains.contains(&domain) {
+                domains.push(domain);
             }
-            return Err(error);
         }
-    };
-
-    Ok((counts, org_ids.len(), None))
+    }
+    Ok(golish_db::repo::stage_purge::StageCheckpointPurgePlan {
+        domains,
+        stage_kinds: affected_names.to_vec(),
+        techniques: affected_stage_techniques(affected)?,
+        target_status_floor: target_status_floor(selected_stage).map(str::to_string),
+    })
 }
 
 fn affected_stage_techniques(affected: &HashSet<StageKind>) -> Result<Vec<String>, GolishError> {
@@ -354,60 +377,6 @@ fn affected_stage_techniques(affected: &HashSet<StageKind>) -> Result<Vec<String
         techniques.extend(spec.expected_techniques);
     }
     Ok(techniques.into_iter().collect())
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn purge_stage_facts_in_transaction(
-    conn: &mut sqlx::PgConnection,
-    operation_id: Uuid,
-    org_ids: &[Uuid],
-    project_path: Option<&str>,
-    stage_names: &[String],
-    techniques: &[String],
-    domains: &HashSet<FactDomain>,
-    selected_stage: StageKind,
-) -> Result<golish_db::repo::stage_purge::StagePurgeCounts, GolishError> {
-    use golish_db::repo::stage_purge;
-
-    let mut counts = stage_purge::StagePurgeCounts::default();
-    for domain in [
-        FactDomain::TargetIntel,
-        FactDomain::Eas,
-        FactDomain::Enumeration,
-        FactDomain::Vuln,
-    ] {
-        if !domains.contains(&domain) {
-            continue;
-        }
-        match domain {
-            FactDomain::TargetIntel => {
-                stage_purge::purge_target_intel_domain(conn, org_ids, &mut counts).await?
-            }
-            FactDomain::Eas => {
-                stage_purge::purge_eas_domain(conn, org_ids, project_path, &mut counts).await?
-            }
-            FactDomain::Enumeration => {
-                stage_purge::purge_enumeration_domain(conn, org_ids, &mut counts).await?
-            }
-            FactDomain::Vuln => {
-                stage_purge::purge_vuln_domain(conn, org_ids, project_path, &mut counts).await?
-            }
-        }
-    }
-
-    counts.technique_outcomes +=
-        stage_purge::delete_technique_outcomes(conn, org_ids, techniques).await?;
-    counts.org_stage_completions +=
-        stage_purge::delete_org_stage_completions(conn, org_ids, stage_names).await?;
-    counts.stage_asset_waves +=
-        stage_purge::delete_stage_asset_waves(conn, operation_id, org_ids, stage_names).await?;
-
-    if let Some(floor) = target_status_floor(selected_stage) {
-        counts.target_status_rolled_back +=
-            stage_purge::rollback_target_status(conn, org_ids, floor).await?;
-    }
-
-    Ok(counts)
 }
 
 fn ensure_dev_checkpoint_reset_allowed() -> Result<(), GolishError> {
@@ -785,6 +754,108 @@ mod tests {
 
     fn assessment_dag() -> AllowedDag {
         projected_dag_for_profile("assessment").expect("assessment dag")
+    }
+
+    #[test]
+    fn stage_reset_policy_accepts_only_reached_company_stages_before_immutable_truth() {
+        let dag = assessment_dag();
+        let reached = HashSet::from([
+            StageKind::Scoping,
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+        ]);
+
+        assert_eq!(
+            validate_in_place_full_reset(
+                StageKind::TargetIntel,
+                StageKind::ExternalAttackSurface,
+                &reached,
+                &dag,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_in_place_full_reset(
+                StageKind::ExternalAttackSurface,
+                StageKind::ExternalAttackSurface,
+                &reached,
+                &dag,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_in_place_full_reset(
+                StageKind::Enumeration,
+                StageKind::ExternalAttackSurface,
+                &reached,
+                &dag,
+            ),
+            Err("stage_reset_stage_not_reached")
+        );
+
+        let reached_after_rewind = HashSet::from([
+            StageKind::Scoping,
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+            StageKind::Enumeration,
+            StageKind::VulnTriage,
+        ]);
+        assert_eq!(
+            validate_in_place_full_reset(
+                StageKind::VulnTriage,
+                StageKind::ExternalAttackSurface,
+                &reached_after_rewind,
+                &dag,
+            ),
+            Err("stage_reset_stage_not_ancestor"),
+            "historical reachability must not authorize a forward jump after rewind"
+        );
+    }
+
+    #[test]
+    fn stage_reset_policy_rejects_scoping_and_immutable_stage_families() {
+        let dag = assessment_dag();
+        let reached = HashSet::from([
+            StageKind::Scoping,
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+            StageKind::Enumeration,
+            StageKind::VulnTriage,
+            StageKind::AttackCandidate,
+            StageKind::Reporting,
+        ]);
+
+        for selected in [
+            StageKind::Scoping,
+            StageKind::AttackCandidate,
+            StageKind::Verification,
+            StageKind::Reporting,
+            StageKind::Cleanup,
+        ] {
+            assert_eq!(
+                validate_in_place_full_reset(selected, StageKind::VulnTriage, &reached, &dag),
+                Err("stage_reset_requires_new_operation"),
+                "selected={}",
+                selected.as_str()
+            );
+        }
+        assert_eq!(
+            validate_in_place_full_reset(
+                StageKind::VulnTriage,
+                StageKind::AttackCandidate,
+                &reached,
+                &dag,
+            ),
+            Err("stage_reset_requires_new_operation")
+        );
+    }
+
+    #[test]
+    fn stage_reset_policy_rejects_unknown_historical_stage_names() {
+        assert_eq!(
+            parse_reached_stages(["scoping", "target_intel", "future_unknown_stage"]),
+            Err("stage_reset_unknown_history_stage")
+        );
     }
 
     #[test]

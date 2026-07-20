@@ -6,20 +6,34 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { IN_PLACE_RESET_STAGES, KNOWN_HARNESS_STAGES } from "@/lib/stage-reset";
 import { cn } from "@/lib/utils";
 import { prettyStageName } from "./StageMarker";
 
-/**
- * The frontier index: stages with index `<=` this are rewindable (selectable),
- * everything after is a not-yet-reached stage and stays locked. When there is no
- * current frontier (run finished / unknown stage), any stage may be rewound to.
- */
-export function stageRewindFrontierIndex(
-  stageOrder: string[],
-  currentStage: string | null
-): number {
-  const idx = currentStage ? stageOrder.indexOf(currentStage) : -1;
-  return idx >= 0 ? idx : stageOrder.length - 1;
+export interface StageResetAvailability {
+  selectable: boolean;
+  reason: string | null;
+}
+
+/** Mirror the backend's fail-closed in-place reset policy for immediate UX. */
+export function stageResetAvailability(
+  stage: string,
+  currentStage: string | null,
+  passedStages: string[]
+): StageResetAvailability {
+  if (!currentStage || !KNOWN_HARNESS_STAGES.has(currentStage)) {
+    return { selectable: false, reason: "没有可原地重置的运行中阶段" };
+  }
+  if (!IN_PLACE_RESET_STAGES.has(currentStage)) {
+    return { selectable: false, reason: "当前阶段需要新建测试任务" };
+  }
+  if (!IN_PLACE_RESET_STAGES.has(stage)) {
+    return { selectable: false, reason: "该阶段需要新建测试任务" };
+  }
+  if (stage !== currentStage && !passedStages.includes(stage)) {
+    return { selectable: false, reason: "该阶段尚未运行" };
+  }
+  return { selectable: true, reason: null };
 }
 
 interface StageResetMenuProps {
@@ -38,12 +52,9 @@ interface StageResetMenuProps {
 }
 
 /**
- * Dev-only stage reset picker (design 2026-06-30-stage-reset-full-purge). Lists
- * the DAG stages and lets the user fully reset to any stage **at or before** the
- * current frontier — you can only jump *back* (re-test an earlier/in-progress
- * stage), never forward into a stage that has not been reached. Selecting a stage
- * asks for confirmation (the reset deletes that stage's discovered data) before
- * firing `onReset`.
+ * Dev-only stage reset picker. Lists the DAG stages and lets the user fully
+ * reset a supported Company stage at or before the real running frontier.
+ * Selecting a stage asks for confirmation before firing `onReset`.
  */
 export const StageResetMenu = memo(function StageResetMenu({
   stageOrder,
@@ -57,12 +68,6 @@ export const StageResetMenu = memo(function StageResetMenu({
   const [pendingStage, setPendingStage] = useState<string | null>(null);
 
   const passed = useMemo(() => new Set(passedStages), [passedStages]);
-
-  // The frontier index: stages with index <= this are selectable (rewind).
-  const currentIdx = useMemo(
-    () => stageRewindFrontierIndex(stageOrder, currentStage),
-    [currentStage, stageOrder]
-  );
 
   const handleOpenChange = useCallback((next: boolean) => {
     setOpen(next);
@@ -130,10 +135,11 @@ export const StageResetMenu = memo(function StageResetMenu({
         ) : (
           <>
             <div className="px-3 pt-2 pb-1 text-[10.5px] text-muted-foreground">
-              重置到所选阶段重新测试（只能往回跳）
+              原地重测 Company 阶段（其他阶段需新建测试任务）
             </div>
-            {stageOrder.map((stage, i) => {
-              const selectable = i <= currentIdx;
+            {stageOrder.map((stage) => {
+              const availability = stageResetAvailability(stage, currentStage, passedStages);
+              const selectable = availability.selectable;
               const isPassed = passed.has(stage);
               const isCurrent = stage === currentStage;
               const Icon = !selectable ? Lock : isPassed ? Check : CircleDot;
@@ -141,6 +147,7 @@ export const StageResetMenu = memo(function StageResetMenu({
                 <DropdownMenuItem
                   key={stage}
                   disabled={!selectable}
+                  title={availability.reason ?? undefined}
                   onSelect={(e) => {
                     e.preventDefault();
                     if (selectable) setPendingStage(stage);
@@ -165,6 +172,11 @@ export const StageResetMenu = memo(function StageResetMenu({
                   <span className="font-medium">{prettyStageName(stage)}</span>
                   {isCurrent && (
                     <span className="ml-auto text-[10px] text-muted-foreground">当前</span>
+                  )}
+                  {!isCurrent && !selectable && availability.reason && (
+                    <span className="ml-auto max-w-[112px] truncate text-[9px] text-muted-foreground/60">
+                      {availability.reason}
+                    </span>
                   )}
                 </DropdownMenuItem>
               );

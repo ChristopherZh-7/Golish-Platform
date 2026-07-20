@@ -283,28 +283,108 @@ pub(super) fn is_cancelled(ctx: &AgenticLoopContext<'_>) -> bool {
 /// Resolve and render one exact-scope ContextPack. Missing runtime identity is
 /// an explicit no-context state; retrieval failures never fall back to legacy
 /// global memories/wiki/graph searches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BoundScopedContextIdentity {
+    pub operation_id: uuid::Uuid,
+    pub stage_execution_id: uuid::Uuid,
+    pub stage_run_unit_id: uuid::Uuid,
+    pub worker_run_id: uuid::Uuid,
+    pub organization_id: uuid::Uuid,
+}
+
+const MAX_CONTEXT_QUERY_CHARS: usize = 4_096;
+
+fn bounded_context_query(query: &str, stage: &str) -> String {
+    let prefix = format!("stage={stage}\n");
+    let prefix_chars = prefix.chars().count();
+    let available = MAX_CONTEXT_QUERY_CHARS.saturating_sub(prefix_chars);
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return format!("{prefix}retrieve exact-scope operational context");
+    }
+    let chars = trimmed.chars().collect::<Vec<_>>();
+    if chars.len() <= available {
+        return format!("{prefix}{trimmed}");
+    }
+    const SEPARATOR: &str = "\n[...bounded...]\n";
+    let content_budget = available.saturating_sub(SEPARATOR.chars().count());
+    let head_len = content_budget.saturating_mul(3) / 4;
+    let tail_len = content_budget.saturating_sub(head_len);
+    let head = chars.iter().take(head_len).collect::<String>();
+    let tail = chars
+        .iter()
+        .skip(chars.len().saturating_sub(tail_len))
+        .collect::<String>();
+    format!("{prefix}{head}{SEPARATOR}{tail}")
+}
+
+fn validate_bound_scoped_context_identity(
+    bound: BoundScopedContextIdentity,
+    outer_operation_id: Option<uuid::Uuid>,
+    outer_stage_execution_id: Option<uuid::Uuid>,
+    outer_stage_run_unit_id: Option<uuid::Uuid>,
+    outer_organization_id: Option<uuid::Uuid>,
+) -> Result<BoundScopedContextIdentity, String> {
+    if outer_operation_id.is_some_and(|value| value != bound.operation_id)
+        || outer_stage_execution_id.is_some_and(|value| value != bound.stage_execution_id)
+        || outer_stage_run_unit_id.is_some_and(|value| value != bound.stage_run_unit_id)
+        || outer_organization_id.is_some_and(|value| value != bound.organization_id)
+    {
+        return Err("knowledge_context_bound_identity_mismatch".to_string());
+    }
+    Ok(bound)
+}
+
 pub(crate) async fn retrieve_scoped_context_data(
     ctx: &AgenticLoopContext<'_>,
     query: &str,
     organization_id: Option<uuid::Uuid>,
     worker_run_id: Option<uuid::Uuid>,
+    bound_identity: Option<BoundScopedContextIdentity>,
 ) -> Result<Option<String>, String> {
     let Some(provider) = ctx.knowledge_context.as_ref() else {
         return Ok(None);
     };
-    let (Some(operation_id), Some(stage_execution_id), Some(stage_run_unit_id), Some(stage)) = (
-        ctx.harness_operation_id,
-        ctx.stage_execution_id,
-        ctx.stage_run_unit_id,
-        ctx.harness_stage,
-    ) else {
+    let Some(stage) = ctx.harness_stage else {
         return Ok(None);
     };
-    let Some(organization_id) = organization_id.or(ctx.harness_org_id) else {
-        return Ok(None);
-    };
-    let worker_run_id =
-        worker_run_id.or_else(|| ctx.worker_lease.as_ref().map(|lease| lease.worker_run_id));
+    let (operation_id, stage_execution_id, stage_run_unit_id, worker_run_id, organization_id) =
+        if let Some(bound) = bound_identity {
+            let bound = validate_bound_scoped_context_identity(
+                bound,
+                ctx.harness_operation_id,
+                ctx.stage_execution_id,
+                ctx.stage_run_unit_id,
+                organization_id.or(ctx.harness_org_id),
+            )?;
+            (
+                bound.operation_id,
+                bound.stage_execution_id,
+                bound.stage_run_unit_id,
+                Some(bound.worker_run_id),
+                bound.organization_id,
+            )
+        } else {
+            let (Some(operation_id), Some(stage_execution_id), Some(stage_run_unit_id)) = (
+                ctx.harness_operation_id,
+                ctx.stage_execution_id,
+                ctx.stage_run_unit_id,
+            ) else {
+                return Ok(None);
+            };
+            let Some(organization_id) = organization_id.or(ctx.harness_org_id) else {
+                return Ok(None);
+            };
+            let worker_run_id = worker_run_id
+                .or_else(|| ctx.worker_lease.as_ref().map(|lease| lease.worker_run_id));
+            (
+                operation_id,
+                stage_execution_id,
+                stage_run_unit_id,
+                worker_run_id,
+                organization_id,
+            )
+        };
     let subject = golish_memory_domain::ContextSubject::from_server_runtime(
         operation_id,
         stage_execution_id,
@@ -315,13 +395,36 @@ pub(crate) async fn retrieve_scoped_context_data(
         None,
     )
     .map_err(|error| error.code().to_string())?;
+    let query = bounded_context_query(query, stage.as_str());
     let pack = provider
         .retrieve(
             subject,
             golish_memory_domain::ContextRequest::for_harness(query, 2_048),
         )
         .await
-        .map_err(|error| error.code().to_string())?;
+        .map_err(|error| {
+            tracing::warn!(
+                target: "harness::knowledge_context",
+                code = error.code(),
+                detail = %error,
+                "exact-scope ContextPack provider rejected retrieval"
+            );
+            error.code().to_string()
+        })?;
+    tracing::info!(
+        target: "harness::knowledge_context",
+        canonical = pack.canonical_items.len(),
+        runtime = pack.runtime_items.len(),
+        handoffs = pack.handoff_items.len(),
+        episodes = pack.episode_items.len(),
+        assertions = pack.assertion_items.len(),
+        documents = pack.document_items.len(),
+        graph = pack.graph_items.len(),
+        vector = pack.vector_items.len(),
+        omitted = pack.omitted.omitted_count,
+        omission_reasons = ?pack.omitted.reasons,
+        "exact-scope ContextPack retrieved"
+    );
     let rendered =
         golish_agent_kit::harness::render_context_pack(&pack).map_err(|error| error.to_string())?;
     Ok(Some(rendered.data_block().to_string()))
@@ -406,7 +509,10 @@ pub(super) fn emit_event(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
 
 #[cfg(test)]
 mod stage_run_reentry_guard_tests {
-    use super::StageRunReentryGuard;
+    use super::{
+        bounded_context_query, validate_bound_scoped_context_identity, BoundScopedContextIdentity,
+        StageRunReentryGuard, MAX_CONTEXT_QUERY_CHARS,
+    };
     use golish_agent_kit::harness::StageKind;
 
     #[test]
@@ -420,5 +526,51 @@ mod stage_run_reentry_guard_tests {
 
         guard.reset();
         assert!(!guard.is_exhausted(StageKind::Enumeration));
+    }
+
+    #[test]
+    fn bound_context_identity_fills_missing_outer_unit_but_rejects_drift() {
+        let bound = BoundScopedContextIdentity {
+            operation_id: uuid::Uuid::new_v4(),
+            stage_execution_id: uuid::Uuid::new_v4(),
+            stage_run_unit_id: uuid::Uuid::new_v4(),
+            worker_run_id: uuid::Uuid::new_v4(),
+            organization_id: uuid::Uuid::new_v4(),
+        };
+        assert_eq!(
+            validate_bound_scoped_context_identity(
+                bound,
+                Some(bound.operation_id),
+                None,
+                None,
+                Some(bound.organization_id),
+            ),
+            Ok(bound)
+        );
+        assert_eq!(
+            validate_bound_scoped_context_identity(
+                bound,
+                Some(bound.operation_id),
+                Some(uuid::Uuid::new_v4()),
+                None,
+                Some(bound.organization_id),
+            ),
+            Err("knowledge_context_bound_identity_mismatch".to_string())
+        );
+    }
+
+    #[test]
+    fn scoped_context_query_bounds_large_worker_assignments_without_losing_both_ends() {
+        let query = format!("BEGIN-{}-END", "记忆".repeat(3_000));
+        let bounded = bounded_context_query(&query, "attack_candidate");
+
+        assert!(bounded.chars().count() <= MAX_CONTEXT_QUERY_CHARS);
+        assert!(bounded.starts_with("stage=attack_candidate\nBEGIN-"));
+        assert!(bounded.contains("[...bounded...]"));
+        assert!(bounded.ends_with("-END"));
+        assert_eq!(
+            bounded_context_query("   ", "target_intel"),
+            "stage=target_intel\nretrieve exact-scope operational context"
+        );
     }
 }

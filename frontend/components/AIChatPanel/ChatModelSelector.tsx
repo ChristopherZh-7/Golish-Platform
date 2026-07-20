@@ -20,6 +20,7 @@ interface ChatModelSelectorProps {
   currentModel: string;
   currentProvider: string;
   configuredProviders: Set<string>;
+  disabled?: boolean;
   onModelSelect: (modelId: string, provider: string) => void;
 }
 
@@ -113,6 +114,7 @@ export const ChatModelSelector = memo(function ChatModelSelector({
   currentModel,
   currentProvider,
   configuredProviders,
+  disabled = false,
   onModelSelect,
 }: ChatModelSelectorProps) {
   const { t } = useTranslation();
@@ -120,13 +122,24 @@ export const ChatModelSelector = memo(function ChatModelSelector({
   const filtered = getVisibleProviderGroups(configuredProviders, currentProvider);
   const thinkingEnabled = useEffectiveThinkingEnabled(currentProvider, currentModel);
 
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
   return (
     <div className="flex items-center gap-1">
-      <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
+      <DropdownMenu
+        modal={false}
+        open={open}
+        onOpenChange={(next) => {
+          if (!disabled) setOpen(next);
+        }}
+      >
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-accent hover:bg-[var(--bg-hover)] transition-colors"
+            disabled={disabled}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-accent hover:bg-[var(--bg-hover)] transition-colors disabled:cursor-not-allowed disabled:opacity-40"
           >
             {modelDisplay}
             {thinkingEnabled && (
@@ -166,7 +179,10 @@ export const ChatModelSelector = memo(function ChatModelSelector({
                   return (
                     <DropdownMenuItem
                       key={`${group.provider}-${model.id}-${model.reasoningEffort ?? ""}`}
-                      onClick={() => onModelSelect(model.id, group.provider)}
+                      disabled={disabled}
+                      onClick={() => {
+                        if (!disabled) onModelSelect(model.id, group.provider);
+                      }}
                       className={getModelItemClassName(isSelected)}
                     >
                       {model.name}
@@ -178,7 +194,7 @@ export const ChatModelSelector = memo(function ChatModelSelector({
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      {currentProvider && currentModel && (
+      {!disabled && currentProvider && currentModel && (
         <ModelSettingsPopover
           provider={currentProvider}
           model={currentModel}

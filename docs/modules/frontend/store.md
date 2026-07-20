@@ -25,7 +25,7 @@
 | `slices/`（12） | appearance / context / conversation / dialog / notification / panel / session / ai / workflow / pane / hitl / app-shell（root 字段） |
 | `slices/live-output.ts` | 高频工具 live output 尾部窗口工具，供 session / ai / workflow sub-agent 输出写点共用 |
 | `slices/session*`（core/streaming/tabs/terminal/draft-types/helpers） | 会话 slice 拆分 |
-| `slices/workflow/` | 工作流/计划状态（含 markStagePassed/passedStages） |
+| `slices/workflow/` | 工作流/计划状态（含 markStagePassed/passedStages 与 receipt-driven `rewindStagePlans`） |
 | `selectors/`（app/session/agent-tree/anchors/pane-leaf/store-hooks） | 派生选择器 |
 | `types/` | 共享状态类型 |
 
@@ -37,6 +37,7 @@
 
 `conversation.updateMessageToolResult` 优先按 `requestId` 精确回填工具结果，工具名只作旧路径兜底；后台工具完成事件通过 `updateMessageToolResultByJobId` 按原 backgrounded result 里的 `job_id` 回填聊天气泡，避免同名 `pentest_run` 串结果或 backgrounded 长期显示成功态。
 `workflow/sub-agent` 的 `entries` 按 sub-agent LLM response 边界维护：`sub_agent_text_delta.accumulated` 和 `sub_agent_reasoning.accumulated` 应回填上一条 `tool_call` 之后的当前 text/thinking entry，而不是因为中间插入了 thinking 就新建重复 `Agent Output`；只有新的 tool call 才是新的 response 边界。
+`workflow/plan::rewindStagePlans(sessionId, affectedStages, selectedStage)` 只操作真实存在的canonical session，绝不能因reset创建AI/terminal alias：删除affected plans/order/passed truth后，必须立即插入selected stage的v0 `in_progress` seed并把它放回stageOrder。conversation localStorage的`rewindPersistedStagePlans`还要从持久化snapshot自己的stageOrder补齐suffix、返回最终union供store与receipt validation共用；不能只清旧plan等待后端下一条事件，否则auto-resume失败会留下空roadmap或刷新后复活旧后继。backend未成功时两处都不改，backend已commit后即使receipt后续校验或auto-resume失败也保留rewind结果。
 `workflow/sub-agent::startSubAgent` 把 exact `parentRequestId` 视为 durable WorkerRun 的 UI identity：冷恢复会先把失联的 running 卡投影成 interrupted；同 identity 后续收到权威 `sub_agent_started` 时必须恢复为 running、清掉旧 terminal/live 字段，同时保留既有 entries 与 tool history，并用 `attemptEntryStart` 隔开新旧 accumulated response，防共享前缀覆盖旧 Turn。重复的 live started 事件保持幂等，不能清空当前流。不能因续跑复用同一 request key 就把卡永久留在 interrupted，也不能另造一张 replacement Agent 卡。
 冷恢复把失去内存 job registry 的 backgrounded child tool 投影为 interrupted，但若 backend 实际仍存活并随后发回 exact `job_id` 的权威 background completion，`completeBackgroundedSubAgentToolCall` 仍须允许该 interrupted tool 收敛为 completed/error；不得仅凭同名工具或父 Agent 状态匹配。
 `tool_output_chunk` 写入 store 时必须走 `slices/live-output.ts::appendLiveToolOutput`，让 `activeToolCalls` / timeline `ai_tool_execution` / sub-agent `toolCalls` 都只保留 bounded live tail；完整结果仍从最终 `tool_result` / transcript / run.log 追溯，避免 route_probe_paths、browser_collect_js_api、js_extract_apis 等高频工具把 React state 膨胀到几十万字符。

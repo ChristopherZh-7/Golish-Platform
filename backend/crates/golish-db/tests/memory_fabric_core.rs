@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Utc};
 use golish_db::repo::{
-    knowledge_assertions, knowledge_documents, knowledge_embeddings, knowledge_outbox,
-    project_scopes, stage_episodes,
+    knowledge_assertions, knowledge_context, knowledge_documents, knowledge_embeddings,
+    knowledge_outbox, project_scopes, stage_episodes,
 };
 use golish_db::{DbConfig, GolishDb};
 use golish_memory_domain::assertion::{
@@ -472,6 +472,38 @@ async fn memory_fabric_typed_ids_delivery_dag_and_projection_invalidation() {
             .status,
         knowledge_outbox::DeliveryStatus::SucceededSuppressed
     );
+    assert_eq!(
+        knowledge_outbox::requeue_provider_unconfigured_embeddings(db.pool())
+            .await
+            .expect("policy-suppressed embeddings are not reopened"),
+        0
+    );
+    sqlx::query(
+        r#"UPDATE knowledge_projection_deliveries
+              SET terminal_reason='memory_embedding_provider_unconfigured'
+            WHERE event_id=$1 AND projector_name='embedding-projector'
+              AND status='succeeded_suppressed'"#,
+    )
+    .bind(episode_event.event_id)
+    .execute(db.pool())
+    .await
+    .expect("model the exact historical provider-unconfigured suppression");
+    assert_eq!(
+        knowledge_outbox::requeue_provider_unconfigured_embeddings(db.pool())
+            .await
+            .expect("requeue exact provider-unconfigured embedding"),
+        1
+    );
+    assert_eq!(
+        knowledge_outbox::get_delivery_status(
+            db.pool(),
+            episode_event.event_id,
+            ProjectorId::EmbeddingProjectorV1,
+        )
+        .await
+        .expect("read requeued embedding delivery"),
+        Some(knowledge_outbox::DeliveryStatus::Pending)
+    );
 
     sqlx::query(
         r#"INSERT INTO knowledge_projector_registry (
@@ -613,6 +645,8 @@ async fn memory_fabric_typed_ids_delivery_dag_and_projection_invalidation() {
         "memory_embedding_dimension_mismatch"
     );
     let embedding_id = Uuid::from_u128(0x403);
+    let mut fixture_embedding = vec![0.0; EMBEDDING_DIMENSION_V1];
+    fixture_embedding[0] = 1.0;
     knowledge_embeddings::insert(
         db.pool(),
         &knowledge_embeddings::InsertKnowledgeEmbedding {
@@ -622,7 +656,7 @@ async fn memory_fabric_typed_ids_delivery_dag_and_projection_invalidation() {
             source_version: 1,
             provider: "fixture".to_string(),
             model: "fixture-1536".to_string(),
-            embedding: vec![0.0; EMBEDDING_DIMENSION_V1],
+            embedding: fixture_embedding.clone(),
             content_hash: "e".repeat(64),
             valid_from: episode_event.occurred_at,
             valid_to: None,
@@ -630,6 +664,42 @@ async fn memory_fabric_typed_ids_delivery_dag_and_projection_invalidation() {
     )
     .await
     .expect("insert 1536-dimensional embedding");
+    let document_context = knowledge_context::active_documents(
+        db.pool(),
+        scope_a.project_scope_id,
+        organization_id,
+        Utc::now(),
+        "restricted",
+        "structured-only",
+        10,
+    )
+    .await
+    .expect("active document retrieval must use unambiguous assertion lineage");
+    assert_eq!(document_context.len(), 1);
+    let vector_context = knowledge_context::vector_documents(
+        db.pool(),
+        scope_a.project_scope_id,
+        organization_id,
+        Utc::now(),
+        "restricted",
+        &fixture_embedding,
+        10,
+    )
+    .await
+    .expect("vector retrieval must use unambiguous assertion lineage");
+    assert_eq!(vector_context.len(), 1);
+    let zero_vector_context = knowledge_context::vector_documents(
+        db.pool(),
+        scope_a.project_scope_id,
+        organization_id,
+        Utc::now(),
+        "restricted",
+        &vec![0.0; EMBEDDING_DIMENSION_V1],
+        10,
+    )
+    .await
+    .expect("undefined cosine distance must be omitted instead of overflowing score");
+    assert!(zero_vector_context.is_empty());
     knowledge_documents::invalidate_source(
         db.pool(),
         Some(scope_a.project_scope_id),

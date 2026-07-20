@@ -16,7 +16,7 @@ const aiMocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/ai", () => aiMocks);
 
-import { useChatSend } from "./useChatSend";
+import { type ChatInteractionLane, useChatSend } from "./useChatSend";
 
 describe("useChatSend system prompt injection", () => {
   it("keeps full pentest context only in chat mode", () => {
@@ -73,8 +73,9 @@ describe("useChatSend execution profile authority", () => {
       })
     );
 
+    let sent: boolean | undefined;
     await act(async () => {
-      await result.current.handleSend("测试广州有创");
+      sent = await result.current.handleSend("测试广州有创");
     });
 
     expect(aiMocks.setExecutionMode).toHaveBeenCalledWith("ai-profile-sync", "pentest");
@@ -86,5 +87,83 @@ describe("useChatSend execution profile authority", () => {
     expect(conversation.messages[conversation.messages.length - 1]?.error).toContain(
       "profile sync failed"
     );
+    expect(sent).toBe(false);
+  });
+
+  it("refuses every prompt while a destructive stage reset owns the send lane", async () => {
+    const { result } = renderHook(() =>
+      useChatSend({
+        input: "must not race reset",
+        setInput: vi.fn(),
+        isStreaming: false,
+        activeConvId: "conv-profile-sync",
+        imageAttachments: [],
+        setImageAttachments: vi.fn(),
+        textareaRef: { current: null },
+        userScrolledUpRef: { current: false },
+        streamingMsgRef: { current: null },
+        chatExecutionModeRef: { current: "pentest" },
+        taskInProgressRef: { current: false },
+        interactionLaneRef: { current: "reset" },
+        initializeSession: vi.fn().mockResolvedValue(true),
+        buildPentestSystemPrompt: vi.fn(() => ""),
+        createTerminalTab: vi.fn().mockResolvedValue(null),
+        t: (_key, fallback) => fallback ?? "",
+      })
+    );
+
+    let sent: boolean | undefined;
+    await act(async () => {
+      sent = await result.current.handleSend();
+    });
+
+    expect(sent).toBe(false);
+    expect(aiMocks.setExecutionMode).not.toHaveBeenCalled();
+    expect(aiMocks.sendPromptSession).not.toHaveBeenCalled();
+    expect(useStore.getState().conversations["conv-profile-sync"].messages).toEqual([]);
+  });
+
+  it("claims the shared lane synchronously before asynchronous session initialization", async () => {
+    let resolveInitialization: ((initialized: boolean) => void) | undefined;
+    const initializeSession = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveInitialization = resolve;
+        })
+    );
+    const interactionLaneRef: { current: ChatInteractionLane } = { current: "idle" };
+    const { result } = renderHook(() =>
+      useChatSend({
+        input: "claim before await",
+        setInput: vi.fn(),
+        isStreaming: false,
+        activeConvId: "conv-profile-sync",
+        imageAttachments: [],
+        setImageAttachments: vi.fn(),
+        textareaRef: { current: null },
+        userScrolledUpRef: { current: false },
+        streamingMsgRef: { current: null },
+        chatExecutionModeRef: { current: "pentest" },
+        taskInProgressRef: { current: false },
+        interactionLaneRef,
+        initializeSession,
+        buildPentestSystemPrompt: vi.fn(() => ""),
+        createTerminalTab: vi.fn().mockResolvedValue(null),
+        t: (_key, fallback) => fallback ?? "",
+      })
+    );
+
+    let send: Promise<boolean> | undefined;
+    act(() => {
+      send = result.current.handleSend();
+    });
+    expect(interactionLaneRef.current).toBe("send");
+
+    await act(async () => {
+      await vi.waitFor(() => expect(resolveInitialization).toBeTypeOf("function"));
+      resolveInitialization?.(false);
+      await send;
+    });
+    expect(interactionLaneRef.current).toBe("idle");
   });
 });

@@ -8,7 +8,8 @@ use golish_memory_app::{
     ContextPackProvider, DocumentDeliverySnapshot, DocumentDeliveryStatus, EffectiveContextQuery,
     EmbeddingDocument, EmbeddingProjectionError, EmbeddingProjectionOutcome,
     EmbeddingProjectionPort, EmbeddingProjector, EmbeddingProvider, KnowledgeContextSource,
-    KnowledgeRetriever, OperationDataPolicyReader, ProjectedEmbedding, ServerDataPolicy,
+    KnowledgeRetriever, OperationDataPolicyReader, ProjectedEmbedding, QueryEmbeddingProvider,
+    ServerDataPolicy,
 };
 use golish_memory_domain::{
     ContextItem, ContextRequest, ContextSubject, KnowledgeClassification, KnowledgeValue,
@@ -145,6 +146,8 @@ async fn document_delivery_must_succeed_before_embedding_provider_is_called() {
 
 struct RecordingContextBackend {
     order: Arc<Mutex<Vec<&'static str>>>,
+    allow_external_embedding: bool,
+    vector_has_embedding: Arc<Mutex<Vec<bool>>>,
 }
 
 #[async_trait]
@@ -180,7 +183,7 @@ impl OperationDataPolicyReader for RecordingContextBackend {
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
             classification_ceiling: KnowledgeClassification::Restricted,
-            allow_external_embedding: false,
+            allow_external_embedding: self.allow_external_embedding,
             server_token_cap: 4096,
         })
     }
@@ -240,8 +243,12 @@ impl KnowledgeContextSource for RecordingContextBackend {
     async fn vector(
         &self,
         _query: &EffectiveContextQuery,
-        _query_embedding: Option<&[f32]>,
+        query_embedding: Option<&[f32]>,
     ) -> Result<Vec<ContextItem>, ContextError> {
+        self.vector_has_embedding
+            .lock()
+            .expect("vector embedding lock")
+            .push(query_embedding.is_some());
         self.record("vector")
     }
 }
@@ -258,6 +265,8 @@ async fn retrieval_order_is_scope_classification_then_exact_layers_graph_and_vec
     let order = Arc::new(Mutex::new(Vec::new()));
     let backend = Arc::new(RecordingContextBackend {
         order: order.clone(),
+        allow_external_embedding: false,
+        vector_has_embedding: Arc::new(Mutex::new(Vec::new())),
     });
     let retriever = KnowledgeRetriever::new(backend.clone(), backend.clone(), backend, None)
         .expect("retriever");
@@ -290,6 +299,114 @@ async fn retrieval_order_is_scope_classification_then_exact_layers_graph_and_vec
             "vector",
         ]
     );
+}
+
+struct RecordingQueryEmbeddingProvider {
+    calls: Arc<Mutex<usize>>,
+    requires_external_data_egress: bool,
+}
+
+#[async_trait]
+impl QueryEmbeddingProvider for RecordingQueryEmbeddingProvider {
+    fn dimension(&self) -> usize {
+        1536
+    }
+
+    fn requires_external_data_egress(&self) -> bool {
+        self.requires_external_data_egress
+    }
+
+    async fn embed_query(&self, _query: &str) -> Result<Vec<f32>, ContextError> {
+        *self.calls.lock().expect("query embedding calls lock") += 1;
+        Ok(vec![0.25; 1536])
+    }
+}
+
+fn context_subject() -> ContextSubject {
+    ContextSubject::from_server_runtime(
+        Uuid::from_u128(20),
+        Uuid::from_u128(21),
+        Uuid::from_u128(22),
+        Some(Uuid::from_u128(23)),
+        Uuid::from_u128(24),
+        "verification",
+        Some(0),
+    )
+    .expect("subject")
+}
+
+#[tokio::test]
+async fn local_query_embedding_runs_when_external_data_egress_is_denied() {
+    let calls = Arc::new(Mutex::new(0));
+    let vector_has_embedding = Arc::new(Mutex::new(Vec::new()));
+    let backend = Arc::new(RecordingContextBackend {
+        order: Arc::new(Mutex::new(Vec::new())),
+        allow_external_embedding: false,
+        vector_has_embedding: vector_has_embedding.clone(),
+    });
+    let provider = Arc::new(RecordingQueryEmbeddingProvider {
+        calls: calls.clone(),
+        requires_external_data_egress: false,
+    });
+    let retriever =
+        KnowledgeRetriever::new(backend.clone(), backend.clone(), backend, Some(provider))
+            .expect("retriever");
+
+    let pack = retriever
+        .retrieve(
+            context_subject(),
+            ContextRequest::for_harness("candidate 7", 2048),
+        )
+        .await
+        .expect("local embedding retrieval");
+
+    assert_eq!(*calls.lock().expect("query embedding calls lock"), 1);
+    assert_eq!(
+        *vector_has_embedding.lock().expect("vector embedding lock"),
+        [true]
+    );
+    assert!(!pack
+        .omitted
+        .reasons
+        .iter()
+        .any(|reason| reason == "external_embedding_policy_denied"));
+}
+
+#[tokio::test]
+async fn external_query_embedding_stays_denied_without_explicit_policy() {
+    let calls = Arc::new(Mutex::new(0));
+    let vector_has_embedding = Arc::new(Mutex::new(Vec::new()));
+    let backend = Arc::new(RecordingContextBackend {
+        order: Arc::new(Mutex::new(Vec::new())),
+        allow_external_embedding: false,
+        vector_has_embedding: vector_has_embedding.clone(),
+    });
+    let provider = Arc::new(RecordingQueryEmbeddingProvider {
+        calls: calls.clone(),
+        requires_external_data_egress: true,
+    });
+    let retriever =
+        KnowledgeRetriever::new(backend.clone(), backend.clone(), backend, Some(provider))
+            .expect("retriever");
+
+    let pack = retriever
+        .retrieve(
+            context_subject(),
+            ContextRequest::for_harness("candidate 7", 2048),
+        )
+        .await
+        .expect("external embedding remains optional");
+
+    assert_eq!(*calls.lock().expect("query embedding calls lock"), 0);
+    assert_eq!(
+        *vector_has_embedding.lock().expect("vector embedding lock"),
+        [false]
+    );
+    assert!(pack
+        .omitted
+        .reasons
+        .iter()
+        .any(|reason| reason == "external_embedding_policy_denied"));
 }
 
 #[test]

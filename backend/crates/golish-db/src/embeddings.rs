@@ -48,6 +48,44 @@ impl HttpEmbedder {
         }
     }
 
+    /// Construct a local-only OpenAI-compatible embedding client. The endpoint
+    /// must be an HTTP loopback literal; redirects and environment proxies are
+    /// disabled so customer text cannot leave the host through proxy policy.
+    pub fn local_openai_compatible(base_url: &str, model: &str, dim: usize) -> Result<Self> {
+        let mut url = reqwest::Url::parse(base_url).context("invalid local embedding URL")?;
+        anyhow::ensure!(url.scheme() == "http", "local embedding URL must use http");
+        anyhow::ensure!(
+            matches!(url.host_str(), Some("127.0.0.1") | Some("::1")),
+            "local embedding URL must use a loopback IP literal"
+        );
+        anyhow::ensure!(
+            url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none(),
+            "local embedding URL cannot contain credentials, query, or fragment"
+        );
+        match url.path().trim_end_matches('/') {
+            "" => url.set_path("/v1"),
+            "/v1" => url.set_path("/v1"),
+            _ => anyhow::bail!("local embedding URL path must be / or /v1"),
+        }
+        let model = model.trim();
+        anyhow::ensure!(!model.is_empty(), "local embedding model is empty");
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("build local embedding client")?;
+        Ok(Self {
+            client,
+            base_url: url.as_str().trim_end_matches('/').to_string(),
+            api_key: String::new(),
+            model: model.to_string(),
+            dim,
+        })
+    }
+
     /// Convenience constructor for OpenAI's text-embedding-3-small (1536-dim).
     pub fn openai_small(api_key: &str) -> Self {
         Self::new(
@@ -78,6 +116,7 @@ impl HttpEmbedder {
 struct EmbeddingRequest<'a> {
     model: &'a str,
     input: &'a [&'a str],
+    dimensions: usize,
 }
 
 #[derive(Deserialize)]
@@ -101,10 +140,14 @@ impl Embedder for HttpEmbedder {
     }
 
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
         let url = format!("{}/embeddings", self.base_url);
         let body = EmbeddingRequest {
             model: &self.model,
             input: texts,
+            dimensions: self.dim,
         };
 
         let mut req = self.client.post(&url).json(&body);
@@ -125,7 +168,25 @@ impl Embedder for HttpEmbedder {
             .await
             .context("failed to parse embedding response")?;
 
-        Ok(parsed.data.into_iter().map(|o| o.embedding).collect())
+        anyhow::ensure!(
+            parsed.data.len() == texts.len(),
+            "embedding API response count mismatch"
+        );
+        parsed
+            .data
+            .into_iter()
+            .map(|object| {
+                anyhow::ensure!(
+                    object.embedding.len() == self.dim,
+                    "embedding API response dimension mismatch"
+                );
+                anyhow::ensure!(
+                    object.embedding.iter().all(|value| value.is_finite()),
+                    "embedding API response contains non-finite values"
+                );
+                Ok(object.embedding)
+            })
+            .collect()
     }
 
     fn dimension(&self) -> usize {
@@ -161,5 +222,37 @@ impl Embedder for NoopEmbedder {
 
     fn model_name(&self) -> &str {
         "noop"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Embedder, HttpEmbedder};
+
+    #[test]
+    fn local_embedder_accepts_only_loopback_v1_and_fixed_identity() {
+        let embedder = HttpEmbedder::local_openai_compatible(
+            "http://127.0.0.1:11434",
+            "qwen3-embedding:4b",
+            1536,
+        )
+        .expect("loopback Ollama endpoint is accepted");
+        assert_eq!(embedder.base_url, "http://127.0.0.1:11434/v1");
+        assert_eq!(embedder.dimension(), 1536);
+        assert_eq!(embedder.model_name(), "qwen3-embedding:4b");
+
+        for rejected in [
+            "https://127.0.0.1:11434/v1",
+            "http://localhost:11434/v1",
+            "http://192.168.1.5:11434/v1",
+            "http://127.0.0.1:11434/api",
+            "http://user@127.0.0.1:11434/v1",
+            "http://127.0.0.1:11434/v1?proxy=true",
+        ] {
+            assert!(
+                HttpEmbedder::local_openai_compatible(rejected, "model", 1536).is_err(),
+                "unsafe local endpoint must be rejected: {rejected}"
+            );
+        }
     }
 }
