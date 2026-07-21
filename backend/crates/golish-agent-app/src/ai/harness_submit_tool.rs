@@ -380,9 +380,8 @@ pub trait EvidenceLedgerQuery: Send + Sync {
     }
 }
 
-/// A still-running background job attributed to the current session. The closeout
-/// reconciliation barrier surfaces these so the agent doesn't conclude a stage
-/// while its own backgrounded scans are still in flight.
+/// A background job that is still running or whose terminal completion has not
+/// fully landed for the current session.
 #[derive(Debug, Clone)]
 pub struct RunningJobInfo {
     pub job_id: String,
@@ -396,8 +395,13 @@ pub struct RunningJobInfo {
 /// app wires it to `golish_app_core::background_jobs::manager()`.
 #[async_trait::async_trait]
 pub trait BackgroundJobsQuery: Send + Sync {
-    /// Background jobs still `Running` that were started by `session_id`.
-    async fn running_for_session(&self, session_id: &str) -> Vec<RunningJobInfo>;
+    /// Wait for runtime-owned terminal reconciliation. Returns the jobs still
+    /// outstanding when `max_wait` expires; empty means every side effect landed.
+    async fn wait_for_session_reconciled(
+        &self,
+        session_id: &str,
+        max_wait: std::time::Duration,
+    ) -> Vec<RunningJobInfo>;
 }
 
 fn required_check_aliases_for_evidence_kind(kind: &str) -> &'static [&'static str] {
@@ -593,19 +597,14 @@ pub struct SubmitStageDeliverableTool {
     operation_id_source: Option<Arc<RwLock<Option<Uuid>>>>,
     /// Piece 3 (closeout reconciliation barrier) · background-job manager seam.
     /// When present (and a `session_id` is set), a submit that arrives while the
-    /// session still has backgrounded scans running defers before gate preview.
-    /// Production defaults `reconcile_wait_ms` to 0 so the wait is a visible
-    /// `wait_for_background_jobs` tool step; operators may opt back into bounded
-    /// in-submit waiting with `GOLISH_SUBMIT_RECONCILE_WAIT_MS`.
+    /// session still has backgrounded scans running waits inside the same submit
+    /// invocation until their terminal side effects are fully reconciled.
     /// `None` ⇒ barrier disabled (tests / no DI).
     bg_jobs: Option<Arc<dyn BackgroundJobsQuery>>,
-    /// Total time the reconciliation barrier waits for running jobs to settle
-    /// before giving up and telling the agent to wait + resubmit. `0` ⇒ no wait
-    /// (single-shot check). Production wires this from
+    /// Total time the reconciliation barrier waits for runtime reconciliation.
+    /// Production wires this from
     /// `GOLISH_SUBMIT_RECONCILE_WAIT_MS`.
     reconcile_wait_ms: u64,
-    /// Poll interval while waiting for running jobs to settle.
-    reconcile_poll_ms: u64,
 }
 
 fn findings_allowed_for_attack_contract(
@@ -661,7 +660,6 @@ impl SubmitStageDeliverableTool {
             operation_id_source: None,
             bg_jobs: None,
             reconcile_wait_ms: 0,
-            reconcile_poll_ms: 1000,
         }
     }
 
@@ -688,10 +686,11 @@ impl SubmitStageDeliverableTool {
 
     /// Expand the compact model-facing Candidate decision groups into the
     /// existing exact one-draft-per-work-item gate contract. The model may name
-    /// exact frozen keys or one canonical manifest-kind prefix (for example,
-    /// `scanner_observation:`); prefixes are expanded only against the trusted
-    /// immutable manifest. Evidence ids are copied from that same manifest so
-    /// repeated ids never consume model output and cannot drift across items.
+    /// exact frozen keys, one canonical manifest-kind prefix (for example,
+    /// `surface_analysis:`), or exact Nuclei template ids. Selectors are
+    /// expanded only against the trusted immutable manifest. Evidence ids are
+    /// copied from that same manifest so repeated ids never consume model
+    /// output and cannot drift across items.
     async fn expand_candidate_decision_groups(&self, args: &mut Value) -> Result<(), String> {
         let Some(object) = args.as_object_mut() else {
             return Ok(());
@@ -760,6 +759,7 @@ impl SubmitStageDeliverableTool {
         const GROUP_FIELDS: &[&str] = &[
             "work_item_keys",
             "work_item_key_prefixes",
+            "nuclei_template_ids",
             "decision",
             "hypothesis",
             "rationale",
@@ -785,9 +785,22 @@ impl SubmitStageDeliverableTool {
                 .get("work_item_key_prefixes")
                 .and_then(Value::as_array)
                 .filter(|prefixes| !prefixes.is_empty());
-            if work_item_keys.is_some() == work_item_key_prefixes.is_some() {
+            let nuclei_template_ids = group
+                .get("nuclei_template_ids")
+                .and_then(Value::as_array)
+                .filter(|template_ids| !template_ids.is_empty());
+            if [
+                work_item_keys.is_some(),
+                work_item_key_prefixes.is_some(),
+                nuclei_template_ids.is_some(),
+            ]
+            .into_iter()
+            .filter(|selected| *selected)
+            .count()
+                != 1
+            {
                 return Err(
-                    "each Candidate decision group needs exactly one selector: work_item_keys or work_item_key_prefixes"
+                    "each Candidate decision group needs exactly one selector: work_item_keys, work_item_key_prefixes, or nuclei_template_ids"
                         .to_string(),
                 );
             }
@@ -805,6 +818,14 @@ impl SubmitStageDeliverableTool {
                 .ok_or_else(|| {
                     "each Candidate decision group needs a non-empty rationale".to_string()
                 })?;
+            if decision == "candidate"
+                && nuclei_template_ids.is_some_and(|template_ids| template_ids.len() != 1)
+            {
+                return Err(
+                    "a candidate Nuclei decision group must select exactly one template id so its hypothesis remains template-specific; metadata no_candidate groups may select multiple templates"
+                        .to_string(),
+                );
+            }
             let selected_keys = if let Some(work_item_keys) = work_item_keys {
                 work_item_keys
                     .iter()
@@ -817,9 +838,7 @@ impl SubmitStageDeliverableTool {
                             })
                     })
                     .collect::<Result<Vec<_>, _>>()?
-            } else {
-                let prefixes =
-                    work_item_key_prefixes.expect("exactly one selector was checked above");
+            } else if let Some(prefixes) = work_item_key_prefixes {
                 if prefixes.len() > 3 {
                     return Err(
                         "Candidate decision groups accept at most three manifest-kind prefixes"
@@ -868,6 +887,73 @@ impl SubmitStageDeliverableTool {
                 if selected.is_empty() {
                     return Err(
                         "Candidate decision-group prefixes selected no frozen work items"
+                            .to_string(),
+                    );
+                }
+                selected
+            } else {
+                let template_ids =
+                    nuclei_template_ids.expect("exactly one selector was checked above");
+                if template_ids.len() > 16 {
+                    return Err(
+                        "Candidate decision groups accept at most 16 Nuclei template ids"
+                            .to_string(),
+                    );
+                }
+                let mut requested_template_ids = HashSet::new();
+                for template_id in template_ids {
+                    let template_id = template_id
+                        .as_str()
+                        .filter(|value| {
+                            !value.trim().is_empty()
+                                && value.len() <= 128
+                                && value.bytes().all(|byte| {
+                                    byte.is_ascii_alphanumeric()
+                                        || matches!(byte, b'-' | b'_' | b'.' | b'/')
+                                })
+                        })
+                        .ok_or_else(|| {
+                            "Candidate Nuclei template selectors must be bounded safe strings"
+                                .to_string()
+                        })?;
+                    if !requested_template_ids.insert(template_id) {
+                        return Err(format!(
+                            "Candidate Nuclei template selector {template_id} is duplicated"
+                        ));
+                    }
+                }
+                let available_template_ids = manifest
+                    .work_items
+                    .iter()
+                    .filter(|item| item.observation_kind == "nuclei_match_v1")
+                    .filter_map(|item| item.observation.get("template_id").and_then(Value::as_str))
+                    .collect::<HashSet<_>>();
+                if let Some(unknown) = requested_template_ids
+                    .iter()
+                    .find(|template_id| !available_template_ids.contains(**template_id))
+                {
+                    return Err(format!(
+                        "Candidate Nuclei template selector {unknown} is not present in the frozen manifest"
+                    ));
+                }
+                let selected = manifest
+                    .work_items
+                    .iter()
+                    .filter(|item| {
+                        item.observation_kind == "nuclei_match_v1"
+                            && item
+                                .observation
+                                .get("template_id")
+                                .and_then(Value::as_str)
+                                .is_some_and(|template_id| {
+                                    requested_template_ids.contains(template_id)
+                                })
+                    })
+                    .map(|item| item.work_item_key.as_str())
+                    .collect::<Vec<_>>();
+                if selected.is_empty() {
+                    return Err(
+                        "Candidate Nuclei template selectors selected no frozen work items"
                             .to_string(),
                     );
                 }
@@ -1271,39 +1357,28 @@ impl SubmitStageDeliverableTool {
         self
     }
 
-    /// Configure the reconciliation barrier's wait budget / poll interval (ms).
+    /// Configure the reconciliation barrier's wait budget. The second argument
+    /// remains for source compatibility with older callers; waiting is now
+    /// event-driven and does not poll.
     /// Production reads `GOLISH_SUBMIT_RECONCILE_WAIT_MS`; tests pass small values
     /// to exercise the timeout branch without real delay.
-    pub fn with_reconcile_timeouts(mut self, wait_ms: u64, poll_ms: u64) -> Self {
+    pub fn with_reconcile_timeouts(mut self, wait_ms: u64, _poll_ms: u64) -> Self {
         self.reconcile_wait_ms = wait_ms;
-        self.reconcile_poll_ms = poll_ms.max(1);
         self
     }
 
     /// Closeout reconciliation barrier (Piece 3). Returns `Some(needs_fix json)`
-    /// when, after waiting up to `reconcile_wait_ms`, the session STILL has
-    /// background jobs running — so the caller short-circuits the submit and the
-    /// agent waits via the explicit `wait_for_background_jobs` control tool
-    /// instead of grading the stage against half-landed evidence. Returns `None`
-    /// when the barrier is disabled or all jobs have settled (proceed normally).
+    /// only when the runtime-owned event wait exceeds `reconcile_wait_ms`.
+    /// Healthy completions continue in this same invocation without asking the
+    /// model to call `check_job` / `wait_for_background_jobs` and resubmit.
     async fn reconcile_background_jobs(&self) -> Option<Value> {
         let (bg, sid) = (self.bg_jobs.as_ref()?, self.session_id.as_deref()?);
-        let mut running = bg.running_for_session(sid).await;
-        if running.is_empty() {
-            return None;
-        }
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(self.reconcile_wait_ms);
-        while !running.is_empty() {
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                break;
-            }
-            let remaining = deadline.duration_since(now).as_millis() as u64;
-            let nap = self.reconcile_poll_ms.min(remaining).max(1);
-            tokio::time::sleep(std::time::Duration::from_millis(nap)).await;
-            running = bg.running_for_session(sid).await;
-        }
+        let running = bg
+            .wait_for_session_reconciled(
+                sid,
+                std::time::Duration::from_millis(self.reconcile_wait_ms),
+            )
+            .await;
         if running.is_empty() {
             return None;
         }
@@ -1311,7 +1386,7 @@ impl SubmitStageDeliverableTool {
             target: "harness::submit_tool",
             session_id = %sid,
             still_running = running.len(),
-            "submit deferred: background scans still running at stage close"
+            "submit deferred: background reconciliation deadline expired"
         );
         let jobs: Vec<Value> = running
             .iter()
@@ -1326,18 +1401,16 @@ impl SubmitStageDeliverableTool {
         Some(json!({
             "status": "needs_fix",
             "reasons": [format!(
-                "{} background job(s) you launched are still running, so this stage's \
-                 evidence has not fully landed yet. Do NOT re-run the same command. Call \
-                 wait_for_background_jobs to wait visibly and read the completed job output \
-                 tails; then build the final deliverable from those results and call \
-                 submit_stage_deliverable again. If one has clearly hung (see elapsed_ms \
-                 below — very long with no progress, e.g. a DNS AXFR / zone-transfer probe), \
-                 inspect it once with check_job and kill_job it if stuck, then resubmit rather \
-                 than letting one hung probe block the stage.",
+                "System reconciliation deadline expired with {} background job(s) still \
+                 running or awaiting result landing. Do NOT re-run the same command. The \
+                 runtime normally resumes this submit automatically; this is an exceptional \
+                 recovery path. Inspect a listed job at most once with check_job, and use \
+                 kill_job only if it is genuinely stuck, then submit again after its terminal \
+                 notification.",
                 running.len()
             )],
             "running_background_jobs": jobs,
-            "note": "call wait_for_background_jobs, inspect the completed job tails it returns, then resubmit."
+            "note": "runtime reconciliation timed out; use the background-job detail and one-shot control tools only for recovery."
         }))
     }
 
@@ -1512,6 +1585,12 @@ impl SubmitStageDeliverableTool {
                     decision.work_item_key
                 )));
             }
+        }
+        if let Err(error) = golish_agent_kit::harness::attack_execution::build_candidate_acceptance(
+            &manifest,
+            &deliverable.candidate_decisions,
+        ) {
+            return Ok(Some(format!("{}: {error}", error.code())));
         }
         Ok(None)
     }
@@ -2046,13 +2125,14 @@ impl Tool for SubmitStageDeliverableTool {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 100,
-                    "description": "attack_candidate compact form for large manifests. Group only work items that genuinely share one decision and rationale. Select each group with either exact work_item_keys or canonical manifest-kind work_item_key_prefixes such as surface_analysis:, scanner_observation:, or directory_entry_set:. Prefixes expand only against the trusted frozen manifest; the unchanged Gate still requires exactly one terminal decision for every exact item. The server supplies each item's frozen evidence ids. Use this instead of candidate_decisions, never together.",
+                    "description": "attack_candidate compact form for large manifests. Group only work items that genuinely share one decision and rationale. Select each group with exactly one of: exact work_item_keys, canonical manifest-kind work_item_key_prefixes, or nuclei_template_ids. Template selectors match only exact nuclei_match_v1 template ids in the trusted frozen manifest, so TLS security and metadata classes can be decided without copying every hash key. The unchanged Gate still requires exactly one terminal decision for every exact item. The server supplies each item's frozen evidence ids. Use this instead of candidate_decisions, never together.",
                     "items": {
                         "type": "object",
                         "additionalProperties": false,
                         "properties": {
                             "work_item_keys": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 } },
                             "work_item_key_prefixes": { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-z0-9_]+:$" } },
+                            "nuclei_template_ids": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._/-]+$" }, "description": "Exact Nuclei template ids present in the frozen manifest, such as weak-cipher-suites or ssl-issuer." },
                             "decision": { "type": "string", "enum": ["candidate", "no_candidate"] },
                             "hypothesis": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Required only for a candidate group." },
                             "rationale": { "type": "string", "minLength": 1, "maxLength": 8192 },
@@ -2885,6 +2965,11 @@ mod tests {
             3
         );
         assert_eq!(
+            schema["properties"]["candidate_decision_groups"]["items"]["properties"]
+                ["nuclei_template_ids"]["maxItems"],
+            16
+        );
+        assert_eq!(
             schema["properties"]["candidate_decision_groups"]["items"]["required"],
             json!(["decision", "rationale"])
         );
@@ -3486,7 +3571,7 @@ mod tests {
         });
 
         golish_core::with_agent_tool_context(
-            Some(context),
+            Some(context.clone()),
             tool.expand_candidate_decision_groups(&mut args),
         )
         .await
@@ -3611,7 +3696,7 @@ mod tests {
         });
 
         golish_core::with_agent_tool_context(
-            Some(context),
+            Some(context.clone()),
             tool.expand_candidate_decision_groups(&mut args),
         )
         .await
@@ -3634,6 +3719,204 @@ mod tests {
             json!([41, 42, 43, 44, 45, 46, 47, 48, 49, 50])
         );
         assert_eq!(decisions[1]["evidence_refs"], json!([51]));
+
+        let mut combined_candidate = json!({
+            "stage_id": "attack_candidate",
+            "claims": [],
+            "candidate_decision_groups": [{
+                "nuclei_template_ids": ["weak-cipher-suites", "ssl-issuer"],
+                "decision": "candidate",
+                "hypothesis": "One generic TLS hypothesis.",
+                "rationale": "One rationale cannot preserve two template identities."
+            }]
+        });
+        let error = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.expand_candidate_decision_groups(&mut combined_candidate),
+        )
+        .await
+        .expect_err("candidate template groups must remain template-specific");
+        assert!(error.contains("exactly one template id"));
+    }
+
+    #[tokio::test]
+    async fn candidate_decision_groups_expand_exact_nuclei_template_ids() {
+        let operation_id = Uuid::new_v4();
+        let organization_id = Uuid::new_v4();
+        let stage_run_unit_id = Uuid::new_v4();
+        let mut manifest = candidate_manifest_fixture(
+            operation_id,
+            organization_id,
+            "scanner_observation:sha256:weak",
+        );
+        manifest.work_items[0].observation_kind = "nuclei_match_v1".to_string();
+        manifest.work_items[0].technique = "WSTG-CRYP-03".to_string();
+        manifest.work_items[0].observation = json!({"template_id": "weak-cipher-suites"});
+        let mut metadata = manifest.work_items[0].clone();
+        metadata.work_item_id = Uuid::new_v4();
+        metadata.work_item_key = "scanner_observation:sha256:issuer".to_string();
+        metadata.observation = json!({"template_id": "ssl-issuer"});
+        metadata.evidence_ids = vec![51];
+        manifest.work_items.push(metadata);
+        let tool = SubmitStageDeliverableTool::new(handles().0, handles().1).with_evidence_repo(
+            Arc::new(CandidateManifestMock {
+                manifest,
+                existing: (41..=51).collect(),
+            }),
+        );
+        let context = golish_core::AgentToolContext {
+            request_id: "candidate-template-groups".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: Some(stage_run_unit_id),
+            organization_id: Some(organization_id),
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let mut args = json!({
+            "stage_id": "attack_candidate",
+            "claims": [],
+            "candidate_decision_groups": [{
+                "nuclei_template_ids": ["weak-cipher-suites"],
+                "decision": "candidate",
+                "hypothesis": "The exact TLS weakness remains reproducible.",
+                "rationale": "Frozen Nuclei evidence supports exact safe replay."
+            }, {
+                "nuclei_template_ids": ["ssl-issuer"],
+                "decision": "no_candidate",
+                "rationale": "Issuer identity is inventory context only.",
+                "no_candidate_reason_code": "tls_metadata_only"
+            }]
+        });
+
+        golish_core::with_agent_tool_context(
+            Some(context),
+            tool.expand_candidate_decision_groups(&mut args),
+        )
+        .await
+        .expect("trusted Nuclei template selectors expand exact frozen items");
+
+        let decisions = args["candidate_decisions"].as_array().unwrap();
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(
+            decisions
+                .iter()
+                .map(|decision| decision["work_item_key"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "scanner_observation:sha256:weak",
+                "scanner_observation:sha256:issuer"
+            ]
+        );
+        assert_eq!(
+            decisions[0]["evidence_refs"],
+            json!([41, 42, 43, 44, 45, 46, 47, 48, 49, 50])
+        );
+        assert_eq!(decisions[1]["evidence_refs"], json!([51]));
+    }
+
+    #[tokio::test]
+    async fn candidate_submit_preview_rejects_duplicate_semantic_identity() {
+        let operation_id = Uuid::new_v4();
+        let organization_id = Uuid::new_v4();
+        let stage_run_unit_id = Uuid::new_v4();
+        let target_id = Uuid::new_v4();
+        let mut manifest = candidate_manifest_fixture(
+            operation_id,
+            organization_id,
+            "scanner_observation:sha256:weak",
+        );
+        manifest.work_items[0].target_live_id = Some(target_id);
+        manifest.work_items[0].technique = "WSTG-CRYP-03".to_string();
+        manifest.work_items[0].observation_kind = "nuclei_match_v1".to_string();
+        manifest.work_items[0].allowed_techniques = vec!["WSTG-CRYP-03".to_string()];
+        manifest.work_items[0].observation = json!({
+            "schema": "nuclei_match_v1",
+            "source_mode": "general",
+            "target_id": target_id,
+            "matched_url": "https://youchuang7.com:443/",
+            "template_id": "weak-cipher-suites",
+            "technique": "WSTG-CRYP-03"
+        });
+        let observation_hash = |observation: &Value| {
+            let digest = Sha256::digest(
+                serde_json::to_vec(observation).expect("serialize test observation"),
+            );
+            format!(
+                "sha256:{}",
+                digest
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            )
+        };
+        manifest.work_items[0].observation_hash =
+            observation_hash(&manifest.work_items[0].observation);
+        let mut second = manifest.work_items[0].clone();
+        second.work_item_id = Uuid::new_v4();
+        second.work_item_key = "scanner_observation:sha256:deprecated".to_string();
+        second.observation["template_id"] = json!("deprecated-tls");
+        second.observation_hash = observation_hash(&second.observation);
+        second.evidence_ids = vec![51];
+        manifest.work_items.push(second);
+        let (stage, sink) = handles();
+        *stage.write().await = Some(StageKind::AttackCandidate);
+        let tool = SubmitStageDeliverableTool::new(stage, sink).with_evidence_repo(Arc::new(
+            CandidateManifestMock {
+                manifest,
+                existing: (41..=51).collect(),
+            },
+        ));
+        let context = golish_core::AgentToolContext {
+            request_id: "candidate-duplicate-semantic-identity".to_string(),
+            tool_call_record_id: None,
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(Uuid::new_v4()),
+            stage_run_unit_id: Some(stage_run_unit_id),
+            organization_id: Some(organization_id),
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+        let output = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.execute(
+                json!({
+                    "stage_id": "attack_candidate",
+                    "claims": [{
+                        "kind": "candidate_synthesis",
+                        "subject": "https://youchuang7.com:443",
+                        "summary": "TLS decisions synthesized"
+                    }],
+                    "candidate_decision_groups": [{
+                        "work_item_keys": ["scanner_observation:sha256:weak"],
+                        "decision": "candidate",
+                        "hypothesis": "The exact TLS configuration remains weak",
+                        "rationale": "Frozen weak-cipher evidence supports replay"
+                    }, {
+                        "work_item_keys": ["scanner_observation:sha256:deprecated"],
+                        "decision": "candidate",
+                        "hypothesis": "The exact TLS configuration remains weak",
+                        "rationale": "Frozen deprecated-TLS evidence supports replay"
+                    }]
+                }),
+                Path::new("."),
+            ),
+        )
+        .await
+        .expect("duplicate semantic identity returns repair feedback");
+
+        assert_eq!(output["status"], "needs_fix", "output={output}");
+        assert!(
+            output["reasons"]
+                .to_string()
+                .contains("ATTACK_CANDIDATE_DUPLICATE_IDENTITY"),
+            "output={output}"
+        );
     }
 
     #[tokio::test]
@@ -5677,12 +5960,11 @@ mod tests {
 
     // ── Piece 3 · closeout reconciliation barrier ──────────────────────────
 
-    /// Background-jobs mock: reports `running` for its first `running_polls`
-    /// calls, then reports none — simulating scans that finish mid-wait. Set
-    /// `running_polls = usize::MAX` to simulate jobs that never settle.
+    /// Background-jobs mock: the runtime event wait either reconciles within
+    /// its budget or returns the still-outstanding jobs at deadline.
     struct BgJobsMock {
         running: Vec<RunningJobInfo>,
-        running_polls: usize,
+        settles_within_wait: bool,
         calls: std::sync::atomic::AtomicUsize,
     }
 
@@ -5696,33 +5978,36 @@ mod tests {
                         elapsed_ms: 45_000,
                     })
                     .collect(),
-                running_polls: usize::MAX,
+                settles_within_wait: false,
                 calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
-        fn settles_after(n_jobs: usize, polls: usize) -> Self {
+        fn settles_within_wait(n_jobs: usize) -> Self {
             let mut m = Self::always_running(n_jobs);
-            m.running_polls = polls;
+            m.settles_within_wait = true;
             m
         }
     }
 
     #[async_trait::async_trait]
     impl BackgroundJobsQuery for BgJobsMock {
-        async fn running_for_session(&self, _session_id: &str) -> Vec<RunningJobInfo> {
-            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if n < self.running_polls {
-                self.running.clone()
-            } else {
+        async fn wait_for_session_reconciled(
+            &self,
+            _session_id: &str,
+            _max_wait: std::time::Duration,
+        ) -> Vec<RunningJobInfo> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.settles_within_wait {
                 Vec::new()
+            } else {
+                self.running.clone()
             }
         }
     }
 
     // A submit that arrives while the session still has backgrounded scans
     // running is DEFERRED: needs_fix listing the still-running jobs, with a
-    // message that tells the model to wait visibly via wait_for_background_jobs
-    // and not rerun the same scan — and nothing is stashed (the stage is not
+    // exceptional recovery guidance — and nothing is stashed (the stage is not
     // graded against half-landed evidence).
     #[tokio::test]
     async fn submit_deferred_when_background_jobs_running() {
@@ -5744,13 +6029,16 @@ mod tests {
             .expect("running_background_jobs present");
         assert_eq!(jobs.len(), 2, "both running jobs are listed: {out:?}");
         let reason = out["reasons"][0].as_str().unwrap();
-        assert!(reason.contains("still running"), "reason: {reason}");
+        assert!(reason.contains("deadline expired"), "reason: {reason}");
         assert!(reason.contains("Do NOT re-run"), "reason: {reason}");
         assert!(
-            reason.contains("wait_for_background_jobs"),
+            !reason.contains("wait_for_background_jobs"),
             "reason: {reason}"
         );
-        assert!(reason.contains("output tails"), "reason: {reason}");
+        assert!(
+            reason.contains("at most once with check_job"),
+            "reason: {reason}"
+        );
         // Short-circuits BEFORE the gate preview ⇒ nothing captured.
         assert!(
             sink.read().await.is_none(),
@@ -5766,8 +6054,7 @@ mod tests {
         *stage.write().await = Some(StageKind::Scoping);
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_session_id("pentest-chat-1")
-            // Running for the first 2 polls, then settles.
-            .with_background_jobs(Arc::new(BgJobsMock::settles_after(1, 2)))
+            .with_background_jobs(Arc::new(BgJobsMock::settles_within_wait(1)))
             .with_reconcile_timeouts(5_000, 1);
 
         let out = tool

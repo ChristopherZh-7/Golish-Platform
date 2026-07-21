@@ -1,5 +1,7 @@
 # Stage Team Rolling Child Drain
 
+> Rolling refill与child completion的数据库锁收敛由 `docs/design/2026-07-21-stage-team-rolling-refill-lock-convergence.md` 补充；本文其余并发、安全与错误合同继续有效。
+
 ## 问题
 
 Target Intel、External Attack Surface、Enumeration 与 Vuln Triage 的 Company Controller 都通过 `drain_company_controller_children` 执行 durable child WorkItem。当前实现按 `child_cap = max_workers_active - 1` 先 claim 固定一批，再用 `join_all` 等整批全部结束，最后才 claim 下一批。
@@ -22,7 +24,7 @@ Target Intel、External Attack Surface、Enumeration 与 Vuln Triage 的 Company
 - 不增加 company、provider或child并发上限，不改变 Nuclei `-rl/-c`，不扩大目标、工具或 capability。
 - 不改 schema/migration、IPC、Worker identity、attempt/retry预算或 operator-recovery所有权。
 - rolling refill只利用 plan已经授权但被固定批次浪费的槽位；任意时刻 durable active Worker仍由 repository的 `max_workers_active`确定性拒绝越界。
-- 本轮不缓存 Nuclei template-list预检，也不修复现场观察到的独立 DB landing deadlock；deadlock属于后续独立根因任务。共享 drain必须确保一个 child错误不会跳过其它可领取 sibling。
+- 本轮不缓存 Nuclei template-list预检。后续生产run证明所谓独立DB landing deadlock实际由共享drain在poll child前同步await refill触发；锁收敛修复见上述2026-07-21补充设计。共享 drain仍必须确保一个 child错误不会跳过其它可领取 sibling。
 
 ## 验证
 

@@ -14,6 +14,7 @@
 
 export type { ApprovalPattern, ReasoningEffort } from "@/lib/ai";
 export type { RiskLevel } from "@/lib/tools";
+export type { BackgroundJob, BackgroundJobOrigin, BackgroundRunMeta } from "./background-job";
 export type {
   AgentMessage,
   AiToolExecution,

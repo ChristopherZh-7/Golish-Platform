@@ -269,7 +269,14 @@ describe("dispatchEvent", () => {
       ...mockCtx,
       getState: vi.fn(() => backgroundState) as unknown as EventHandlerContext["getState"],
     };
-    const result = { status: "backgrounded", job_id: "job_42", partial_stdout: "scanning..." };
+    const result = {
+      status: "backgrounded",
+      job_id: "job_42",
+      command: "naabu -host 10.0.0.1",
+      partial_stdout: "scanning...",
+      soft_timeout_ms: 30_000,
+      hard_timeout_ms: 1_800_000,
+    };
     const event = {
       type: "tool_result" as const,
       tool_name: "pentest_run",
@@ -298,6 +305,17 @@ describe("dispatchEvent", () => {
       "req-bg2",
       true,
       result
+    );
+    expect(backgroundState.addBackgroundJob).toHaveBeenCalledWith(
+      "test-session",
+      expect.objectContaining({
+        jobId: "job_42",
+        toolName: "pentest_run",
+        origin: { kind: "main_tool", requestId: "req-bg2" },
+        softTimeoutMs: 30_000,
+        hardTimeoutMs: 1_800_000,
+        state: "running",
+      })
     );
     // Must NOT terminally complete the card while the job is still running.
     expect(backgroundState.completeToolExecutionBlock).not.toHaveBeenCalled();
@@ -368,7 +386,17 @@ describe("dispatchEvent", () => {
     // Surfaces in the Cursor-style background-jobs indicator (badge + detail).
     expect(subAgentState.addBackgroundJob).toHaveBeenCalledWith(
       "test-session",
-      expect.objectContaining({ jobId: "job_sa", command: "nmap -p- -sV 10.0.0.0/24" })
+      expect.objectContaining({
+        jobId: "job_sa",
+        command: "nmap -p- -sV 10.0.0.0/24",
+        toolName: "pentest_run",
+        origin: {
+          kind: "sub_agent_tool",
+          parentRequestId: "parent-1",
+          requestId: "req-sa-bg",
+        },
+        state: "running",
+      })
     );
     // The sub-agent card is still resolved, carrying the backgrounded result.
     expect(subAgentState.completeSubAgentToolCall).toHaveBeenCalledWith(
@@ -410,6 +438,39 @@ describe("dispatchEvent", () => {
       "req-sa-ok",
       true,
       result
+    );
+  });
+
+  it("records live output activity for the exact background job request", () => {
+    const state = {
+      markBackgroundJobOutput: vi.fn(),
+    };
+    const ctx = {
+      ...mockCtx,
+      getState: vi.fn(() => state) as unknown as EventHandlerContext["getState"],
+    };
+    const event = {
+      type: "tool_output_chunk" as const,
+      request_id: "req-bg2",
+      tool_name: "pentest_run",
+      chunk: "open 443\n",
+      stream: "stdout",
+      source: { type: "main" as const },
+      session_id: "test-session",
+    };
+
+    dispatchEvent(event, ctx);
+
+    expect(state.markBackgroundJobOutput).toHaveBeenCalledWith(
+      "test-session",
+      "req-bg2",
+      expect.any(Number)
+    );
+    expect(ctx.batchToolOutputChunk).toHaveBeenCalledWith(
+      "test-session",
+      "req-bg2",
+      "open 443\n",
+      "main"
     );
   });
 

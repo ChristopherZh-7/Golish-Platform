@@ -1,6 +1,20 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type BackgroundJob, useStore } from "@/store";
 import { BackgroundJobsBadge } from "./StatusBadges";
+
+function backgroundJob(overrides: Partial<BackgroundJob> = {}): BackgroundJob {
+  return {
+    jobId: "job-1",
+    command: "naabu --host 127.0.0.1",
+    toolName: "pentest_run",
+    origin: { kind: "main_tool", requestId: "req-main" },
+    startedAt: Date.now(),
+    backgroundedAt: Date.now(),
+    state: "running",
+    ...overrides,
+  };
+}
 
 describe("BackgroundJobsBadge", () => {
   afterEach(() => {
@@ -19,7 +33,7 @@ describe("BackgroundJobsBadge", () => {
 
     render(
       <BackgroundJobsBadge
-        jobs={[{ jobId: "job-1", command: "naabu --host 127.0.0.1", startedAt: Date.now() - 7000 }]}
+        jobs={[backgroundJob({ startedAt: Date.now() - 7000 })]}
       />
     );
 
@@ -36,9 +50,7 @@ describe("BackgroundJobsBadge", () => {
 
   it("uses a high-contrast live style for the background jobs trigger", () => {
     render(
-      <BackgroundJobsBadge
-        jobs={[{ jobId: "job-1", command: "naabu --host 127.0.0.1", startedAt: Date.now() }]}
-      />
+      <BackgroundJobsBadge jobs={[backgroundJob()]} />
     );
 
     const button = screen.getByRole("button", { name: /1 running/i });
@@ -55,5 +67,32 @@ describe("BackgroundJobsBadge", () => {
     expect(placeholder).toBeInTheDocument();
     expect(placeholder?.className).toContain("invisible");
     expect(placeholder?.className).toContain("w-[7.25rem]");
+  });
+
+  it("opens the exact originating tool when a job row is selected", () => {
+    const sessionId = "session-badge";
+    useStore.setState((state) => {
+      state.sessions[sessionId] = {
+        id: sessionId,
+        name: "Badge",
+        workingDirectory: "/tmp",
+        createdAt: "2026-07-21T00:00:00.000Z",
+        mode: "agent",
+      };
+      state.backgroundJobs[sessionId] = [backgroundJob()];
+    });
+
+    render(
+      <BackgroundJobsBadge jobs={useStore.getState().backgroundJobs[sessionId]} sessionId={sessionId} />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /1 running/i }));
+    fireEvent.click(screen.getByRole("button", { name: /open naabu/i }));
+
+    expect(useStore.getState().sessions[sessionId]).toEqual(
+      expect.objectContaining({
+        detailViewMode: "tool-detail",
+        toolDetailRequestIds: ["req-main"],
+      })
+    );
   });
 });

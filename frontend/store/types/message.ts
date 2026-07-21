@@ -1,3 +1,4 @@
+import type { BackgroundRunMeta } from "./background-job";
 import type { CompactionResult, FinalizedStreamingBlock } from "./streaming";
 import type { ActiveSubAgent } from "./sub-agent";
 import type { ToolCall, ToolCallSource } from "./tool-call";
@@ -59,6 +60,8 @@ export interface AiToolExecution {
   autoApproved?: boolean;
   riskLevel?: string;
   streamingOutput?: string;
+  /** Retained even after a background job reaches a terminal result. */
+  backgroundRun?: BackgroundRunMeta;
   source?: ToolCallSource;
   planStepIndex?: number;
   planStepId?: string;

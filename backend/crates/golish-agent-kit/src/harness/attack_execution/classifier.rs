@@ -524,17 +524,19 @@ pub fn classify_candidate(
                     ));
                 }
                 let origin = required_observation_str(&candidate.observation, "origin")?;
-                let candidate_origin = golish_pentest_domain::canonical_web_origin(
-                    candidate.target_value.trim(),
-                )
-                .ok_or_else(|| {
-                    observation_identity_mismatch(
+                let candidate_origin =
+                    golish_pentest_domain::canonical_web_origin(candidate.target_value.trim())
+                        .ok_or_else(|| {
+                            observation_identity_mismatch(
                         "directory-entry set Candidate target is not an exact HTTP(S) origin",
                     )
-                })?;
+                        })?;
                 let observed_origin = golish_pentest_domain::canonical_web_origin(origin)
-                    .ok_or_else(|| observation_invalid("directory-entry set origin is malformed"))?;
-                if observed_origin.key != candidate_origin.key || origin != candidate.target_value.trim()
+                    .ok_or_else(|| {
+                        observation_invalid("directory-entry set origin is malformed")
+                    })?;
+                if observed_origin.key != candidate_origin.key
+                    || origin != candidate.target_value.trim()
                 {
                     return Err(observation_identity_mismatch(
                         "directory-entry set origin differs from the frozen Candidate",
@@ -600,24 +602,26 @@ pub fn classify_candidate(
                     let id = id.as_i64().filter(|id| *id > 0).ok_or_else(|| {
                         observation_invalid("directory-entry set has invalid producer evidence")
                     })?;
-                    if parsed_evidence_ids.last().is_some_and(|previous| *previous >= id) {
+                    if parsed_evidence_ids
+                        .last()
+                        .is_some_and(|previous| *previous >= id)
+                    {
                         return Err(observation_invalid(
                             "directory-entry set producer evidence must be sorted and unique",
                         ));
                     }
                     let evidence_ref = format!("audit:{id}");
-                    if !prior_refs.iter().any(|reference| reference == &evidence_ref) {
+                    if !prior_refs
+                        .iter()
+                        .any(|reference| reference == &evidence_ref)
+                    {
                         return Err(observation_invalid(
                             "directory-entry set lacks its exact producer evidence",
                         ));
                     }
                     parsed_evidence_ids.push(id);
                 }
-                if candidate
-                    .observation
-                    .get("method")
-                    .and_then(Value::as_str)
-                    != Some("GET")
+                if candidate.observation.get("method").and_then(Value::as_str) != Some("GET")
                     || candidate
                         .observation
                         .get("source_tool")
@@ -677,9 +681,7 @@ pub fn classify_candidate(
                                 .any(|character| matches!(character, '\0' | '\r' | '\n'))
                     })
                     .ok_or_else(|| {
-                        observation_invalid(
-                            "directory-entry set preview has invalid content type",
-                        )
+                        observation_invalid("directory-entry set preview has invalid content type")
                     })?;
                 let source_tool = required_observation_str(selected, "tool")?;
                 if source_tool != "route_probe" {

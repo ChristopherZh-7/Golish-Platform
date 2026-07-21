@@ -1,3 +1,5 @@
+import type { BackgroundRunMeta } from "./background-job";
+
 export interface SubAgentToolCall {
   id: string;
   name: string;
@@ -5,6 +7,8 @@ export interface SubAgentToolCall {
   status: "running" | "backgrounded" | "completed" | "error" | "interrupted";
   result?: unknown;
   streamingOutput?: string;
+  /** Retained even after a background job reaches a terminal result. */
+  backgroundRun?: BackgroundRunMeta;
   startedAt: string;
   completedAt?: string;
 }

@@ -12,6 +12,8 @@ import type {
   AiConfig,
   AiStatus,
   AiToolExecution,
+  BackgroundJob,
+  BackgroundRunMeta,
   Session,
   StreamingBlock,
   TaskPlan,
@@ -68,14 +70,16 @@ function inferToolIntent(
   };
 }
 
-/** A backgrounded shell/pentest job still running (Cursor-style bottom indicator). */
-export interface BackgroundJob {
-  /** Job id returned by a `status:"backgrounded"` tool result. */
-  jobId: string;
-  /** The command that was detached to the background. */
-  command: string;
-  /** ms epoch when it was detached, for an elapsed-time display. */
-  startedAt: number;
+function backgroundRunMetaFromResult(result: unknown): BackgroundRunMeta | undefined {
+  if (result == null || typeof result !== "object") return undefined;
+  const value = result as Record<string, unknown>;
+  if (value.status !== "backgrounded" || typeof value.job_id !== "string") return undefined;
+  return {
+    jobId: value.job_id,
+    backgroundedAt: Date.now(),
+    softTimeoutMs: typeof value.soft_timeout_ms === "number" ? value.soft_timeout_ms : undefined,
+    hardTimeoutMs: typeof value.hard_timeout_ms === "number" ? value.hard_timeout_ms : undefined,
+  };
 }
 
 export interface AiState {
@@ -200,6 +204,12 @@ export interface AiActions {
   addBackgroundJob: (sessionId: string, job: BackgroundJob) => void;
   /** Drop a background job once it terminates (completed / killed). */
   removeBackgroundJob: (sessionId: string, jobId: string) => void;
+  /** Record live stdout/stderr activity for the exact originating request. */
+  markBackgroundJobOutput: (sessionId: string, requestId: string, at: number) => void;
+  /** Keep cancellation request distinct from terminal completion. */
+  setBackgroundJobState: (sessionId: string, jobId: string, state: BackgroundJob["state"]) => void;
+  /** Navigate to the exact main tool or parent sub-agent that owns a live job. */
+  openBackgroundJobDetail: (sessionId: string, jobId: string) => void;
 }
 
 export interface AiSlice extends AiState, AiActions {}
@@ -337,7 +347,10 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
   addBackgroundJob: (sessionId, job) =>
     set((state) => {
       const list = state.backgroundJobs[sessionId] ?? [];
-      if (!list.some((j) => j.jobId === job.jobId)) {
+      const existing = list.find((j) => j.jobId === job.jobId);
+      if (existing) {
+        Object.assign(existing, job);
+      } else {
         state.backgroundJobs[sessionId] = [...list, job];
       }
     }),
@@ -347,6 +360,36 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
       const list = state.backgroundJobs[sessionId];
       if (list) {
         state.backgroundJobs[sessionId] = list.filter((j) => j.jobId !== jobId);
+      }
+    }),
+
+  markBackgroundJobOutput: (sessionId, requestId, at) =>
+    set((state) => {
+      const job = state.backgroundJobs[sessionId]?.find(
+        (candidate) => candidate.origin.requestId === requestId
+      );
+      if (job) job.lastOutputAt = at;
+    }),
+
+  setBackgroundJobState: (sessionId, jobId, nextState) =>
+    set((state) => {
+      const job = state.backgroundJobs[sessionId]?.find((candidate) => candidate.jobId === jobId);
+      if (job) job.state = nextState;
+    }),
+
+  openBackgroundJobDetail: (sessionId, jobId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      const job = state.backgroundJobs[sessionId]?.find((candidate) => candidate.jobId === jobId);
+      if (!session || !job) return;
+      if (job.origin.kind === "main_tool") {
+        session.toolDetailRequestIds = [job.origin.requestId];
+        session.backgroundToolFocusRequestId = null;
+        session.detailViewMode = "tool-detail";
+      } else {
+        session.toolDetailRequestIds = [job.origin.parentRequestId];
+        session.backgroundToolFocusRequestId = job.origin.requestId;
+        session.detailViewMode = "sub-agent-detail";
       }
     }),
 
@@ -592,6 +635,7 @@ export const createAiSlice: SliceCreator<AiSlice, AiStoreDraft> = (set, get) => 
       if (block && block.type === "ai_tool_execution") {
         block.data.status = "backgrounded";
         block.data.result = result;
+        block.data.backgroundRun = backgroundRunMetaFromResult(result);
       }
     }),
 

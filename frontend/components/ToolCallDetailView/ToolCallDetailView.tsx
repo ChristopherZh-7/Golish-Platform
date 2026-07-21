@@ -15,6 +15,7 @@ import { ArrowLeft, CheckCircle2, Clock, Loader2, Wrench, XCircle } from "lucide
 import { memo, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Ansi } from "@/components/Ansi";
+import { BackgroundJobPanel } from "@/components/BackgroundJobPanel/BackgroundJobPanel";
 import { AttackCandidateReview } from "@/components/Engagement/AttackCandidateReview";
 import {
   AttackCandidateStageRunRows,
@@ -650,6 +651,9 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     execution.result,
     stageRun?.rows ?? []
   );
+  const backgroundJob = execution.backgroundRun
+    ? (backgroundJobs.find((job) => job.jobId === execution.backgroundRun?.jobId) ?? null)
+    : null;
 
   return (
     <div className="h-full flex flex-col bg-card">
@@ -688,6 +692,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         <div className="ml-auto flex items-center justify-end">
           <BackgroundJobsBadge
             jobs={backgroundJobs}
+            sessionId={sessionId}
             fallbackCount={backgroundedToolCount}
             reserveSpace
           />
@@ -712,6 +717,15 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             )}
           </div>
         </div>
+
+        {execution.backgroundRun && (
+          <BackgroundJobPanel
+            sessionId={sessionId}
+            backgroundRun={execution.backgroundRun}
+            job={backgroundJob}
+            terminalResult={execution.result}
+          />
+        )}
 
         {execution.toolName === "stage_run" &&
           stageRun &&
@@ -893,27 +907,10 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         )}
       </div>
 
-      {(isRunning || isBackgrounded) && (
-        <div
-          className={cn(
-            "px-3 py-2 border-t border-[var(--border-subtle)] flex items-center gap-2 flex-shrink-0",
-            isBackgrounded ? "bg-amber-400/10" : "bg-[var(--ansi-blue)]/10"
-          )}
-        >
-          <Loader2
-            className={cn(
-              DETAIL_RUNNING_SPINNER_CLASS,
-              isBackgrounded ? "text-amber-300" : "text-[var(--ansi-blue)]"
-            )}
-          />
-          <span
-            className={cn(
-              "text-[11px]",
-              isBackgrounded ? "text-amber-300" : "text-[var(--ansi-blue)]"
-            )}
-          >
-            {isBackgrounded ? "Running in background" : t("ai.toolDetail.running")}
-          </span>
+      {isRunning && (
+        <div className="px-3 py-2 border-t border-[var(--border-subtle)] flex items-center gap-2 flex-shrink-0 bg-[var(--ansi-blue)]/10">
+          <Loader2 className={cn(DETAIL_RUNNING_SPINNER_CLASS, "text-[var(--ansi-blue)]")} />
+          <span className="text-[11px] text-[var(--ansi-blue)]">{t("ai.toolDetail.running")}</span>
         </div>
       )}
     </div>

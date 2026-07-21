@@ -594,10 +594,7 @@ fn classifier_directory_entry_set_selects_one_frozen_preview_row_for_exact_repla
         "https://example.com/config.json"
     );
     assert_eq!(action.canonical_args["source_evidence_id"], 20);
-    assert_eq!(
-        action.canonical_args["observation"],
-        candidate.observation
-    );
+    assert_eq!(action.canonical_args["observation"], candidate.observation);
     assert_eq!(
         action.canonical_args["observation_hash"],
         candidate.observation_hash

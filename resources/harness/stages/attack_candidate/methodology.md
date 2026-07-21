@@ -30,6 +30,22 @@ manifest or decision.
   rationale.
 - `not_applicable` applies only to the exact technique and producer represented
   by that evidence row. It must not be generalized into "the target is safe".
+- For a frozen `nuclei_match_v1` / `WSTG-CRYP-03` observation, distinguish TLS
+  security leads from inventory metadata. `weak-cipher-suites`,
+  `deprecated-tls`, `self-signed-ssl`, and `mismatched-ssl-certificate` should
+  normally become low-priority verification hypotheses: Candidate is not a
+  Finding, and the server will derive an exact template replay. You may choose
+  `no_candidate` only when the frozen context supports one exact exception code:
+  `duplicate_candidate`, `evidence_stale`, `target_out_of_scope`,
+  `replay_not_safe`, `context_refuted`, or `observation_invalid`; explain that
+  exception and cite the work-item evidence. Generic labels such as
+  `observation_not_exploitable`, `informational`, or `low_severity` do not close
+  a TLS security lead.
+- `tls-version`, `ssl-issuer`, `ssl-dns-names`, and `wildcard-tls` are normally
+  inventory context and may close as `tls_metadata_only`. If other frozen
+  evidence makes one of them security-relevant, you may still form a concrete
+  Candidate hypothesis; the Gate validates the evidence and immutable replay
+  plan instead of replacing your judgment.
 
 **Recommended sequence:**
 
@@ -43,7 +59,18 @@ manifest or decision.
    surfaced (deep SQLi/XSS, deep IDOR/object-relationship abuse, WAF-bypass
    chains).
 3. For every `work_item_key`, submit exactly one `candidate` or `no_candidate`
-   decision. Unknown, duplicate, or omitted keys BLOCK the Gate.
+   decision. Unknown, duplicate, or omitted keys BLOCK the Gate. When the
+   manifest has more than 20 items, call `submit_stage_deliverable` in the first
+   response with `candidate_decision_groups`; do not use the response budget to
+   restate the manifest. Use exact `nuclei_template_ids` to group repeated
+   `nuclei_match_v1` observations by template while preserving the AI's chosen
+   decision/rationale. A Candidate group selects exactly one template id so the
+   hypothesis remains template-specific; metadata-only `no_candidate` groups
+   may combine template ids. If expanded items would create the same
+   target+technique+hypothesis identity, retain one Candidate and close the
+   duplicates as `no_candidate/duplicate_candidate`, or provide genuinely
+   distinct hypotheses. The server expands only exact frozen matches and
+   attaches each work item's evidence before the unchanged per-item Gate runs.
 4. Submit the StageDeliverable with `candidate_decisions[]`. `findings` and
    legacy `candidates[]` stay empty. After final Gate PASS the server classifies
    immutable verifier plan/hash/risk and accepts the complete batch atomically.
@@ -65,6 +92,9 @@ manifest or decision.
 - Prefer a few high-quality, well-grounded candidates over a long list of
   speculative ones — each approved candidate costs real exploitation budget in
   `verification`.
+- Do NOT spend a turn narrating, enumerating, or reconstructing a large frozen
+  manifest. Submit compact decision groups first; after a rejection, repair only
+  the selector named by the deterministic Gate.
 
 **Coverage + stop condition:**
 

@@ -128,6 +128,8 @@ export interface Session {
   passedStages?: string[];
   detailViewMode?: DetailViewMode;
   toolDetailRequestIds?: string[] | null;
+  /** Exact child tool to reveal after navigating from the background-jobs index. */
+  backgroundToolFocusRequestId?: string | null;
   /**
    * Live per-org progress for this session's current `stage_run` tool call.
    * Rendered inside the standard tool-call detail pane (ToolCallDetailView) for

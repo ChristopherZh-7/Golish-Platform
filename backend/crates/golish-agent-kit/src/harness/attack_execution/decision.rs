@@ -63,11 +63,70 @@ fn stable_reason_code(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
+fn normalize_candidate_identity_component(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
 fn is_surface_analysis(item: &CandidateManifestWorkItem) -> bool {
     item.observation
         .get("schema")
         .and_then(serde_json::Value::as_str)
         .is_some_and(|schema| matches!(schema, "surface_analysis_v1" | "surface_analysis_v2"))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NucleiObservationClass {
+    Other,
+    TlsSecurity,
+    TlsMetadata,
+}
+
+fn nuclei_observation_class(observation: &serde_json::Value) -> NucleiObservationClass {
+    if observation
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        != Some("nuclei_match_v1")
+        || observation
+            .get("technique")
+            .and_then(serde_json::Value::as_str)
+            != Some("WSTG-CRYP-03")
+    {
+        return NucleiObservationClass::Other;
+    }
+    let Some(template_id) = observation
+        .get("template_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+    else {
+        return NucleiObservationClass::Other;
+    };
+    match template_id.as_str() {
+        "weak-cipher-suites"
+        | "deprecated-tls"
+        | "self-signed-ssl"
+        | "mismatched-ssl-certificate" => NucleiObservationClass::TlsSecurity,
+        "tls-version" | "ssl-issuer" | "ssl-dns-names" | "wildcard-tls" => {
+            NucleiObservationClass::TlsMetadata
+        }
+        _ => NucleiObservationClass::Other,
+    }
+}
+
+fn allowed_tls_security_no_candidate_reason(reason_code: &str) -> bool {
+    matches!(
+        reason_code,
+        "duplicate_candidate"
+            | "evidence_stale"
+            | "target_out_of_scope"
+            | "replay_not_safe"
+            | "context_refuted"
+            | "observation_invalid"
+    )
 }
 
 fn fact_delta_route_shape_valid(item: &CandidateManifestWorkItem) -> bool {
@@ -309,6 +368,7 @@ pub fn build_candidate_acceptance(
 
     let mut candidates = Vec::new();
     let mut no_candidate_decisions = Vec::new();
+    let mut candidate_semantic_identities = BTreeMap::new();
     for (work_item_key, item) in by_key {
         let draft = decisions[work_item_key];
         if draft.rationale.trim().is_empty() {
@@ -379,6 +439,22 @@ pub fn build_candidate_acceptance(
                     }
                     selected
                 };
+                let semantic_identity = (
+                    item.target_identity_hash.clone(),
+                    normalize_candidate_identity_component(&item.target_value_at_time),
+                    normalize_candidate_identity_component(technique),
+                    normalize_candidate_identity_component(hypothesis),
+                );
+                if let Some(first_work_item_key) = candidate_semantic_identities
+                    .insert(semantic_identity, work_item_key.to_string())
+                {
+                    return Err(invalid(
+                        "ATTACK_CANDIDATE_DUPLICATE_IDENTITY",
+                        format!(
+                            "work items {first_work_item_key} and {work_item_key} produce the same Candidate identity; keep one exact hypothesis and close the duplicate as no_candidate/duplicate_candidate, or make the hypotheses genuinely distinct"
+                        ),
+                    ));
+                }
                 let identity = format!("{}:{}", manifest.operation_id, item.work_item_id);
                 let candidate_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, identity.as_bytes());
                 let execution_plan = classify_candidate(&CandidateClassificationInput {
@@ -440,6 +516,17 @@ pub fn build_candidate_acceptance(
                             format!("work item {work_item_key} has no stable reason code"),
                         )
                     })?;
+                if nuclei_observation_class(&item.observation)
+                    == NucleiObservationClass::TlsSecurity
+                    && !allowed_tls_security_no_candidate_reason(reason_code)
+                {
+                    return Err(invalid(
+                        "ATTACK_TLS_NO_CANDIDATE_REASON_TOO_GENERIC",
+                        format!(
+                            "TLS security work item {work_item_key} requires a specific evidence-backed exception or a Candidate verification hypothesis"
+                        ),
+                    ));
+                }
                 no_candidate_decisions.push(AcceptedNoCandidateDecision {
                     work_item_id: item.work_item_id,
                     reason_code: reason_code.to_string(),
@@ -549,6 +636,47 @@ mod tests {
             observation_hash: observation_hash(&observation),
             observation,
             evidence_ids: vec![evidence_id],
+        }
+    }
+
+    fn tls_item(key: &str, evidence_id: i64, template_id: &str) -> CandidateManifestWorkItem {
+        let target_id = Uuid::new_v4();
+        let observation = serde_json::json!({
+            "schema": "nuclei_match_v1",
+            "source_mode": "general",
+            "target_id": target_id,
+            "matched_url": "https://example.test:443/",
+            "template_id": template_id,
+            "technique": "WSTG-CRYP-03",
+        });
+        CandidateManifestWorkItem {
+            work_item_id: Uuid::new_v4(),
+            work_item_key: key.to_string(),
+            target_live_id: Some(target_id),
+            target_type_at_time: "url".to_string(),
+            target_value_at_time: "https://example.test:443".to_string(),
+            target_identity_hash: "sha256:tls-target".to_string(),
+            technique: "WSTG-CRYP-03".to_string(),
+            source_fact_delta_id: None,
+            delta_kind: None,
+            observation_kind: "nuclei_match_v1".to_string(),
+            allowed_techniques: vec!["WSTG-CRYP-03".to_string()],
+            enrichment_required: false,
+            observation_hash: observation_hash(&observation),
+            observation,
+            evidence_ids: vec![evidence_id],
+        }
+    }
+
+    fn manifest(work_items: Vec<CandidateManifestWorkItem>) -> CandidateManifestSnapshot {
+        CandidateManifestSnapshot {
+            operation_id: Uuid::new_v4(),
+            scope_snapshot_id: Uuid::new_v4(),
+            wave_run_id: Uuid::new_v4(),
+            wave_unit_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            manifest_hash: "sha256:fixture-manifest".to_string(),
+            work_items,
         }
     }
 
@@ -809,5 +937,160 @@ mod tests {
         };
 
         assert!(build_candidate_acceptance(&manifest, &[draft]).is_err());
+    }
+
+    #[test]
+    fn actionable_tls_observation_rejects_generic_no_candidate_reason() {
+        let manifest = manifest(vec![tls_item("weak-cipher", 71, "weak-cipher-suites")]);
+        let draft = CandidateDecisionDraft {
+            work_item_key: "weak-cipher".to_string(),
+            decision: CandidateDecisionKind::NoCandidate,
+            hypothesis: None,
+            rationale: "the scanner labeled this informational".to_string(),
+            technique: None,
+            evidence_refs: vec![71],
+            no_candidate_reason_code: Some("observation_not_exploitable".to_string()),
+        };
+
+        let error = build_candidate_acceptance(&manifest, &[draft])
+            .expect_err("generic labels must not silently discard actionable TLS evidence");
+        assert_eq!(error.code(), "ATTACK_TLS_NO_CANDIDATE_REASON_TOO_GENERIC");
+    }
+
+    #[test]
+    fn actionable_tls_observation_rejects_unrecognized_specific_reason() {
+        let manifest = manifest(vec![tls_item("self-signed", 76, "self-signed-ssl")]);
+        let draft = CandidateDecisionDraft {
+            work_item_key: "self-signed".to_string(),
+            decision: CandidateDecisionKind::NoCandidate,
+            hypothesis: None,
+            rationale: "the analyst called the observation not actionable".to_string(),
+            technique: None,
+            evidence_refs: vec![76],
+            no_candidate_reason_code: Some("not_actionable".to_string()),
+        };
+
+        let error = build_candidate_acceptance(&manifest, &[draft])
+            .expect_err("unrecognized synonyms must not bypass the TLS decision contract");
+        assert_eq!(error.code(), "ATTACK_TLS_NO_CANDIDATE_REASON_TOO_GENERIC");
+    }
+
+    #[test]
+    fn actionable_tls_observation_accepts_specific_evidenced_no_candidate() {
+        let mut item = tls_item("deprecated-tls", 72, "deprecated-tls");
+        item.evidence_ids.push(75);
+        let manifest = manifest(vec![item]);
+        let draft = CandidateDecisionDraft {
+            work_item_key: "deprecated-tls".to_string(),
+            decision: CandidateDecisionKind::NoCandidate,
+            hypothesis: None,
+            rationale: "a later frozen observation for this exact origin refutes the stale match"
+                .to_string(),
+            technique: None,
+            evidence_refs: vec![72, 75],
+            no_candidate_reason_code: Some("context_refuted".to_string()),
+        };
+
+        let accepted = build_candidate_acceptance(&manifest, &[draft])
+            .expect("AI may reject a TLS lead when it gives a specific grounded reason");
+        assert_eq!(accepted.candidates.len(), 0);
+        assert_eq!(accepted.no_candidate_decisions.len(), 1);
+    }
+
+    #[test]
+    fn actionable_tls_observation_builds_low_priority_nuclei_plan() {
+        let manifest = manifest(vec![tls_item("deprecated-tls", 73, "deprecated-tls")]);
+        let draft = CandidateDecisionDraft {
+            work_item_key: "deprecated-tls".to_string(),
+            decision: CandidateDecisionKind::Candidate,
+            hypothesis: Some(
+                "the exact origin may still negotiate a deprecated TLS version".into(),
+            ),
+            rationale: "the frozen Nuclei match is safe to replay exactly".to_string(),
+            technique: Some("WSTG-CRYP-03".to_string()),
+            evidence_refs: vec![73],
+            no_candidate_reason_code: None,
+        };
+
+        let accepted = build_candidate_acceptance(&manifest, &[draft])
+            .expect("AI-selected actionable TLS should derive an immutable replay plan");
+        assert_eq!(accepted.candidates.len(), 1);
+        assert_eq!(accepted.candidates[0].priority, "low");
+        assert_eq!(
+            accepted.candidates[0].execution_plan.actions[0].capability_id,
+            "verify.nuclei_template_replay"
+        );
+        assert_eq!(
+            accepted.candidates[0].execution_plan.actions[0].canonical_args["template_id"],
+            "deprecated-tls"
+        );
+        assert_eq!(
+            accepted.candidates[0].execution_plan.actions[0].canonical_args["matched_url"],
+            "https://example.test:443/"
+        );
+    }
+
+    #[test]
+    fn candidate_batch_rejects_duplicate_semantic_identity_before_db_insert() {
+        let manifest = manifest(vec![
+            tls_item("weak", 81, "weak-cipher-suites"),
+            tls_item("deprecated", 82, "deprecated-tls"),
+        ]);
+        let drafts = [
+            CandidateDecisionDraft {
+                work_item_key: "weak".to_string(),
+                decision: CandidateDecisionKind::Candidate,
+                hypothesis: Some("The exact TLS configuration remains weak".to_string()),
+                rationale: "Frozen weak-cipher evidence supports replay".to_string(),
+                technique: None,
+                evidence_refs: vec![81],
+                no_candidate_reason_code: None,
+            },
+            CandidateDecisionDraft {
+                work_item_key: "deprecated".to_string(),
+                decision: CandidateDecisionKind::Candidate,
+                hypothesis: Some("The exact TLS configuration remains weak".to_string()),
+                rationale: "Frozen deprecated-TLS evidence supports replay".to_string(),
+                technique: None,
+                evidence_refs: vec![82],
+                no_candidate_reason_code: None,
+            },
+        ];
+
+        let error = build_candidate_acceptance(&manifest, &drafts)
+            .expect_err("one operation cannot persist the same Candidate identity twice");
+        assert_eq!(error.code(), "ATTACK_CANDIDATE_DUPLICATE_IDENTITY");
+        assert!(error.to_string().contains("weak"));
+        assert!(error.to_string().contains("deprecated"));
+    }
+
+    #[test]
+    fn tls_metadata_observation_accepts_ai_decision_in_either_direction() {
+        let metadata = tls_item("issuer", 74, "ssl-issuer");
+        let no_candidate_manifest = manifest(vec![metadata.clone()]);
+        let no_candidate = CandidateDecisionDraft {
+            work_item_key: "issuer".to_string(),
+            decision: CandidateDecisionKind::NoCandidate,
+            hypothesis: None,
+            rationale: "issuer identity alone is inventory context".to_string(),
+            technique: None,
+            evidence_refs: vec![74],
+            no_candidate_reason_code: Some("tls_metadata_only".to_string()),
+        };
+        assert!(build_candidate_acceptance(&no_candidate_manifest, &[no_candidate]).is_ok());
+
+        let candidate_manifest = manifest(vec![metadata]);
+        let candidate = CandidateDecisionDraft {
+            work_item_key: "issuer".to_string(),
+            decision: CandidateDecisionKind::Candidate,
+            hypothesis: Some(
+                "the exact certificate issuer may violate the frozen trust policy".into(),
+            ),
+            rationale: "other frozen context makes this exact issuer security-relevant".to_string(),
+            technique: Some("WSTG-CRYP-03".to_string()),
+            evidence_refs: vec![74],
+            no_candidate_reason_code: None,
+        };
+        assert!(build_candidate_acceptance(&candidate_manifest, &[candidate]).is_ok());
     }
 }

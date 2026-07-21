@@ -1,4 +1,4 @@
-import { Bug, Gauge, Loader2, Server } from "lucide-react";
+import { Bug, ChevronRight, Gauge, Loader2, Server } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { SiOpentelemetry } from "react-icons/si";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -9,6 +9,7 @@ import type { TelemetryStats } from "@/lib/settings";
 import { formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { isMockBrowserMode } from "@/mocks";
+import { type BackgroundJob, useStore } from "@/store";
 
 function formatTokenCountDetailed(tokens: number): string {
   return tokens.toLocaleString();
@@ -28,13 +29,15 @@ function formatUptime(startedAtMs: number, now = Date.now()): string {
 /* ── Background Jobs Badge (Cursor-style "N running in background") ── */
 
 interface BackgroundJobsBadgeProps {
-  jobs: Array<{ jobId: string; command: string; startedAt: number }>;
+  jobs: BackgroundJob[];
+  sessionId?: string;
   fallbackCount?: number;
   reserveSpace?: boolean;
 }
 
 export const BackgroundJobsBadge = memo(function BackgroundJobsBadge({
   jobs,
+  sessionId,
   fallbackCount = 0,
   reserveSpace = false,
 }: BackgroundJobsBadgeProps) {
@@ -91,16 +94,26 @@ export const BackgroundJobsBadge = memo(function BackgroundJobsBadge({
         {hasJobDetails ? (
           <ul className="space-y-0.5 max-h-64 overflow-auto">
             {jobs.map((j) => (
-              <li
-                key={j.jobId}
-                className="flex items-center justify-between gap-2 rounded-md px-2 py-1 hover:bg-muted/50"
-              >
-                <span className="font-mono text-[11px] truncate" title={j.command}>
-                  {j.command}
-                </span>
-                <span className="text-[11px] text-foreground/75 shrink-0 tabular-nums">
-                  {formatUptime(j.startedAt, nowMs)}
-                </span>
+              <li key={j.jobId}>
+                <button
+                  type="button"
+                  aria-label={`Open ${j.command}`}
+                  disabled={!sessionId}
+                  onClick={() => {
+                    if (sessionId) {
+                      useStore.getState().openBackgroundJobDetail(sessionId, j.jobId);
+                    }
+                  }}
+                  className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left hover:bg-muted/50 disabled:pointer-events-none"
+                >
+                  <span className="font-mono text-[11px] truncate" title={j.command}>
+                    {j.command}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1 text-[11px] text-foreground/75 tabular-nums">
+                    {formatUptime(j.startedAt, nowMs)}
+                    {sessionId && <ChevronRight className="size-3 text-muted-foreground" />}
+                  </span>
+                </button>
               </li>
             ))}
           </ul>

@@ -148,7 +148,7 @@ export const InputStatusRow = memo(function InputStatusRow({ sessionId }: InputS
 
       {/* Right side */}
       <div className="flex items-center gap-2">
-        <BackgroundJobsBadge jobs={backgroundJobs} />
+        <BackgroundJobsBadge jobs={backgroundJobs} sessionId={sessionId} />
         {isMockBrowserMode() ? (
           <span className="text-[var(--ansi-yellow)] text-[11px] truncate max-w-[200px]">
             Browser only mode

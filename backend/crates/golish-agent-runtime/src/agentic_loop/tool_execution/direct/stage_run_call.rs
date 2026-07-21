@@ -163,10 +163,15 @@ fn candidate_manifest_instruction(manifest: &CandidateManifestSnapshot) -> anyho
          `work_item_key`. Concrete typed observations are the only candidate-capable items; inspect \
          and prioritize them before generic surface cells, keep their frozen `technique`, and cite \
          only evidence from that exact item. For a large manifest, use the submit tool's \
-         `candidate_decision_groups` compact form: group only items that genuinely share the same \
-         terminal decision and rationale. Use exact `work_item_keys` for exceptions and canonical \
-         manifest-kind `work_item_key_prefixes` such as `surface_analysis:` or \
-         `scanner_observation:` for homogeneous groups. The server expands only the immutable \
+         `candidate_decision_groups` compact form immediately: do not enumerate or restate a large \
+         manifest in prose. Group only items that genuinely share the same terminal decision and \
+         rationale. Use exact `work_item_keys` for exceptions, canonical manifest-kind \
+         `work_item_key_prefixes` such as `surface_analysis:` for homogeneous groups, and exact \
+         `nuclei_template_ids` to separate Nuclei/TLS security templates from metadata templates. \
+         A Candidate Nuclei group selects exactly one template id. If expanded items would create \
+         the same target+technique+hypothesis identity, retain one Candidate and close duplicates \
+         as `no_candidate/duplicate_candidate`, or provide genuinely distinct hypotheses. \
+         The server expands only the immutable \
          manifest and attaches each item's frozen evidence before running the unchanged exact-item \
          Gate. Do not re-list keys in prose. A `surface_analysis_v1` item is context-only: use its \
          server-provided `target_live_id` with read-only `query_target_data` only to explain an \
@@ -472,8 +477,10 @@ where
     );
 
     let mut in_flight = FuturesUnordered::new();
+    let mut pending_claims = FuturesUnordered::new();
     let mut completed = 0usize;
     let mut claim_sequence = 0usize;
+    let mut claim_paused_after_none = false;
     let mut first_execution_error = None;
     let mut terminal_error = None;
 
@@ -484,41 +491,48 @@ where
             ));
         }
 
-        while terminal_error.is_none() && in_flight.len() < concurrency {
-            if cancelled() {
-                terminal_error = Some(anyhow::anyhow!(
-                    "Stage Team child drain cancelled after the active tool reached its landing boundary"
-                ));
-                break;
-            }
-            match claim(claim_sequence).await {
-                Ok(Some(work)) => {
-                    claim_sequence = claim_sequence.saturating_add(1);
-                    in_flight.push(execute(work));
-                }
-                Ok(None) => break,
-                Err(error) => {
-                    terminal_error = Some(error);
-                    break;
-                }
-            }
+        if terminal_error.is_none()
+            && !claim_paused_after_none
+            && pending_claims.is_empty()
+            && in_flight.len() < concurrency
+        {
+            pending_claims.push(claim(claim_sequence));
         }
 
-        if in_flight.is_empty() {
+        if in_flight.is_empty() && pending_claims.is_empty() {
             return match terminal_error.or(first_execution_error) {
                 Some(error) => Err(error),
                 None => Ok(completed),
             };
         }
 
-        let result = in_flight
-            .next()
-            .await
-            .expect("a non-empty Stage Team rolling drain must yield a child result");
-        let summary = summarize_stage_team_child_batch([result]);
-        completed = completed.saturating_add(summary.completed);
-        if first_execution_error.is_none() {
-            first_execution_error = summary.first_error;
+        tokio::select! {
+            biased;
+            result = in_flight.next(), if !in_flight.is_empty() => {
+                let result = result
+                    .expect("a non-empty Stage Team rolling drain must yield a child result");
+                let summary = summarize_stage_team_child_batch([result]);
+                completed = completed.saturating_add(summary.completed);
+                if first_execution_error.is_none() {
+                    first_execution_error = summary.first_error;
+                }
+                claim_paused_after_none = false;
+            }
+            claimed = pending_claims.next(), if !pending_claims.is_empty() => {
+                match claimed.expect("a pending Stage Team claim must yield a result") {
+                    Ok(Some(work)) => {
+                        claim_sequence = claim_sequence.saturating_add(1);
+                        claim_paused_after_none = false;
+                        in_flight.push(execute(work));
+                    }
+                    Ok(None) => claim_paused_after_none = true,
+                    Err(error) => {
+                        if terminal_error.is_none() {
+                            terminal_error = Some(error);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -5712,7 +5726,10 @@ fn company_controller_waiting_action(
         CompanyControllerWaitingAction::OperatorRecoveryRequired {
             workers: barrier.recovery_required_workers,
         }
-    } else if barrier.live_workers > 0 || barrier.retry_pending_work_items > 0 {
+    } else if barrier.required_work_items > barrier.terminal_required_work_items
+        || barrier.live_workers > 0
+        || barrier.retry_pending_work_items > 0
+    {
         CompanyControllerWaitingAction::DrainChildren
     } else {
         CompanyControllerWaitingAction::NoRunnableChild
@@ -5728,7 +5745,7 @@ fn company_controller_waiting_error(barrier: &StageTeamBarrierView) -> anyhow::E
             .into()
         }
         CompanyControllerWaitingAction::DrainChildren => anyhow::anyhow!(
-            "Company Controller has live child WorkItems, but none were claimable by this scheduler"
+            "Company Controller has unfinished child WorkItems, but none were claimable by this scheduler"
         ),
         CompanyControllerWaitingAction::NoRunnableChild => {
             anyhow::anyhow!("Company Controller is waiting but no runnable child WorkItem remains")
@@ -13304,6 +13321,50 @@ mod tests {
     }
 
     #[test]
+    fn company_controller_waiting_action_drains_unclaimed_queued_child() {
+        let barrier = StageTeamBarrierView {
+            stage_team_plan_id: uuid::Uuid::new_v4(),
+            dispatch_epoch: 0,
+            requests_closed_at: None,
+            required_work_items: 16,
+            terminal_required_work_items: 5,
+            live_workers: 0,
+            retry_pending_work_items: 0,
+            recovery_required_workers: 0,
+            missing_outputs: 0,
+            manifest_sha256: format!("sha256:{}", "6".repeat(64)),
+        };
+
+        assert_eq!(
+            company_controller_waiting_action(&barrier),
+            CompanyControllerWaitingAction::DrainChildren,
+            "a parked Controller must claim required queued WorkItems that do not have WorkerRuns yet"
+        );
+    }
+
+    #[test]
+    fn company_controller_waiting_action_preserves_fully_terminal_barrier() {
+        let barrier = StageTeamBarrierView {
+            stage_team_plan_id: uuid::Uuid::new_v4(),
+            dispatch_epoch: 0,
+            requests_closed_at: None,
+            required_work_items: 5,
+            terminal_required_work_items: 5,
+            live_workers: 0,
+            retry_pending_work_items: 0,
+            recovery_required_workers: 0,
+            missing_outputs: 0,
+            manifest_sha256: format!("sha256:{}", "7".repeat(64)),
+        };
+
+        assert_eq!(
+            company_controller_waiting_action(&barrier),
+            CompanyControllerWaitingAction::NoRunnableChild,
+            "a fully terminal open barrier must not invent more child work"
+        );
+    }
+
+    #[test]
     fn stage_team_child_batch_preserves_error_without_skipping_recoverable_results() {
         let summary = summarize_stage_team_child_batch([
             Err(anyhow::anyhow!("first child lost its lease")),
@@ -13368,6 +13429,81 @@ mod tests {
             .expect("rolling drain task should not panic")
             .expect("all fake children should complete");
         assert_eq!(completed, 3);
+    }
+
+    #[tokio::test]
+    async fn rolling_stage_team_child_drain_polls_landing_while_refill_claim_waits() {
+        let queued = Arc::new(Mutex::new(VecDeque::from([1_u8, 2, 3])));
+        let claimed = Arc::new(Mutex::new(Vec::new()));
+        let operation_lock = Arc::new(Semaphore::new(1));
+        let holder_acquired = Arc::new(Notify::new());
+        let refill_started = Arc::new(Notify::new());
+
+        let completed = timeout(
+            Duration::from_secs(1),
+            drain_rolling_stage_team_work(
+                2,
+                {
+                    let queued = queued.clone();
+                    let claimed = claimed.clone();
+                    let operation_lock = operation_lock.clone();
+                    let refill_started = refill_started.clone();
+                    move |_claim_sequence| {
+                        let work = queued.lock().unwrap().pop_front();
+                        if let Some(work) = work {
+                            claimed.lock().unwrap().push(work);
+                        }
+                        let operation_lock = operation_lock.clone();
+                        let refill_started = refill_started.clone();
+                        async move {
+                            if work == Some(3) {
+                                refill_started.notify_one();
+                                let permit = operation_lock
+                                    .acquire_owned()
+                                    .await
+                                    .expect("the simulated operation lock should stay open");
+                                drop(permit);
+                            }
+                            Ok(work)
+                        }
+                    }
+                },
+                {
+                    let operation_lock = operation_lock.clone();
+                    let holder_acquired = holder_acquired.clone();
+                    let refill_started = refill_started.clone();
+                    move |work| {
+                        let operation_lock = operation_lock.clone();
+                        let holder_acquired = holder_acquired.clone();
+                        let refill_started = refill_started.clone();
+                        async move {
+                            match work {
+                                1 => {
+                                    let permit = operation_lock
+                                        .acquire_owned()
+                                        .await
+                                        .expect("the simulated operation lock should stay open");
+                                    holder_acquired.notify_one();
+                                    refill_started.notified().await;
+                                    drop(permit);
+                                }
+                                2 => holder_acquired.notified().await,
+                                _ => {}
+                            }
+                            Ok(StageTeamChildExecution::Completed)
+                        }
+                    }
+                },
+                || false,
+            ),
+        )
+        .await
+        .expect("refill waiting on a child-held lock must not stall child polling")
+        .expect("all fake children should land");
+
+        assert_eq!(completed, 3);
+        assert_eq!(*claimed.lock().unwrap(), vec![1, 2, 3]);
+        assert_eq!(operation_lock.available_permits(), 1);
     }
 
     #[tokio::test]

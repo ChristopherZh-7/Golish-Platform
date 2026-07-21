@@ -10,7 +10,8 @@
 //! - The caller (`run_shell_command_detail`) waits up to a *soft* timeout; if
 //!   the command finishes in time it returns the full result as before, else it
 //!   returns a `backgrounded` handle (`job_id`) and the command keeps running.
-//! - The AI polls [`BackgroundJobManager::snapshot`] via the `check_job` tool.
+//! - Runtime listeners reconcile terminal output and wake stage closeout only
+//!   after evidence, structured outcomes, UI state, and the agent note land.
 //! - A *hard* limit watchdog kills runaway jobs so nothing leaks forever.
 //!
 //! Design: `docs/design/2026-06-03-background-tool-execution.md` (P1).
@@ -105,6 +106,12 @@ struct JobState {
     started_at: Instant,
     finished_at: Option<Instant>,
     kill: Arc<Notify>,
+    /// Terminal is not equivalent to fully consumed. Keep the job outstanding
+    /// until the bridge listener has persisted every completion side effect.
+    reconciled: bool,
+    /// Shared by the original broadcast and any replay generated after a
+    /// lagged listener so completion side effects remain exactly-once.
+    processing_claim: Arc<AtomicBool>,
 }
 
 /// Immutable view of a job's current state, safe to hand back to callers.
@@ -207,6 +214,10 @@ pub struct BackgroundJobManager {
     completions: broadcast::Sender<JobCompletion>,
     /// Fan-out of live stdout/stderr chunks to per-session UI listeners.
     outputs: broadcast::Sender<JobOutputChunk>,
+    /// Event-driven closeout barrier. Terminal publication and reconciliation
+    /// acknowledgements both notify waiters; no model-authored polling loop is
+    /// needed on the healthy path.
+    state_changed: Arc<Notify>,
 }
 
 impl Default for BackgroundJobManager {
@@ -244,7 +255,7 @@ fn terminal_completion(job_id: String, state: &JobState) -> JobCompletion {
         stdout_tail: tail_capped(&state.stdout, COMPLETION_TAIL_BYTES),
         stderr_tail: tail_capped(&state.stderr, COMPLETION_TAIL_BYTES),
         duration_ms: end.duration_since(state.started_at).as_millis() as u64,
-        processing_claim: Arc::new(AtomicBool::new(false)),
+        processing_claim: state.processing_claim.clone(),
     }
 }
 
@@ -333,6 +344,7 @@ impl BackgroundJobManager {
             jobs: Mutex::new(HashMap::new()),
             completions,
             outputs,
+            state_changed: Arc::new(Notify::new()),
         }
     }
 
@@ -429,6 +441,9 @@ impl BackgroundJobManager {
 
         let id = format!("job_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
         let kill = Arc::new(Notify::new());
+        // Unattributed jobs have no session bridge consumer, so terminal state
+        // itself is fully reconciled for retention purposes.
+        let reconciled = session_id.is_none();
         let state = Arc::new(Mutex::new(JobState {
             command: command.to_string(),
             session_id,
@@ -440,6 +455,8 @@ impl BackgroundJobManager {
             started_at: Instant::now(),
             finished_at: None,
             kill: kill.clone(),
+            reconciled,
+            processing_claim: Arc::new(AtomicBool::new(false)),
         }));
         self.jobs.lock().insert(id.clone(), state.clone());
 
@@ -473,6 +490,7 @@ impl BackgroundJobManager {
 
                 let st = state.clone();
                 let completions = self.completions.clone();
+                let state_changed = self.state_changed.clone();
                 let job_id = id.clone();
                 tokio::spawn(async move {
                     enum Outcome {
@@ -554,6 +572,7 @@ impl BackgroundJobManager {
                         terminal_completion(job_id, &s)
                     };
                     let _ = completions.send(completion);
+                    state_changed.notify_waiters();
                 });
             }
             Err(e) => {
@@ -566,6 +585,7 @@ impl BackgroundJobManager {
                     terminal_completion(id.clone(), &s)
                 };
                 let _ = self.completions.send(completion);
+                self.state_changed.notify_waiters();
             }
         }
 
@@ -630,6 +650,104 @@ impl BackgroundJobManager {
             .collect()
     }
 
+    /// Jobs whose completion is not safe to close over yet. A job remains here
+    /// while its process is running *and* after termination until the bridge
+    /// listener acknowledges that all completion side effects have landed.
+    pub fn outstanding_for_session(&self, session_id: &str) -> Vec<RunningJob> {
+        let now = Instant::now();
+        let jobs = self.jobs.lock();
+        jobs.iter()
+            .filter_map(|(id, state)| {
+                let s = state.lock();
+                if s.session_id.as_deref() == Some(session_id)
+                    && (s.status == JobStatus::Running || !s.reconciled)
+                {
+                    Some(RunningJob {
+                        job_id: id.clone(),
+                        command: s.command.clone(),
+                        elapsed_ms: now.duration_since(s.started_at).as_millis() as u64,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Regenerate completion payloads that a lagged broadcast receiver may
+    /// have missed. They reuse the original processing claim, so overlapping
+    /// listener generations cannot duplicate evidence or notes.
+    pub fn terminal_unreconciled_for_session(&self, session_id: &str) -> Vec<JobCompletion> {
+        let jobs = self.jobs.lock();
+        jobs.iter()
+            .filter_map(|(id, state)| {
+                let s = state.lock();
+                if s.session_id.as_deref() == Some(session_id)
+                    && s.status.is_terminal()
+                    && !s.reconciled
+                {
+                    Some(terminal_completion(id.clone(), &s))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Acknowledge a terminal completion only after all bridge side effects
+    /// have landed. Returns false for unknown or still-running jobs.
+    pub fn mark_reconciled(&self, job_id: &str) -> bool {
+        let Some(state) = self.jobs.lock().get(job_id).cloned() else {
+            return false;
+        };
+        let changed = {
+            let mut s = state.lock();
+            if !s.status.is_terminal() {
+                return false;
+            }
+            let changed = !s.reconciled;
+            s.reconciled = true;
+            changed
+        };
+        if changed {
+            self.state_changed.notify_waiters();
+        }
+        true
+    }
+
+    /// Wait once for every background job owned by `session_id` to terminate
+    /// and be reconciled. The returned list is empty on success, or contains
+    /// the still-outstanding jobs when the system deadline expires.
+    pub async fn wait_for_session_reconciled(
+        &self,
+        session_id: &str,
+        max_wait: Duration,
+    ) -> Vec<RunningJob> {
+        let deadline = Instant::now() + max_wait;
+        loop {
+            // Register before checking state, preventing an acknowledgement in
+            // the check→await gap from being lost.
+            let notified = self.state_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let outstanding = self.outstanding_for_session(session_id);
+            if outstanding.is_empty() {
+                return outstanding;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return outstanding;
+            }
+            if tokio::time::timeout(deadline.duration_since(now), notified)
+                .await
+                .is_err()
+            {
+                return self.outstanding_for_session(session_id);
+            }
+        }
+    }
+
     /// Request cancellation of a running job. Returns `true` if the job exists.
     pub fn kill(&self, job_id: &str) -> bool {
         if let Some(state) = self.jobs.lock().get(job_id).cloned() {
@@ -663,6 +781,7 @@ impl BackgroundJobManager {
     /// Forget a job (used after its result has been consumed inline).
     pub fn remove(&self, job_id: &str) {
         self.jobs.lock().remove(job_id);
+        self.state_changed.notify_waiters();
     }
 
     /// Drop the oldest finished jobs once the map grows too large.
@@ -673,7 +792,10 @@ impl BackgroundJobManager {
         }
         let finished: Vec<String> = jobs
             .iter()
-            .filter(|(_, st)| st.lock().status.is_terminal())
+            .filter(|(_, st)| {
+                let state = st.lock();
+                state.status.is_terminal() && state.reconciled
+            })
             .map(|(id, _)| id.clone())
             .collect();
         for id in finished {
@@ -930,6 +1052,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_job_remains_outstanding_until_completion_is_reconciled() {
+        let mgr = BackgroundJobManager::new();
+        let id = mgr.spawn_for_session(
+            "printf landed",
+            &ws(),
+            Duration::from_secs(10),
+            Some("sess-landed".to_string()),
+        );
+        let _ = wait_terminal(&mgr, &id, Duration::from_secs(5)).await;
+
+        assert!(
+            mgr.outstanding_for_session("sess-landed")
+                .iter()
+                .any(|job| job.job_id == id),
+            "terminal output is still outstanding until listener side effects land"
+        );
+        assert!(mgr.mark_reconciled(&id));
+        assert!(mgr.outstanding_for_session("sess-landed").is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_reconciliation_wait_wakes_after_listener_ack() {
+        let mgr = Arc::new(BackgroundJobManager::new());
+        let id = mgr.spawn_for_session(
+            "printf wake",
+            &ws(),
+            Duration::from_secs(10),
+            Some("sess-wake".to_string()),
+        );
+        let _ = wait_terminal(&mgr, &id, Duration::from_secs(5)).await;
+
+        let waiter = {
+            let mgr = mgr.clone();
+            tokio::spawn(async move {
+                mgr.wait_for_session_reconciled("sess-wake", Duration::from_secs(5))
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(mgr.mark_reconciled(&id));
+
+        let remaining = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("ack wakes waiter")
+            .expect("wait task succeeds");
+        assert!(remaining.is_empty());
+    }
+
+    #[tokio::test]
     async fn overlapping_handoff_subscribers_receive_without_duplicate_processing() {
         let mgr = BackgroundJobManager::new();
         let mut old_generation = mgr.subscribe_completions();
@@ -956,6 +1127,31 @@ mod tests {
             prepared.try_claim_processing(),
             "overlapping generations share one exactly-once processing claim"
         );
+    }
+
+    #[tokio::test]
+    async fn lag_replay_reuses_the_original_exactly_once_claim() {
+        let mgr = BackgroundJobManager::new();
+        let mut rx = mgr.subscribe_completions();
+        let id = mgr.spawn_for_session(
+            "printf replay",
+            &ws(),
+            Duration::from_secs(10),
+            Some("sess-replay".to_string()),
+        );
+        let broadcast = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("completion broadcast within timeout")
+            .expect("completion received");
+        let replay = mgr
+            .terminal_unreconciled_for_session("sess-replay")
+            .into_iter()
+            .find(|completion| completion.job_id == id)
+            .expect("terminal unreconciled job can be replayed");
+
+        let claims = usize::from(broadcast.try_claim_processing())
+            + usize::from(replay.try_claim_processing());
+        assert_eq!(claims, 1, "broadcast and replay share one processing claim");
     }
 
     #[tokio::test]

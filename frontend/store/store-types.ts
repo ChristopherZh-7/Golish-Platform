@@ -16,6 +16,9 @@ export type {
   // Re-exported externals
   ApprovalPattern,
   AskHumanRequest,
+  BackgroundJob,
+  BackgroundJobOrigin,
+  BackgroundRunMeta,
   CandidateReviewHint,
   // Messages
   CommandBlock,

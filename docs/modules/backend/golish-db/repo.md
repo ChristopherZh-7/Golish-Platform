@@ -188,6 +188,11 @@ owns 全部表的结构化访问。每个表一个子模块（如 `findings.rs` 
 - Vuln attempt-start conditional batch只能插入/刷新 `partial|error`；若任一 sibling 已是 `found|empty|blocked|not_applicable`，整组返回 superseded并回滚，避免旧终态被后来的扫描启动标记降级。
 - finalizer provider checkpoint把原始 chain array/object包在server-owned `{_runtime,chain}` 中，startup/retry恢复不得假定顶层一定是object或遮蔽真正的final-seal错误。
 
+## EAS PORT monotonic outcome / raw attestation read（2026-07-21）
+
+- `audit::TargetBoundEvidenceFactRow` 额外投影 `detail.raw_output`，只用于 app bridge 对 target-bound EAS PORT attestation 做 read-side deterministic 验证；不新增 schema。
+- `technique_outcomes::upsert_batch_guarded_monotonic` 在 exact target guard 下只插入新 cell 或替换 `partial|error`，已有 `found|empty|blocked|not_applicable` 不被后来的 quick/standard discovery 降级。
+
 ## 测试入口
 
 ```bash

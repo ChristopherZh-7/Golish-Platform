@@ -1,4 +1,10 @@
-import type { ActiveSubAgent, SubAgentEntry, TaskPlan, UnifiedBlock } from "../../store-types";
+import type {
+  ActiveSubAgent,
+  BackgroundRunMeta,
+  SubAgentEntry,
+  TaskPlan,
+  UnifiedBlock,
+} from "../../store-types";
 import { appendLiveToolOutput } from "../live-output";
 import type { ImmerSet } from "../types";
 import type { WorkflowStoreDraft } from "./types";
@@ -28,6 +34,18 @@ function backgroundJobIdFromResult(result: unknown): string | null {
   if (result == null || typeof result !== "object") return null;
   const jobId = (result as { job_id?: unknown }).job_id;
   return typeof jobId === "string" ? jobId : null;
+}
+
+function backgroundRunMetaFromResult(result: unknown): BackgroundRunMeta | undefined {
+  if (result == null || typeof result !== "object") return undefined;
+  const value = result as Record<string, unknown>;
+  if (value.status !== "backgrounded" || typeof value.job_id !== "string") return undefined;
+  return {
+    jobId: value.job_id,
+    backgroundedAt: Date.now(),
+    softTimeoutMs: typeof value.soft_timeout_ms === "number" ? value.soft_timeout_ms : undefined,
+    hardTimeoutMs: typeof value.hard_timeout_ms === "number" ? value.hard_timeout_ms : undefined,
+  };
 }
 
 function lastToolCallEntryIndex(entries: SubAgentEntry[]): number {
@@ -311,6 +329,7 @@ export function createSubAgentActions(set: ImmerSet<WorkflowStoreDraft>) {
                 : "error";
             tool.result = result;
             if (tool.status === "backgrounded") {
+              tool.backgroundRun = backgroundRunMetaFromResult(result);
               delete tool.completedAt;
             } else {
               tool.completedAt = new Date().toISOString();

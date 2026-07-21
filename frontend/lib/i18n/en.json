@@ -760,6 +760,24 @@
       "executionsLabel": "{{count}} executions",
       "view": "View"
     },
+    "backgroundJobs": {
+      "panelLabel": "Background job lifecycle",
+      "stop": "Stop background job",
+      "stopAction": "Stop",
+      "stopFailed": "The stop request was not accepted. The job state has not been changed.",
+      "backgroundFor": "Background for {{duration}}",
+      "totalDuration": "Total duration {{duration}}",
+      "softTimeout": "Soft timeout after {{duration}}",
+      "deadlineIn": "Deadline in {{duration}}",
+      "lastOutput": "Last output {{duration}} ago",
+      "status": {
+        "running": "Running in background",
+        "stopping": "Stopping…",
+        "completed": "Completed",
+        "failed": "Failed",
+        "stopped": "Stopped"
+      }
+    },
     "agentTree": {
       "agents": "agents",
       "tools": "tools",

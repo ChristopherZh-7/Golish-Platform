@@ -760,6 +760,24 @@
       "executionsLabel": "{{count}} 次执行",
       "view": "查看"
     },
+    "backgroundJobs": {
+      "panelLabel": "后台任务生命周期",
+      "stop": "停止后台任务",
+      "stopAction": "停止",
+      "stopFailed": "停止请求未被接受，任务状态保持不变。",
+      "backgroundFor": "已在后台运行 {{duration}}",
+      "totalDuration": "总耗时 {{duration}}",
+      "softTimeout": "前台等待 {{duration}} 后转入后台",
+      "deadlineIn": "距离硬截止 {{duration}}",
+      "lastOutput": "最近输出于 {{duration}} 前",
+      "status": {
+        "running": "正在后台运行",
+        "stopping": "正在停止…",
+        "completed": "已完成",
+        "failed": "执行失败",
+        "stopped": "已停止"
+      }
+    },
     "agentTree": {
       "agents": "个 agent",
       "tools": "个工具",

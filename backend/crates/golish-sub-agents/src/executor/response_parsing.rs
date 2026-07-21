@@ -3381,11 +3381,14 @@ fn use_sub_agent_outer_tool_timeout(tool_name: &str) -> bool {
         // own progress or own a bounded runner timeout plus shared cancellation.
         // In particular, the Nuclei wrappers accept a server-validated timeout
         // up to 600 seconds and must retain control through parse + DB landing.
-        // Applying `tokio::time::timeout` here drops the wrapper future; a spawned
+        // `submit_stage_deliverable` also owns the event-driven background-job
+        // reconciliation barrier, whose bounded wait may exceed the generic
+        // per-tool timeout. Applying `tokio::time::timeout` here drops the wrapper future; a spawned
         // child may outlive it, while authorized landing/evidence can no longer
         // publish final DB truth. Generic shell/pentest commands retain their own
         // separate timeout/background policy.
         "vuln_nuclei_general"
+            | "submit_stage_deliverable"
             | "vuln_nuclei_fingerprint_targeted"
             | "browser_collect_js_api"
             | "js_extract_apis"
@@ -4804,7 +4807,7 @@ mod tests {
     }
 
     #[test]
-    fn background_jobs_needs_fix_enters_wait_only_repair_mode() {
+    fn background_jobs_needs_fix_enters_one_shot_recovery_mode() {
         let v = serde_json::json!({
             "status": "needs_fix",
             "reasons": ["1 background job(s) you launched are still running"],
@@ -4816,15 +4819,18 @@ mod tests {
             panic!("expected Set repair mode");
         };
 
-        assert!(mode.block_result("wait_for_background_jobs").is_none());
+        let blocked_wait = mode
+            .block_result("wait_for_background_jobs")
+            .expect("recovery mode blocks another model-authored wait loop");
+        assert!(blocked_wait["error"]
+            .as_str()
+            .unwrap()
+            .contains("check_job"));
         assert!(mode.block_result("submit_stage_deliverable").is_none());
         let blocked = mode
             .block_result("pentest_run")
             .expect("wait repair mode blocks replacement scans");
-        assert!(blocked["error"]
-            .as_str()
-            .unwrap()
-            .contains("wait_for_background_jobs"));
+        assert!(blocked["error"].as_str().unwrap().contains("check_job"));
     }
 
     #[test]
@@ -5987,6 +5993,7 @@ mod tests {
     #[test]
     fn long_guarded_bridge_tools_bypass_sub_agent_outer_timeout() {
         for tool_name in [
+            "submit_stage_deliverable",
             "vuln_nuclei_general",
             "vuln_nuclei_fingerprint_targeted",
             "browser_collect_js_api",

@@ -6,8 +6,10 @@
 //! `DbRepoProvider` (see `mod.rs`) so the orchestrator/runtime reach the ledger
 //! without holding a raw pool.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::net::IpAddr;
 
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use golish_agent_kit::harness::wstg_mapping::{
@@ -30,6 +32,13 @@ const ENUM_COLLECTION_RECOVERY_BLOCKED_KIND: &str = "enumeration_collection_reco
 const EAS_WEB_BLOCKED_TOOL: &str = "whatweb";
 const EAS_WEB_BLOCKED_KIND: &str = "eas.fingerprint_web_stack";
 const EAS_WEB_BLOCKED_SOURCE: &str = "eas_fingerprint_web_stack";
+const EAS_PORT_TERMINAL_SOURCE: &str = "eas_discover_ports";
+const EAS_PORT_TERMINAL_NMAP_TOOL: &str = "nmap";
+const EAS_PORT_TERMINAL_NAABU_TOOL: &str = "naabu";
+const EAS_PORT_TERMINAL_KIND: &str = "eas.discover_ports";
+const EAS_PORT_POLICY_BLOCKED_SOURCE: &str = "eas_discover_ports_policy";
+const EAS_PORT_POLICY_BLOCKED_TOOL: &str = "eas_discover_ports";
+const EAS_PORT_POLICY_BLOCKED_KIND: &str = "eas.port_scan_policy_blocked";
 const VULN_NUCLEI_EVIDENCE_KIND: &str = "vuln.nuclei_observation";
 const VULN_NUCLEI_GENERAL_TOOL: &str = "vuln_nuclei_general";
 const VULN_NUCLEI_TARGETED_TOOL: &str = "vuln_nuclei_fingerprint_targeted";
@@ -143,6 +152,11 @@ fn is_eas_technique(technique: &str) -> bool {
 
 fn is_eas_terminal_outcome(technique: &str, outcome: &str) -> bool {
     (is_eas_technique(technique) && matches!(outcome, "found" | "empty"))
+        || (matches!(
+            technique,
+            golish_db::repo::coverage_truth::TECH_EAS_LIVENESS
+                | golish_db::repo::coverage_truth::TECH_EAS_PORT
+        ) && outcome == "blocked")
         || (technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP && outcome == "blocked")
 }
 
@@ -151,6 +165,19 @@ fn eas_terminal_source_is_authoritative(
     outcome: &str,
     source: Option<&str>,
 ) -> bool {
+    if technique == golish_db::repo::coverage_truth::TECH_EAS_PORT
+        && matches!(outcome, "found" | "empty")
+    {
+        return source == Some(EAS_PORT_TERMINAL_SOURCE);
+    }
+    if matches!(
+        technique,
+        golish_db::repo::coverage_truth::TECH_EAS_LIVENESS
+            | golish_db::repo::coverage_truth::TECH_EAS_PORT
+    ) && outcome == "blocked"
+    {
+        return source == Some(EAS_PORT_POLICY_BLOCKED_SOURCE);
+    }
     technique != golish_db::repo::coverage_truth::TECH_EAS_WEB_FP
         || outcome != "blocked"
         || source == Some(EAS_WEB_BLOCKED_SOURCE)
@@ -293,12 +320,495 @@ fn row_has_trusted_enumeration_blocked_producer(
 fn row_has_trusted_eas_blocked_producer(
     row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
 ) -> bool {
-    row.evidence_outcome != "blocked"
-        || (row.evidence_technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP
-            && matches!(
-                (row.tool_name.as_deref(), row.evidence_kind.as_deref()),
-                (Some(EAS_WEB_BLOCKED_TOOL), Some(EAS_WEB_BLOCKED_KIND))
-            ))
+    if row.evidence_outcome != "blocked" {
+        return true;
+    }
+    if row.evidence_technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP {
+        return matches!(
+            (row.tool_name.as_deref(), row.evidence_kind.as_deref()),
+            (Some(EAS_WEB_BLOCKED_TOOL), Some(EAS_WEB_BLOCKED_KIND))
+        );
+    }
+    if !matches!(
+        row.evidence_technique.as_str(),
+        golish_db::repo::coverage_truth::TECH_EAS_LIVENESS
+            | golish_db::repo::coverage_truth::TECH_EAS_PORT
+    ) || !matches!(
+        (row.tool_name.as_deref(), row.evidence_kind.as_deref()),
+        (
+            Some(EAS_PORT_POLICY_BLOCKED_TOOL),
+            Some(EAS_PORT_POLICY_BLOCKED_KIND)
+        )
+    ) {
+        return false;
+    }
+    let Some(attestation) = row
+        .evidence_raw_output
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+    else {
+        return false;
+    };
+    attestation
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        == Some("eas_port_scan_policy_blocked_v1")
+        && attestation
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|reason| {
+                matches!(
+                    reason,
+                    "full_profile_host_budget_exceeded" | "ipv6_range_full_scan_not_supported"
+                )
+            })
+        && attestation
+            .get("scan_profile")
+            .and_then(serde_json::Value::as_str)
+            == Some("full")
+        && attestation
+            .get("host_budget")
+            .and_then(serde_json::Value::as_u64)
+            == Some(4)
+        && attestation
+            .get("network_launched")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        && attestation
+            .get("target_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|target_id| target_id.parse::<Uuid>().ok())
+            == Some(row.target_id)
+}
+
+fn eas_full_port_manifest_hash(
+    address_family: u8,
+    tool_args: &str,
+    expected_hosts: &BTreeSet<IpAddr>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"eas_port_scan_manifest_v1\0");
+    hasher.update(b"full");
+    hasher.update(b"\0profile_version=1\0family=");
+    hasher.update(address_family.to_string().as_bytes());
+    hasher.update(b"\0port_scope=tcp-1-65535\0tool=nmap\0args=");
+    hasher.update(tool_args.as_bytes());
+    for target in expected_hosts {
+        hasher.update(b"\0");
+        hasher.update(target.to_string().as_bytes());
+    }
+    let digest = hasher.finalize();
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{hex}")
+}
+
+fn eas_full_port_manifest_hash_v2(
+    address_family: u8,
+    tool_args: &str,
+    expected_hosts: &BTreeSet<IpAddr>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"eas_port_scan_manifest_v2\0");
+    hasher.update(b"full");
+    hasher.update(b"\0profile_version=2\0family=");
+    hasher.update(address_family.to_string().as_bytes());
+    hasher.update(b"\0port_scope=tcp-1-65535\0tool=naabu\0args=");
+    hasher.update(tool_args.as_bytes());
+    for target in expected_hosts {
+        hasher.update(b"\0");
+        hasher.update(target.to_string().as_bytes());
+    }
+    let digest = hasher.finalize();
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{hex}")
+}
+
+fn eas_port_scan_output_hash(output: &str) -> String {
+    let digest = Sha256::digest(output.as_bytes());
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{hex}")
+}
+
+fn row_has_trusted_eas_port_attestation(
+    row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
+) -> bool {
+    if row.evidence_technique != golish_db::repo::coverage_truth::TECH_EAS_PORT
+        || !matches!(row.evidence_outcome.as_str(), "found" | "empty")
+    {
+        return true;
+    }
+    if row.evidence_kind.as_deref() != Some(EAS_PORT_TERMINAL_KIND) {
+        return false;
+    }
+    let Some(attestation) = row
+        .evidence_raw_output
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+    else {
+        return false;
+    };
+    match (
+        row.tool_name.as_deref(),
+        attestation
+            .get("schema")
+            .and_then(serde_json::Value::as_str),
+    ) {
+        (Some(EAS_PORT_TERMINAL_NMAP_TOOL), Some("eas_port_scan_attestation_v1")) => {
+            row_has_trusted_eas_port_attestation_v1(row, &attestation)
+        }
+        (Some(EAS_PORT_TERMINAL_NAABU_TOOL), Some("eas_port_scan_attestation_v2")) => {
+            row_has_trusted_eas_port_attestation_v2(row, &attestation)
+        }
+        _ => false,
+    }
+}
+
+fn row_has_trusted_eas_port_attestation_v1(
+    row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
+    attestation: &serde_json::Value,
+) -> bool {
+    let Some(profile) = attestation.get("profile") else {
+        return false;
+    };
+    if profile.get("schema").and_then(serde_json::Value::as_str)
+        != Some("eas_port_scan_coverage_v1")
+        || profile.get("profile").and_then(serde_json::Value::as_str) != Some("full")
+        || profile
+            .get("profile_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+        || profile.get("scanner").and_then(serde_json::Value::as_str) != Some("nmap")
+        || profile.get("protocol").and_then(serde_json::Value::as_str) != Some("tcp")
+        || profile
+            .get("port_scope")
+            .and_then(serde_json::Value::as_str)
+            != Some("tcp-1-65535")
+        || profile.get("complete").and_then(serde_json::Value::as_bool) != Some(true)
+        || profile
+            .get("complete_for_gate")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || profile
+            .get("timeout_secs")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1_900)
+    {
+        return false;
+    }
+    let address_family = match profile
+        .get("address_family")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("ipv4") => 4,
+        Some("ipv6") => 6,
+        _ => return false,
+    };
+    let Some(batch_manifest) = attestation.get("batch_manifest") else {
+        return false;
+    };
+    let Some(expanded_hosts) = batch_manifest
+        .get("expanded_hosts")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|hosts| {
+            hosts
+                .iter()
+                .map(|host| host.as_str()?.parse::<IpAddr>().ok())
+                .collect::<Option<BTreeSet<_>>>()
+        })
+        .filter(|hosts| !hosts.is_empty() && hosts.len() <= 4)
+    else {
+        return false;
+    };
+    if expanded_hosts.iter().any(|ip| {
+        if address_family == 6 {
+            !ip.is_ipv6()
+        } else {
+            !ip.is_ipv4()
+        }
+    }) || profile
+        .get("expanded_host_count")
+        .and_then(serde_json::Value::as_u64)
+        != Some(expanded_hosts.len() as u64)
+    {
+        return false;
+    }
+    let Some(execution) = attestation.get("execution") else {
+        return false;
+    };
+    let Some(command) = execution.get("command").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(tool_args) = command.strip_prefix("nmap ") else {
+        return false;
+    };
+    let expected_args = if address_family == 6 {
+        "-n -Pn -sT --open -p- -T3 --max-rate 500 --max-retries 2 --host-timeout 30m -oX - -6 -iL {input_file}"
+    } else {
+        "-n -Pn -sT --open -p- -T3 --max-rate 500 --max-retries 2 --host-timeout 30m -oX - -iL {input_file}"
+    };
+    if tool_args != expected_args
+        || execution
+            .get("network_launched")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || execution
+            .get("exit_code")
+            .and_then(serde_json::Value::as_i64)
+            != Some(0)
+        || execution
+            .get("stdout_truncated")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        || execution
+            .get("stderr_truncated")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        || execution
+            .get("target_manifest_complete")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        return false;
+    }
+    let expected_hash = eas_full_port_manifest_hash(address_family, tool_args, &expanded_hosts);
+    if profile
+        .get("target_manifest_sha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(expected_hash.as_str())
+        || batch_manifest
+            .get("sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_hash.as_str())
+    {
+        return false;
+    }
+    let Some(scanner_stdout) = attestation
+        .get("scanner_stdout")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    let Some(coverage) = golish_pentest::output_parser::parse_nmap_xml_coverage(scanner_stdout)
+    else {
+        return false;
+    };
+    coverage.finished_success
+        && coverage
+            .hosts
+            .iter()
+            .all(|host| host.scanned_port_count == 65_535)
+        && coverage
+            .hosts
+            .iter()
+            .filter_map(|host| host.ip.parse::<IpAddr>().ok())
+            .collect::<BTreeSet<_>>()
+            == expanded_hosts
+        && attestation
+            .pointer("/target/target_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|target_id| target_id.parse::<Uuid>().ok())
+            == Some(row.target_id)
+}
+
+fn parse_attested_naabu_endpoint(line: &str) -> Option<(IpAddr, u16)> {
+    let (host, port) = line.trim().rsplit_once(':')?;
+    let host = host.trim_matches(|character| matches!(character, '[' | ']'));
+    let ip = host.parse::<IpAddr>().ok()?;
+    let port = port.parse::<u16>().ok()?;
+    (port > 0).then_some((ip, port))
+}
+
+fn row_has_trusted_eas_port_attestation_v2(
+    row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
+    attestation: &serde_json::Value,
+) -> bool {
+    let Some(profile) = attestation.get("profile") else {
+        return false;
+    };
+    if profile.get("schema").and_then(serde_json::Value::as_str)
+        != Some("eas_port_scan_coverage_v2")
+        || profile.get("profile").and_then(serde_json::Value::as_str) != Some("full")
+        || profile
+            .get("profile_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(2)
+        || profile.get("scanner").and_then(serde_json::Value::as_str) != Some("naabu")
+        || profile.get("protocol").and_then(serde_json::Value::as_str) != Some("tcp")
+        || profile
+            .get("port_scope")
+            .and_then(serde_json::Value::as_str)
+            != Some("tcp-1-65535")
+        || profile.get("complete").and_then(serde_json::Value::as_bool) != Some(true)
+        || profile
+            .get("complete_for_gate")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || profile
+            .get("timeout_secs")
+            .and_then(serde_json::Value::as_u64)
+            != Some(600)
+    {
+        return false;
+    }
+    let address_family = match profile
+        .get("address_family")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("ipv4") => 4,
+        Some("ipv6") => 6,
+        _ => return false,
+    };
+    let Some(batch_manifest) = attestation.get("batch_manifest") else {
+        return false;
+    };
+    let Some(expanded_host_values) = batch_manifest
+        .get("expanded_hosts")
+        .and_then(serde_json::Value::as_array)
+        .filter(|hosts| !hosts.is_empty() && hosts.len() <= 4)
+    else {
+        return false;
+    };
+    let Some(expanded_hosts) = expanded_host_values
+        .iter()
+        .map(|host| host.as_str()?.parse::<IpAddr>().ok())
+        .collect::<Option<BTreeSet<_>>>()
+    else {
+        return false;
+    };
+    if expanded_hosts.len() != expanded_host_values.len()
+        || expanded_hosts.iter().any(|ip| {
+            if address_family == 6 {
+                !ip.is_ipv6()
+            } else {
+                !ip.is_ipv4()
+            }
+        })
+        || profile
+            .get("expanded_host_count")
+            .and_then(serde_json::Value::as_u64)
+            != Some(expanded_hosts.len() as u64)
+    {
+        return false;
+    }
+    let Some(execution) = attestation.get("execution") else {
+        return false;
+    };
+    let Some(command) = execution.get("command").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(tool_args) = command.strip_prefix("naabu ") else {
+        return false;
+    };
+    let expected_args = format!(
+        "-list {{input_file}} -iv {address_family} -p 1-65535 -s c -rate 1000 -timeout 1000 -retries 1 -verify -silent -no-stdin"
+    );
+    if tool_args != expected_args
+        || execution
+            .get("network_launched")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || execution
+            .get("exit_code")
+            .and_then(serde_json::Value::as_i64)
+            != Some(0)
+        || execution
+            .get("stdout_truncated")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        || execution
+            .get("stderr_truncated")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        || execution
+            .get("target_manifest_complete")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        return false;
+    }
+    let expected_hash = eas_full_port_manifest_hash_v2(address_family, tool_args, &expanded_hosts);
+    if profile
+        .get("target_manifest_sha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(expected_hash.as_str())
+        || batch_manifest
+            .get("sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_hash.as_str())
+    {
+        return false;
+    }
+    let Some(receipt) = attestation
+        .get("coverage_receipt")
+        .and_then(serde_json::Value::as_array)
+        .filter(|entries| entries.len() == expanded_hosts.len())
+    else {
+        return false;
+    };
+    let receipt_hosts = receipt
+        .iter()
+        .filter_map(|entry| {
+            (entry.get("first_port").and_then(serde_json::Value::as_u64) == Some(1)
+                && entry.get("last_port").and_then(serde_json::Value::as_u64) == Some(65_535)
+                && entry
+                    .get("scheduled_port_count")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(65_535)
+                && entry.get("completed").and_then(serde_json::Value::as_bool) == Some(true))
+            .then(|| {
+                entry
+                    .get("host")
+                    .and_then(serde_json::Value::as_str)?
+                    .parse::<IpAddr>()
+                    .ok()
+            })
+            .flatten()
+        })
+        .collect::<BTreeSet<_>>();
+    if receipt_hosts != expanded_hosts || receipt_hosts.len() != receipt.len() {
+        return false;
+    }
+    let Some(scanner_stdout) = attestation
+        .get("scanner_stdout")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    let scanner_stdout_hash = eas_port_scan_output_hash(scanner_stdout);
+    if execution
+        .get("scanner_stdout_sha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(scanner_stdout_hash.as_str())
+        || !scanner_stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .all(|line| {
+                parse_attested_naabu_endpoint(line)
+                    .is_some_and(|(ip, _)| expanded_hosts.contains(&ip))
+            })
+    {
+        return false;
+    }
+    let target_id_matches = attestation
+        .pointer("/target/target_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|target_id| target_id.parse::<Uuid>().ok())
+        == Some(row.target_id);
+    let requested_matches = attestation
+        .pointer("/target/requested")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|requested| requested == row.target_value || requested == row.target_name);
+    target_id_matches && requested_matches
 }
 
 fn open_port_urls(
@@ -442,6 +952,7 @@ pub(crate) fn eas_target_bound_evidence_fact_set(
         .filter(row_has_matching_producer_and_current_org)
         .filter(target_row_still_authorizes_eas_fact)
         .filter(row_has_trusted_eas_blocked_producer)
+        .filter(row_has_trusted_eas_port_attestation)
         .filter_map(|row| {
             if row.evidence_id <= 0
                 || !is_eas_terminal_outcome(&row.evidence_technique, &row.evidence_outcome)
@@ -1530,11 +2041,107 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
 mod tests {
     use super::{
         dns_empty_outcome_hosts, dns_error_outcome_hosts, dns_found_outcome_hosts,
-        dns_partial_outcome_hosts, eas_target_bound_evidence_facts, enumeration_evidence_fact_set,
+        dns_partial_outcome_hosts, eas_full_port_manifest_hash, eas_full_port_manifest_hash_v2,
+        eas_port_scan_output_hash, eas_target_bound_evidence_facts, enumeration_evidence_fact_set,
         enumeration_target_bound_evidence_fact_set, projected_technique_outcome_evidence_id,
         terminal_materialization_asset_key, vuln_target_bound_evidence_fact_set,
     };
+    use std::collections::BTreeSet;
+    use std::net::IpAddr;
     use uuid::Uuid;
+
+    fn full_port_attestation(target_id: Uuid, ip: &str) -> String {
+        let tool_args = "-n -Pn -sT --open -p- -T3 --max-rate 500 --max-retries 2 --host-timeout 30m -oX - -iL {input_file}";
+        let hosts = BTreeSet::from([ip.parse::<IpAddr>().expect("test IP")]);
+        let manifest_hash = eas_full_port_manifest_hash(4, tool_args, &hosts);
+        let stdout = format!(
+            r#"<?xml version="1.0"?><nmaprun><host><status state="up" reason="user-set"/><address addr="{ip}" addrtype="ipv4"/><ports><extraports state="closed" count="65535"/></ports></host><runstats><finished exit="success"/></runstats></nmaprun>"#
+        );
+        serde_json::json!({
+            "schema": "eas_port_scan_attestation_v1",
+            "profile": {
+                "schema": "eas_port_scan_coverage_v1",
+                "profile": "full",
+                "profile_version": 1,
+                "scanner": "nmap",
+                "protocol": "tcp",
+                "port_scope": "tcp-1-65535",
+                "complete": true,
+                "complete_for_gate": true,
+                "address_family": "ipv4",
+                "target_manifest_sha256": manifest_hash.clone(),
+                "expanded_host_count": 1,
+                "timeout_secs": 1900,
+            },
+            "batch_manifest": {
+                "sha256": manifest_hash,
+                "expanded_hosts": [ip],
+            },
+            "target": {"target_id": target_id, "requested": ip},
+            "execution": {
+                "network_launched": true,
+                "command": format!("nmap {tool_args}"),
+                "exit_code": 0,
+                "stdout_truncated": false,
+                "stderr_truncated": false,
+                "target_manifest_complete": true,
+            },
+            "observation": {"alive_host_count": 0, "open_port_count": 0},
+            "scanner_stdout": stdout,
+            "scanner_stderr": "",
+        })
+        .to_string()
+    }
+
+    fn naabu_full_port_attestation(target_id: Uuid, ip: &str) -> String {
+        let tool_args =
+            "-list {input_file} -iv 4 -p 1-65535 -s c -rate 1000 -timeout 1000 -retries 1 -verify -silent -no-stdin";
+        let hosts = BTreeSet::from([ip.parse::<IpAddr>().expect("test IP")]);
+        let manifest_hash = eas_full_port_manifest_hash_v2(4, tool_args, &hosts);
+        let stdout = format!("{ip}:443\n");
+        serde_json::json!({
+            "schema": "eas_port_scan_attestation_v2",
+            "profile": {
+                "schema": "eas_port_scan_coverage_v2",
+                "profile": "full",
+                "profile_version": 2,
+                "scanner": "naabu",
+                "protocol": "tcp",
+                "port_scope": "tcp-1-65535",
+                "complete": true,
+                "complete_for_gate": true,
+                "address_family": "ipv4",
+                "target_manifest_sha256": manifest_hash.clone(),
+                "expanded_host_count": 1,
+                "timeout_secs": 600,
+            },
+            "batch_manifest": {
+                "sha256": manifest_hash,
+                "expanded_hosts": [ip],
+            },
+            "target": {"target_id": target_id, "requested": ip},
+            "coverage_receipt": [{
+                "host": ip,
+                "first_port": 1,
+                "last_port": 65535,
+                "scheduled_port_count": 65535,
+                "completed": true,
+            }],
+            "execution": {
+                "network_launched": true,
+                "command": format!("naabu {tool_args}"),
+                "exit_code": 0,
+                "stdout_truncated": false,
+                "stderr_truncated": false,
+                "target_manifest_complete": true,
+                "scanner_stdout_sha256": eas_port_scan_output_hash(&stdout),
+            },
+            "observation": {"alive_host_count": 1, "open_port_count": 1},
+            "scanner_stdout": stdout,
+            "scanner_stderr": "",
+        })
+        .to_string()
+    }
 
     #[test]
     fn dns_error_hosts_are_not_selected_for_checked_empty_outcomes() {
@@ -1584,6 +2191,7 @@ mod tests {
             evidence_organization_id: organization_id.to_string(),
             tool_name: Some("route_probe_paths".to_string()),
             evidence_kind: Some("enumeration_route_probe".to_string()),
+            evidence_raw_output: None,
             target_id: Uuid::new_v4(),
             target_organization_id: Some(organization_id),
             target_type: target_type.to_string(),
@@ -2152,13 +2760,16 @@ mod tests {
     fn eas_target_bound_evidence_requires_producer_and_current_org() {
         let org_a = Uuid::new_v4();
         let org_b = Uuid::new_v4();
-        let row = target_bound_row(
+        let mut row = target_bound_row(
             org_a,
             "192.0.2.10",
             golish_db::repo::coverage_truth::TECH_EAS_PORT,
             "192.0.2.10",
             "ip_address",
         );
+        row.tool_name = Some("nmap".to_string());
+        row.evidence_kind = Some("eas.discover_ports".to_string());
+        row.evidence_raw_output = Some(full_port_attestation(row.target_id, "192.0.2.10"));
 
         assert_eq!(
             eas_target_bound_evidence_facts(org_a, vec![row.clone()]).len(),
@@ -2223,13 +2834,16 @@ mod tests {
     #[test]
     fn eas_terminal_outcome_ref_must_match_guarded_audit_quadruple() {
         let org = Uuid::new_v4();
-        let row = target_bound_row(
+        let mut row = target_bound_row(
             org,
             "192.0.2.10",
             golish_db::repo::coverage_truth::TECH_EAS_PORT,
             "192.0.2.10",
             "ip_address",
         );
+        row.tool_name = Some("nmap".to_string());
+        row.evidence_kind = Some("eas.discover_ports".to_string());
+        row.evidence_raw_output = Some(full_port_attestation(row.target_id, "192.0.2.10"));
         let facts = super::eas_target_bound_evidence_fact_set(org, vec![row]);
 
         assert_eq!(
@@ -2260,6 +2874,198 @@ mod tests {
                 ),
                 None
             );
+        }
+    }
+
+    #[test]
+    fn eas_port_terminal_requires_full_scan_attestation() {
+        let org = Uuid::new_v4();
+        let mut row = target_bound_row(
+            org,
+            "192.0.2.10",
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            "192.0.2.10",
+            "ip_address",
+        );
+        row.tool_name = Some("nmap".to_string());
+        row.evidence_kind = Some("eas.discover_ports".to_string());
+
+        assert!(
+            eas_target_bound_evidence_facts(org, vec![row.clone()]).is_empty(),
+            "a terminal PORT row without immutable full-scan proof must fail closed"
+        );
+
+        row.evidence_raw_output = Some("{}".to_string());
+        assert!(
+            eas_target_bound_evidence_facts(org, vec![row.clone()]).is_empty(),
+            "malformed or incomplete attestation must fail closed"
+        );
+
+        row.evidence_raw_output = Some(full_port_attestation(row.target_id, "192.0.2.10"));
+        assert_eq!(eas_target_bound_evidence_facts(org, vec![row]).len(), 1);
+    }
+
+    #[test]
+    fn eas_port_terminal_accepts_naabu_v2_attestation() {
+        let org = Uuid::new_v4();
+        let mut row = target_bound_row(
+            org,
+            "192.0.2.10",
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            "192.0.2.10",
+            "ip_address",
+        );
+        row.tool_name = Some("naabu".to_string());
+        row.evidence_kind = Some("eas.discover_ports".to_string());
+        row.evidence_raw_output = Some(naabu_full_port_attestation(row.target_id, "192.0.2.10"));
+
+        assert_eq!(eas_target_bound_evidence_facts(org, vec![row]).len(), 1);
+    }
+
+    #[test]
+    fn eas_port_terminal_rejects_tampered_naabu_v2_attestation() {
+        let org = Uuid::new_v4();
+        let mut row = target_bound_row(
+            org,
+            "192.0.2.10",
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            "192.0.2.10",
+            "ip_address",
+        );
+        row.tool_name = Some("naabu".to_string());
+        row.evidence_kind = Some("eas.discover_ports".to_string());
+        let base = serde_json::from_str::<serde_json::Value>(&naabu_full_port_attestation(
+            row.target_id,
+            "192.0.2.10",
+        ))
+        .expect("valid v2 fixture");
+        let mut tampered = Vec::new();
+
+        let mut value = base.clone();
+        value["profile"]["scanner"] = serde_json::json!("nmap");
+        tampered.push(value);
+        let mut value = base.clone();
+        value["profile"]["timeout_secs"] = serde_json::json!(601);
+        tampered.push(value);
+        let mut value = base.clone();
+        value["execution"]["command"] = serde_json::json!("naabu -p 1-65535 192.0.2.10");
+        tampered.push(value);
+        let mut value = base.clone();
+        value["batch_manifest"]["sha256"] = serde_json::json!("sha256:forged");
+        tampered.push(value);
+        let mut value = base.clone();
+        value["coverage_receipt"][0]["host"] = serde_json::json!("198.51.100.7");
+        tampered.push(value);
+        let mut value = base.clone();
+        value["coverage_receipt"][0]["scheduled_port_count"] = serde_json::json!(65_534);
+        tampered.push(value);
+        let mut value = base.clone();
+        value["coverage_receipt"][0]["completed"] = serde_json::json!(false);
+        tampered.push(value);
+        let mut value = base.clone();
+        value["execution"]["stdout_truncated"] = serde_json::json!(true);
+        tampered.push(value);
+        let mut value = base.clone();
+        value["execution"]["scanner_stdout_sha256"] = serde_json::json!("sha256:forged");
+        tampered.push(value);
+        let mut value = base.clone();
+        let foreign_stdout = "198.51.100.7:443\n";
+        value["scanner_stdout"] = serde_json::json!(foreign_stdout);
+        value["execution"]["scanner_stdout_sha256"] =
+            serde_json::json!(eas_port_scan_output_hash(foreign_stdout));
+        tampered.push(value);
+        let mut value = base;
+        value["target"]["target_id"] = serde_json::json!(Uuid::new_v4());
+        tampered.push(value);
+
+        for value in tampered {
+            let mut forged = row.clone();
+            forged.evidence_raw_output = Some(value.to_string());
+            assert!(
+                eas_target_bound_evidence_facts(org, vec![forged]).is_empty(),
+                "tampered Naabu v2 proof must fail closed: {value}"
+            );
+        }
+
+        row.tool_name = Some("nmap".to_string());
+        row.evidence_raw_output = Some(naabu_full_port_attestation(row.target_id, "192.0.2.10"));
+        assert!(
+            eas_target_bound_evidence_facts(org, vec![row]).is_empty(),
+            "a Naabu v2 proof cannot be relabeled as legacy Nmap"
+        );
+    }
+
+    #[test]
+    fn eas_port_terminal_keeps_strict_legacy_nmap_v1_compatibility() {
+        let org = Uuid::new_v4();
+        let mut row = target_bound_row(
+            org,
+            "192.0.2.10",
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            "192.0.2.10",
+            "ip_address",
+        );
+        row.tool_name = Some("nmap".to_string());
+        row.evidence_kind = Some("eas.discover_ports".to_string());
+        row.evidence_raw_output = Some(full_port_attestation(row.target_id, "192.0.2.10"));
+        assert_eq!(
+            eas_target_bound_evidence_facts(org, vec![row.clone()]).len(),
+            1
+        );
+
+        let mut under_accounted = serde_json::from_str::<serde_json::Value>(
+            row.evidence_raw_output.as_deref().expect("legacy proof"),
+        )
+        .expect("valid legacy fixture");
+        under_accounted["scanner_stdout"] = serde_json::json!(
+            r#"<?xml version="1.0"?><nmaprun><host><status state="up" reason="user-set"/><address addr="192.0.2.10" addrtype="ipv4"/><ports><extraports state="closed" count="1024"/></ports></host><runstats><finished exit="success"/></runstats></nmaprun>"#
+        );
+        row.evidence_raw_output = Some(under_accounted.to_string());
+        assert!(
+            eas_target_bound_evidence_facts(org, vec![row]).is_empty(),
+            "legacy compatibility must retain exact 65,535-port XML accounting"
+        );
+    }
+
+    #[test]
+    fn eas_wide_cidr_policy_block_requires_exact_guarded_producer() {
+        let org = Uuid::new_v4();
+        for technique in [
+            golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+        ] {
+            let mut row = target_bound_row(org, "192.0.2.0/24", technique, "192.0.2.0/24", "cidr");
+            row.evidence_outcome = "blocked".to_string();
+            row.tool_name = Some("eas_discover_ports".to_string());
+            row.evidence_kind = Some("eas.port_scan_policy_blocked".to_string());
+            row.evidence_raw_output = Some(
+                serde_json::json!({
+                    "schema": "eas_port_scan_policy_blocked_v1",
+                    "reason_code": "full_profile_host_budget_exceeded",
+                    "scan_profile": "full",
+                    "host_budget": 4,
+                    "network_launched": false,
+                    "target_id": row.target_id,
+                    "requested": "192.0.2.0/24",
+                })
+                .to_string(),
+            );
+            let facts = super::eas_target_bound_evidence_fact_set(org, vec![row.clone()]);
+            assert_eq!(facts.len(), 1);
+            assert_eq!(
+                projected_technique_outcome_evidence_id(
+                    "192.0.2.0/24",
+                    technique,
+                    "blocked",
+                    &[91],
+                    &facts,
+                    Some("eas_discover_ports_policy"),
+                ),
+                Some(91)
+            );
+
+            row.evidence_raw_output = Some("{}".to_string());
+            assert!(eas_target_bound_evidence_facts(org, vec![row]).is_empty());
         }
     }
 

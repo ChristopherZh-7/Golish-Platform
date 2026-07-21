@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
-  "version": "0.1.12",
-  "last_updated": "2026-07-20",
+  "version": "0.1.13",
+  "last_updated": "2026-07-21",
   "notes": "同一时间只能有一个 status=in_progress 的条目；当前 Target Intel / EAS / Enumeration / Vuln 四个按公司执行的普通阶段均为每公司一个 Codex 式 Company Controller，由 Controller 动态调用 0..N durable SubAgent 并自己提交 Gate。Candidate/Verification 仍保留 Wave/CandidateAttempt 合同，真实主动阶段仍要求 exact authorized target。CLI/GUI shared-DB post-Scoping stage fork 已通过定向验证。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -10,6 +10,71 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "background-job-lifecycle-ui-2026-07-21",
+      "priority": 0,
+      "area": "golish-app-core background jobs + golish-agent-app submit reconciliation + frontend tool detail",
+      "title": "Make background tool execution event-driven and visible in the originating tool detail.",
+      "user_visible_behavior": "A long command that moves to the background remains visible in its original main-agent or sub-agent Detail with elapsed time, last activity, deadline and a truthful Stop/Stopping lifecycle. The global running-jobs entry opens that exact Detail. Stage closeout waits inside the runtime for completion and evidence landing instead of filling the timeline with repeated wait_for_background_jobs/check_job calls.",
+      "status": "passing",
+      "design": "docs/design/2026-07-21-background-job-lifecycle-ui.md",
+      "plan": "docs/superpowers/plans/2026-07-21-background-job-lifecycle-ui.md",
+      "verification": [
+        "pnpm vitest run frontend/store/background-jobs.test.ts frontend/services/ai-events/registry.test.ts frontend/components/BackgroundJobPanel/BackgroundJobPanel.test.tsx frontend/components/UnifiedInput/StatusBadges.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts",
+        "pnpm biome check frontend/components/BackgroundJobPanel frontend/components/UnifiedInput/StatusBadges.tsx frontend/components/UnifiedInput/StatusBadges.test.tsx frontend/components/UnifiedInput/InputStatusRow.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.tsx frontend/components/SubAgentDetailView/SubAgentDetailView.tsx frontend/services/ai-events/tool-handlers.ts frontend/services/ai-events/sub-agent-handlers.ts frontend/services/ai-events/registry.test.ts frontend/store/background-jobs.test.ts frontend/store/slices/ai.ts frontend/store/slices/session-core.ts frontend/store/slices/workflow/sub-agent.ts frontend/store/types/background-job.ts frontend/store/types/message.ts frontend/store/types/session.ts frontend/store/types/sub-agent.ts frontend/store/types/index.ts frontend/store/store-types.ts frontend/store/public-api.ts frontend/lib/i18n/en.json frontend/lib/i18n/zh-CN.json",
+        "pnpm typecheck",
+        "cd backend && cargo nextest run -p golish-app-core -E 'test(background_command_that_survives_startup_returns_job_handle) | test(terminal_job_remains_outstanding_until_completion_is_reconciled) | test(session_reconciliation_wait_wakes_after_listener_ack) | test(lag_replay_reuses_the_original_exactly_once_claim)'",
+        "cd backend && cargo nextest run -p golish-agent-app -E 'test(submit_deferred_when_background_jobs_running) | test(submit_proceeds_after_background_jobs_settle) | test(reconciliation_barrier_inert_without_session_id)'",
+        "cd backend && cargo nextest run -p golish-sub-agents -E 'test(long_guarded_bridge_tools_bypass_sub_agent_outer_timeout) | test(background_jobs_needs_fix_enters_one_shot_recovery_mode)'",
+        "cd backend && cargo clippy -p golish-app-core -p golish-agent-app -p golish-sub-agents --all-targets -- -D warnings",
+        "rustfmt --edition 2021 --check backend/crates/golish-app-core/src/background_jobs.rs backend/crates/golish-app-core/src/pty_interactive.rs backend/crates/golish-agent-app/src/ai/harness_submit_tool.rs backend/crates/golish-agent-app/src/ai/commands/bridge_config.rs backend/crates/golish-sub-agents/src/executor/response_parsing.rs backend/crates/golish-sub-agents/src/executor_types.rs",
+        "jq empty feature_list.json && jq -e '([.features[] | select(.status == \"in_progress\")] | length) == 0' feature_list.json && git diff --check"
+      ],
+      "evidence": "PASS 2026-07-21. Frontend focused Vitest passed 48/48 across exact-origin store navigation, main/sub-agent event registration and output activity, lifecycle panel Stop-to-Stopping/terminal history/deadline behavior, clickable global badge navigation, and Tool Detail helpers. Targeted Biome checked 23 affected files with no findings; pnpm typecheck exited 0. After just space-guard exited 0, golish-app-core nextest run 4baaf79e-212c-421b-aa5d-31d432bcf5ba passed 4/4 for terminal-unreconciled retention, reconciliation wakeup, lag replay exactly-once claim, and background result soft/hard metadata. golish-agent-app run 325bb225-b766-4d83-ae3d-8a11dd402d7c passed 3/3 for same-invocation submit continuation, deadline recovery and no-session behavior. golish-sub-agents run f2d25070-2451-49ce-b818-0381d1430daf passed 2/2 for submit outer-timeout exemption and one-shot recovery mode that blocks model-authored wait loops. Three affected crates passed all-target Clippy with -D warnings; six changed Rust files passed scoped rustfmt. JSON, zero-active-feature and diff checks passed. No DB schema/migration/generated IPC change, external request, process kill, commit or push occurred. Per AGENTS.md 0.1, init/precommit/full workspace suites were not authorized and were not run.",
+      "notes": "No DB schema, migration, generated IPC type or external scan is required. check_job/wait_for_background_jobs/kill_job remain recovery controls; the normal submit path becomes runtime-owned. The cross-platform process-tree supervisor is explicitly separate from this UI/reconciliation slice."
+    },
+    {
+      "id": "eas-naabu-full-port-discovery-2026-07-21",
+      "priority": 0,
+      "area": "backend EAS port discovery runtime and deterministic evidence read-side",
+      "title": "Use Naabu for bounded full TCP discovery and Nmap only for confirmed-open service fingerprints.",
+      "user_visible_behavior": "Full EAS port discovery no longer spends the whole batch on Nmap TCP-connect scans that are killed by a shorter runner timeout. A fixed Naabu 1-65535 scan discovers ports under the same target guards, Nmap fingerprints only confirmed-open ports, and the PORT gate accepts only an untampered complete v2 receipt while retaining strict legacy Nmap proof compatibility.",
+      "status": "passing",
+      "design": "docs/design/2026-07-21-eas-naabu-full-port-discovery.md",
+      "plan": "docs/superpowers/plans/2026-07-21-eas-naabu-full-port-discovery.md",
+      "verification": [
+        "cd backend && cargo nextest run -p golish-pentest-app -E 'test(port_scan_profile_recipes_are_server_owned_and_bounded) | test(incomplete_port_profile_never_terminalizes_port_coverage) | test(full_port_profile_terminalizes_only_after_complete_target_manifest) | test(full_port_profile_counts_only_real_open_port_liveness) | test(full_port_attestation_v2_binds_manifest_recipe_receipt_and_output) | test(full_empty_manifest_is_valid_zero_record_landing) | test(full_port_profile_accepts_only_bounded_cidr_and_one_address_family) | test(port_scan_result_reports_coverage_and_next_action)'",
+        "cd backend && cargo nextest run -p golish-agent-app -E 'test(eas_port_terminal_) | test(eas_target_bound_evidence_requires_producer_and_current_org) | test(eas_terminal_outcome_ref_must_match_guarded_audit_quadruple)'",
+        "cd backend && cargo clippy -p golish-pentest-app -p golish-agent-app --lib --tests -- -D warnings",
+        "cd backend && cargo fmt -p golish-pentest-app -p golish-agent-app -- --check",
+        "jq empty feature_list.json && jq -e '([.features[] | select(.status == \"in_progress\")] | length) <= 1' feature_list.json && git diff --check"
+      ],
+      "evidence": "PASS 2026-07-21. GUI run pentest-chat-1784598026928-1 supplied the runtime root cause: Nmap full declared 1900 seconds but two guarded calls were killed by the generic 600-second cap at about 600086ms and 600039ms with zero landing. Producer TDD RED run 084ed2c1-2ff5-43f9-a863-9bb85a943efa failed exactly because full still selected nmap; final producer run a85f6e5c-3bcb-42c6-87e0-0a59ba424a30 passed 8/8 for fixed Naabu Connect 1-65535/rate 1000/600-second recipe, exact expanded-IP list input, partial/full semantics, zero-open completion, manifest-bound endpoints, v2 receipt/hash and result contract. Read-side RED run 8fcfa7f0-6035-4d1c-b62a-46a67b0f9b32 rejected the new v2 proof because only legacy Nmap was accepted; final read-side run 5479ca1e-c067-435e-821d-73eaab9756fa passed 6/6 for Naabu v2 acceptance, recipe/manifest/receipt/output/target tamper rejection, exact producer ownership and strict Nmap v1 XML compatibility. Scoped golish-pentest-app + golish-agent-app Clippy with -D warnings and rustfmt check exited 0; JSON, single-active-feature and diff checks passed. No production DB write, external acceptance scan, schema/migration, process stop or GUI restart occurred. Per AGENTS.md 0.1, init/precommit/full workspace suites were not authorized and were not run.",
+      "notes": "Current full discovery is server-owned Naabu TCP Connect 1-65535 over an exact expanded-IP manifest; quick/standard remain partial and Nmap is reserved for confirmed-open service/version fingerprinting. Gate terminal projection accepts only Naabu v2 proof or strict historical Nmap v1 XML proof. This implementation completed in the current user-authorized thread while the independent background-job lifecycle feature remained the sole in_progress entry; no status or files belonging to that active feature were reverted."
+    },
+    {
+      "id": "candidate-tls-port-scan-coverage-2026-07-21",
+      "priority": 0,
+      "area": "backend Candidate TLS decision closure and EAS port-scan coverage semantics",
+      "title": "Keep TLS Candidate decisions evidence-backed and make port-scan completeness deterministic.",
+      "user_visible_behavior": "AI still decides whether a TLS observation becomes a hypothesis, but it cannot discard a security-relevant observation with a generic label; every accepted Candidate has an exact verification plan, and every port scan reports whether it covered a bounded subset or the full port range so incomplete scans cannot satisfy the PORT gate.",
+      "status": "passing",
+      "design": "docs/design/2026-07-21-candidate-tls-port-scan-coverage.md",
+      "plan": "docs/superpowers/plans/2026-07-21-candidate-tls-port-scan-coverage.md",
+      "verification": [
+        "cd backend && cargo nextest run -p golish-agent-kit -p golish-agent-app -E 'test(actionable_tls_observation_) | test(tls_metadata_observation_) | test(candidate_batch_rejects_duplicate_semantic_identity_before_db_insert) | test(candidate_decision_groups_expand_manifest_kind_prefixes_exactly) | test(candidate_decision_groups_expand_exact_nuclei_template_ids) | test(candidate_submit_preview_rejects_duplicate_semantic_identity)'",
+        "cd backend && cargo nextest run -p golish-pentest-app -E 'test(port_scan_profile_recipes_are_server_owned_and_bounded) | test(wide_cidr_full_profile_closes_as_typed_policy_block) | test(incomplete_port_profile_never_terminalizes_port_coverage) | test(full_port_profile_terminalizes_only_after_complete_target_manifest) | test(full_port_profile_counts_only_real_open_port_liveness_from_nmap_xml) | test(full_port_profile_accepts_only_bounded_cidr_and_one_address_family) | test(port_scan_result_reports_coverage_and_next_action) | test(port_scan_network_launch_flag_requires_runner_witness) | test(discover_ports_publishes_each_registered_technique_once)'",
+        "cd backend && cargo nextest run -p golish-agent-app -p golish-pentest -p golish-db -E 'test(eas_port_terminal_requires_full_scan_attestation) | test(eas_wide_cidr_policy_block_requires_exact_guarded_producer) | test(nmap_pn_user_set_status_does_not_publish_liveness) | test(nmap_toolsconfig_parses_filtered_and_closed_terminal_ports) | test(monotonic_guarded_batch_cannot_downgrade_terminal_truth)'",
+        "cd backend && cargo nextest run -p golish-sub-agents -E 'test(attack_analyst_is_reasoning_only_and_distinct_from_verifier)'",
+        "cd backend && cargo clippy -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-pentest-app -p golish-pentest -p golish-sub-agents -p golish-db --lib --tests -- -D warnings",
+        "cd backend && cargo fmt -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-pentest-app -p golish-pentest -p golish-sub-agents -p golish-db -- --check",
+        "VT_TRANSCRIPT_DIR=/tmp/golish-candidate-tls-v3-20260721.yL3MXz backend/target/debug/golish /Users/christopherzheng/golish-platform/Test1 --stage-run-fork 7dcef9f0-17c8-40e9-a5b8-db06a86f9f27 --only attack_candidate --stage-run-test-database golish_gatefix_20260720_d --auto-approve --json --execute '<Candidate TLS and duplicate-identity closure objective>'",
+        "python3 scripts/run_tree.py /tmp/golish-candidate-tls-v3-20260721.yL3MXz/stage-run-99f45137-aa48-447c-baaf-b90613b7986a --full",
+        "jq empty feature_list.json && jq -e '([.features[] | select(.status == \"in_progress\")] | length) == 0' feature_list.json && git diff --check"
+      ],
+      "evidence": "PASS 2026-07-21. Clone-only Candidate run stage-run-99f45137-aa48-447c-baaf-b90613b7986a / operation 39219787-814c-4bc9-ae46-4b1da445b99e / execution 4f67ec71-9d12-4eb8-a6aa-e8372370b688 first returned typed ATTACK_CANDIDATE_DUPLICATE_IDENTITY with both exact work-item keys, then the same Analyst chain repaired the batch and reached per-org 1/1 PASS plus final GATE PASS. Read-only clone DB verification showed stage completed, Unit 1/1 passed, 22 proposed Candidates (21 WSTG-CRYP-03 and 1 WSTG-INFO), and 0 Candidate Attempts. ContextPack remained canonical=1/runtime=2/vector=3/omitted=0. Candidate/TLS/group/duplicate preview run 4456c215-0234-42af-9a26-26680ba02206 passed 9/9; Analyst prompt run e984f856-c5ad-41fa-ba9f-b36dceb4dfbc passed 1/1. Port profile/manifest/result run b6230c05-ca46-443b-86e3-4125a88b73a7 passed 9/9; Nmap parser/read-side attestation/wide-CIDR/monotonic outcome run 8868d211-279b-4a59-845e-9140e3b33dea passed 5/5. Seven affected crates passed scoped Clippy with -D warnings and scoped rustfmt check. JSON, zero-active-feature and diff checks passed. No production DB write, target scan, Candidate approval, Verification action, schema or migration occurred. Per AGENTS.md 0.1, init/precommit/full workspace suites were not authorized and were not run.",
+      "notes": "AI still owns Candidate judgment; deterministic rules enforce exact frozen evidence, closed TLS exception reasons, server-derived immutable plans and duplicate semantic identity before durable write. quick/standard remain partial discovery only; full is server-owned TCP 1-65535 and terminal only after read-side per-host attestation. Wide CIDR closes as no-network policy-blocked until scope is narrowed. The isolated CLI slice intentionally stopped with proposed plans and no Attempt; approving any real plan remains an explicit user decision."
+    },
     {
       "id": "candidate-memory-graph-vector-closure-2026-07-20",
       "priority": 0,
@@ -119,6 +184,24 @@
       ],
       "evidence": "PASSING 2026-07-19. TDD delete-side RED nextest run 397d30d5-c5fe-4ed0-abff-881acf07050c failed 1/1 because an active fork still accepted a deletion job; GREEN ec6fcd66-4425-4ad1-9446-5fccf5a49035 passed. Reverse-fence RED run 010520f0-8426-4b3b-839a-01d76be2c367 failed because a fork still materialized after deletion acceptance; GREEN ea9313f2-1d77-4478-89b8-19ce1a4a05d3 and final fresh run da638b92-f5b0-4508-891e-561d1cfe8663 passed 1/1 on fresh embedded PostgreSQL with migration 20260719000001. Final app-core run 0b2e40fb-9bb3-4577-a683-ba3e636a62bc passed 2/2 typed-code/serialization tests. Focused Target/error-code Vitest passed 6/6; focused Biome, TypeScript noEmit, five-package all-target Clippy -D warnings, five-package rustfmt, jq and diff checks exited 0. Live recovery decision 90981a97-b3ce-54dc-927d-64efceb3bc09 terminalized exact outcome-unknown Worker ce4fd12c-99ab-4880-8d1b-af707b6079d7 as failed, WorkItem exhausted and blocked output without replay; the abandoned parent stage_run/tool and Task a8c3469f-e505-45bd-b2fe-d169de267504 were then failed through existing repo transitions after zero live Worker leases were verified. Cleanup job 44d3b647-a462-47a7-8083-30b6f84ad7ec reached hard_delete_committed at 2026-07-19 14:25:48 +08:00; exact readback showed organization 38c070ba-55a5-43ee-b4ba-99cfa91cc1fb rows=0 and its live Target rows=0. Live _sqlx_migrations confirms 20260719000001 success=true.",
       "notes": "The user explicitly authorized code, migration, and live recovery changes without another confirmation. The immutable Target freeze remains intact; both admission writers now serialize on live Organization rows and reject the losing race before partial cleanup/materialization. Full init/precommit/workspace suites were not run under AGENTS.md §0.1; focused evidence covers the changed behavior."
+    },
+    {
+      "id": "stage-team-rolling-refill-lock-convergence-2026-07-21",
+      "priority": 0,
+      "area": "backend: shared Company Controller rolling Stage Team scheduler for Target Intel, EAS, Enumeration and Vuln Triage",
+      "title": "Keep child completion polling live while a refill claim waits on the same operation lock.",
+      "user_visible_behavior": "Triage and other Company stages continue updating after fast sibling completions instead of freezing in waiting_background when a refill claim overlaps another child's durable landing transaction.",
+      "status": "passing",
+      "design": "docs/design/2026-07-21-stage-team-rolling-refill-lock-convergence.md",
+      "plan": "docs/superpowers/plans/2026-07-21-stage-team-rolling-refill-lock-convergence.md",
+      "verification": [
+        "cd backend && cargo nextest run -p golish-agent-runtime -E 'test(rolling_stage_team_child_drain_) | test(stage_team_child_batch_preserves_error_without_skipping_recoverable_results) | test(persisted_vuln_worklist_distinguishes_in_flight_from_exhausted)'",
+        "cd backend && cargo clippy -p golish-agent-runtime --lib --tests -- -D warnings",
+        "cargo fmt --manifest-path backend/Cargo.toml -p golish-agent-runtime -- --check",
+        "jq empty feature_list.json && test $(jq '[.features[] | select(.status == \"in_progress\")] | length' feature_list.json) -eq 0 && git diff --check"
+      ],
+      "evidence": "PASS 2026-07-21. Production run pentest-chat-1784603212728-1 supplied the exact failure topology: Enumeration passed, five tools completed, PID 9914 held the operation_state transaction while PID 96586 refill claim waited on it, leaving Triage at 4/16 terminal with no active scanner. TDD RED run fe4d64b7-3b46-4687-92c7-4d93a2ea93ef failed 1/1 with the expected 1-second timeout while an in-flight child held the simulated operation lock and refill waited for it. Minimal persistent-single-claim plus child-first select implementation turned the same test GREEN in run 2035d9e2-9e85-48df-8236-f5646b3c7b6e (1/1). Final focused run 902b28ec-1086-415a-bcd8-f54cbd509a55 passed 8/8, covering lock convergence, immediate refill, exact child cap, execution-error drain, cancellation landing, claim-error landing and persisted Vuln in-flight classification. Scoped golish-agent-runtime lib/tests Clippy with -D warnings, rustfmt check, JSON/zero-active-feature and diff checks exited 0.",
+      "notes": "The fix keeps at most one persistent pending claim and concurrently polls it with existing child completions; claim(None) pauses until child progress. It does not change database schema, scanner timeouts, scope, concurrency caps, evidence, retry or Gate semantics. The currently running GUI process still has the old binary and its existing blocked transaction was deliberately not restarted or mutated; loading the fix and recovering that run requires a separate user-approved restart/continuation action. Per AGENTS.md section 0.1, init/precommit/full-workspace gates were not authorized and were not run."
     },
     {
       "id": "stage-team-rolling-child-drain-2026-07-20",

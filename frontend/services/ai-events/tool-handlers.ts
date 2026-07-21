@@ -332,9 +332,29 @@ export function isBackgroundedResult(result: unknown): boolean {
 type BackgroundJobRegistrar = {
   addBackgroundJob: (
     sessionId: string,
-    job: { jobId: string; command: string; startedAt: number }
+    job: {
+      jobId: string;
+      command: string;
+      toolName: string;
+      origin:
+        | { kind: "main_tool"; requestId: string }
+        | { kind: "sub_agent_tool"; parentRequestId: string; requestId: string };
+      startedAt: number;
+      backgroundedAt: number;
+      lastOutputAt?: number;
+      softTimeoutMs?: number;
+      hardTimeoutMs?: number;
+      state: "running" | "stopping";
+    }
   ) => void;
 };
+
+interface BackgroundJobOriginInput {
+  requestId: string;
+  toolName: string;
+  source: "main" | "sub_agent";
+  parentRequestId?: string;
+}
 
 /**
  * Register a soft-timeout→backgrounded tool result into the Cursor-style
@@ -346,14 +366,38 @@ type BackgroundJobRegistrar = {
 export function registerBackgroundJobFromResult(
   state: BackgroundJobRegistrar,
   sessionId: string,
-  result: unknown
+  result: unknown,
+  origin: BackgroundJobOriginInput
 ): void {
-  const bg = result as { job_id?: string; command?: string };
+  const bg = result as {
+    job_id?: string;
+    command?: string;
+    soft_timeout_ms?: number;
+    hard_timeout_ms?: number;
+  };
   if (bg.job_id) {
+    const parentRequestId = origin.parentRequestId;
+    if (origin.source === "sub_agent" && !parentRequestId) return;
+    const jobOrigin =
+      origin.source === "sub_agent"
+        ? {
+            kind: "sub_agent_tool" as const,
+            parentRequestId: parentRequestId!,
+            requestId: origin.requestId,
+          }
+        : { kind: "main_tool" as const, requestId: origin.requestId };
+    const backgroundedAt = Date.now();
+    const softTimeoutMs = typeof bg.soft_timeout_ms === "number" ? bg.soft_timeout_ms : undefined;
     state.addBackgroundJob(sessionId, {
       jobId: bg.job_id,
       command: bg.command ?? "(command)",
-      startedAt: Date.now(),
+      toolName: origin.toolName,
+      origin: jobOrigin,
+      startedAt: backgroundedAt - (softTimeoutMs ?? 0),
+      backgroundedAt,
+      softTimeoutMs,
+      hardTimeoutMs: typeof bg.hard_timeout_ms === "number" ? bg.hard_timeout_ms : undefined,
+      state: "running",
     });
   }
 }
@@ -380,7 +424,11 @@ export const handleToolResult: EventHandler<{
   // but keep the timeline + interleaved cards visibly "running in background"
   // until a later `tool_background_completed` flips them to a terminal result.
   if (isBackgroundedResult(event.result)) {
-    registerBackgroundJobFromResult(state, ctx.sessionId, event.result);
+    registerBackgroundJobFromResult(state, ctx.sessionId, event.result, {
+      requestId: event.request_id,
+      toolName: event.tool_name,
+      source: "main",
+    });
     state.completeActiveToolCall(ctx.sessionId, event.request_id, true, event.result);
     state.backgroundStreamingToolBlock(ctx.sessionId, event.request_id, event.result);
     state.backgroundToolExecutionBlock(ctx.sessionId, event.request_id, event.result);
@@ -418,6 +466,7 @@ export const handleToolOutputChunk: EventHandler<{
   session_id: string;
   seq?: number;
 }> = (event, ctx) => {
+  ctx.getState().markBackgroundJobOutput(ctx.sessionId, event.request_id, Date.now());
   if (event.source?.type === "sub_agent") {
     ctx.batchToolOutputChunk(ctx.sessionId, event.request_id, event.chunk, "sub_agent");
     return;

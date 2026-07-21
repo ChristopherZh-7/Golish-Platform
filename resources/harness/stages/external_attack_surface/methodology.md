@@ -65,11 +65,19 @@ evidence ledger / `technique_outcomes` for the exact asset and technique.
    concrete IP/CIDR hosts.
 5. Port discovery — call `eas_discover_ports` for every explicit IP/CIDR target
    that is still runnable.
-   Its optional scanner enum only selects a backend-owned recipe; raw
-   `naabu`/`masscan`/`nmap` tools and command arguments are never exposed to the
-   model. The wrapper owns the list-file recipe and rejects domains/URLs. Every
-   IP/CIDR range row must have a fresh port terminal result; discovered child IPs
-   continue in their own supplemental wave.
+   Use `scan_profile="full"` for a PORT cell that must become terminal. The
+   wrapper owns scanner, TCP range, rate, retries, timeout and list-file recipe;
+   raw `naabu`/`masscan`/`nmap` arguments are never exposed to the model.
+   `quick` (Top 100) and `standard` (Top 1000) are discovery-only and always
+   publish `partial`, including when ports are found. Only a successful full
+   Naabu TCP Connect 1-65535 run with an untampered v2 authorized-target
+   manifest/coverage receipt can publish PORT `found` or `empty`. Naabu is the
+   port-discovery engine; Nmap is reserved for service/version fingerprinting
+   of confirmed-open ports. Full is bounded to four expanded IPv4 hosts (CIDR
+   `/30` or narrower) or exact IPv6 `/128`; for a wider existing range the
+   wrapper launches no scanner and persists an evidence-backed policy `blocked`
+   result for LIVENESS/PORT. Do not silently split or mark it checked-empty.
+   Discovered guarded child IPs continue in their own supplemental wave.
 6. Service/version fingerprint — call `eas_fingerprint_services` only for
    concrete IP targets with confirmed open ports. Normally pass only `targets[]`:
    the wrapper reads the exact DB-owned pending ports for each IP, splits them
@@ -115,9 +123,8 @@ evidence ledger / `technique_outcomes` for the exact asset and technique.
 
 **If a tool is missing or errors:**
 
-- Record it in `skipped_checks` with the reason and use another EAS wrapper
-  fallback where possible (for example, `eas_discover_ports(scanner="nmap")` for
-  concrete IPs when `naabu` is unavailable), not unresolved domains.
+- Record it in `skipped_checks` with the reason and follow the wrapper's
+  `next_action`; do not select a raw scanner fallback or unresolved domain.
 - Do NOT install tools, spawn extra sub-agents, or retry a blocked/missing tool in
   a loop. Note it and move on — "checked_empty" is NOT "unchecked".
 - If a WhatWeb batch has valid output or exactly attributed transport failures
@@ -136,10 +143,10 @@ evidence ledger / `technique_outcomes` for the exact asset and technique.
 - EAS wrappers are forced foreground and return only after guarded business rows
   and evidence land. Do not use background job controls or relaunch a wrapper
   because its prior result has not yet been interpreted; retry only a named
-  partial/error cell with a bounded batch. The four wrappers bypass the generic
-  sub-agent 300-second outer timeout and remain cancellable through User Stop;
-  SERVICE fingerprinting defaults each underlying nmap batch to a bounded
-  600-second command budget unless the caller explicitly supplies a smaller one.
+   partial/error cell with a bounded batch. The four wrappers bypass the generic
+   sub-agent 300-second outer timeout and remain cancellable through User Stop;
+  full Naabu discovery and every Nmap service-fingerprint job use server-owned
+  bounded command budgets that callers cannot increase.
 - The four `eas_*` capabilities are the complete model-facing active tool surface.
   `httpx`, `naabu`, `masscan`, `nmap`, WhatWeb and `pentest_run` are internal
   engines/recipes, not tools the AI may call directly.

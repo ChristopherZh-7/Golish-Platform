@@ -63,9 +63,9 @@ const DEFAULT_HARD_TIMEOUT_MS: u64 = 1_800_000; // 30 min
 /// 30-minute default would let a single hung probe pin a whole stage's closeout
 /// reconciliation barrier. Capped aggressively so they fail fast instead.
 const DEFAULT_DNS_HARD_TIMEOUT_MS: u64 = 15_000; // 15s
-/// Explicit wait tool default. Unlike `submit_stage_deliverable`, this is a
-/// visible step: the model/user see "waiting for background jobs" as its own
-/// tool card, then receive the finished job tails before re-submitting.
+/// Explicit recovery wait tool default. Normal closeout uses the manager's
+/// event-driven reconciliation barrier; this remains available for manual or
+/// exceptional diagnostics.
 const DEFAULT_WAIT_BACKGROUND_JOBS_TIMEOUT_MS: u64 = 300_000;
 const MAX_WAIT_BACKGROUND_JOBS_TIMEOUT_MS: u64 = 900_000;
 const DEFAULT_WAIT_BACKGROUND_JOBS_IDLE_TIMEOUT_MS: u64 = 60_000;
@@ -364,17 +364,16 @@ async fn run_shell_command_detail_with_mode(
         format!(
             "Started in the background as requested (job {job_id}); continue with other work. \
              Its result is auto-delivered when it finishes — do NOT poll it in a loop or re-run \
-             the same command. Reconcile any background jobs before you conclude the task. If it \
-             still hasn't finished much later, `check_job` it ONCE: if it's stuck with no new \
-             output (e.g. a hung DNS AXFR), `kill_job` it and move on instead of waiting."
+             the same command. Runtime reconciliation waits for the terminal result before stage \
+             closeout. Use `check_job` once and `kill_job` only as exceptional recovery if the \
+             detail view shows that it is genuinely stuck."
         )
     } else {
         format!(
             "Command exceeded the {}s soft timeout and is STILL RUNNING in the background (job {}). \
              It was NOT killed. Its result is auto-delivered when it finishes — do NOT re-run the \
-             same command. Poll `check_job` at most once if you need interim output; if it shows \
-             the job stuck with no new output, `kill_job` it and proceed (do not wait out the \
-             30-minute hard timeout).",
+             same command. Runtime reconciliation owns the normal wait. Use `check_job` once and \
+             `kill_job` only as exceptional recovery if the background detail shows no progress.",
             soft_ms / 1000,
             job_id
         )
@@ -389,7 +388,8 @@ async fn run_shell_command_detail_with_mode(
         "partial_stderr_truncated": partial_stderr.truncated,
         "partial_stdout_original_bytes": partial_stdout.original_bytes,
         "partial_stderr_original_bytes": partial_stderr.original_bytes,
-        "soft_timeout_ms": soft_ms,
+        "soft_timeout_ms": inline_wait_ms,
+        "hard_timeout_ms": hard_ms,
         "hint": hint,
     }))
 }
@@ -669,11 +669,8 @@ impl Tool for KillJobTool {
     }
 }
 
-/// Tool that turns "wait for background scans" into an explicit, visible agent
-/// step. It returns when all tracked jobs settle, when any tracked job completes,
-/// or when the remaining jobs go idle/timeout, so the model can inspect landed
-/// output incrementally instead of blocking an entire stage behind the slowest
-/// batch.
+/// Explicit recovery tool for manually observing background scans. Normal stage
+/// closeout waits on manager lifecycle events and should not call this tool.
 pub struct WaitForBackgroundJobsTool;
 
 #[async_trait::async_trait]
@@ -683,7 +680,8 @@ impl Tool for WaitForBackgroundJobsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Wait for background jobs started by this AI session. Return as soon as all tracked \
+        "Recovery-only: manually wait for background jobs started by this AI session. Normal \
+         stage closeout is event-driven and must not call this in a loop. Return as soon as all tracked \
          jobs finish, any tracked job finishes while others are still running, or the remaining \
          jobs go idle/timeout. The result includes completed stdout/stderr tails plus still-running \
          jobs, so inspect landed output before deciding whether to wait again, narrow, kill, or submit."
@@ -964,6 +962,24 @@ mod tests {
             .expect("background command should return a structured result");
 
         assert_eq!(res.get("status"), Some(&json!("backgrounded")));
+        assert!(
+            res.get("soft_timeout_ms")
+                .and_then(|value| value.as_u64())
+                .is_some(),
+            "detail UI needs the effective soft timeout: {res:?}"
+        );
+        assert!(
+            res.get("hard_timeout_ms")
+                .and_then(|value| value.as_u64())
+                .is_some(),
+            "detail UI needs the hard deadline: {res:?}"
+        );
+        let hint = res
+            .get("hint")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        assert!(hint.contains("Runtime reconciliation"));
+        assert!(!hint.contains("Poll `check_job`"));
         let job_id = res
             .get("job_id")
             .and_then(|v| v.as_str())

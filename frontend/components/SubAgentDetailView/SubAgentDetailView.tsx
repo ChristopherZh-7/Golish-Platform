@@ -32,6 +32,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { ThinkingBlock } from "@/components/AIChatPanel/ThinkingBlock";
 import { Ansi } from "@/components/Ansi";
+import { BackgroundJobPanel } from "@/components/BackgroundJobPanel/BackgroundJobPanel";
 import {
   StageAssetCoverageBlock,
   type StageAssetCoverageWorkItem,
@@ -2174,6 +2175,9 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   const { t } = useTranslation();
   const setDetailViewMode = useStore((s) => s.setDetailViewMode);
   const requestIds = useStore((s) => s.sessions[sessionId]?.toolDetailRequestIds);
+  const backgroundToolFocusRequestId = useStore(
+    (s) => s.sessions[sessionId]?.backgroundToolFocusRequestId ?? null
+  );
   const targetRequestId = requestIds?.[requestIds.length - 1] ?? null;
   const subAgents = useStore((s) => s.activeSubAgents[sessionId] ?? EMPTY_SUB_AGENT_LIST);
 
@@ -2330,6 +2334,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
   const backgroundJobs = useStore((s) => s.backgroundJobs[sessionId]) ?? EMPTY_BG_JOBS;
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const focusedBackgroundToolRef = useRef<HTMLDivElement>(null);
   const timelineScrollFrameRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const previousTimelineScrollTopRef = useRef(0);
@@ -2432,6 +2437,26 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
     previousTimelineScrollTopRef.current = scrollRef.current?.scrollTop ?? 0;
     if (scrollRef.current && isRunning) scheduleTimelineScrollToBottom();
   }, [targetRequestId, isRunning, scheduleTimelineScrollToBottom]);
+
+  useEffect(() => {
+    if (!backgroundToolFocusRequestId) return;
+    const frameId = requestAnimationFrame(() => {
+      shouldStickToBottomRef.current = false;
+      focusedBackgroundToolRef.current?.scrollIntoView({ block: "center" });
+    });
+    const highlightTimer = window.setTimeout(() => {
+      useStore.setState((state) => {
+        const session = state.sessions[sessionId];
+        if (session?.backgroundToolFocusRequestId === backgroundToolFocusRequestId) {
+          session.backgroundToolFocusRequestId = null;
+        }
+      });
+    }, 1_800);
+    return () => {
+      cancelAnimationFrame(frameId);
+      window.clearTimeout(highlightTimer);
+    };
+  }, [backgroundToolFocusRequestId, sessionId, targetRequestId]);
 
   useEffect(() => {
     setIsTaskExpanded(false);
@@ -2576,6 +2601,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
         <div className="ml-auto flex items-center justify-end">
           <BackgroundJobsBadge
             jobs={backgroundJobs}
+            sessionId={sessionId}
             fallbackCount={backgroundedToolCount}
             reserveSpace
           />
@@ -2790,6 +2816,18 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
               const renderRecoveredDispatchHere =
                 shouldRecoverDispatch && recoveredDispatchTimelineIndex === i;
               if (!renderedEntry && !renderRecoveredDispatchHere) return null;
+              const backgroundTool =
+                entry.kind === "tool_call" && entry.toolCallId
+                  ? (toolMap.get(entry.toolCallId) ?? null)
+                  : null;
+              const focusedBackgroundTool = Boolean(
+                backgroundToolFocusRequestId && entry.toolCallId === backgroundToolFocusRequestId
+              );
+              const liveBackgroundJob = backgroundTool?.backgroundRun
+                ? (backgroundJobs.find(
+                    (job) => job.jobId === backgroundTool.backgroundRun?.jobId
+                  ) ?? null)
+                : null;
               return (
                 <Fragment key={`entry-${i}`}>
                   {renderRecoveredDispatchHere && (
@@ -2803,7 +2841,25 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
                       onRetry={() => setRecoveredDispatchRefresh((version) => version + 1)}
                     />
                   )}
-                  {renderedEntry && <div className={boundaryClass}>{renderedEntry}</div>}
+                  {renderedEntry && (
+                    <div
+                      ref={focusedBackgroundTool ? focusedBackgroundToolRef : undefined}
+                      className={cn(
+                        boundaryClass,
+                        focusedBackgroundTool && "rounded-md ring-1 ring-inset ring-amber-300/45"
+                      )}
+                    >
+                      {backgroundTool?.backgroundRun && (
+                        <BackgroundJobPanel
+                          sessionId={sessionId}
+                          backgroundRun={backgroundTool.backgroundRun}
+                          job={liveBackgroundJob}
+                          terminalResult={backgroundTool.result}
+                        />
+                      )}
+                      {renderedEntry}
+                    </div>
+                  )}
                 </Fragment>
               );
             })}

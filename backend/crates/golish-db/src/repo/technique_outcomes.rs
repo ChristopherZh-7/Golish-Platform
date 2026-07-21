@@ -290,6 +290,40 @@ pub async fn upsert_batch_guarded(
     Ok(())
 }
 
+/// Target-guarded producer publication that may advance an unfinished cell but
+/// never replace an existing terminal cell. EAS port discovery uses this so a
+/// later quick/standard observation cannot demote prior full-scan truth.
+pub async fn upsert_batch_guarded_monotonic(
+    pool: &PgPool,
+    guard: &TargetWriteGuard,
+    writes: &[TechniqueOutcomeWrite],
+) -> Result<()> {
+    if writes.is_empty() {
+        return Ok(());
+    }
+    let Some(organization_id) = guard.organization_id else {
+        return Err(anyhow::anyhow!(
+            "target-bound technique outcomes require an organization"
+        ));
+    };
+    if writes
+        .iter()
+        .any(|write| write.organization_id != organization_id)
+    {
+        return Err(anyhow::anyhow!(
+            "technique outcome organization does not match target write guard"
+        ));
+    }
+
+    let mut tx = pool.begin().await?;
+    lock_target_write_guard(&mut tx, guard).await?;
+    for write in writes {
+        let _applied = execute_attempt_marker(&mut *tx, write).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct AttemptStateRow {
     technique: String,
@@ -713,6 +747,12 @@ mod tests {
     fn guarded_batch_reuses_org_scoped_conflict_contract() {
         assert!(UPSERT_SQL
             .contains("ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE"));
+    }
+
+    #[test]
+    fn monotonic_guarded_batch_cannot_downgrade_terminal_truth() {
+        assert!(UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_SQL
+            .contains("WHERE technique_outcomes.outcome IN ('partial', 'error')"));
     }
 
     #[test]

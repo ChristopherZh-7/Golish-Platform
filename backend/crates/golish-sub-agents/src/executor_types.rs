@@ -528,7 +528,6 @@ impl SubmitRepairMode {
                 "wait_for_background_jobs",
             ],
             SubmitRepairKind::BackgroundJobs => &[
-                "wait_for_background_jobs",
                 "check_job",
                 "kill_job",
                 "check_stage_asset_coverage",
@@ -627,9 +626,10 @@ impl SubmitRepairMode {
                         .to_string()
                 }
                 SubmitRepairKind::BackgroundJobs => {
-                    "submit_stage_deliverable returned needs_fix because background jobs are still \
-                 pending. Do NOT launch replacement scans. Call wait_for_background_jobs, inspect \
-                 the completed output tails, then resubmit."
+                    "submit_stage_deliverable reached the exceptional system reconciliation \
+                 deadline. Do NOT launch replacement scans or enter a polling loop. Inspect each \
+                 listed job at most once with check_job; use kill_job only if it is genuinely \
+                 stuck, then resubmit after its terminal notification."
                         .to_string()
                 }
                 SubmitRepairKind::CoverageGap => {

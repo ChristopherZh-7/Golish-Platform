@@ -295,6 +295,7 @@ export function createSessionCoreActions(
           state.sessions[sessionId].detailViewMode = mode;
           if (mode !== "tool-detail" && mode !== "sub-agent-detail") {
             state.sessions[sessionId].toolDetailRequestIds = null;
+            state.sessions[sessionId].backgroundToolFocusRequestId = null;
           }
         }
       }),

@@ -902,12 +902,9 @@ mod tests {
         assert!(directive.contains("submit_stage_deliverable"));
         assert!(bound_stage_submit_reprompt(false, &tools, 0).is_none());
         assert!(bound_stage_submit_reprompt(true, &[], 0).is_none());
-        assert!(bound_stage_submit_reprompt(
-            true,
-            &tools,
-            MAX_BOUND_STAGE_SUBMIT_REPROMPTS
-        )
-        .is_none());
+        assert!(
+            bound_stage_submit_reprompt(true, &tools, MAX_BOUND_STAGE_SUBMIT_REPROMPTS).is_none()
+        );
     }
 
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]

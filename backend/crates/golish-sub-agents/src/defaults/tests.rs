@@ -249,6 +249,12 @@ fn test_prober_prompt_is_active_surface() {
     // Active surface mapping: liveness / open ports / service fingerprint via wrappers.
     assert!(prompt.contains("eas_probe_http_liveness"));
     assert!(prompt.contains("eas_discover_ports"));
+    assert!(prompt.contains("scan_profile=\"full\""));
+    assert!(prompt.contains("quick/standard"));
+    assert!(prompt.contains("remain partial"));
+    assert!(prompt.contains("evidence-backed policy-blocked LIVENESS/PORT"));
+    assert!(!prompt.contains("scanner=\"naabu\""));
+    assert!(!prompt.contains("top_ports="));
     assert!(prompt.contains("eas_fingerprint_services"));
     assert!(prompt.contains("eas_fingerprint_web_stack"));
     assert!(prompt.contains("confirmed HTTP(S)"));
@@ -515,6 +521,8 @@ fn attack_analyst_is_reasoning_only_and_distinct_from_verifier() {
     assert!(!has_tool(analyst, "pentest_run"));
     assert!(!has_tool(analyst, "record_finding"));
     assert!(build_attack_analyst_prompt().contains("reasoning-only"));
+    assert!(build_attack_analyst_prompt().contains("first response MUST call"));
+    assert!(build_attack_analyst_prompt().contains("nuclei_template_ids"));
 }
 
 #[test]

@@ -268,6 +268,20 @@ fn spawn_background_completion_listener(
                                         "[background-listener] retirement drain lagged; dropped {} completion(s)",
                                         dropped
                                     );
+                                    for completion in golish_app_core::background_jobs::manager()
+                                        .terminal_unreconciled_for_session(&session_id)
+                                    {
+                                        process_background_completion(
+                                            &session_id,
+                                            &notes,
+                                            &event_tx,
+                                            &db_repo,
+                                            &db_pool,
+                                            project_path.as_deref(),
+                                            completion,
+                                        )
+                                        .await;
+                                    }
                                 }
                                 Err(tokio::sync::broadcast::error::TryRecvError::Empty)
                                 | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
@@ -297,6 +311,20 @@ fn spawn_background_completion_listener(
                         "[background-listener] lagged; dropped {} completion(s)",
                         dropped
                     );
+                    for completion in golish_app_core::background_jobs::manager()
+                        .terminal_unreconciled_for_session(&session_id)
+                    {
+                        process_background_completion(
+                            &session_id,
+                            &notes,
+                            &event_tx,
+                            &db_repo,
+                            &db_pool,
+                            project_path.as_deref(),
+                            completion,
+                        )
+                        .await;
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -334,16 +362,6 @@ async fn process_background_completion(
         job_id = %jc.job_id,
         status = %jc.status.as_str(),
     );
-
-    let _ = event_tx.send(AiEvent::ToolBackgroundCompleted {
-        job_id: jc.job_id.clone(),
-        command: jc.command.clone(),
-        status: jc.status.as_str().to_string(),
-        exit_code: jc.exit_code,
-        stdout_tail: jc.stdout_tail.clone(),
-        stderr_tail: jc.stderr_tail.clone(),
-        duration_ms: jc.duration_ms,
-    });
 
     let evidence_id =
         maybe_append_background_evidence(db_repo, session_id, project_path, &jc).await;
@@ -384,6 +402,26 @@ async fn process_background_completion(
     match notes.lock() {
         Ok(mut queue) => queue.push(note),
         Err(poisoned) => poisoned.into_inner().push(note),
+    }
+
+    // UI terminal state is deliberately published only after persistence and
+    // the agent note are ready. Closeout is acknowledged last so the submit
+    // invocation cannot resume before every completion consumer has landed.
+    let _ = event_tx.send(AiEvent::ToolBackgroundCompleted {
+        job_id: jc.job_id.clone(),
+        command: jc.command.clone(),
+        status: jc.status.as_str().to_string(),
+        exit_code: jc.exit_code,
+        stdout_tail: jc.stdout_tail.clone(),
+        stderr_tail: jc.stderr_tail.clone(),
+        duration_ms: jc.duration_ms,
+    });
+    if !golish_app_core::background_jobs::manager().mark_reconciled(&jc.job_id) {
+        tracing::warn!(
+            job_id = %jc.job_id,
+            session_id,
+            "background completion side effects landed but job was unavailable for reconciliation ack"
+        );
     }
 }
 
@@ -2745,18 +2783,20 @@ async fn configure_sub_agents(bridge: &AgentBridge, settings: &golish_settings::
 }
 
 /// Backs the submit tool's closeout reconciliation barrier (Piece 3) with the
-/// process-wide background-job manager: reports the running scans this session
-/// started so `submit_stage_deliverable` can wait for them before grading.
+/// process-wide background-job manager. The manager owns the event wait and
+/// returns only after process termination plus completion-side-effect landing.
 struct ManagerBackgroundJobs;
 
 #[async_trait::async_trait]
 impl crate::ai::harness_submit_tool::BackgroundJobsQuery for ManagerBackgroundJobs {
-    async fn running_for_session(
+    async fn wait_for_session_reconciled(
         &self,
         session_id: &str,
+        max_wait: std::time::Duration,
     ) -> Vec<crate::ai::harness_submit_tool::RunningJobInfo> {
         golish_app_core::background_jobs::manager()
-            .running_for_session(session_id)
+            .wait_for_session_reconciled(session_id, max_wait)
+            .await
             .into_iter()
             .map(|j| crate::ai::harness_submit_tool::RunningJobInfo {
                 job_id: j.job_id,
@@ -2768,11 +2808,11 @@ impl crate::ai::harness_submit_tool::BackgroundJobsQuery for ManagerBackgroundJo
 }
 
 /// Total time the submit-time reconciliation barrier (Piece 3) waits for a
-/// session's background scans to settle before telling the agent to wait +
-/// resubmit. Tunable via `GOLISH_SUBMIT_RECONCILE_WAIT_MS`; default is 0 so the
-/// wait is visible as a separate `wait_for_background_jobs` tool step instead
-/// of making the submit card spin for minutes.
-const DEFAULT_SUBMIT_RECONCILE_WAIT_MS: u64 = 0;
+/// session's background scans to terminate and fully reconcile. The default
+/// covers the standard 30-minute hard job deadline plus landing grace, so the
+/// healthy path remains one submit invocation. The environment override is an
+/// operational escape hatch, not a prompt-level polling policy.
+const DEFAULT_SUBMIT_RECONCILE_WAIT_MS: u64 = 1_805_000;
 
 fn submit_reconcile_wait_ms() -> u64 {
     std::env::var("GOLISH_SUBMIT_RECONCILE_WAIT_MS")
@@ -2865,10 +2905,9 @@ async fn register_pentest_tools(
         // stage are queued for a follow-up wave instead of moving the current
         // gate.
         .with_operation_id_source(bridge.harness_active_operation_id_handle())
-        // Piece 3 · closeout reconciliation barrier: a submit that arrives while
-        // this session still has backgrounded scans running defers fast by default
-        // and tells the model to call wait_for_background_jobs. Operators can opt
-        // back into the old bounded-in-submit wait via GOLISH_SUBMIT_RECONCILE_WAIT_MS.
+        // Piece 3 · closeout reconciliation barrier: one submit invocation waits
+        // on runtime lifecycle events until terminal results and side effects land.
+        // Control tools remain exceptional recovery paths only.
         .with_background_jobs(std::sync::Arc::new(ManagerBackgroundJobs))
         .with_reconcile_timeouts(submit_reconcile_wait_ms(), 1000);
         // 乙 · scope the real-id suggestion to this chat session (the string both

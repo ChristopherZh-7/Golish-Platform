@@ -261,7 +261,7 @@ impl RepairDirective {
         }
         if ports_total > 0 {
             out.push_str(&format!(
-                "\n- PORT/eas_discover_ports: one wrapper call with concrete IP/CIDR targets[] like:\n{}",
+                "\n- PORT/eas_discover_ports: one wrapper call with concrete IP/CIDR targets[] and scan_profile=full. The backend owns scanner/range/rate/retries/timeout; quick/standard remain partial and cannot close PORT. Full is bounded to at most four expanded IPv4 hosts (CIDR /30 or narrower) or exact IPv6 /128; a wider existing range produces a no-network, evidence-backed LIVENESS/PORT policy block, so do not alter or split its authorization. Sample targets:\n{}",
                 sample_assets(&ports, ports_total)
             ));
         }
@@ -696,7 +696,7 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
             "eas_probe_http_liveness wrapper: include {asset} in targets[] only when it is a domain, URL, or confirmed web-origin seed; concrete IP/CIDR liveness must be closed through eas_discover_ports first"
         ),
         (StageKind::ExternalAttackSurface, "eas_discover_ports", _) => format!(
-            "eas_discover_ports wrapper: include {asset} in targets[] only when it is a concrete IP/CIDR needing PORT coverage; the wrapper owns the naabu/masscan/nmap recipe and writes port outcomes"
+            "eas_discover_ports wrapper: include {asset} in targets[] only when it is a concrete IP/CIDR needing PORT coverage and use scan_profile=full; quick/standard remain partial, while the backend-owned full recipe writes terminal port outcomes only after its complete target manifest lands"
         ),
         (StageKind::ExternalAttackSurface, "eas_fingerprint_services", _) => {
             format!(
@@ -710,7 +710,7 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
             "httpx batch: include {asset} with sibling domain/URL LIVENESS gaps in one JSONL run; use args `-json -sc -title -td -server -silent` plus pentest_run.input_lines. For concrete IP/CIDR liveness, prefer PORT/naabu first because port evidence closes IP liveness."
         ),
         (StageKind::ExternalAttackSurface, "naabu", _) => format!(
-            "naabu batch: include {asset} with sibling PORT gaps in one pentest_run; use args `-list {{{{input_file}}}} -top-ports 1000 -s c -silent` plus pentest_run.input_lines"
+            "Use eas_discover_ports(targets=[{asset}], scan_profile=full) instead of raw naabu; scanner, port range, rate, retries and timeout are server-owned, and quick/standard profiles remain partial"
         ),
         (StageKind::ExternalAttackSurface, "nmap", _) => {
             format!(
@@ -1352,6 +1352,8 @@ mod tests {
         assert!(instruction.contains("EAS repair is batch-first"));
         assert!(instruction.contains("eas_probe_http_liveness"));
         assert!(instruction.contains("eas_discover_ports"));
+        assert!(instruction.contains("scan_profile=full"));
+        assert!(instruction.contains("quick/standard remain partial"));
         assert!(instruction.contains("eas_fingerprint_services"));
         assert!(instruction.contains("WEB-FINGERPRINT/eas_fingerprint_web_stack"));
         assert!(!instruction.contains("tool_name=httpx"));

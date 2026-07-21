@@ -116,7 +116,12 @@ export const handleSubAgentToolResult: EventHandler<{
   // surfaces in the input-row badge + sub-agent detail header. The sub-agent's
   // turn continues, so still resolve the card carrying the backgrounded result.
   if (isBackgroundedResult(event.result)) {
-    registerBackgroundJobFromResult(state, ctx.sessionId, event.result);
+    registerBackgroundJobFromResult(state, ctx.sessionId, event.result, {
+      requestId: event.request_id,
+      toolName: event.tool_name,
+      source: "sub_agent",
+      parentRequestId: event.parent_request_id,
+    });
   }
   state.completeSubAgentToolCall(
     ctx.sessionId,
