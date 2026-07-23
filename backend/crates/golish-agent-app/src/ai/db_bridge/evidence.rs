@@ -429,6 +429,30 @@ fn eas_full_port_manifest_hash_v2(
     format!("sha256:{hex}")
 }
 
+fn eas_full_port_manifest_hash_v3(
+    address_family: u8,
+    tool_args: &str,
+    expected_hosts: &BTreeSet<IpAddr>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"eas_port_scan_manifest_v3\0");
+    hasher.update(b"full");
+    hasher.update(b"\0profile_version=3\0family=");
+    hasher.update(address_family.to_string().as_bytes());
+    hasher.update(b"\0port_scope=tcp-1-65535\0tool=naabu\0args=");
+    hasher.update(tool_args.as_bytes());
+    for target in expected_hosts {
+        hasher.update(b"\0");
+        hasher.update(target.to_string().as_bytes());
+    }
+    let digest = hasher.finalize();
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{hex}")
+}
+
 fn eas_port_scan_output_hash(output: &str) -> String {
     let digest = Sha256::digest(output.as_bytes());
     let hex = digest
@@ -467,6 +491,9 @@ fn row_has_trusted_eas_port_attestation(
         }
         (Some(EAS_PORT_TERMINAL_NAABU_TOOL), Some("eas_port_scan_attestation_v2")) => {
             row_has_trusted_eas_port_attestation_v2(row, &attestation)
+        }
+        (Some(EAS_PORT_TERMINAL_NAABU_TOOL), Some("eas_port_scan_attestation_v3")) => {
+            row_has_trusted_eas_port_attestation_v3(row, &attestation)
         }
         _ => false,
     }
@@ -809,6 +836,101 @@ fn row_has_trusted_eas_port_attestation_v2(
         .and_then(serde_json::Value::as_str)
         .is_some_and(|requested| requested == row.target_value || requested == row.target_name);
     target_id_matches && requested_matches
+}
+
+fn row_has_trusted_eas_port_attestation_v3(
+    row: &golish_db::repo::audit::TargetBoundEvidenceFactRow,
+    attestation: &serde_json::Value,
+) -> bool {
+    let Some(profile) = attestation.get("profile") else {
+        return false;
+    };
+    if profile.get("schema").and_then(serde_json::Value::as_str)
+        != Some("eas_port_scan_coverage_v3")
+        || profile
+            .get("profile_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(3)
+        || [
+            "inline_wait_secs",
+            "operational_slo_secs",
+            "automatic_deadline",
+        ]
+        .iter()
+        .any(|field| profile.get(*field).is_some())
+    {
+        return false;
+    }
+    let address_family = match profile
+        .get("address_family")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("ipv4") => 4,
+        Some("ipv6") => 6,
+        _ => return false,
+    };
+    let Some(expanded_hosts) = attestation
+        .pointer("/batch_manifest/expanded_hosts")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|hosts| {
+            hosts
+                .iter()
+                .map(|host| host.as_str()?.parse::<IpAddr>().ok())
+                .collect::<Option<BTreeSet<_>>>()
+        })
+        .filter(|hosts| !hosts.is_empty() && hosts.len() <= 4)
+    else {
+        return false;
+    };
+    let Some(execution) = attestation.get("execution") else {
+        return false;
+    };
+    let Some(command) = execution.get("command").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let expected_args = format!(
+        "-list {{input_file}} -iv {address_family} -p 1-65535 -s c -Pn -c 128 -rate 1000 -timeout 500 -retries 1 -verify -warm-up-time 0 -silent -nc -duc -no-stdin"
+    );
+    let Some(tool_args) = command.strip_prefix("naabu ") else {
+        return false;
+    };
+    let expected_hash = eas_full_port_manifest_hash_v3(address_family, tool_args, &expanded_hosts);
+    if tool_args != expected_args
+        || profile
+            .get("target_manifest_sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_hash.as_str())
+        || attestation
+            .pointer("/batch_manifest/sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_hash.as_str())
+        || execution
+            .get("termination_reason")
+            .and_then(serde_json::Value::as_str)
+            != Some("exited")
+        || execution
+            .get("automatic_kill")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+    {
+        return false;
+    }
+
+    // Reuse the established endpoint, receipt, target binding, and output-hash
+    // verifier after substituting only the versioned recipe/hash envelope.
+    let legacy_args = format!(
+        "-list {{input_file}} -iv {address_family} -p 1-65535 -s c -rate 1000 -timeout 1000 -retries 1 -verify -silent -no-stdin"
+    );
+    let legacy_hash = eas_full_port_manifest_hash_v2(address_family, &legacy_args, &expanded_hosts);
+    let mut legacy = attestation.clone();
+    legacy["schema"] = serde_json::json!("eas_port_scan_attestation_v2");
+    legacy["profile"]["schema"] = serde_json::json!("eas_port_scan_coverage_v2");
+    legacy["profile"]["profile_version"] = serde_json::json!(2);
+    legacy["profile"]["timeout_secs"] = serde_json::json!(600);
+    legacy["profile"]["target_manifest_sha256"] = serde_json::json!(legacy_hash);
+    legacy["batch_manifest"]["sha256"] = legacy["profile"]["target_manifest_sha256"].clone();
+    legacy["execution"]["command"] = serde_json::json!(format!("naabu {legacy_args}"));
+    row_has_trusted_eas_port_attestation_v2(row, &legacy)
 }
 
 fn open_port_urls(
@@ -2042,9 +2164,10 @@ mod tests {
     use super::{
         dns_empty_outcome_hosts, dns_error_outcome_hosts, dns_found_outcome_hosts,
         dns_partial_outcome_hosts, eas_full_port_manifest_hash, eas_full_port_manifest_hash_v2,
-        eas_port_scan_output_hash, eas_target_bound_evidence_facts, enumeration_evidence_fact_set,
-        enumeration_target_bound_evidence_fact_set, projected_technique_outcome_evidence_id,
-        terminal_materialization_asset_key, vuln_target_bound_evidence_fact_set,
+        eas_full_port_manifest_hash_v3, eas_port_scan_output_hash, eas_target_bound_evidence_facts,
+        enumeration_evidence_fact_set, enumeration_target_bound_evidence_fact_set,
+        projected_technique_outcome_evidence_id, terminal_materialization_asset_key,
+        vuln_target_bound_evidence_fact_set,
     };
     use std::collections::BTreeSet;
     use std::net::IpAddr;
@@ -2131,6 +2254,56 @@ mod tests {
                 "network_launched": true,
                 "command": format!("naabu {tool_args}"),
                 "exit_code": 0,
+                "stdout_truncated": false,
+                "stderr_truncated": false,
+                "target_manifest_complete": true,
+                "scanner_stdout_sha256": eas_port_scan_output_hash(&stdout),
+            },
+            "observation": {"alive_host_count": 1, "open_port_count": 1},
+            "scanner_stdout": stdout,
+            "scanner_stderr": "",
+        })
+        .to_string()
+    }
+
+    fn naabu_full_port_attestation_v3(target_id: Uuid, ip: &str) -> String {
+        let tool_args = "-list {input_file} -iv 4 -p 1-65535 -s c -Pn -c 128 -rate 1000 -timeout 500 -retries 1 -verify -warm-up-time 0 -silent -nc -duc -no-stdin";
+        let hosts = BTreeSet::from([ip.parse::<IpAddr>().expect("test IP")]);
+        let manifest_hash = eas_full_port_manifest_hash_v3(4, tool_args, &hosts);
+        let stdout = format!("{ip}:443\n");
+        serde_json::json!({
+            "schema": "eas_port_scan_attestation_v3",
+            "profile": {
+                "schema": "eas_port_scan_coverage_v3",
+                "profile": "full",
+                "profile_version": 3,
+                "scanner": "naabu",
+                "protocol": "tcp",
+                "port_scope": "tcp-1-65535",
+                "complete": true,
+                "complete_for_gate": true,
+                "address_family": "ipv4",
+                "target_manifest_sha256": manifest_hash.clone(),
+                "expanded_host_count": 1,
+            },
+            "batch_manifest": {
+                "sha256": manifest_hash,
+                "expanded_hosts": [ip],
+            },
+            "target": {"target_id": target_id, "requested": ip},
+            "coverage_receipt": [{
+                "host": ip,
+                "first_port": 1,
+                "last_port": 65535,
+                "scheduled_port_count": 65535,
+                "completed": true,
+            }],
+            "execution": {
+                "network_launched": true,
+                "command": format!("naabu {tool_args}"),
+                "exit_code": 0,
+                "termination_reason": "exited",
+                "automatic_kill": false,
                 "stdout_truncated": false,
                 "stderr_truncated": false,
                 "target_manifest_complete": true,
@@ -2920,6 +3093,48 @@ mod tests {
         row.evidence_raw_output = Some(naabu_full_port_attestation(row.target_id, "192.0.2.10"));
 
         assert_eq!(eas_target_bound_evidence_facts(org, vec![row]).len(), 1);
+    }
+
+    #[test]
+    fn eas_port_terminal_accepts_managed_naabu_v3_attestation() {
+        let org = Uuid::new_v4();
+        let mut row = target_bound_row(
+            org,
+            "192.0.2.10",
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            "192.0.2.10",
+            "ip_address",
+        );
+        row.tool_name = Some("naabu".to_string());
+        row.evidence_kind = Some("eas.discover_ports".to_string());
+        row.evidence_raw_output = Some(naabu_full_port_attestation_v3(row.target_id, "192.0.2.10"));
+
+        assert_eq!(
+            eas_target_bound_evidence_facts(org, vec![row.clone()]).len(),
+            1
+        );
+
+        let mut forged = serde_json::from_str::<serde_json::Value>(
+            row.evidence_raw_output.as_deref().expect("v3 fixture"),
+        )
+        .expect("valid v3 fixture");
+        forged["profile"]["inline_wait_secs"] = serde_json::json!(30);
+        row.evidence_raw_output = Some(forged.to_string());
+        assert!(
+            eas_target_bound_evidence_facts(org, vec![row.clone()]).is_empty(),
+            "v3 Gate proof must reject transport yield fields in business attestation"
+        );
+
+        let mut forged = serde_json::from_str::<serde_json::Value>(
+            &naabu_full_port_attestation_v3(row.target_id, "192.0.2.10"),
+        )
+        .expect("valid v3 fixture");
+        forged["execution"]["automatic_kill"] = serde_json::json!(true);
+        row.evidence_raw_output = Some(forged.to_string());
+        assert!(
+            eas_target_bound_evidence_facts(org, vec![row]).is_empty(),
+            "v3 gate proof must reject elapsed-time kill semantics"
+        );
     }
 
     #[test]

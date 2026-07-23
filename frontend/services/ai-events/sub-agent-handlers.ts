@@ -110,9 +110,9 @@ export const handleSubAgentToolResult: EventHandler<{
 }> = (event, ctx) => {
   ctx.flushSessionDeltas(ctx.sessionId);
   const state = ctx.getState();
-  // Soft-timeout → backgrounded: a sub-agent command exceeded its soft timeout
-  // and was detached to a background job (still running). Register it into the
-  // Cursor-style background-jobs indicator (mirrors the main-agent path) so it
+  // Bounded initial yield → compatibility `backgrounded`: the same sub-agent
+  // process remains live under the manager. Register it into the
+  // Codex-style managed-jobs indicator (mirrors the main-agent path) so it
   // surfaces in the input-row badge + sub-agent detail header. The sub-agent's
   // turn continues, so still resolve the card carrying the backgrounded result.
   if (isBackgroundedResult(event.result)) {

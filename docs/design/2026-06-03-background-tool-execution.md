@@ -1,3 +1,5 @@
+> Superseded by `docs/design/2026-07-23-codex-same-session-process-yield.md` for process lifetime, adjustable yield, activity, spool, and typed completion semantics. Historical rollout context remains below.
+
 # 工具调用「超时转后台」执行 设计
 
 > 后台任务的 Detail 生命周期、可导航全局入口及无需模型轮询的 reconciliation 已由 `docs/design/2026-07-21-background-job-lifecycle-ui.md` 演进；本文继续保留最初软超时转后台与 completion 回灌的决策历史。

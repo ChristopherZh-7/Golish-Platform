@@ -10,8 +10,7 @@
 //!   pipelines on timeout / cancel.
 //! - [`shell`]: shell-type detection (`zsh` / `bash` / `fish` / `sh`) and
 //!   rc-file-aware command wrapping.
-//! - [`common`]: shared constants ([`common::DEFAULT_TIMEOUT_SECS`],
-//!   [`common::MAX_OUTPUT_SIZE`]) and small helpers
+//! - [`common`]: shared output cap ([`common::MAX_OUTPUT_SIZE`]) and small helpers
 //!   ([`common::resolve_cwd`], [`common::truncate_output`]).
 //! - [`streaming`]: [`streaming::execute_streaming`] for real-time output
 //!   chunks via mpsc channel.

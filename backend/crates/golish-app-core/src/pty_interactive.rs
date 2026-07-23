@@ -47,22 +47,18 @@ impl PtyOutputTap {
     }
 }
 
-const DEFAULT_TIMEOUT_MS: u64 = 10000;
-const MAX_TIMEOUT_MS: u64 = 120000;
-
-/// Inline wait cap before a still-running command is moved to the background.
-const DEFAULT_SOFT_TIMEOUT_MS: u64 = 30_000;
+/// Default and bounds for one initial command observation. This is a yield
+/// window, not a process timeout: reaching it never changes child lifetime.
+const DEFAULT_INITIAL_YIELD_MS: u64 = 10_000;
+const MIN_INITIAL_YIELD_MS: u64 = 250;
+const MAX_INITIAL_YIELD_MS: u64 = 30_000;
+/// Maximum duration of one `check_job` read. Like Codex's empty stdin poll,
+/// this bounds only the current read and never the managed process.
+const MAX_JOB_READ_YIELD_MS: u64 = 300_000;
 /// Brief startup confirmation for AI-elected background jobs. Commands that
 /// fail immediately due to bad flags / missing runtime should be returned inline
 /// so the model can correct them instead of blindly continuing.
 const DEFAULT_BACKGROUND_STARTUP_GRACE_MS: u64 = 800;
-/// Background hard limit: runaway jobs are killed after this so nothing leaks.
-const DEFAULT_HARD_TIMEOUT_MS: u64 = 1_800_000; // 30 min
-/// Background hard limit for DNS zone-transfer (AXFR) probes. These hang
-/// indefinitely against resolvers that silently drop TCP zone transfers, so the
-/// 30-minute default would let a single hung probe pin a whole stage's closeout
-/// reconciliation barrier. Capped aggressively so they fail fast instead.
-const DEFAULT_DNS_HARD_TIMEOUT_MS: u64 = 15_000; // 15s
 /// Explicit recovery wait tool default. Normal closeout uses the manager's
 /// event-driven reconciliation barrier; this remains available for manual or
 /// exceptional diagnostics.
@@ -74,9 +70,9 @@ const WAIT_BACKGROUND_JOBS_OUTPUT_TAIL_BYTES: usize = 12 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellRunMode {
-    AutoBackgroundAfterSoftTimeout,
-    BackgroundAfterStartup,
-    ForegroundOnly,
+    ManagedYield,
+    StartupYield,
+    SynchronousAuthority,
 }
 
 fn env_ms(key: &str, default: u64) -> u64 {
@@ -84,31 +80,6 @@ fn env_ms(key: &str, default: u64) -> u64 {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(default)
-}
-
-/// True when `command` is a DNS zone-transfer probe (`dig AXFR`, `host -l`, …).
-/// These are prone to hanging forever against resolvers that drop TCP AXFR, so
-/// the caller caps their background hard limit (see [`compute_hard_ms`]).
-fn is_dns_zone_transfer(command: &str) -> bool {
-    let c = command.to_ascii_lowercase();
-    c.contains("axfr") || c.contains("host -l")
-}
-
-/// Background hard limit (ms) for `command` given the caller's `timeout_ms`.
-///
-/// Normally the global default (30 min, raised to outlast `timeout_ms`), but
-/// capped hard for DNS zone-transfer probes so one hung `dig AXFR` cannot keep a
-/// stage's reconciliation barrier open for the full default.
-fn compute_hard_ms(command: &str, timeout_ms: u64) -> u64 {
-    let hard_ms = env_ms("GOLISH_TOOL_HARD_TIMEOUT_MS", DEFAULT_HARD_TIMEOUT_MS).max(timeout_ms);
-    if is_dns_zone_transfer(command) {
-        hard_ms.min(env_ms(
-            "GOLISH_DNS_HARD_TIMEOUT_MS",
-            DEFAULT_DNS_HARD_TIMEOUT_MS,
-        ))
-    } else {
-        hard_ms
-    }
 }
 
 fn finished_job_value(command: &str, snap: crate::background_jobs::JobSnapshot) -> Value {
@@ -135,40 +106,6 @@ fn finished_job_value(command: &str, snap: crate::background_jobs::JobSnapshot) 
     })
 }
 
-fn timeout_job_value(
-    command: &str,
-    snap: crate::background_jobs::JobSnapshot,
-    timeout_ms: u64,
-) -> Value {
-    let BoundedOutput {
-        text: stdout,
-        truncated: stdout_truncated,
-        original_bytes: stdout_original_bytes,
-    } = truncate_output(snap.stdout);
-    let BoundedOutput {
-        text: stderr,
-        truncated: stderr_truncated,
-        original_bytes: stderr_original_bytes,
-    } = truncate_output(snap.stderr);
-    json!({
-        "status": "timeout",
-        "error_kind": "COMMAND_TIMEOUT",
-        "error": format!(
-            "Command exceeded the {}s timeout and was killed before being moved to the background.",
-            timeout_ms.div_ceil(1000)
-        ),
-        "stdout": stdout,
-        "stderr": stderr,
-        "stdout_truncated": stdout_truncated,
-        "stderr_truncated": stderr_truncated,
-        "stdout_original_bytes": stdout_original_bytes,
-        "stderr_original_bytes": stderr_original_bytes,
-        "command": command,
-        "exit_code": snap.exit_code.unwrap_or(124),
-        "duration_ms": snap.duration_ms,
-    })
-}
-
 fn cancelled_job_value(command: &str, snap: crate::background_jobs::JobSnapshot) -> Value {
     let mut value = finished_job_value(command, snap);
     value["status"] = Value::String("cancelled".to_string());
@@ -186,61 +123,77 @@ fn cancelled_job_value(command: &str, snap: crate::background_jobs::JobSnapshot)
 /// commands do not create `CommandBlock`s in the user's terminal timeline.
 ///
 /// The command is spawned through the [`crate::background_jobs`] manager: if it
-/// finishes within the *soft* timeout (or, for AI-elected background runs, the
-/// startup confirmation window) the full result is returned as before; otherwise
-/// it keeps running in the background and a
+/// finishes within the bounded initial yield (or the legacy short startup
+/// yield) the full result is returned as before; otherwise the same managed
+/// child keeps running and a
 /// `{ status: "backgrounded", job_id }` handle is returned (success-shaped, so
 /// the agentic loop does not treat it as a failure). The AI polls progress via
 /// the `check_job` tool.
 pub async fn run_shell_command_detail(
     command: &str,
     workspace: &Path,
-    timeout_ms: u64,
-    // AI-elected background (Cursor-style): when true, hand back the job handle
-    // immediately without waiting the soft timeout, so the agent continues async.
-    background: bool,
+    initial_yield_ms: u64,
+    // Compatibility only: old callers can request the short startup yield.
+    // This does not create a different kind of process or detach/respawn it.
+    legacy_background: bool,
 ) -> Result<Value> {
-    let mode = if background {
-        ShellRunMode::BackgroundAfterStartup
+    let mode = if legacy_background {
+        ShellRunMode::StartupYield
     } else {
-        ShellRunMode::AutoBackgroundAfterSoftTimeout
+        ShellRunMode::ManagedYield
     };
-    run_shell_command_detail_with_mode(command, workspace, timeout_ms, mode).await
+    run_shell_command_detail_with_mode(command, workspace, initial_yield_ms, mode, None).await
+}
+
+/// Run a command with a server-owned typed completion reconciler. The inline
+/// yield is bounded, but process lifetime is not: a still-running child returns
+/// its session handle, and its typed reconciler
+/// lands business state before completion is delivered to the generic bridge.
+pub async fn run_shell_command_detail_managed(
+    command: &str,
+    workspace: &Path,
+    initial_yield_ms: u64,
+    reconciler: Arc<dyn crate::background_jobs::BackgroundJobReconciler>,
+) -> Result<Value> {
+    run_shell_command_detail_with_mode(
+        command,
+        workspace,
+        initial_yield_ms,
+        ShellRunMode::ManagedYield,
+        Some(reconciler),
+    )
+    .await
 }
 
 /// Run a shell command in the current tool call only.
 ///
-/// Unlike [`run_shell_command_detail`], timeout does not create a background
-/// handle. The process is killed and the retained stdout/stderr are returned so
-/// callers can decide whether to retry with narrower flags.
+/// Unlike [`run_shell_command_detail`], this policy does not create a background
+/// handle. Elapsed time never kills the child; only explicit tool/session
+/// cancellation does. Callers use it only when detached completion would lose
+/// a required synchronous authority or receipt.
 pub async fn run_shell_command_detail_foreground_only(
     command: &str,
     workspace: &Path,
-    timeout_ms: u64,
+    legacy_wait_ms: u64,
 ) -> Result<Value> {
-    run_shell_command_detail_with_mode(command, workspace, timeout_ms, ShellRunMode::ForegroundOnly)
-        .await
+    run_shell_command_detail_with_mode(
+        command,
+        workspace,
+        legacy_wait_ms,
+        ShellRunMode::SynchronousAuthority,
+        None,
+    )
+    .await
 }
 
 async fn run_shell_command_detail_with_mode(
     command: &str,
     workspace: &Path,
-    timeout_ms: u64,
+    requested_yield_ms: u64,
     mode: ShellRunMode,
+    reconciler: Option<Arc<dyn crate::background_jobs::BackgroundJobReconciler>>,
 ) -> Result<Value> {
-    let soft_cap = env_ms("GOLISH_TOOL_SOFT_TIMEOUT_MS", DEFAULT_SOFT_TIMEOUT_MS);
-    let soft_ms = timeout_ms.min(soft_cap).max(1);
-    // The background hard limit normally outlasts the caller's timeout so the job
-    // can continue past the point where it would previously have been killed —
-    // except DNS zone-transfer probes, which are capped short (they hang forever
-    // against resolvers that drop TCP AXFR). See [`compute_hard_ms`].
-    let hard_ms = match mode {
-        ShellRunMode::ForegroundOnly => timeout_ms.saturating_add(1_000).max(1),
-        ShellRunMode::AutoBackgroundAfterSoftTimeout | ShellRunMode::BackgroundAfterStartup => {
-            compute_hard_ms(command, timeout_ms)
-        }
-    };
-
+    let initial_yield_ms = requested_yield_ms.clamp(MIN_INITIAL_YIELD_MS, MAX_INITIAL_YIELD_MS);
     let started_at = std::time::Instant::now();
     // Attribute the job to the session whose agentic loop is currently running
     // (set via `golish_core::with_agent_session`), so the completion broadcast
@@ -248,53 +201,61 @@ async fn run_shell_command_detail_with_mode(
     // so live stdout/stderr chunks can update the existing tool-call detail UI.
     // `None` when not attributable.
     let tool_cancellation = golish_core::current_agent_tool_cancellation();
-    let (session_id, tool_context) = match mode {
+    let (desired_session_id, tool_context) = match mode {
         // Foreground-only jobs are consumed by this tool call, so they should
         // not hold the stage-close background barrier open. Keep the tool
         // context so stdout/stderr and cancellation remain attached to the
         // exact durable wrapper call.
-        ShellRunMode::ForegroundOnly => (None, golish_core::current_agent_tool_context()),
-        ShellRunMode::AutoBackgroundAfterSoftTimeout | ShellRunMode::BackgroundAfterStartup => (
+        ShellRunMode::SynchronousAuthority => (None, golish_core::current_agent_tool_context()),
+        ShellRunMode::ManagedYield | ShellRunMode::StartupYield => (
             golish_core::current_agent_session(),
             golish_core::current_agent_tool_context(),
         ),
     };
-    let job_id = crate::background_jobs::manager()
-        .try_spawn_for_session_and_tool(
+    let job_id = if let Some(reconciler) = reconciler {
+        crate::background_jobs::manager().try_spawn_for_session_and_tool_with_reconciler(
             command,
             workspace,
-            Duration::from_millis(hard_ms),
-            session_id.clone(),
+            None,
+            tool_context,
+            reconciler,
+        )
+    } else {
+        crate::background_jobs::manager().try_spawn_for_session_and_tool(
+            command,
+            workspace,
+            Duration::ZERO,
+            None,
             tool_context,
         )
-        .map_err(|error| anyhow::anyhow!("{}: {}", error.code(), error))?;
+    }
+    .map_err(|error| anyhow::anyhow!("{}: {}", error.code(), error))?;
 
     tracing::info!(
-        "[run_pty_cmd] spawn: command={}, mode={:?}, soft_ms={}, hard_ms={}, job_id={}, session={:?}",
+        "[run_pty_cmd] spawn: command={}, mode={:?}, initial_yield_ms={}, automatic_kill=false, job_id={}, session={:?}",
         command,
         mode,
-        soft_ms,
-        hard_ms,
+        initial_yield_ms,
         job_id,
-        session_id
+        desired_session_id
     );
 
-    // Cursor-style backgrounding still needs a tiny startup confirmation window:
+    // Codex-style backgrounding still needs a tiny startup confirmation window:
     // if the child exits immediately with a usage/runtime error, return that
     // inline so the model can correct its command. Once the window expires and
     // the child is still running, hand back the job handle and let it continue.
-    let inline_wait_ms = match mode {
-        ShellRunMode::BackgroundAfterStartup => env_ms(
+    let effective_yield_ms = match mode {
+        ShellRunMode::StartupYield => env_ms(
             "GOLISH_TOOL_BACKGROUND_STARTUP_GRACE_MS",
             DEFAULT_BACKGROUND_STARTUP_GRACE_MS,
         )
-        .min(soft_ms),
-        ShellRunMode::AutoBackgroundAfterSoftTimeout => soft_ms,
-        ShellRunMode::ForegroundOnly => timeout_ms.max(1),
+        .min(initial_yield_ms),
+        ShellRunMode::ManagedYield => initial_yield_ms,
+        ShellRunMode::SynchronousAuthority => initial_yield_ms,
     };
 
-    if inline_wait_ms > 0 {
-        let inline_deadline = started_at + Duration::from_millis(inline_wait_ms);
+    if effective_yield_ms > 0 {
+        let yield_deadline = started_at + Duration::from_millis(effective_yield_ms);
         loop {
             if tool_cancellation
                 .as_ref()
@@ -307,7 +268,7 @@ async fn run_shell_command_detail_with_mode(
                     .unwrap_or_else(|| crate::background_jobs::JobSnapshot {
                         command: command.to_string(),
                         status: crate::background_jobs::JobStatus::Killed,
-                        exit_code: Some(124),
+                        exit_code: Some(130),
                         stdout: String::new(),
                         stderr: String::new(),
                         duration_ms: started_at.elapsed().as_millis() as u64,
@@ -318,39 +279,34 @@ async fn run_shell_command_detail_with_mode(
             }
             if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
                 if snap.finished {
+                    let typed_result = crate::background_jobs::manager()
+                        .reconciliation(&job_id)
+                        .map(|value| value.tool_result);
                     crate::background_jobs::manager().remove(&job_id);
-                    return Ok(finished_job_value(command, snap));
+                    return Ok(typed_result.unwrap_or_else(|| finished_job_value(command, snap)));
                 }
             }
-            if std::time::Instant::now() >= inline_deadline {
+            if mode != ShellRunMode::SynchronousAuthority
+                && std::time::Instant::now() >= yield_deadline
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
-    if mode == ShellRunMode::ForegroundOnly {
-        if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
-            if snap.finished {
+    debug_assert_ne!(mode, ShellRunMode::SynchronousAuthority);
+
+    if let Some(session_id) = desired_session_id {
+        if !crate::background_jobs::manager().promote_to_session(&job_id, session_id) {
+            if let Some(snap) = crate::background_jobs::manager().snapshot(&job_id) {
+                let typed_result = crate::background_jobs::manager()
+                    .reconciliation(&job_id)
+                    .map(|value| value.tool_result);
                 crate::background_jobs::manager().remove(&job_id);
-                return Ok(finished_job_value(command, snap));
+                return Ok(typed_result.unwrap_or_else(|| finished_job_value(command, snap)));
             }
         }
-        let _ = crate::background_jobs::manager().kill(&job_id);
-        let snap = crate::background_jobs::manager()
-            .wait_terminal(&job_id)
-            .await
-            .unwrap_or_else(|| crate::background_jobs::JobSnapshot {
-                command: command.to_string(),
-                status: crate::background_jobs::JobStatus::Killed,
-                exit_code: Some(124),
-                stdout: String::new(),
-                stderr: String::new(),
-                duration_ms: started_at.elapsed().as_millis() as u64,
-                finished: true,
-            });
-        crate::background_jobs::manager().remove(&job_id);
-        return Ok(timeout_job_value(command, snap, timeout_ms));
     }
 
     // Still running → hand back a background handle. Deliberately no `error` and
@@ -360,22 +316,20 @@ async fn run_shell_command_detail_with_mode(
         .snapshot(&job_id)
         .map(|s| (truncate_output(s.stdout), truncate_output(s.stderr)))
         .unwrap_or_default();
-    let hint = if mode == ShellRunMode::BackgroundAfterStartup {
+    let activity = crate::background_jobs::manager().activity(&job_id);
+    let hint = if mode == ShellRunMode::StartupYield {
         format!(
-            "Started in the background as requested (job {job_id}); continue with other work. \
-             Its result is auto-delivered when it finishes — do NOT poll it in a loop or re-run \
-             the same command. Runtime reconciliation waits for the terminal result before stage \
-             closeout. Use `check_job` once and `kill_job` only as exceptional recovery if the \
-             detail view shows that it is genuinely stuck."
+            "Managed process {job_id} is still running after the requested startup yield. This is \
+             the same process, not a detached or respawned copy. Its result is auto-delivered on \
+             exit; use `check_job` for another bounded read and `kill_job` only after deciding the \
+             live process is stuck or no longer useful."
         )
     } else {
         format!(
-            "Command exceeded the {}s soft timeout and is STILL RUNNING in the background (job {}). \
-             It was NOT killed. Its result is auto-delivered when it finishes — do NOT re-run the \
-             same command. Runtime reconciliation owns the normal wait. Use `check_job` once and \
-             `kill_job` only as exceptional recovery if the background detail shows no progress.",
-            soft_ms / 1000,
-            job_id
+            "Managed process {job_id} is still running, so this call returned control after its \
+             bounded initial yield. The same process remains alive and was not killed or respawned. \
+             Use `check_job` for another bounded read; use `kill_job` only after evaluating liveness, \
+             workload, and output activity."
         )
     };
     Ok(json!({
@@ -388,8 +342,11 @@ async fn run_shell_command_detail_with_mode(
         "partial_stderr_truncated": partial_stderr.truncated,
         "partial_stdout_original_bytes": partial_stdout.original_bytes,
         "partial_stderr_original_bytes": partial_stderr.original_bytes,
-        "soft_timeout_ms": inline_wait_ms,
-        "hard_timeout_ms": hard_ms,
+        "stdout_total_bytes": activity.map(|value| value.stdout_total_bytes).unwrap_or(0),
+        "stderr_total_bytes": activity.map(|value| value.stderr_total_bytes).unwrap_or(0),
+        "last_output_age_ms": activity.and_then(|value| value.last_output_age_ms),
+        "initial_yield_ms": effective_yield_ms,
+        "automatic_kill": false,
         "hint": hint,
     }))
 }
@@ -452,7 +409,15 @@ fn tail_output(output: &str, max_bytes: usize) -> String {
     format!("...[+{} earlier bytes]\n{}", cut, &output[cut..])
 }
 
-fn job_snapshot_value(job_id: &str, snap: crate::background_jobs::JobSnapshot) -> Value {
+fn job_snapshot_value(
+    manager: &crate::background_jobs::BackgroundJobManager,
+    job_id: &str,
+    snap: crate::background_jobs::JobSnapshot,
+) -> Value {
+    let activity = manager.activity(job_id);
+    let termination_reason = manager
+        .termination_reason(job_id)
+        .map(|reason| reason.as_str());
     json!({
         "job_id": job_id,
         "status": snap.status.as_str(),
@@ -462,6 +427,11 @@ fn job_snapshot_value(job_id: &str, snap: crate::background_jobs::JobSnapshot) -
         "stdout_tail": tail_output(&snap.stdout, WAIT_BACKGROUND_JOBS_OUTPUT_TAIL_BYTES),
         "stderr_tail": tail_output(&snap.stderr, WAIT_BACKGROUND_JOBS_OUTPUT_TAIL_BYTES),
         "duration_ms": snap.duration_ms,
+        "stdout_total_bytes": activity.map(|value| value.stdout_total_bytes).unwrap_or(0),
+        "stderr_total_bytes": activity.map(|value| value.stderr_total_bytes).unwrap_or(0),
+        "last_output_age_ms": activity.and_then(|value| value.last_output_age_ms),
+        "termination_reason": termination_reason,
+        "automatic_kill": false,
     })
 }
 
@@ -498,13 +468,9 @@ impl Tool for VisibleRunPtyCmdTool {
                     "type": "string",
                     "description": "Shell command to execute"
                 },
-                "timeout": {
+                "yield_time_ms": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 10, max: 120)"
-                },
-                "background": {
-                    "type": "boolean",
-                    "description": "Run in the background (Cursor-style): after a brief startup check, return a job handle and keep the command running so you can proceed with other work. Immediate flag/runtime errors are returned inline so you can fix them. Use for long commands whose output you don't need right now; the result is auto-delivered when it finishes."
+                    "description": "How long this call should observe the managed process before returning its live job handle, in milliseconds. Default 10000, range 250..30000. This never kills the process."
                 }
             },
             "required": ["command"]
@@ -517,22 +483,34 @@ impl Tool for VisibleRunPtyCmdTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing required argument: command"))?;
 
-        let timeout_secs = args
-            .get("timeout")
+        let configured_default = env_ms(
+            "GOLISH_TOOL_INITIAL_YIELD_MS",
+            env_ms(
+                "GOLISH_TOOL_INLINE_WAIT_MS",
+                env_ms("GOLISH_TOOL_SOFT_TIMEOUT_MS", DEFAULT_INITIAL_YIELD_MS),
+            ),
+        );
+        let initial_yield_ms = args
+            .get("yield-time_ms")
             .and_then(|v| v.as_u64())
-            .unwrap_or(DEFAULT_TIMEOUT_MS / 1000);
-        let timeout_ms = (timeout_secs * 1000).min(MAX_TIMEOUT_MS);
-        let background = args
+            .or_else(|| {
+                args.get("timeout")
+                    .and_then(|v| v.as_u64())
+                    .map(|seconds| seconds.saturating_mul(1_000))
+            })
+            .unwrap_or(configured_default)
+            .clamp(MIN_INITIAL_YIELD_MS, MAX_INITIAL_YIELD_MS);
+        let legacy_background = args
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        run_shell_command_detail(command, workspace, timeout_ms, background).await
+        run_shell_command_detail(command, workspace, initial_yield_ms, legacy_background).await
     }
 }
 
-/// Tool that lets the AI poll a background job started when a shell/pentest
-/// command exceeded its soft timeout (see [`run_shell_command_detail`]).
+/// Tool that lets the AI perform another bounded read from the same managed
+/// shell/pentest process returned by [`run_shell_command_detail`].
 pub struct CheckJobTool;
 
 #[async_trait::async_trait]
@@ -542,12 +520,10 @@ impl Tool for CheckJobTool {
     }
 
     fn description(&self) -> &'static str {
-        "Poll a background job (created when a shell/pentest command exceeded its soft timeout and was \
-         moved to the background instead of being killed). Returns its status \
-         (running/done/failed/killed), the command's exit code once finished, and the latest \
-         stdout/stderr. Pass the job_id from a tool result whose status was \"backgrounded\". \
-         If this shows a job still running with no new output for a long time, it is likely stuck \
-         (e.g. a hung DNS AXFR / zone-transfer) — cancel it with kill_job and move on."
+        "Read a managed process for a bounded yield without changing its lifetime. Returns running/terminal \
+         status, elapsed time, cumulative stdout/stderr bytes, time since the last output, and retained \
+         output. A quiet process is not automatically stuck; compare its workload and activity before \
+         explicitly using kill_job. Managed jobs are never killed merely because elapsed time passed."
     }
 
     fn parameters(&self) -> Value {
@@ -557,6 +533,10 @@ impl Tool for CheckJobTool {
                 "job_id": {
                     "type": "string",
                     "description": "The job_id returned in a tool result with status \"backgrounded\"."
+                },
+                "yield-time_ms": {
+                    "type": "integer",
+                    "description": "How long to wait for new output or process exit before returning. Default 10000ms; 0 returns an immediate snapshot; max 300000ms. This never kills the process."
                 }
             },
             "required": ["job_id"]
@@ -569,8 +549,60 @@ impl Tool for CheckJobTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing required argument: job_id"))?;
 
-        match crate::background_jobs::manager().snapshot(job_id) {
+        let yield_ms = args
+            .get("yield-time_ms")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(DEFAULT_INITIAL_YIELD_MS)
+            .min(MAX_JOB_READ_YIELD_MS);
+        let manager = crate::background_jobs::manager();
+        let started_at = Instant::now();
+        let initial_activity = manager.activity(job_id);
+        let poll_reason = if manager.snapshot(job_id).is_none() {
+            "missing"
+        } else if manager
+            .snapshot(job_id)
+            .is_some_and(|snapshot| snapshot.finished)
+        {
+            "terminal"
+        } else if yield_ms == 0 {
+            "snapshot"
+        } else {
+            loop {
+                let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                if elapsed_ms >= yield_ms {
+                    break "yield_elapsed";
+                }
+                tokio::time::sleep(Duration::from_millis(
+                    50_u64.min(yield_ms.saturating_sub(elapsed_ms).max(1)),
+                ))
+                .await;
+                let Some(snapshot) = manager.snapshot(job_id) else {
+                    break "missing";
+                };
+                if snapshot.finished {
+                    break "terminal";
+                }
+                let activity = manager.activity(job_id);
+                let output_changed = match (initial_activity, activity) {
+                    (Some(before), Some(after)) => {
+                        before.stdout_total_bytes != after.stdout_total_bytes
+                            || before.stderr_total_bytes != after.stderr_total_bytes
+                    }
+                    (None, Some(_)) => true,
+                    _ => false,
+                };
+                if output_changed {
+                    break "output";
+                }
+            }
+        };
+
+        match manager.snapshot(job_id) {
             Some(snap) => {
+                let activity = manager.activity(job_id);
+                let termination_reason = manager
+                    .termination_reason(job_id)
+                    .map(|reason| reason.as_str());
                 let BoundedOutput {
                     text: stdout,
                     truncated: stdout_truncated,
@@ -597,6 +629,14 @@ impl Tool for CheckJobTool {
                 "stdout_original_bytes": stdout_original_bytes,
                 "stderr_original_bytes": stderr_original_bytes,
                 "duration_ms": snap.duration_ms,
+                "stdout_total_bytes": activity.map(|value| value.stdout_total_bytes).unwrap_or(0),
+                "stderr_total_bytes": activity.map(|value| value.stderr_total_bytes).unwrap_or(0),
+                "last_output_age_ms": activity.and_then(|value| value.last_output_age_ms),
+                "termination_reason": termination_reason,
+                "automatic_kill": false,
+                "read_yield_ms": yield_ms,
+                "waited_ms": started_at.elapsed().as_millis() as u64,
+                "poll_reason": poll_reason,
                 }))
             }
             None => Ok(json!({
@@ -608,9 +648,9 @@ impl Tool for CheckJobTool {
 
 /// Tool that lets the AI cancel a background job that is stuck or no longer
 /// needed (e.g. a DNS AXFR / zone-transfer probe that hangs against a resolver
-/// dropping TCP zone transfers). Closes the Cursor-style loop: `check_job` shows
+/// dropping TCP zone transfers). Closes the Codex-style loop: `check_job` shows
 /// no progress → `kill_job` it → continue or re-run differently, instead of
-/// waiting out the hard-timeout watchdog.
+/// relying on an elapsed-time watchdog.
 pub struct KillJobTool;
 
 #[async_trait::async_trait]
@@ -620,10 +660,10 @@ impl Tool for KillJobTool {
     }
 
     fn description(&self) -> &'static str {
-        "Cancel a background job that is stuck or no longer needed (created when a shell/pentest \
-         command was moved to the background). Use this AFTER check_job shows a job has been \
+        "Cancel a managed shell/pentest job that is stuck or no longer needed. Use this AFTER \
+         check_job shows the same process has been \
          running with no new output for a long time (e.g. a hung DNS AXFR / zone-transfer probe): \
-         cancel it, then continue or re-run differently rather than waiting out the hard timeout. \
+         cancel it, then continue or re-run differently. \
          Pass the job_id from a tool result whose status was \"backgrounded\"."
     }
 
@@ -682,8 +722,8 @@ impl Tool for WaitForBackgroundJobsTool {
     fn description(&self) -> &'static str {
         "Recovery-only: manually wait for background jobs started by this AI session. Normal \
          stage closeout is event-driven and must not call this in a loop. Return as soon as all tracked \
-         jobs finish, any tracked job finishes while others are still running, or the remaining \
-         jobs go idle/timeout. The result includes completed stdout/stderr tails plus still-running \
+         jobs finish, any tracked job finishes while others are still running, or the current \
+         aggregate read yield ends. The result includes completed stdout/stderr tails plus still-running \
          jobs, so inspect landed output before deciding whether to wait again, narrow, kill, or submit."
     }
 
@@ -691,13 +731,13 @@ impl Tool for WaitForBackgroundJobsTool {
         json!({
             "type": "object",
             "properties": {
-                "timeout_secs": {
+                "yield-time_ms": {
                     "type": "integer",
-                    "description": "Maximum time to wait, in seconds. Default 300, max 900. The tool returns earlier when any tracked job completes, or when remaining jobs go idle."
+                    "description": "Maximum duration of this aggregate read, in milliseconds. Default 300000, max 900000. Ending the read never stops a process."
                 },
-                "idle_timeout_secs": {
+                "quiet_yield_ms": {
                     "type": "integer",
-                    "description": "Return early if running jobs produce no new stdout/stderr for this many seconds. Default 60. If output is moving, the wait continues up to timeout_secs."
+                    "description": "Return control after this much time with no new stdout/stderr. Default 60000ms. Quiet is only an observation and never implies kill or business completion."
                 },
                 "poll_interval_ms": {
                     "type": "integer",
@@ -715,10 +755,14 @@ impl Tool for WaitForBackgroundJobsTool {
             }));
         };
 
-        let timeout_ms = args
-            .get("timeout_secs")
+        let yield_ms = args
+            .get("yield-time_ms")
             .and_then(|v| v.as_u64())
-            .map(|s| s.saturating_mul(1_000))
+            .or_else(|| {
+                args.get("timeout_secs")
+                    .and_then(|v| v.as_u64())
+                    .map(|seconds| seconds.saturating_mul(1_000))
+            })
             .unwrap_or(DEFAULT_WAIT_BACKGROUND_JOBS_TIMEOUT_MS)
             .min(MAX_WAIT_BACKGROUND_JOBS_TIMEOUT_MS);
         let poll_ms = args
@@ -726,18 +770,22 @@ impl Tool for WaitForBackgroundJobsTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_WAIT_BACKGROUND_JOBS_POLL_MS)
             .clamp(100, 10_000);
-        let idle_timeout_ms = args
-            .get("idle_timeout_secs")
+        let quiet_yield_ms = args
+            .get("quiet_yield_ms")
             .and_then(|v| v.as_u64())
-            .map(|s| s.saturating_mul(1_000))
+            .or_else(|| {
+                args.get("idle_timeout_secs")
+                    .and_then(|v| v.as_u64())
+                    .map(|seconds| seconds.saturating_mul(1_000))
+            })
             .unwrap_or(DEFAULT_WAIT_BACKGROUND_JOBS_IDLE_TIMEOUT_MS)
-            .clamp(1_000, timeout_ms.max(1_000));
+            .clamp(1_000, yield_ms.max(1_000));
 
         let manager = crate::background_jobs::manager();
         let started_at = Instant::now();
-        let deadline = started_at + Duration::from_millis(timeout_ms);
+        let deadline = started_at + Duration::from_millis(yield_ms);
         let mut last_progress_at = started_at;
-        let mut wait_reason = "timeout";
+        let mut wait_reason = "yield_elapsed";
         let mut tracked_ids = BTreeSet::new();
         let mut running = manager.running_for_session(&session_id);
         for job in &running {
@@ -770,9 +818,9 @@ impl Tool for WaitForBackgroundJobsTool {
                 last_sizes = sizes;
             } else if !running.is_empty()
                 && Instant::now().duration_since(last_progress_at)
-                    >= Duration::from_millis(idle_timeout_ms)
+                    >= Duration::from_millis(quiet_yield_ms)
             {
-                wait_reason = "idle_timeout";
+                wait_reason = "quiet";
                 break;
             }
         }
@@ -782,9 +830,9 @@ impl Tool for WaitForBackgroundJobsTool {
         for job_id in tracked_ids {
             if let Some(snap) = manager.snapshot(&job_id) {
                 if snap.finished {
-                    completed_jobs.push(job_snapshot_value(&job_id, snap));
+                    completed_jobs.push(job_snapshot_value(manager, &job_id, snap));
                 } else {
-                    running_jobs.push(job_snapshot_value(&job_id, snap));
+                    running_jobs.push(job_snapshot_value(manager, &job_id, snap));
                 }
             }
         }
@@ -814,14 +862,14 @@ impl Tool for WaitForBackgroundJobsTool {
             "wait_reason": wait_reason,
             "completed_background_jobs": completed_jobs,
             "running_background_jobs": running_jobs,
-            "recommended_action": if wait_reason == "idle_timeout" {
-                "check_job_once_then_kill_or_narrow_if_stuck"
+            "recommended_action": if wait_reason == "quiet" {
+                "inspect_liveness_workload_and_activity_before_deciding"
             } else if wait_reason == "job_completed" {
                 "inspect_completed_output_then_wait_again_or_check_remaining"
             } else {
                 "check_job_once_then_wait_again_if_progressing"
             },
-            "note": "Some background jobs are still running. First inspect any completed job output above and let its evidence land. Then use check_job once on the remaining jobs if needed. If stdout/stderr is still moving and the batch is appropriate, wait again; if it has gone idle or the batch is too broad, kill_job it and close the affected cells with a concrete blocked/error/not_applicable note or a narrower batch."
+            "note": "Some managed processes are still running. Inspect completed output and the remaining jobs' liveness, workload, cumulative bytes, and last-output age. A quiet read is not proof of a hung process. Wait again when useful, or explicitly kill only after deciding the process is stuck, mis-scoped, or no longer needed; cancellation does not create terminal coverage truth."
         }))
     }
 }
@@ -844,6 +892,27 @@ fn background_output_sizes(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    struct InlineTypedReconciler;
+
+    #[async_trait::async_trait]
+    impl crate::background_jobs::BackgroundJobReconciler for InlineTypedReconciler {
+        async fn reconcile(
+            &self,
+            terminal: crate::background_jobs::ManagedJobTerminal,
+        ) -> anyhow::Result<crate::background_jobs::BackgroundJobReconciliation> {
+            Ok(crate::background_jobs::BackgroundJobReconciliation {
+                tool_result: json!({
+                    "typed": true,
+                    "stdout": terminal.output.stdout,
+                    "termination_reason": terminal.termination_reason.as_str(),
+                }),
+                note: None,
+                evidence_ids: Vec::new(),
+                skip_generic_persistence: true,
+            })
+        }
+    }
 
     fn ws() -> std::path::PathBuf {
         std::env::temp_dir()
@@ -895,42 +964,21 @@ mod tests {
         assert_eq!(result["stderr_original_bytes"], BYTES_PER_STREAM);
     }
 
-    #[test]
-    fn detects_dns_zone_transfer_probes() {
-        assert!(is_dns_zone_transfer("dig AXFR +short pingan.com"));
-        assert!(is_dns_zone_transfer("dig axfr example.com"));
-        assert!(is_dns_zone_transfer(
-            "dig @ns1.example.com example.com AXFR"
-        ));
-        assert!(is_dns_zone_transfer("host -l example.com ns1.example.com"));
-    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_inline_completion_returns_typed_reconciliation() {
+        let result = run_shell_command_detail_managed(
+            "printf managed-inline",
+            &ws(),
+            5_000,
+            Arc::new(InlineTypedReconciler),
+        )
+        .await
+        .expect("managed command should return its typed completion");
 
-    #[test]
-    fn non_zone_transfer_commands_are_not_flagged() {
-        assert!(!is_dns_zone_transfer("dig A example.com"));
-        assert!(!is_dns_zone_transfer("subfinder -d example.com"));
-        assert!(!is_dns_zone_transfer("httpx -u https://example.com"));
-        assert!(!is_dns_zone_transfer("echo hello"));
-    }
-
-    #[test]
-    fn zone_transfer_hard_limit_is_capped_short() {
-        // A hung AXFR must not be allowed to pin a stage for the 30-min default.
-        let axfr = compute_hard_ms("dig AXFR +short pingan.com", 10_000);
-        assert!(
-            axfr <= DEFAULT_DNS_HARD_TIMEOUT_MS,
-            "zone-transfer hard limit should be capped to <= {DEFAULT_DNS_HARD_TIMEOUT_MS}ms, got {axfr}"
-        );
-        // A normal command keeps the long default (and must outlast the caller timeout).
-        let normal = compute_hard_ms("dig A example.com", 10_000);
-        assert!(
-            normal >= DEFAULT_HARD_TIMEOUT_MS,
-            "normal command should keep the long hard limit, got {normal}"
-        );
-        assert!(
-            axfr < normal,
-            "zone-transfer hard limit ({axfr}) must be shorter than a normal one ({normal})"
-        );
+        assert_eq!(result["typed"], true);
+        assert_eq!(result["stdout"], "managed-inline");
+        assert_eq!(result["termination_reason"], "exited");
     }
 
     #[cfg(unix)]
@@ -963,23 +1011,20 @@ mod tests {
 
         assert_eq!(res.get("status"), Some(&json!("backgrounded")));
         assert!(
-            res.get("soft_timeout_ms")
+            res.get("initial_yield_ms")
                 .and_then(|value| value.as_u64())
                 .is_some(),
-            "detail UI needs the effective soft timeout: {res:?}"
+            "tool result needs the effective initial yield for diagnostics: {res:?}"
         );
-        assert!(
-            res.get("hard_timeout_ms")
-                .and_then(|value| value.as_u64())
-                .is_some(),
-            "detail UI needs the hard deadline: {res:?}"
-        );
+        assert_eq!(res.get("automatic_kill"), Some(&json!(false)));
+        assert!(res.get("hard_timeout_ms").is_none());
         let hint = res
             .get("hint")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        assert!(hint.contains("Runtime reconciliation"));
-        assert!(!hint.contains("Poll `check_job`"));
+        assert!(hint.contains("same process"));
+        assert!(hint.contains("check_job"));
+        assert!(!hint.contains("moved to the background"));
         let job_id = res
             .get("job_id")
             .and_then(|v| v.as_str())
@@ -992,16 +1037,19 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn foreground_only_timeout_kills_instead_of_backgrounding() {
-        let res = run_shell_command_detail_foreground_only("sleep 30", &ws(), 250)
+    async fn foreground_policy_does_not_kill_on_elapsed_wait() {
+        let res = run_shell_command_detail_foreground_only("sleep 0.2; printf survived", &ws(), 40)
             .await
             .expect("foreground-only command should return a structured result");
 
-        assert_eq!(res.get("status"), Some(&json!("timeout")));
-        assert_eq!(res.get("exit_code"), Some(&json!(124)));
+        assert_eq!(res.get("exit_code"), Some(&json!(0)));
+        assert!(res["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("survived"));
         assert!(
             res.get("job_id").is_none(),
-            "foreground-only timeout must not hand the model a background job: {res:?}"
+            "foreground policy remains inline even though elapsed time cannot kill it: {res:?}"
         );
     }
 
@@ -1045,6 +1093,89 @@ mod tests {
             Some(&json!(true)),
             "kill_job should report killed:true for a live job, got {res:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn check_job_reports_server_authored_termination_reason() {
+        let job_id = crate::background_jobs::manager().spawn(
+            "printf finished",
+            &ws(),
+            Duration::from_millis(1),
+        );
+
+        for _ in 0..100 {
+            if crate::background_jobs::manager()
+                .snapshot(&job_id)
+                .is_some_and(|snapshot| snapshot.finished)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let res = CheckJobTool
+            .execute(json!({ "job_id": job_id }), &ws())
+            .await
+            .expect("check_job execute ok");
+        assert_eq!(res.get("status"), Some(&json!("done")));
+        assert_eq!(res.get("termination_reason"), Some(&json!("exited")));
+        assert_eq!(res.get("automatic_kill"), Some(&json!(false)));
+        assert_eq!(res.get("poll_reason"), Some(&json!("terminal")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn check_job_yield_returns_on_new_output_without_killing_process() {
+        let job_id = crate::background_jobs::manager().spawn(
+            "sleep 0.05; printf progress; sleep 30",
+            &ws(),
+            Duration::ZERO,
+        );
+
+        let res = CheckJobTool
+            .execute(json!({ "job_id": job_id, "yield-time_ms": 2_000 }), &ws())
+            .await
+            .expect("check_job output-sensitive read should succeed");
+
+        assert_eq!(res.get("poll_reason"), Some(&json!("output")));
+        assert_eq!(res.get("running"), Some(&json!(true)));
+        assert!(res["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("progress"));
+        assert_eq!(res.get("automatic_kill"), Some(&json!(false)));
+        assert!(
+            crate::background_jobs::manager()
+                .snapshot(res["job_id"].as_str().expect("job id"))
+                .is_some_and(|snapshot| !snapshot.finished),
+            "a completed read yield must leave the same managed process alive"
+        );
+        let _ = crate::background_jobs::manager()
+            .kill(res["job_id"].as_str().expect("job id remains available"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn check_job_elapsed_yield_returns_same_live_handle() {
+        let job_id = crate::background_jobs::manager().spawn("sleep 30", &ws(), Duration::ZERO);
+
+        let res = CheckJobTool
+            .execute(json!({ "job_id": job_id, "yield-time_ms": 50 }), &ws())
+            .await
+            .expect("check_job elapsed yield should succeed");
+
+        assert_eq!(res.get("poll_reason"), Some(&json!("yield_elapsed")));
+        assert_eq!(res.get("running"), Some(&json!(true)));
+        assert_eq!(res.get("read_yield_ms"), Some(&json!(50)));
+        assert_eq!(res.get("job_id"), Some(&json!(job_id.clone())));
+        assert!(
+            crate::background_jobs::manager()
+                .snapshot(&job_id)
+                .is_some_and(|snapshot| !snapshot.finished),
+            "read yield expiration must not kill or replace the managed process"
+        );
+        let _ = crate::background_jobs::manager().kill(&job_id);
     }
 
     #[tokio::test]
@@ -1097,7 +1228,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn wait_for_background_jobs_returns_on_idle_timeout() {
+    async fn wait_for_background_jobs_returns_on_quiet_observation() {
         let session_id = format!("test-session-{}", uuid::Uuid::new_v4());
         let job_id = crate::background_jobs::manager().spawn_for_session(
             "sleep 30",
@@ -1123,10 +1254,10 @@ mod tests {
         .expect("wait_for_background_jobs execute ok");
 
         assert_eq!(res.get("status"), Some(&json!("still_running")));
-        assert_eq!(res.get("wait_reason"), Some(&json!("idle_timeout")));
+        assert_eq!(res.get("wait_reason"), Some(&json!("quiet")));
         assert!(
             start.elapsed() < Duration::from_secs(4),
-            "idle timeout should return before full timeout: {res:?}"
+            "quiet observation should return before the full read yield: {res:?}"
         );
         let _ = crate::background_jobs::manager().kill(&job_id);
     }

@@ -2906,80 +2906,6 @@ where
                         .await
                     {
                         result
-                    } else if tool_name == "run_pty_cmd" || tool_name == "run_command" {
-                        let command = tool_args
-                            .get("command")
-                            .and_then(|c| c.as_str())
-                            .unwrap_or("");
-                        let cwd = tool_args.get("cwd").and_then(|c| c.as_str());
-                        let timeout_secs = tool_args
-                            .get("timeout")
-                            .and_then(|t| t.as_u64())
-                            .unwrap_or(120);
-                        let workspace = ctx.workspace.read().await;
-
-                        let (chunk_tx, mut chunk_rx) =
-                            tokio::sync::mpsc::channel::<golish_shell_exec::OutputChunk>(64);
-
-                        let event_tx = ctx.event_tx.clone();
-                        let chunk_request_id = request_id.clone();
-                        let chunk_tool_name = tool_name.to_string();
-                        let chunk_agent_id = agent_id.to_string();
-                        let chunk_agent_name = agent_def.name.clone();
-                        tokio::spawn(async move {
-                            while let Some(chunk) = chunk_rx.recv().await {
-                                let _ = event_tx.send(AiEvent::ToolOutputChunk {
-                                    request_id: chunk_request_id.clone(),
-                                    tool_name: chunk_tool_name.clone(),
-                                    chunk: chunk.data,
-                                    stream: chunk.stream.as_str().to_string(),
-                                    source: ToolSource::SubAgent {
-                                        agent_id: chunk_agent_id.clone(),
-                                        agent_name: chunk_agent_name.clone(),
-                                    },
-                                });
-                            }
-                        });
-
-                        match golish_shell_exec::execute_streaming(
-                            command,
-                            cwd,
-                            timeout_secs,
-                            &workspace,
-                            None,
-                            chunk_tx,
-                        )
-                        .await
-                        {
-                            Ok(r) => {
-                                let ok = r.exit_code == 0;
-                                let mut v = serde_json::json!({
-                                    "stdout": r.stdout,
-                                    "stderr": r.stderr,
-                                    "exit_code": r.exit_code,
-                                    "command": command,
-                                });
-                                if let Some(c) = cwd {
-                                    v["cwd"] = serde_json::json!(c);
-                                }
-                                if !ok {
-                                    let err_detail = if r.stderr.is_empty() {
-                                        &r.stdout
-                                    } else {
-                                        &r.stderr
-                                    };
-                                    v["error"] = serde_json::json!(format!(
-                                        "Command exited with code {}: {}",
-                                        r.exit_code, err_detail
-                                    ));
-                                }
-                                if r.timed_out {
-                                    v["timeout"] = serde_json::json!(true);
-                                }
-                                (v, ok)
-                            }
-                            Err(e) => (serde_json::json!({ "error": e.to_string() }), false),
-                        }
                     } else {
                         let tool_context = golish_core::AgentToolContext {
                             request_id: request_id.clone(),
@@ -3049,9 +2975,11 @@ where
                                                     (value, success)
                                                 }
                                                 None => {
+                                                    let effective_tool_name =
+                                                        registry_tool_name(tool_name);
                                                     match execute_registry_tool_with_active_org(
                                                         ctx,
-                                                        tool_name,
+                                                        effective_tool_name,
                                                         tool_args.clone(),
                                                     )
                                                     .await
@@ -3373,20 +3301,27 @@ fn registry_tool_outcome(value: serde_json::Value) -> (serde_json::Value, bool) 
     (value, success)
 }
 
+fn registry_tool_name(tool_name: &str) -> &str {
+    if tool_name == "run_command" {
+        "run_pty_cmd"
+    } else {
+        tool_name
+    }
+}
+
 fn use_sub_agent_outer_tool_timeout(tool_name: &str) -> bool {
     !matches!(
         tool_name,
         // These Rust direct/guarded bridge tools can legitimately run past a
         // sub-agent's LLM idle timeout on large targets. They either emit their
-        // own progress or own a bounded runner timeout plus shared cancellation.
-        // In particular, the Nuclei wrappers accept a server-validated timeout
-        // up to 600 seconds and must retain control through parse + DB landing.
+        // own progress or retain synchronous/typed completion authority plus shared cancellation.
+        // In particular, the Nuclei wrappers must retain control through parse + DB landing.
         // `submit_stage_deliverable` also owns the event-driven background-job
         // reconciliation barrier, whose bounded wait may exceed the generic
         // per-tool timeout. Applying `tokio::time::timeout` here drops the wrapper future; a spawned
         // child may outlive it, while authorized landing/evidence can no longer
-        // publish final DB truth. Generic shell/pentest commands retain their own
-        // separate timeout/background policy.
+        // publish final DB truth. Generic shell/pentest commands return from their
+        // bounded managed-process yield before this outer loop guard is relevant.
         "vuln_nuclei_general"
             | "submit_stage_deliverable"
             | "vuln_nuclei_fingerprint_targeted"
@@ -3477,7 +3412,7 @@ mod tests {
         begin_bound_worker_tool, bound_worker_lifecycle_request_id,
         candidate_terminal_intent_persisted, execute_registry_tool_with_active_org,
         finish_bound_worker_tool, inject_harness_org_id_arg, model_visible_tool_result,
-        refine_eas_web_repair_mode_from_worklist, registry_tool_outcome,
+        refine_eas_web_repair_mode_from_worklist, registry_tool_name, registry_tool_outcome,
         stage_submission_barrier_response, stage_team_controller_submit_result_rejection,
         stage_team_leader_router_barrier_response, structured_storage_hook_payload,
         submit_coverage_gap_repair_mode_from_reasons, submit_needs_fix_runtime_correction,
@@ -3487,6 +3422,13 @@ mod tests {
         use_sub_agent_outer_tool_timeout, SubmitRepairModeUpdate,
         MAX_ROUTE_PROBE_MODEL_BATCH_BYTES, MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
     };
+
+    #[test]
+    fn sub_agent_shell_alias_routes_through_the_shared_registry_tool() {
+        assert_eq!(registry_tool_name("run_pty_cmd"), "run_pty_cmd");
+        assert_eq!(registry_tool_name("run_command"), "run_pty_cmd");
+        assert_eq!(registry_tool_name("pentest_run"), "pentest_run");
+    }
 
     #[test]
     fn submit_result_barrier_serializes_a_typed_result_object() {

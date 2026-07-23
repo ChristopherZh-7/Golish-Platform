@@ -387,6 +387,9 @@ pub struct RunningJobInfo {
     pub job_id: String,
     pub command: String,
     pub elapsed_ms: u64,
+    pub stdout_total_bytes: u64,
+    pub stderr_total_bytes: u64,
+    pub last_output_age_ms: Option<u64>,
 }
 
 /// Narrow seam over the background-job manager so the submit tool can run the
@@ -603,8 +606,9 @@ pub struct SubmitStageDeliverableTool {
     bg_jobs: Option<Arc<dyn BackgroundJobsQuery>>,
     /// Total time the reconciliation barrier waits for runtime reconciliation.
     /// Production wires this from
-    /// `GOLISH_SUBMIT_RECONCILE_WAIT_MS`.
-    reconcile_wait_ms: u64,
+    /// `GOLISH_SUBMIT_RECONCILE_OBSERVE_MS` (the old WAIT name is accepted only
+    /// as an environment compatibility fallback).
+    reconcile_observe_ms: u64,
 }
 
 fn findings_allowed_for_attack_contract(
@@ -659,7 +663,7 @@ impl SubmitStageDeliverableTool {
             org_id_source: None,
             operation_id_source: None,
             bg_jobs: None,
-            reconcile_wait_ms: 0,
+            reconcile_observe_ms: 0,
         }
     }
 
@@ -1357,18 +1361,18 @@ impl SubmitStageDeliverableTool {
         self
     }
 
-    /// Configure the reconciliation barrier's wait budget. The second argument
+    /// Configure the reconciliation barrier's bounded observation yield. The second argument
     /// remains for source compatibility with older callers; waiting is now
     /// event-driven and does not poll.
-    /// Production reads `GOLISH_SUBMIT_RECONCILE_WAIT_MS`; tests pass small values
-    /// to exercise the timeout branch without real delay.
-    pub fn with_reconcile_timeouts(mut self, wait_ms: u64, _poll_ms: u64) -> Self {
-        self.reconcile_wait_ms = wait_ms;
+    /// Production reads `GOLISH_SUBMIT_RECONCILE_OBSERVE_MS`; tests pass small values
+    /// to exercise immediate handback without real delay.
+    pub fn with_reconcile_observation(mut self, wait_ms: u64, _poll_ms: u64) -> Self {
+        self.reconcile_observe_ms = wait_ms;
         self
     }
 
     /// Closeout reconciliation barrier (Piece 3). Returns `Some(needs_fix json)`
-    /// only when the runtime-owned event wait exceeds `reconcile_wait_ms`.
+    /// only when the runtime-owned observation yield ends first.
     /// Healthy completions continue in this same invocation without asking the
     /// model to call `check_job` / `wait_for_background_jobs` and resubmit.
     async fn reconcile_background_jobs(&self) -> Option<Value> {
@@ -1376,7 +1380,7 @@ impl SubmitStageDeliverableTool {
         let running = bg
             .wait_for_session_reconciled(
                 sid,
-                std::time::Duration::from_millis(self.reconcile_wait_ms),
+                std::time::Duration::from_millis(self.reconcile_observe_ms),
             )
             .await;
         if running.is_empty() {
@@ -1386,7 +1390,7 @@ impl SubmitStageDeliverableTool {
             target: "harness::submit_tool",
             session_id = %sid,
             still_running = running.len(),
-            "submit deferred: background reconciliation deadline expired"
+            "submit deferred: managed-process observation yield elapsed"
         );
         let jobs: Vec<Value> = running
             .iter()
@@ -1395,22 +1399,24 @@ impl SubmitStageDeliverableTool {
                     "job_id": j.job_id,
                     "command": j.command,
                     "elapsed_ms": j.elapsed_ms,
+                    "stdout_total_bytes": j.stdout_total_bytes,
+                    "stderr_total_bytes": j.stderr_total_bytes,
+                    "last_output_age_ms": j.last_output_age_ms,
                 })
             })
             .collect();
         Some(json!({
             "status": "needs_fix",
             "reasons": [format!(
-                "System reconciliation deadline expired with {} background job(s) still \
-                 running or awaiting result landing. Do NOT re-run the same command. The \
-                 runtime normally resumes this submit automatically; this is an exceptional \
-                 recovery path. Inspect a listed job at most once with check_job, and use \
-                 kill_job only if it is genuinely stuck, then submit again after its terminal \
-                 notification.",
+                "{} managed background job(s) are still running or awaiting typed result \
+                 landing. Do NOT re-run the same command. Inspect process status and output \
+                 activity; wait while it is alive and progressing, and use kill_job only when \
+                 you judge it genuinely stuck or no longer useful. Submit again after its \
+                 terminal notification.",
                 running.len()
             )],
             "running_background_jobs": jobs,
-            "note": "runtime reconciliation timed out; use the background-job detail and one-shot control tools only for recovery."
+            "note": "submit only ended this bounded observation. It did not alter process lifetime; the same managed process remains an explicit AI/operator decision."
         }))
     }
 
@@ -5961,7 +5967,7 @@ mod tests {
     // ── Piece 3 · closeout reconciliation barrier ──────────────────────────
 
     /// Background-jobs mock: the runtime event wait either reconciles within
-    /// its budget or returns the still-outstanding jobs at deadline.
+    /// its observation yield or returns the still-outstanding jobs when control is handed back.
     struct BgJobsMock {
         running: Vec<RunningJobInfo>,
         settles_within_wait: bool,
@@ -5976,6 +5982,9 @@ mod tests {
                         job_id: format!("job_{i}"),
                         command: format!("masscan -p- target{i}"),
                         elapsed_ms: 45_000,
+                        stdout_total_bytes: 1_024,
+                        stderr_total_bytes: 0,
+                        last_output_age_ms: Some(500),
                     })
                     .collect(),
                 settles_within_wait: false,
@@ -6016,8 +6025,8 @@ mod tests {
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_session_id("pentest-chat-1")
             .with_background_jobs(Arc::new(BgJobsMock::always_running(2)))
-            // wait budget 0 ⇒ single-shot check (the timeout branch) with no delay.
-            .with_reconcile_timeouts(0, 1);
+            // observation yield 0 ⇒ immediate snapshot with no delay.
+            .with_reconcile_observation(0, 1);
 
         let out = tool
             .execute(valid_scoping_args(), Path::new("/tmp"))
@@ -6029,16 +6038,18 @@ mod tests {
             .expect("running_background_jobs present");
         assert_eq!(jobs.len(), 2, "both running jobs are listed: {out:?}");
         let reason = out["reasons"][0].as_str().unwrap();
-        assert!(reason.contains("deadline expired"), "reason: {reason}");
+        assert!(
+            reason.contains("managed background job"),
+            "reason: {reason}"
+        );
         assert!(reason.contains("Do NOT re-run"), "reason: {reason}");
         assert!(
             !reason.contains("wait_for_background_jobs"),
             "reason: {reason}"
         );
-        assert!(
-            reason.contains("at most once with check_job"),
-            "reason: {reason}"
-        );
+        assert!(reason.contains("output activity"), "reason: {reason}");
+        assert_eq!(jobs[0]["stdout_total_bytes"], 1_024);
+        assert_eq!(jobs[0]["last_output_age_ms"], 500);
         // Short-circuits BEFORE the gate preview ⇒ nothing captured.
         assert!(
             sink.read().await.is_none(),
@@ -6055,7 +6066,7 @@ mod tests {
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_session_id("pentest-chat-1")
             .with_background_jobs(Arc::new(BgJobsMock::settles_within_wait(1)))
-            .with_reconcile_timeouts(5_000, 1);
+            .with_reconcile_observation(5_000, 1);
 
         let out = tool
             .execute(valid_scoping_args(), Path::new("/tmp"))
@@ -6077,7 +6088,7 @@ mod tests {
         *stage.write().await = Some(StageKind::Scoping);
         let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&sink))
             .with_background_jobs(Arc::new(BgJobsMock::always_running(3)))
-            .with_reconcile_timeouts(0, 1);
+            .with_reconcile_observation(0, 1);
 
         let out = tool
             .execute(valid_scoping_args(), Path::new("/tmp"))

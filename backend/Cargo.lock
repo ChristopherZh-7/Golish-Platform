@@ -2777,6 +2777,7 @@ dependencies = [
  "golish-core",
  "golish-db",
  "golish-pentest",
+ "golish-platform",
  "golish-pty",
  "golish-scan-runner",
  "golish-skills",

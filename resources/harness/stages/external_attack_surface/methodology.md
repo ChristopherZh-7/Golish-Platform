@@ -66,12 +66,15 @@ evidence ledger / `technique_outcomes` for the exact asset and technique.
 5. Port discovery — call `eas_discover_ports` for every explicit IP/CIDR target
    that is still runnable.
    Use `scan_profile="full"` for a PORT cell that must become terminal. The
-   wrapper owns scanner, TCP range, rate, retries, timeout and list-file recipe;
+   wrapper owns scanner, TCP range, rate, retries, per-connection timeout and list-file recipe;
    raw `naabu`/`masscan`/`nmap` arguments are never exposed to the model.
    `quick` (Top 100) and `standard` (Top 1000) are discovery-only and always
    publish `partial`, including when ports are found. Only a successful full
-   Naabu TCP Connect 1-65535 run with an untampered v2 authorized-target
-   manifest/coverage receipt can publish PORT `found` or `empty`. Naabu is the
+   Naabu TCP Connect 1-65535 run with an untampered v3 authorized-target
+   manifest/coverage receipt, natural exit and complete output can publish PORT
+   `found` or `empty`. A bounded initial yield may return the same managed
+   process as a `job_id`; it only returns control and never terminates,
+   detaches, or respawns the process. Naabu is the
    port-discovery engine; Nmap is reserved for service/version fingerprinting
    of confirmed-open ports. Full is bounded to four expanded IPv4 hosts (CIDR
    `/30` or narrower) or exact IPv6 `/128`; for a wider existing range the
@@ -84,7 +87,7 @@ evidence ledger / `technique_outcomes` for the exact asset and technique.
    into bounded chunks, runs small chunks concurrently, isolates slow IPs, and
    performs at most one smaller recovery pass for ports whose complete XML did
    not land. Optional `ports[]` can only narrow the pending set; callers cannot
-   expand the scan surface or override server-owned deadlines. It rejects raw
+   expand the scan surface or override server-owned per-host scan budgets. It rejects raw
    domains, URL strings, and CIDR ranges. Do not regroup IPs by matching port
    sets, raise a timeout, or blindly replay a timed-out batch. Close blocked concrete-host
    SERVICE cells with a concrete note. A port-scoped nmap terminal result such
@@ -140,14 +143,19 @@ evidence ledger / `technique_outcomes` for the exact asset and technique.
   publish the trusted exact-origin handoff that removes that origin from the next
   stage. Never delete the target/origin, rewrite an open port as closed, or
   suppress sibling Host/SNI origins.
-- EAS wrappers are forced foreground and return only after guarded business rows
-  and evidence land. Do not use background job controls or relaunch a wrapper
-  because its prior result has not yet been interpreted; retry only a named
-   partial/error cell with a bounded batch. The four wrappers bypass the generic
-   sub-agent 300-second outer timeout and remain cancellable through User Stop;
-  full Naabu discovery and every Nmap service-fingerprint job use server-owned
-  bounded command budgets that callers cannot increase.
-- The four `eas_*` capabilities are the complete model-facing active tool surface.
+- `eas_discover_ports` may return the same managed process after its adjustable
+  initial yield. Do not relaunch it: continue independent work or use one
+  bounded `wait_for_background_jobs`; inspect `check_job` running state,
+  cumulative output bytes and last-output age before deciding. Silent Naabu is
+  not automatically hung. Use `kill_job` only when the AI/operator judges the
+  process genuinely stuck, mis-scoped or no longer useful. Natural exit drains
+  the complete spool, then the typed continuation lands guarded business rows
+  and evidence before terminal notification. The other three EAS wrappers retain
+  synchronous guarded landing authority and have no generic elapsed watchdog. User Stop remains an
+  explicit cancellation; per-connection and dedicated safety-producer budgets
+  remain server-owned controls, not a managed-process elapsed watchdog.
+- The four `eas_*` capabilities plus managed-process observation/stop controls
+  are the complete model-facing active tool surface.
   `httpx`, `naabu`, `masscan`, `nmap`, WhatWeb and `pentest_run` are internal
   engines/recipes, not tools the AI may call directly.
 

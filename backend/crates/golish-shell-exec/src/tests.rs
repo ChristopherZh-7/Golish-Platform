@@ -213,18 +213,21 @@ async fn test_run_pty_cmd_stderr() {
 }
 
 #[tokio::test]
-async fn test_run_pty_cmd_timeout() {
+async fn legacy_timeout_input_does_not_kill_the_process() {
     let dir = tempdir().unwrap();
 
     let tool = RunPtyCmdTool::new();
     let result = tool
-        .execute(json!({"command": "sleep 10", "timeout": 1}), dir.path())
+        .execute(
+            json!({"command": "sleep 0.05; echo survived", "timeout": 0}),
+            dir.path(),
+        )
         .await
         .unwrap();
 
-    assert!(result.get("error").is_some());
-    assert!(result["error"].as_str().unwrap().contains("timed out"));
-    assert_eq!(result["exit_code"].as_i64(), Some(124));
+    assert_eq!(result["exit_code"].as_i64(), Some(0));
+    assert!(result["stdout"].as_str().unwrap().contains("survived"));
+    assert_eq!(result["automatic_kill"], false);
 }
 
 #[tokio::test]

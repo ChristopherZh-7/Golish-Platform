@@ -33,8 +33,8 @@ describe("background job lifecycle state", () => {
     state.backgroundToolExecutionBlock(SESSION_ID, "req-main", {
       status: "backgrounded",
       job_id: "job-main",
-      soft_timeout_ms: 30_000,
-      hard_timeout_ms: 1_800_000,
+      initial_yield_ms: 10_000,
+      automatic_kill: false,
     });
     state.completeToolExecutionBlock(SESSION_ID, "req-main", true, {
       status: "done",
@@ -51,8 +51,8 @@ describe("background job lifecycle state", () => {
     expect(block.data.backgroundRun).toEqual(
       expect.objectContaining({
         jobId: "job-main",
-        softTimeoutMs: 30_000,
-        hardTimeoutMs: 1_800_000,
+        initialYieldMs: 10_000,
+        automaticKill: false,
       })
     );
   });

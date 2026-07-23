@@ -99,10 +99,12 @@ agentic loop 的公开表面 + 子模块实现。`turn/` 是 phase 调度本体�
 - Enumeration 的 exact-origin worklist 可跨 8 页以上，且弱模型可能每完成一页就提前结束。runtime 对每个 worker segment 前后都从 `DbRepoProvider::stage_asset_coverage` 的 raw assets/coverage cells 重算 `unfinished = pending+error+partial` 及完整规范化 `(exact-origin, technique)` key set。成功但无 accepted StageDeliverable，或 deliverable 的 coverage gap key set 与 authoritative unfinished key set 完全相等时，只有 unfinished 严格下降才复用当前 org 的精确 chain；同数量不同 key 或 compact truncation 不得误判。工作续段上限为 `min(ceil(root_count/50)-1, 8)`，ready=true 另有独立且最多一次 submit-only continuation。capacity continuation 不增加 per-org gate attempt；混合 blocker 保留正常 gate repair。无进展、缺链、取消、空 denominator、读取失败或预算耗尽直接进入 exhausted/reentry breaker。
 - `stage_run_call.rs` 的 EAS Prober objective 是 coverage-driven：先读
   `check_stage_asset_coverage` / `query_target_data`，再选最小 batch。模型只调四个
-  `eas_*` wrapper，不看 raw httpx/naabu/masscan/nmap/WhatWeb/pentest_run；wrapper 强制
-  foreground，在 guarded business/evidence/outcome 落库后返回。domain/url 只做 Host/SNI
-  LIVENESS + exact-origin WEB；IP 先 PORT 后 per-open-port SERVICE；CIDR 行只做
-  LIVENESS/PORT，child IP 下波做 SERVICE/WEB；wildcard 不进 active wrapper。
+  `eas_*` wrapper，不看 raw httpx/naabu/masscan/nmap/WhatWeb/pentest_run；其中PORT从spawn起即由
+  manager持有，initial yield后返回同一handle；Prober用有界check读取存活与输出activity，并只在判断
+  确实挂死、scope错误或已无用途时显式kill；观察quiet或yield结束都不是自动终止信号。其它wrapper仍同步，
+  在guarded business/evidence/outcome落库后返回。domain/url只做Host/SNI LIVENESS + exact-origin
+  WEB；IP先PORT后per-open-port SERVICE；CIDR行只做LIVENESS/PORT，child IP下波做
+  SERVICE/WEB；wildcard不进active wrapper。
 - depth-0 stage orchestrator 会在 active harness stage 里看到只读 coverage/target query 工具（`list_in_scope_targets` / `list_attack_surface_seeds` / `query_target_data` / `check_stage_asset_coverage` / `stage_worklist_status` / `stage_worklist_next`）；这些工具既要在 `tool_list` 暴露，也必须在 direct executor 走 `execute_security_analysis_tool`，不能只声明不路由，否则主 agent 会得到 `Unknown tool`。coverage/worklist 工具还需要透传当前 `harness_stage` / `harness_org_id` / `harness_operation_id`，这样它们才能默认按当前阶段和 `stage_started_at` 做提交前缺口预检/下一批 work item。`stage_run_call::build_org_objective` 会把 specialist worker 写成 worklist-first loop：先 `stage_worklist_status`，`ready_to_submit=false` 时再 `stage_worklist_next(prefer=["pending","error"])`，只处理 items 点名的 asset×technique cell；`check_stage_asset_coverage` 作为最终 compact sanity，不靠 `submit_stage_deliverable` 试错。
 - `stage_run_call::build_org_objective` 会额外写入当前 stage 的 capability registry 摘要，要求 specialist worker 优先按 worklist item 的 `suggested_capabilities` 选择能力，再把 `suggested_tools` 当实现 hint；这仍只是指导，最终 PASS/BLOCK 只看 DB/gate truth。
 - `stage_run_call::build_org_objective` 还会读取 bridge 透传的顶层 `SubAgentContext.original_request`，把它放在 deterministic objective 与 stage methodology 之间的 `TOP-LEVEL OPERATOR CONSTRAINTS` 数据块中：最多 4096 Unicode 字符，超长首尾保留且显式 `truncated=true`，正文用 JSON string 引用。该块优先级低于 stage/org/scope/tool/safety/evidence/gate 合同，只能收紧执行；不能靠文字改变 stage、增加 org/target、扩大 scope、放宽 read-only/exact-origin、启用禁用工具或伪造 terminal。它不参与 worker-chain key、checkpoint 或 `StageRunReentryGuard` 状态。

@@ -77,6 +77,8 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "grep_file".into(),
             "pentest_list_tools".into(),
             "pentest_run".into(),
+            "check_job".into(),
+            "kill_job".into(),
         ])
         .with_max_iterations(30)
         .with_idle_timeout(300)
@@ -105,6 +107,8 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "vault".to_string(),
             "pentest_list_tools".to_string(),
             "pentest_run".to_string(),
+            "check_job".to_string(),
+            "kill_job".to_string(),
             "list_recent_evidence".to_string(),
             "graph_search".to_string(),
             "graph_add_entity".to_string(),
@@ -206,6 +210,9 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "eas_discover_ports".to_string(),
             "eas_fingerprint_services".to_string(),
             "eas_fingerprint_web_stack".to_string(),
+            "wait_for_background_jobs".to_string(),
+            "check_job".to_string(),
+            "kill_job".to_string(),
             "list_recent_evidence".to_string(),
             "submit_stage_deliverable".to_string(),
             "record_finding".to_string(),

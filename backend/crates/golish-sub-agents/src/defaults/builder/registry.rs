@@ -75,7 +75,7 @@ pub async fn create_default_sub_agents_from_registry(
             "Tool installation and environment configuration specialist. Handles downloading, compiling, and configuring penetration testing tools. Manages Python virtual environments, Go builds, and dependency conflicts. Delegate when a tool needs to be installed or a complex environment needs setup.",
             tmpl_or_fallback!("installer", build_installer_prompt()),
         )
-        .with_tools(vec!["read_file".into(), "write_file".into(), "web_fetch".into(), "list_directory".into(), "list_files".into(), "grep_file".into(), "pentest_list_tools".into(), "pentest_run".into()])
+        .with_tools(vec!["read_file".into(), "write_file".into(), "web_fetch".into(), "list_directory".into(), "list_files".into(), "grep_file".into(), "pentest_list_tools".into(), "pentest_run".into(), "check_job".into(), "kill_job".into()])
         .with_max_iterations(30).with_idle_timeout(300)
         .with_delegatable_agents(vec!["researcher".into(), "memorist".into()]),
     );
@@ -107,6 +107,8 @@ pub async fn create_default_sub_agents_from_registry(
             "js_extract_apis".into(),
             "pentest_list_tools".into(),
             "pentest_run".into(),
+            "check_job".into(),
+            "kill_job".into(),
             "list_recent_evidence".into(),
             "graph_search".into(),
             "graph_add_entity".into(),
@@ -227,6 +229,9 @@ pub async fn create_default_sub_agents_from_registry(
             "eas_discover_ports".into(),
             "eas_fingerprint_services".into(),
             "eas_fingerprint_web_stack".into(),
+            "wait_for_background_jobs".into(),
+            "check_job".into(),
+            "kill_job".into(),
             "list_recent_evidence".into(),
             "submit_stage_deliverable".into(),
             "record_finding".into(),

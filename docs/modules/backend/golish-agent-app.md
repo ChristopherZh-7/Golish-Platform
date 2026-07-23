@@ -73,6 +73,7 @@ agent 服务的命令面与运行时状态宿主。`AiState` 持有 per-session 
 - `AgentState.knowledge_memory` 与 process supervisor 必须来自同一个 adapter Arc；`bridge_config.rs` 只注入 UoW handle。P1 final-seal/P2 Attempt 在各自 DB compound transaction 接 inner seam 前，不能宣称 canonical producer atomic 闭环完成。
 - `PgKnowledgeMemory` assertion promoter 对每个非空 catalog route 使用显式 authority policy；Candidate/Post-Exploit/Cleanup terminal event 的 derived Assertion 只能信任 envelope + sealed frozen scope，严格 payload 只承载事实内容。只有 reason-only blocked Candidate（persisted blocker reason、无 audit evidence、无 FactDelta）在通过 exact sealed operation/project/snapshot/org/source authority 后允许 intentional suppression；无 authority 不得借 suppression 绕过。Candidate `fact_delta_count > 0` 在 typed evidence-role 字段落地前 fail closed；其他投影不得由测试手工 ACK `succeeded_suppressed` 代替。
 - `bridge_config.rs` 的 ContextPack provider 必须来自当前 `DbState` pool；request/model 不传 actor、project path 或 trusted context。检索失败不得接 legacy global fallback。
+- background completion listener必须先读取process manager保存的typed reconciliation。`skip_generic_persistence=true`时只投影typed evidence trace/note/UI terminal并最后ack，禁止generic structured/evidence/outcome hook重复落库；`submit_stage_deliverable`只做短观察并把live job activity交还AI，观察窗口绝不是process deadline。
 - Vuln no-purge compatibility adoption由`db_bridge/runtime_memory`透传exact Controller fence到单一DB事务；evidence materialization保留`scheme://host:port` exact-origin identity，禁止host-only折叠。
 
 ## 测试入口

@@ -103,7 +103,7 @@ function parseShellResult(result: unknown): ShellResult | null {
       exitCode: typeof obj.exit_code === "number" ? obj.exit_code : undefined,
     };
   }
-  // Backgrounded (soft-timeout) results carry partial output under partial_*.
+  // Managed background results carry partial output under partial_*.
   if (obj.partial_stdout !== undefined || obj.partial_stderr !== undefined) {
     return {
       stdout: typeof obj.partial_stdout === "string" ? obj.partial_stdout : undefined,

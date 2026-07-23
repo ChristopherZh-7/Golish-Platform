@@ -1,4 +1,4 @@
-use super::builder::create_default_sub_agents;
+use super::builder::{create_default_sub_agents, create_default_sub_agents_from_registry};
 use super::prompts::{
     build_attack_analyst_prompt, build_browser_prompt, build_candidate_verifier_prompt,
     build_coder_prompt, build_enumerator_prompt, build_orchestrator_prompt, build_pentester_prompt,
@@ -123,6 +123,8 @@ fn test_pentester_has_security_tools() {
     assert!(!has_tool(pentester, "flow_compose"));
     assert!(has_tool(pentester, "manage_targets"));
     assert!(has_tool(pentester, "record_finding"));
+    assert!(has_tool(pentester, "check_job"));
+    assert!(has_tool(pentester, "kill_job"));
     // The pentester runs the harness target_intel stage, so it must carry the
     // passive asset-intel recon_* tools — otherwise it falls back to manual
     // `dig` via pentest_run instead of the 0.zone/quake/ENScan provider engine.
@@ -139,6 +141,19 @@ fn test_pentester_has_security_tools() {
     // makes progress, bounded only by the idle timeout + max_iterations.
     assert_eq!(pentester.timeout_secs, None);
     assert_eq!(pentester.idle_timeout_secs, Some(300));
+}
+
+#[test]
+fn every_default_pentest_runner_has_managed_process_controls() {
+    let agents = create_default_sub_agents();
+    let runners = agents.iter().filter(|agent| has_tool(agent, "pentest_run"));
+    let mut count = 0;
+    for agent in runners {
+        count += 1;
+        assert!(has_tool(agent, "check_job"), "{} needs check_job", agent.id);
+        assert!(has_tool(agent, "kill_job"), "{} needs kill_job", agent.id);
+    }
+    assert!(count > 0);
 }
 
 #[test]
@@ -217,7 +232,9 @@ fn test_prober_has_active_surface_tools() {
     assert!(has_tool(prober, "eas_fingerprint_web_stack"));
     assert!(!has_tool(prober, "pentest_run"));
     assert!(!has_tool(prober, "pentest_list_tools"));
-    assert!(!has_tool(prober, "wait_for_background_jobs"));
+    assert!(has_tool(prober, "wait_for_background_jobs"));
+    assert!(has_tool(prober, "check_job"));
+    assert!(has_tool(prober, "kill_job"));
     assert!(!has_tool(prober, "manage_targets"));
     assert!(has_tool(prober, "list_in_scope_targets"));
     // L1b (design 2026-06-24): Prober gets the ranked attack-surface seed worklist.
@@ -260,17 +277,20 @@ fn test_prober_prompt_is_active_surface() {
     assert!(prompt.contains("confirmed HTTP(S)"));
     assert!(prompt.contains("port"));
     assert!(prompt.contains("list_attack_surface_seeds"));
-    assert!(prompt.contains("All four wrappers are forced foreground"));
-    assert!(prompt.contains("guarded business rows and evidence have synchronously landed"));
-    assert!(prompt.contains("legacy `background` compatibility field is deprecated and ignored"));
+    assert!(prompt.contains("adjustable initial yield"));
+    assert!(prompt.contains("same process remains alive"));
+    assert!(prompt.contains("managed `job_id`"));
+    assert!(prompt.contains("never kills, detaches, or respawns it"));
+    assert!(prompt.contains("typed completion"));
     assert!(prompt.contains("Usually omit `ports`"));
     assert!(prompt.contains("Do not pass or increase a timeout"));
     assert!(prompt.contains("already isolates slow IPs"));
     assert!(!prompt.contains("background:true"));
     assert!(!prompt.contains("soft timeout"));
-    assert!(!prompt.contains("wait_for_background_jobs"));
-    assert!(!prompt.contains("check_job"));
-    assert!(!prompt.contains("kill_job"));
+    assert!(prompt.contains("wait_for_background_jobs"));
+    assert!(prompt.contains("check_job"));
+    assert!(prompt.contains("kill_job"));
+    assert!(!prompt.contains("All four wrappers are forced foreground"));
     assert!(prompt.contains("found cells are credited from the database"));
     assert!(prompt.contains("Do NOT hand-copy found coverage cells"));
     assert!(prompt.contains("Never include a bare IP, IP:port, or CIDR"));
@@ -289,6 +309,28 @@ fn test_prober_prompt_is_active_surface() {
     // Prober is the ACTIVE counterpart of the ZERO-TOUCH Recon — it must NOT
     // describe itself as zero-touch.
     assert!(!prompt.contains("ZERO-TOUCH"));
+}
+
+#[tokio::test]
+async fn registry_builder_keeps_managed_process_controls_for_every_pentest_runner() {
+    let registry = crate::prompt_registry::PromptRegistry::new();
+    let agents = create_default_sub_agents_from_registry(&registry).await;
+    let prober = agents
+        .iter()
+        .find(|agent| agent.id == "prober")
+        .expect("registry-built prober");
+    for tool in [
+        "eas_discover_ports",
+        "wait_for_background_jobs",
+        "check_job",
+        "kill_job",
+    ] {
+        assert!(has_tool(prober, tool), "registry prober needs {tool}");
+    }
+    for agent in agents.iter().filter(|agent| has_tool(agent, "pentest_run")) {
+        assert!(has_tool(agent, "check_job"), "{} needs check_job", agent.id);
+        assert!(has_tool(agent, "kill_job"), "{} needs kill_job", agent.id);
+    }
 }
 
 #[test]
@@ -668,6 +710,9 @@ fn test_pentester_prompt_has_core_identity() {
     assert!(prompt.contains("penetration testing specialist"));
     assert!(prompt.contains("<expertise>"));
     assert!(prompt.contains("<constraints>"));
+    assert!(prompt.contains("yield-time-ms"));
+    assert!(prompt.contains("check_job"));
+    assert!(prompt.contains("kill_job"));
     assert!(prompt.contains("search_knowledge_base"));
 }
 

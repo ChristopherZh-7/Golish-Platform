@@ -9,7 +9,7 @@
   "requires_stages": ["scoping", "target_intel"],
   "allowed_next_stages": ["enumeration", "reporting"],
 
-  "$comment_allowed_tool_types": "These are backend authorization taxonomy selectors, not the model tool surface. The Prober sees only eas_probe_http_liveness, eas_discover_ports, eas_fingerprint_services and eas_fingerprint_web_stack; raw httpx/naabu/masscan/nmap/WhatWeb/pentest_run remain hidden behind fixed guarded recipes.",
+  "$comment_allowed_tool_types": "These are backend authorization taxonomy selectors, not the model tool surface. The Prober sees the four guarded eas_* capabilities plus wait/check/kill controls for a managed port process; raw httpx/naabu/masscan/nmap/WhatWeb/pentest_run remain hidden behind fixed guarded recipes.",
   "allowed_tool_types": ["recon/port-scan", "recon/http", "recon/visual"],
 
   "deliverable_schema": "ExternalAttackSurfaceDeliverable",

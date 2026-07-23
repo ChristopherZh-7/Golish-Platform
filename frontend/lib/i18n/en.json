@@ -761,17 +761,16 @@
       "view": "View"
     },
     "backgroundJobs": {
-      "panelLabel": "Background job lifecycle",
-      "stop": "Stop background job",
+      "panelLabel": "Managed process lifecycle",
+      "stop": "Stop managed process",
       "stopAction": "Stop",
       "stopFailed": "The stop request was not accepted. The job state has not been changed.",
-      "backgroundFor": "Background for {{duration}}",
+      "backgroundFor": "Managed for {{duration}}",
       "totalDuration": "Total duration {{duration}}",
-      "softTimeout": "Soft timeout after {{duration}}",
-      "deadlineIn": "Deadline in {{duration}}",
+      "manualTermination": "No automatic process deadline · stop explicitly if needed",
       "lastOutput": "Last output {{duration}} ago",
       "status": {
-        "running": "Running in background",
+        "running": "Managed process running",
         "stopping": "Stopping…",
         "completed": "Completed",
         "failed": "Failed",

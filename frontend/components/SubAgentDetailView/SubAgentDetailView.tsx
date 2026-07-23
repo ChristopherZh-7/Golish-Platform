@@ -2328,7 +2328,7 @@ export const SubAgentDetailView = memo(function SubAgentDetailView({
     return null;
   });
   const parentStageStopped = isTerminalStageRunToolStatus(parentStageRunToolStatus);
-  // Session-wide background jobs (soft-timeout→detached commands still running),
+  // Session-wide managed jobs (the same processes still running after yield),
   // surfaced here so backgrounded recon/sub-agent commands are visible from the
   // detail view, not only the input-row badge.
   const backgroundJobs = useStore((s) => s.backgroundJobs[sessionId]) ?? EMPTY_BG_JOBS;

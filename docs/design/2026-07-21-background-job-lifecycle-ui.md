@@ -1,3 +1,5 @@
+> Superseded by `docs/design/2026-07-23-codex-same-session-process-yield.md` for same-process initial/read yield semantics. This document remains the UI lifecycle history.
+
 # 后台工具生命周期与事件驱动收口设计
 
 日期：2026-07-21

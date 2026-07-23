@@ -6,6 +6,19 @@
 
 ---
 
+# 会话记录：2026-07-23 · 全局 Codex 同会话进程 yield 对齐（PASS）
+
+- **本轮目标**：按用户纠正把上一轮 EAS 局部修复提升为所有 AI-owned raw shell/pentest command 的统一合同。进程从launch起受管；`yield-time_ms`只限制一次等待/读取；返回同一个`job_id`后由AI/用户依据存活、工作量和输出活动继续读、等或显式kill，不存在固定30秒业务逻辑。
+- **已完成**：读取OpenAI Codex当前手册，确认bounded poll与process lifetime分离、terminal可查看并显式stop；新增`docs/design/2026-07-23-codex-same-session-process-yield.md`和实现计划，旧soft-timeout/EAS局部设计标superseded。`run_pty_cmd`、`run_command` alias、普通`pentest_run`从spawn起使用同一`BackgroundJobManager`，initial yield默认10秒且可调，结束时只返回同一handle；`check_job`支持0..300秒output-sensitive read并报告`terminal|output|yield_elapsed|snapshot`，`wait_for_background_jobs`的quiet/yield也不kill或推断coverage。manager显式取消改为进程组kill，返回server-authored termination reason；legacy shell fallback不再把旧timeout输入变成elapsed kill。
+- **全局路由与EAS**：删除sub-agent直连`golish_shell_exec::execute_streaming`的timeout/kill旁路，`run_command`统一alias到registry中的`run_pty_cmd`；Installer/Pentester及既有Prober等raw shell/pentest角色同时获得`check_job`/`kill_job`和activity判断prompt。普通pentest路径使用managed yield；必须同步保有typed landing authority的wrapper也不受通用elapsed watchdog自动kill。EAS `PortScanPlan`、coverage、attestation和Gate移除固定30秒transport字段；PORT仍由typed reconciler在完整自然退出后先做guarded landing/evidence/outcome再广播。Nmap `--host-timeout`、Naabu connect timeout等仍是scanner per-host/socket工作片，不是进程寿命watchdog。
+- **UI / closeout**：前端把`backgrounded`解释为initial yield后同一进程仍存活，保留诊断用`initialYieldMs`和`automaticKill:false`，不再显示“转后台窗口”或自动截止倒计时；面板显示managed elapsed、last output、累计字节和显式Stop。`submit_stage_deliverable`环境名改为`GOLISH_SUBMIT_RECONCILE_OBSERVE_MS`，旧WAIT名仅兼容；短观察结束只返回activity，不改变process lifetime。相关module cards和INDEX已同步。
+- **运行过的验证 / 已记录证据**：每个Cargo命令前`just space-guard`均exit 0。app-core同handle/no-elapsed-kill/output-sensitive yield run `67dd24f0-31c4-43fb-bb4d-d8ead1ee2df6`为9/9；显式取消run `1957daf0-3059-4db1-99a4-9ef192bc9faf`为3/3；shell-exec整crate run `fafea856-acdd-47c4-b294-3b51e920eea9`为31/31；EAS recipe/attestation/host-budget run `261cfe53-3b13-4ceb-849d-41e691645c47`为3/3，较宽focused EAS run `e3c240ec-8e14-4357-87e3-df20b596ecb2`为11/11；agent Gate/submit run `893e9eca-1cdf-4107-a009-25c05baba1b3`为4/4；sub-agent route/control run `b6b83290-08f3-4404-b4f0-509fca1c615b`为5/5；runtime objective run `6ad1c79c-598d-43c6-bafa-e2c17b122085`为2/2。六crate all-target Clippy `-D warnings`、23文件rustfmt、`tsc --noEmit`、JSON/zero-active/scoped diff均exit 0；focused Vitest 3 files/29 tests通过，Biome 13 files无修改。提交前另从`git write-tree`创建仅暂存内容的临时worktree，rustfmt通过，sub-agent五条关键回归run `506677e1-057e-44c8-a9e6-bbab61985070`为5/5，证明共享dirty tree未掩盖暂存快照。三路只读SubAgent分别审计通用process、pentest/domain timeout分类和前端/提示词；主agent逐项复核后实现，未以SubAgent自述代替证据。
+- **提交记录**：本轮managed-process scope已按用户要求单独提交（本记录所在提交：`fix(ai): align managed process yielding with codex`）；未push、未删除文件，未启动/停止用户GUI任务，未发真实外部扫描。共享dirty tree中Candidate/Application Model/Reporting/DB/generated等无关改动全部保留。
+- **已知风险或未解决问题**：manager仍是进程内的，app crash后不恢复OS child；DB业务cell保持pending并由现有worklist安全重试。HTTP connect/request、scanner socket/per-host、DB acquire、LLM stream-start、output-drain以及同步原子receipt action的bounded I/O/资源控制明确保留，它们不是generic process elapsed timeout。按AGENTS §0.1未运行未获授权的init/precommit/全workspace门禁，也没有用外部目标做真实EAS验收。
+- **下一步最佳动作**：无需人工补救即可继续。下一次获准的GUI回归可观察任一长`run_pty_cmd`/`pentest_run`：initial yield后确认同一`job_id`仍live，`check_job`遇输出提前返回，quiet只返回`yield_elapsed`，自然退出或显式Stop才产生terminal reason；跨app重启process supervision如需实现应单独立项。
+- **提交范围**：`golish-app-core` manager/PTY与Cargo依赖、`golish-shell-exec` fallback、`golish-pentest-app` runner/EAS/enumeration bridge、agent Gate/submit/config、runtime objective、sub-agent registry/defaults/executor、13个frontend lifecycle/i18n文件、EAS methodology、设计/计划、模块卡/INDEX、`feature_list.json`和本进度记录；共享工作区其余未提交改动不在本次commit内。
+
+
 #### 2026-07-21 · Candidate / EAS / Background / Stage Team 当前已验证工作树 checkpoint
 
 - **本轮目标**：按用户“先 commit 现在”的明确指令，将当前已有新鲜定向证据的 Candidate TLS / EAS 全端口发现 / 后台工具生命周期 / Stage Team rolling-refill 与 parked queued WorkItem 恢复收口为一个安全 checkpoint；不 push，不发起扫描或外部请求。

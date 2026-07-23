@@ -45,7 +45,7 @@
 - `candidate_review_required/resumed`、`candidate_attempt_terminalized`、`attack_wave_consolidated` 都不是审批/Attempt/Wave authority；handler 只能更新已存在的 `Session.candidateReviewHint`，组件随后重读 DB API。terminal trace 用自己的 `wave_run_id`，consolidation trace 用 `source_wave_run_id` 做 exact match；operation/wave 不匹配或 hint 尚不存在时不得创建假 cursor，匹配时也必须保留现有 `resumeVersion`。
 - Reporting 的 `gate_decision` / `deliverable_submitted` 也不是报告 authority；仅当 outer `stage=reporting` 时更新 `Session.reportingReadModelHint`，报告内容、CAS 与 finalization 一律由 scoped IPC/DB 重验。
 - `session-sequence` 依赖后端 envelope 的 seq 保证有序——别绕过它直接处理乱序事件。
-- `tool_result.result.status === "backgrounded"` 要走 live/non-terminal 路由：登记带 exact origin（main requestId 或 sub-agent parentRequestId + child requestId）的 `backgroundJobs`，timeline / streaming block 标 `backgrounded` 并保留 soft/hard deadline；每个 output chunk 刷新 `lastOutputAt`。等 `tool_background_completed` 再按 `job_id` 翻终态；聊天气泡侧同样按 requestId/jobId 回填，避免 success=true 的 backgrounded 工具显示绿勾。
+- `tool_result.result.status === "backgrounded"`要走live/non-terminal路由：登记带exact origin（main requestId或sub-agent parentRequestId+child requestId）的`backgroundJobs`，timeline/streaming block标`backgrounded`并保留诊断用`initialYieldMs`与`automaticKill:false`；该状态表示initial yield后同一受管进程仍存活，不表示detach/respawn，也绝不解析或展示legacy hard deadline。每个output chunk刷新`lastOutputAt`，等`tool_background_completed`再按`job_id`翻终态。
 - 高频流式 handler 不要直接写 store：`reasoning`、`sub_agent_reasoning`、`tool_output_chunk` 走 `EventHandlerContext` 的 batch 方法，由 `lib/ai/streaming-buffer.ts` 合并后写入，避免 detail thinking/output 同时刷新时卡顿。
 
 ## 测试入口

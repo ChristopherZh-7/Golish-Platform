@@ -1,3 +1,5 @@
+> Superseded by `docs/design/2026-07-23-codex-style-managed-tool-processes.md` for the Naabu v3 recipe, managed process lifetime, and typed background attestation. Historical Naabu v2 evidence remains readable under the rules below.
+
 # EAS Naabu 全端口发现与 Nmap 定向指纹设计
 
 > 本文取代 `2026-07-21-candidate-tls-port-scan-coverage.md` 中仅关于 `full=Nmap TCP 1-65535 XML` 的端口发现与 v1 attestation 设计；Candidate/TLS、quick/standard partial、CIDR policy block 和 duplicate Candidate 设计继续有效。

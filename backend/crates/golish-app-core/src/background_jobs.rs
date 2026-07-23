@@ -1,30 +1,33 @@
 //! Background job manager for long-running AI shell/pentest commands.
 //!
 //! Replaces the old "timeout → kill the process → report a timeout error"
-//! behaviour with a Cursor-style "soft timeout → keep running in the
-//! background" model:
+//! behaviour with a Codex-style "bounded yield → return the same live process
+//! handle" model:
 //!
 //! - A command is always spawned through [`BackgroundJobManager::spawn`], which
 //!   captures stdout/stderr incrementally into a capped buffer and **does not**
 //!   `kill_on_drop` — the child outlives the awaiting future.
-//! - The caller (`run_shell_command_detail`) waits up to a *soft* timeout; if
-//!   the command finishes in time it returns the full result as before, else it
-//!   returns a `backgrounded` handle (`job_id`) and the command keeps running.
+//! - The caller (`run_shell_command_detail`) waits through a bounded initial
+//!   yield; if the command finishes in time it returns the full result as before,
+//!   else it returns the same managed handle (`job_id`) and the command keeps
+//!   running. `backgrounded` is only the compatibility status label.
 //! - Runtime listeners reconcile terminal output and wake stage closeout only
 //!   after evidence, structured outcomes, UI state, and the agent note land.
-//! - A *hard* limit watchdog kills runaway jobs so nothing leaks forever.
+//! - Process lifetime is not tied to an elapsed-time watchdog. The agent or
+//!   operator observes activity and explicitly cancels a job when appropriate;
+//!   session shutdown remains an authoritative cancellation boundary.
 //!
-//! Design: `docs/design/2026-06-03-background-tool-execution.md` (P1).
+//! Design: `docs/design/2026-07-23-codex-same-session-process-yield.md`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, Notify};
 
 use crate::pty_interactive::shell_command;
@@ -32,6 +35,10 @@ use crate::pty_interactive::shell_command;
 /// Cap each stream's retained buffer; keep the *tail* once exceeded so the most
 /// recent output (usually the interesting part) survives.
 const MAX_JOB_OUTPUT_BYTES: usize = 512 * 1024;
+/// Full-output spool safety cap per stream. The child keeps running when the
+/// cap is reached, but `complete=false` prevents evidence producers from
+/// treating the partial archive as exhaustive output.
+const MAX_JOB_SPOOL_BYTES: usize = 32 * 1024 * 1024;
 /// Soft-delete finished jobs once the map grows past this, so a long session
 /// doesn't accumulate unbounded completed-job state.
 const MAX_RETAINED_JOBS: usize = 128;
@@ -76,6 +83,31 @@ pub enum JobStatus {
     Killed,
 }
 
+/// Server-authored reason a managed child reached terminal state. There is no
+/// elapsed-time/deadline variant by design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobTerminationReason {
+    Exited,
+    OperatorCancelled,
+    SessionCancelled,
+    SpawnFailed,
+    WaitFailed,
+    OutputIncomplete,
+}
+
+impl JobTerminationReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exited => "exited",
+            Self::OperatorCancelled => "operator_cancelled",
+            Self::SessionCancelled => "session_cancelled",
+            Self::SpawnFailed => "spawn_failed",
+            Self::WaitFailed => "wait_failed",
+            Self::OutputIncomplete => "output_incomplete",
+        }
+    }
+}
+
 impl JobStatus {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -103,8 +135,16 @@ struct JobState {
     exit_code: Option<i32>,
     stdout: String,
     stderr: String,
+    stdout_total_bytes: u64,
+    stderr_total_bytes: u64,
+    last_output_at: Option<Instant>,
+    stdout_spool_path: Option<PathBuf>,
+    stderr_spool_path: Option<PathBuf>,
+    stdout_spool_truncated: bool,
+    stderr_spool_truncated: bool,
     started_at: Instant,
     finished_at: Option<Instant>,
+    termination_reason: Option<JobTerminationReason>,
     kill: Arc<Notify>,
     /// Terminal is not equivalent to fully consumed. Keep the job outstanding
     /// until the bridge listener has persisted every completion side effect.
@@ -112,6 +152,8 @@ struct JobState {
     /// Shared by the original broadcast and any replay generated after a
     /// lagged listener so completion side effects remain exactly-once.
     processing_claim: Arc<AtomicBool>,
+    reconciler: Option<Arc<dyn BackgroundJobReconciler>>,
+    reconciliation: Option<BackgroundJobReconciliation>,
 }
 
 /// Immutable view of a job's current state, safe to hand back to callers.
@@ -126,6 +168,57 @@ pub struct JobSnapshot {
     pub finished: bool,
 }
 
+/// Monotonic activity counters for a managed process. These let the agent
+/// distinguish a live, progressing job from one that has been quiet without
+/// conflating either state with an automatic timeout decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JobActivity {
+    pub stdout_total_bytes: u64,
+    pub stderr_total_bytes: u64,
+    pub last_output_age_ms: Option<u64>,
+}
+
+/// Full server-owned output for a terminal managed process. UI/model surfaces
+/// should continue using bounded tails; typed reconcilers use this archive for
+/// exact parsing and hashing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobOutputArchive {
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_total_bytes: u64,
+    pub stderr_total_bytes: u64,
+    pub complete: bool,
+}
+
+/// Immutable terminal input passed to a server-installed typed reconciler.
+#[derive(Debug, Clone)]
+pub struct ManagedJobTerminal {
+    pub job_id: String,
+    pub command: String,
+    pub status: JobStatus,
+    pub exit_code: Option<i32>,
+    pub termination_reason: JobTerminationReason,
+    pub duration_ms: u64,
+    pub output: JobOutputArchive,
+}
+
+/// Business completion produced before the generic background listener runs.
+#[derive(Debug, Clone)]
+pub struct BackgroundJobReconciliation {
+    pub tool_result: serde_json::Value,
+    pub note: Option<String>,
+    pub evidence_ids: Vec<i64>,
+    pub skip_generic_persistence: bool,
+}
+
+#[async_trait::async_trait]
+pub trait BackgroundJobReconciler: Send + Sync {
+    async fn reconcile(
+        &self,
+        terminal: ManagedJobTerminal,
+    ) -> anyhow::Result<BackgroundJobReconciliation>;
+}
+
 /// Lightweight view of a still-running job attributed to a session. Used by the
 /// closeout reconciliation barrier (`submit_stage_deliverable`) to tell the
 /// agent which background scans are still in flight before it concludes a stage.
@@ -134,6 +227,9 @@ pub struct RunningJob {
     pub job_id: String,
     pub command: String,
     pub elapsed_ms: u64,
+    pub stdout_total_bytes: u64,
+    pub stderr_total_bytes: u64,
+    pub last_output_age_ms: Option<u64>,
 }
 
 /// Broadcast payload emitted when a background job reaches a terminal state.
@@ -259,8 +355,25 @@ fn terminal_completion(job_id: String, state: &JobState) -> JobCompletion {
     }
 }
 
+fn typed_reconciliation_complete(state: &JobState) -> bool {
+    state.reconciler.is_none() || state.reconciliation.is_some()
+}
+
+fn remove_spool_files(state: &JobState) {
+    for path in [
+        state.stdout_spool_path.as_ref(),
+        state.stderr_spool_path.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 async fn pump<R>(
     mut reader: R,
+    mut spool: Option<tokio::fs::File>,
     state: Arc<Mutex<JobState>>,
     outputs: broadcast::Sender<JobOutputChunk>,
     job_id: String,
@@ -270,20 +383,45 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut buf = [0u8; 8192];
+    let mut spooled_bytes = 0usize;
     loop {
         match reader.read(&mut buf).await {
-            Ok(0) => return Ok(()),
+            Ok(0) => {
+                if let Some(file) = spool.as_mut() {
+                    file.flush().await?;
+                }
+                return Ok(());
+            }
             Err(error) => return Err(error),
             Ok(n) => {
+                if let Some(file) = spool.as_mut() {
+                    let remaining = MAX_JOB_SPOOL_BYTES.saturating_sub(spooled_bytes);
+                    let write_len = remaining.min(n);
+                    if write_len > 0 {
+                        file.write_all(&buf[..write_len]).await?;
+                        spooled_bytes = spooled_bytes.saturating_add(write_len);
+                    }
+                    if write_len < n {
+                        let mut s = state.lock();
+                        if is_stderr {
+                            s.stderr_spool_truncated = true;
+                        } else {
+                            s.stdout_spool_truncated = true;
+                        }
+                    }
+                }
                 let chunk = String::from_utf8_lossy(&buf[..n]);
                 let stream = if is_stderr { "stderr" } else { "stdout" };
                 let output_event = {
                     let mut s = state.lock();
                     if is_stderr {
                         append_capped(&mut s.stderr, &chunk);
+                        s.stderr_total_bytes = s.stderr_total_bytes.saturating_add(n as u64);
                     } else {
                         append_capped(&mut s.stdout, &chunk);
+                        s.stdout_total_bytes = s.stdout_total_bytes.saturating_add(n as u64);
                     }
+                    s.last_output_at = Some(Instant::now());
                     s.tool_context.as_ref().map(|ctx| JobOutputChunk {
                         job_id: job_id.clone(),
                         session_id: s.session_id.clone(),
@@ -336,6 +474,78 @@ async fn drain_output_pumps(
     stdout_error.into_iter().chain(stderr_error).collect()
 }
 
+async fn output_archive_for_state(state: &Arc<Mutex<JobState>>) -> JobOutputArchive {
+    let (
+        stdout_path,
+        stderr_path,
+        stdout_tail,
+        stderr_tail,
+        stdout_total_bytes,
+        stderr_total_bytes,
+        stdout_spool_truncated,
+        stderr_spool_truncated,
+    ) = {
+        let s = state.lock();
+        (
+            s.stdout_spool_path.clone(),
+            s.stderr_spool_path.clone(),
+            s.stdout.clone(),
+            s.stderr.clone(),
+            s.stdout_total_bytes,
+            s.stderr_total_bytes,
+            s.stdout_spool_truncated,
+            s.stderr_spool_truncated,
+        )
+    };
+    let (stdout, stdout_read_complete) = match stdout_path {
+        Some(path) => match tokio::fs::read_to_string(path).await {
+            Ok(output) => (output, true),
+            Err(_) => (stdout_tail.clone(), false),
+        },
+        None => (stdout_tail, false),
+    };
+    let (stderr, stderr_read_complete) = match stderr_path {
+        Some(path) => match tokio::fs::read_to_string(path).await {
+            Ok(output) => (output, true),
+            Err(_) => (stderr_tail.clone(), false),
+        },
+        None => (stderr_tail, false),
+    };
+    let complete = stdout_read_complete
+        && stderr_read_complete
+        && !stdout_spool_truncated
+        && !stderr_spool_truncated
+        && stdout.len() as u64 == stdout_total_bytes
+        && stderr.len() as u64 == stderr_total_bytes;
+    JobOutputArchive {
+        stdout,
+        stderr,
+        stdout_total_bytes,
+        stderr_total_bytes,
+        complete,
+    }
+}
+
+async fn managed_terminal_for_state(
+    job_id: String,
+    state: &Arc<Mutex<JobState>>,
+) -> ManagedJobTerminal {
+    let output = output_archive_for_state(state).await;
+    let s = state.lock();
+    let end = s.finished_at.unwrap_or_else(Instant::now);
+    ManagedJobTerminal {
+        job_id,
+        command: s.command.clone(),
+        status: s.status,
+        exit_code: s.exit_code,
+        termination_reason: s
+            .termination_reason
+            .unwrap_or(JobTerminationReason::WaitFailed),
+        duration_ms: end.duration_since(s.started_at).as_millis() as u64,
+        output,
+    }
+}
+
 impl BackgroundJobManager {
     pub fn new() -> Self {
         let (completions, _) = broadcast::channel(COMPLETION_CHANNEL_CAP);
@@ -364,23 +574,25 @@ impl BackgroundJobManager {
 
     /// Spawn `command` in the background, unattributed. See
     /// [`Self::spawn_for_session`].
-    pub fn spawn(&self, command: &str, workspace: &Path, hard_limit: Duration) -> String {
-        self.spawn_for_session(command, workspace, hard_limit, None)
+    pub fn spawn(&self, command: &str, workspace: &Path, legacy_limit: Duration) -> String {
+        self.spawn_for_session(command, workspace, legacy_limit, None)
     }
 
     /// Spawn `command` in the background, attributing it to `session_id` so the
     /// completion broadcast can be routed back to the right session. Returns
     /// immediately with a `job_id`. The child is reaped by an internal task;
-    /// output streams into a capped buffer; the `hard_limit` watchdog kills it
-    /// if it overruns; a [`JobCompletion`] is broadcast when it terminates.
+    /// output streams into a capped buffer; the legacy duration argument is
+    /// retained for source compatibility but does not control process lifetime;
+    /// a [`JobCompletion`] is broadcast when the child exits or is explicitly
+    /// cancelled.
     pub fn spawn_for_session(
         &self,
         command: &str,
         workspace: &Path,
-        hard_limit: Duration,
+        legacy_limit: Duration,
         session_id: Option<String>,
     ) -> String {
-        self.spawn_for_session_and_tool(command, workspace, hard_limit, session_id, None)
+        self.spawn_for_session_and_tool(command, workspace, legacy_limit, session_id, None)
     }
 
     /// Spawn `command` in the background, additionally attributing live output
@@ -389,16 +601,17 @@ impl BackgroundJobManager {
         &self,
         command: &str,
         workspace: &Path,
-        hard_limit: Duration,
+        legacy_limit: Duration,
         session_id: Option<String>,
         tool_context: Option<golish_core::AgentToolContext>,
     ) -> String {
         self.spawn_for_session_and_tool_unchecked(
             command,
             workspace,
-            hard_limit,
+            legacy_limit,
             session_id,
             tool_context,
+            None,
         )
     }
 
@@ -409,7 +622,7 @@ impl BackgroundJobManager {
         &self,
         command: &str,
         workspace: &Path,
-        hard_limit: Duration,
+        legacy_limit: Duration,
         session_id: Option<String>,
         tool_context: Option<golish_core::AgentToolContext>,
     ) -> Result<String, BackgroundJobSpawnError> {
@@ -423,9 +636,56 @@ impl BackgroundJobManager {
         Ok(self.spawn_for_session_and_tool_unchecked(
             command,
             workspace,
-            hard_limit,
+            legacy_limit,
             session_id,
             tool_context,
+            None,
+        ))
+    }
+
+    /// Server-only managed spawn with a typed completion reconciler. The
+    /// reconciler is installed before process launch and therefore cannot race
+    /// a fast child exit.
+    pub fn spawn_for_session_and_tool_with_reconciler(
+        &self,
+        command: &str,
+        workspace: &Path,
+        session_id: Option<String>,
+        tool_context: Option<golish_core::AgentToolContext>,
+        reconciler: Arc<dyn BackgroundJobReconciler>,
+    ) -> String {
+        self.spawn_for_session_and_tool_unchecked(
+            command,
+            workspace,
+            Duration::ZERO,
+            session_id,
+            tool_context,
+            Some(reconciler),
+        )
+    }
+
+    pub fn try_spawn_for_session_and_tool_with_reconciler(
+        &self,
+        command: &str,
+        workspace: &Path,
+        session_id: Option<String>,
+        tool_context: Option<golish_core::AgentToolContext>,
+        reconciler: Arc<dyn BackgroundJobReconciler>,
+    ) -> Result<String, BackgroundJobSpawnError> {
+        if tool_context
+            .as_ref()
+            .and_then(|context| context.candidate_attempt.as_ref())
+            .is_some()
+        {
+            return Err(BackgroundJobSpawnError::CandidateVerifierForegroundRequired);
+        }
+        Ok(self.spawn_for_session_and_tool_unchecked(
+            command,
+            workspace,
+            Duration::ZERO,
+            session_id,
+            tool_context,
+            Some(reconciler),
         ))
     }
 
@@ -433,13 +693,38 @@ impl BackgroundJobManager {
         &self,
         command: &str,
         workspace: &Path,
-        hard_limit: Duration,
+        _legacy_limit: Duration,
         session_id: Option<String>,
         tool_context: Option<golish_core::AgentToolContext>,
+        reconciler: Option<Arc<dyn BackgroundJobReconciler>>,
     ) -> String {
         self.prune();
 
         let id = format!("job_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let spool_dir = workspace.join(".golish").join("background-jobs");
+        let spool_ready = std::fs::create_dir_all(&spool_dir).is_ok();
+        let stdout_spool_path = spool_ready.then(|| spool_dir.join(format!("{id}.stdout")));
+        let stderr_spool_path = spool_ready.then(|| spool_dir.join(format!("{id}.stderr")));
+        let stdout_spool = stdout_spool_path
+            .as_ref()
+            .and_then(|path| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                    .ok()
+            })
+            .map(tokio::fs::File::from_std);
+        let stderr_spool = stderr_spool_path
+            .as_ref()
+            .and_then(|path| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                    .ok()
+            })
+            .map(tokio::fs::File::from_std);
         let kill = Arc::new(Notify::new());
         // Unattributed jobs have no session bridge consumer, so terminal state
         // itself is fully reconciled for retention purposes.
@@ -452,11 +737,21 @@ impl BackgroundJobManager {
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
+            stdout_total_bytes: 0,
+            stderr_total_bytes: 0,
+            last_output_at: None,
+            stdout_spool_path: stdout_spool.as_ref().and(stdout_spool_path),
+            stderr_spool_path: stderr_spool.as_ref().and(stderr_spool_path),
+            stdout_spool_truncated: stdout_spool.is_none(),
+            stderr_spool_truncated: stderr_spool.is_none(),
             started_at: Instant::now(),
             finished_at: None,
+            termination_reason: None,
             kill: kill.clone(),
             reconciled,
             processing_claim: Arc::new(AtomicBool::new(false)),
+            reconciler,
+            reconciliation: None,
         }));
         self.jobs.lock().insert(id.clone(), state.clone());
 
@@ -465,6 +760,7 @@ impl BackgroundJobManager {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        golish_platform::process::configure_process_group(&mut cmd);
         // Intentionally NOT kill_on_drop: the whole point is to keep running.
 
         match cmd.spawn() {
@@ -472,6 +768,7 @@ impl BackgroundJobManager {
                 let stdout_pump = child.stdout.take().map(|out| {
                     tokio::spawn(pump(
                         out,
+                        stdout_spool,
                         state.clone(),
                         self.outputs.clone(),
                         id.clone(),
@@ -481,6 +778,7 @@ impl BackgroundJobManager {
                 let stderr_pump = child.stderr.take().map(|err| {
                     tokio::spawn(pump(
                         err,
+                        stderr_spool,
                         state.clone(),
                         self.outputs.clone(),
                         id.clone(),
@@ -495,56 +793,62 @@ impl BackgroundJobManager {
                 tokio::spawn(async move {
                     enum Outcome {
                         Exited(std::io::Result<std::process::ExitStatus>),
-                        Stopped, // hard-timeout or explicit kill
+                        Stopped,
                     }
                     let outcome = tokio::select! {
                         r = child.wait() => Outcome::Exited(r),
-                        _ = tokio::time::sleep(hard_limit) => Outcome::Stopped,
                         _ = kill.notified() => Outcome::Stopped,
                     };
-                    let (mut status, mut exit_code, mut diagnostics) = match outcome {
-                        Outcome::Exited(Ok(status)) => (
-                            if status.success() {
-                                JobStatus::Done
-                            } else {
-                                JobStatus::Failed
-                            },
-                            status.code(),
-                            Vec::new(),
-                        ),
-                        Outcome::Exited(Err(error)) => {
-                            let _ = child.start_kill();
-                            let reap_error = child.wait().await.err();
-                            (
-                                JobStatus::Failed,
-                                Some(1),
-                                std::iter::once(format!("child wait failed: {error}"))
-                                    .chain(
-                                        reap_error
-                                            .map(|error| format!("child reap failed: {error}")),
-                                    )
-                                    .collect(),
-                            )
-                        }
-                        Outcome::Stopped => {
-                            let _ = child.start_kill();
-                            let wait_error = child.wait().await.err(); // reap; no lock held
-                            (
-                                JobStatus::Killed,
-                                Some(124),
-                                wait_error
-                                    .map(|error| format!("child reap failed: {error}"))
-                                    .into_iter()
-                                    .collect(),
-                            )
-                        }
-                    };
+                    let (mut status, mut exit_code, mut diagnostics, mut termination_reason) =
+                        match outcome {
+                            Outcome::Exited(Ok(status)) => (
+                                if status.success() {
+                                    JobStatus::Done
+                                } else {
+                                    JobStatus::Failed
+                                },
+                                status.code(),
+                                Vec::new(),
+                                JobTerminationReason::Exited,
+                            ),
+                            Outcome::Exited(Err(error)) => {
+                                golish_platform::process::kill_process_group(&mut child).await;
+                                let reap_error = child.wait().await.err();
+                                (
+                                    JobStatus::Failed,
+                                    Some(1),
+                                    std::iter::once(format!("child wait failed: {error}"))
+                                        .chain(
+                                            reap_error
+                                                .map(|error| format!("child reap failed: {error}")),
+                                        )
+                                        .collect(),
+                                    JobTerminationReason::WaitFailed,
+                                )
+                            }
+                            Outcome::Stopped => {
+                                golish_platform::process::kill_process_group(&mut child).await;
+                                let wait_error = child.wait().await.err(); // reap; no lock held
+                                (
+                                    JobStatus::Killed,
+                                    Some(130),
+                                    wait_error
+                                        .map(|error| format!("child reap failed: {error}"))
+                                        .into_iter()
+                                        .collect(),
+                                    st.lock()
+                                        .termination_reason
+                                        .unwrap_or(JobTerminationReason::OperatorCancelled),
+                                )
+                            }
+                        };
 
                     // `child.wait()` only proves the process exited. Pipe pump
                     // tasks may still be draining kernel buffers, so terminal
                     // state and completion broadcast must wait for both EOFs.
                     diagnostics.extend(drain_output_pumps(stdout_pump, stderr_pump).await);
                     if !diagnostics.is_empty() {
+                        termination_reason = JobTerminationReason::OutputIncomplete;
                         if status == JobStatus::Done {
                             status = JobStatus::Failed;
                         }
@@ -564,6 +868,27 @@ impl BackgroundJobManager {
                         s.status = status;
                         s.exit_code = exit_code;
                         s.finished_at = Some(Instant::now());
+                        s.termination_reason = Some(termination_reason);
+                    }
+                    let reconciler = { st.lock().reconciler.clone() };
+                    if let Some(reconciler) = reconciler {
+                        let terminal = managed_terminal_for_state(job_id.clone(), &st).await;
+                        let reconciliation = match reconciler.reconcile(terminal).await {
+                            Ok(value) => value,
+                            Err(error) => BackgroundJobReconciliation {
+                                tool_result: serde_json::json!({
+                                    "status": "reconciliation_failed",
+                                    "exit_code": 1,
+                                    "error": error.to_string(),
+                                }),
+                                note: Some(format!(
+                                    "Managed job finished, but typed reconciliation failed: {error}"
+                                )),
+                                evidence_ids: Vec::new(),
+                                skip_generic_persistence: true,
+                            },
+                        };
+                        st.lock().reconciliation = Some(reconciliation);
                     }
                     // Broadcast the terminal state to per-session listeners.
                     // Send errors (no subscribers) are expected and ignored.
@@ -576,16 +901,54 @@ impl BackgroundJobManager {
                 });
             }
             Err(e) => {
-                let completion = {
+                let reconciler = {
                     let mut s = state.lock();
                     s.status = JobStatus::Failed;
                     s.stderr = format!("Failed to spawn command: {e}");
+                    s.stderr_total_bytes = s.stderr.len() as u64;
                     s.exit_code = Some(1);
                     s.finished_at = Some(Instant::now());
-                    terminal_completion(id.clone(), &s)
+                    s.termination_reason = Some(JobTerminationReason::SpawnFailed);
+                    s.reconciler.clone()
                 };
-                let _ = self.completions.send(completion);
-                self.state_changed.notify_waiters();
+                if let Some(reconciler) = reconciler {
+                    let st = state.clone();
+                    let job_id = id.clone();
+                    let completions = self.completions.clone();
+                    let state_changed = self.state_changed.clone();
+                    tokio::spawn(async move {
+                        let terminal = managed_terminal_for_state(job_id.clone(), &st).await;
+                        let reconciliation = match reconciler.reconcile(terminal).await {
+                            Ok(value) => value,
+                            Err(error) => BackgroundJobReconciliation {
+                                tool_result: serde_json::json!({
+                                    "status": "reconciliation_failed",
+                                    "exit_code": 1,
+                                    "error": error.to_string(),
+                                }),
+                                note: Some(format!(
+                                    "Managed job could not spawn, and typed reconciliation failed: {error}"
+                                )),
+                                evidence_ids: Vec::new(),
+                                skip_generic_persistence: true,
+                            },
+                        };
+                        st.lock().reconciliation = Some(reconciliation);
+                        let completion = {
+                            let s = st.lock();
+                            terminal_completion(job_id, &s)
+                        };
+                        let _ = completions.send(completion);
+                        state_changed.notify_waiters();
+                    });
+                } else {
+                    let completion = {
+                        let s = state.lock();
+                        terminal_completion(id.clone(), &s)
+                    };
+                    let _ = self.completions.send(completion);
+                    self.state_changed.notify_waiters();
+                }
             }
         }
 
@@ -604,8 +967,59 @@ impl BackgroundJobManager {
             stdout: s.stdout.clone(),
             stderr: s.stderr.clone(),
             duration_ms: end.duration_since(s.started_at).as_millis() as u64,
-            finished: s.status.is_terminal(),
+            finished: s.status.is_terminal() && typed_reconciliation_complete(&s),
         })
+    }
+
+    /// Current process-output activity, retained for running and terminal jobs.
+    pub fn activity(&self, job_id: &str) -> Option<JobActivity> {
+        let state = self.jobs.lock().get(job_id).cloned()?;
+        let s = state.lock();
+        Some(JobActivity {
+            stdout_total_bytes: s.stdout_total_bytes,
+            stderr_total_bytes: s.stderr_total_bytes,
+            last_output_age_ms: s
+                .last_output_at
+                .map(|at| Instant::now().duration_since(at).as_millis() as u64),
+        })
+    }
+
+    /// Attach a still-running inline job to the session background lifecycle.
+    /// Returning false means the job is unknown or already terminal, so the
+    /// caller must consume it inline instead of emitting a background handle.
+    pub fn promote_to_session(&self, job_id: &str, session_id: String) -> bool {
+        let Some(state) = self.jobs.lock().get(job_id).cloned() else {
+            return false;
+        };
+        let mut s = state.lock();
+        if s.status.is_terminal() && typed_reconciliation_complete(&s) {
+            return false;
+        }
+        s.session_id = Some(session_id);
+        s.reconciled = false;
+        true
+    }
+
+    pub fn termination_reason(&self, job_id: &str) -> Option<JobTerminationReason> {
+        let state = self.jobs.lock().get(job_id).cloned()?;
+        let reason = state.lock().termination_reason;
+        reason
+    }
+
+    pub fn reconciliation(&self, job_id: &str) -> Option<BackgroundJobReconciliation> {
+        let state = self.jobs.lock().get(job_id).cloned()?;
+        let reconciliation = state.lock().reconciliation.clone();
+        reconciliation
+    }
+
+    /// Read the full terminal output archive. Returns `None` for unknown or
+    /// still-running jobs, or when the spool files are unavailable.
+    pub async fn read_output_archive(&self, job_id: &str) -> Option<JobOutputArchive> {
+        let state = self.jobs.lock().get(job_id).cloned()?;
+        if !state.lock().status.is_terminal() {
+            return None;
+        }
+        Some(output_archive_for_state(&state).await)
     }
 
     /// Await the exact job's terminal state. Terminal publication occurs only
@@ -642,6 +1056,11 @@ impl BackgroundJobManager {
                         job_id: id.clone(),
                         command: s.command.clone(),
                         elapsed_ms: now.duration_since(s.started_at).as_millis() as u64,
+                        stdout_total_bytes: s.stdout_total_bytes,
+                        stderr_total_bytes: s.stderr_total_bytes,
+                        last_output_age_ms: s
+                            .last_output_at
+                            .map(|at| now.duration_since(at).as_millis() as u64),
                     })
                 } else {
                     None
@@ -666,6 +1085,11 @@ impl BackgroundJobManager {
                         job_id: id.clone(),
                         command: s.command.clone(),
                         elapsed_ms: now.duration_since(s.started_at).as_millis() as u64,
+                        stdout_total_bytes: s.stdout_total_bytes,
+                        stderr_total_bytes: s.stderr_total_bytes,
+                        last_output_age_ms: s
+                            .last_output_at
+                            .map(|at| now.duration_since(at).as_millis() as u64),
                     })
                 } else {
                     None
@@ -684,6 +1108,7 @@ impl BackgroundJobManager {
                 let s = state.lock();
                 if s.session_id.as_deref() == Some(session_id)
                     && s.status.is_terminal()
+                    && typed_reconciliation_complete(&s)
                     && !s.reconciled
                 {
                     Some(terminal_completion(id.clone(), &s))
@@ -702,7 +1127,7 @@ impl BackgroundJobManager {
         };
         let changed = {
             let mut s = state.lock();
-            if !s.status.is_terminal() {
+            if !s.status.is_terminal() || !typed_reconciliation_complete(&s) {
                 return false;
             }
             let changed = !s.reconciled;
@@ -750,12 +1175,23 @@ impl BackgroundJobManager {
 
     /// Request cancellation of a running job. Returns `true` if the job exists.
     pub fn kill(&self, job_id: &str) -> bool {
-        if let Some(state) = self.jobs.lock().get(job_id).cloned() {
-            state.lock().kill.notify_one();
-            true
-        } else {
-            false
-        }
+        self.cancel_with_reason(job_id, JobTerminationReason::OperatorCancelled)
+    }
+
+    fn cancel_with_reason(&self, job_id: &str, reason: JobTerminationReason) -> bool {
+        let Some(state) = self.jobs.lock().get(job_id).cloned() else {
+            return false;
+        };
+        let kill = {
+            let mut s = state.lock();
+            if s.status.is_terminal() {
+                return false;
+            }
+            s.termination_reason = Some(reason);
+            s.kill.clone()
+        };
+        kill.notify_one();
+        true
     }
 
     /// Request cancellation of every running job attributed to `session_id`.
@@ -775,12 +1211,16 @@ impl BackgroundJobManager {
                 })
                 .collect()
         };
-        ids.iter().filter(|id| self.kill(id)).count()
+        ids.iter()
+            .filter(|id| self.cancel_with_reason(id, JobTerminationReason::SessionCancelled))
+            .count()
     }
 
     /// Forget a job (used after its result has been consumed inline).
     pub fn remove(&self, job_id: &str) {
-        self.jobs.lock().remove(job_id);
+        if let Some(state) = self.jobs.lock().remove(job_id) {
+            remove_spool_files(&state.lock());
+        }
         self.state_changed.notify_waiters();
     }
 
@@ -794,12 +1234,16 @@ impl BackgroundJobManager {
             .iter()
             .filter(|(_, st)| {
                 let state = st.lock();
-                state.status.is_terminal() && state.reconciled
+                state.status.is_terminal()
+                    && typed_reconciliation_complete(&state)
+                    && state.reconciled
             })
             .map(|(id, _)| id.clone())
             .collect();
         for id in finished {
-            jobs.remove(&id);
+            if let Some(state) = jobs.remove(&id) {
+                remove_spool_files(&state.lock());
+            }
         }
     }
 }
@@ -813,6 +1257,7 @@ pub fn manager() -> &'static BackgroundJobManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     fn ws() -> std::path::PathBuf {
         std::env::temp_dir()
@@ -841,6 +1286,127 @@ mod tests {
             "stdout was: {:?}",
             snap.stdout
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn background_job_has_no_elapsed_deadline() {
+        let mgr = BackgroundJobManager::new();
+        let id = mgr.spawn("sleep 5", &ws(), Duration::from_millis(40));
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let snap = mgr.snapshot(&id).expect("managed job remains observable");
+        assert_eq!(
+            snap.status,
+            JobStatus::Running,
+            "elapsed time must not terminate a live managed process"
+        );
+        assert!(mgr.kill(&id));
+        let terminal = wait_terminal(&mgr, &id, Duration::from_secs(5)).await;
+        assert_eq!(terminal.status, JobStatus::Killed);
+        assert_eq!(
+            mgr.termination_reason(&id),
+            Some(JobTerminationReason::OperatorCancelled)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_job_reports_last_output_activity() {
+        let mgr = BackgroundJobManager::new();
+        let id = mgr.spawn(
+            "printf first; sleep 0.2; printf second",
+            &ws(),
+            Duration::ZERO,
+        );
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let first = mgr.activity(&id).expect("activity remains queryable");
+        assert!(first.stdout_total_bytes >= 5);
+        assert_eq!(first.stderr_total_bytes, 0);
+        assert!(first.last_output_age_ms.is_some_and(|age| age < 200));
+
+        let terminal = wait_terminal(&mgr, &id, Duration::from_secs(5)).await;
+        assert_eq!(terminal.status, JobStatus::Done);
+        let final_activity = mgr.activity(&id).expect("terminal activity is retained");
+        assert!(final_activity.stdout_total_bytes >= 11);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_job_spool_preserves_output_beyond_tail() {
+        let mgr = BackgroundJobManager::new();
+        let id = mgr.spawn(
+            "python3 -c 'import sys; sys.stdout.write(\"HEAD_SENTINEL\" + \"x\" * 600000 + \"TAIL_SENTINEL\")'",
+            &ws(),
+            Duration::ZERO,
+        );
+
+        let terminal = wait_terminal(&mgr, &id, Duration::from_secs(10)).await;
+        assert_eq!(terminal.status, JobStatus::Done);
+        assert!(
+            !terminal.stdout.contains("HEAD_SENTINEL"),
+            "the bounded in-memory tail should have dropped the oldest bytes"
+        );
+
+        let archive = mgr
+            .read_output_archive(&id)
+            .await
+            .expect("terminal spool remains readable");
+        assert!(archive.complete);
+        assert!(archive.stdout.starts_with("HEAD_SENTINEL"));
+        assert!(archive.stdout.ends_with("TAIL_SENTINEL"));
+        assert_eq!(archive.stdout_total_bytes, archive.stdout.len() as u64);
+    }
+
+    struct FixtureReconciler {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl BackgroundJobReconciler for FixtureReconciler {
+        async fn reconcile(
+            &self,
+            terminal: ManagedJobTerminal,
+        ) -> anyhow::Result<BackgroundJobReconciliation> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(terminal.termination_reason, JobTerminationReason::Exited);
+            assert!(terminal.output.complete);
+            Ok(BackgroundJobReconciliation {
+                tool_result: serde_json::json!({"typed": true}),
+                note: Some("fixture reconciled".to_string()),
+                evidence_ids: vec![41],
+                skip_generic_persistence: true,
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn typed_reconciler_runs_once_before_completion() {
+        let mgr = BackgroundJobManager::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut completions = mgr.subscribe_completions();
+        let id = mgr.spawn_for_session_and_tool_with_reconciler(
+            "printf typed-output",
+            &ws(),
+            None,
+            None,
+            Arc::new(FixtureReconciler {
+                calls: calls.clone(),
+            }),
+        );
+
+        let completion = tokio::time::timeout(Duration::from_secs(5), completions.recv())
+            .await
+            .expect("completion is broadcast")
+            .expect("completion channel remains open");
+        assert_eq!(completion.job_id, id);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let reconciled = mgr.reconciliation(&id).expect("typed result retained");
+        assert_eq!(reconciled.tool_result["typed"], true);
+        assert!(reconciled.skip_generic_persistence);
     }
 
     #[cfg(unix)]
@@ -908,16 +1474,6 @@ mod tests {
         assert!(mgr.kill(&id));
         let snap = wait_terminal(&mgr, &id, Duration::from_secs(5)).await;
         assert_eq!(snap.status, JobStatus::Killed);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn hard_limit_kills_overrun() {
-        let mgr = BackgroundJobManager::new();
-        let id = mgr.spawn("sleep 30", &ws(), Duration::from_millis(200));
-        let snap = wait_terminal(&mgr, &id, Duration::from_secs(5)).await;
-        assert_eq!(snap.status, JobStatus::Killed);
-        assert_eq!(snap.exit_code, Some(124));
     }
 
     #[test]

@@ -19,6 +19,7 @@ golish-scan-runner = { workspace = true }
 # Foundation crate (L1): the EventEmitter trait + path helpers backing the
 # shared TauriEventEmitter adapter below.
 golish-core = { workspace = true }
+golish-platform = { workspace = true }
 
 # Tauri: the shared TauriEventEmitter adapter wraps `tauri::AppHandle` so every
 # per-domain app crate can emit `golish_core` events without re-implementing the

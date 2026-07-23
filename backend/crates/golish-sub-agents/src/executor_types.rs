@@ -626,8 +626,8 @@ impl SubmitRepairMode {
                         .to_string()
                 }
                 SubmitRepairKind::BackgroundJobs => {
-                    "submit_stage_deliverable reached the exceptional system reconciliation \
-                 deadline. Do NOT launch replacement scans or enter a polling loop. Inspect each \
+                    "submit_stage_deliverable ended its bounded managed-process observation while \
+                 the same jobs remained live. Do NOT launch replacement scans or enter a polling loop. Inspect each \
                  listed job at most once with check_job; use kill_job only if it is genuinely \
                  stuck, then resubmit after its terminal notification."
                         .to_string()

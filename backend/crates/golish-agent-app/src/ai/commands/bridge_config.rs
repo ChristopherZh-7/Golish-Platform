@@ -212,8 +212,9 @@ fn process_background_output_chunk(
 
 /// Wire this session's background-job completions back into the agent.
 ///
-/// Long shell/pentest commands that exceed their soft timeout keep running in
-/// the background (see `golish-app-core/background_jobs.rs`). When one finishes,
+/// Long shell/pentest commands that outlive their inline observation window keep
+/// running in the background (see `golish-app-core/background_jobs.rs`). The
+/// window never terminates the child. When one finishes,
 /// the job manager broadcasts a [`JobCompletion`]; this per-session listener
 /// (started once per `configure_bridge`) picks up the ones attributed to this
 /// session and:
@@ -363,28 +364,48 @@ async fn process_background_completion(
         status = %jc.status.as_str(),
     );
 
-    let evidence_id =
-        maybe_append_background_evidence(db_repo, session_id, project_path, &jc).await;
-    maybe_store_background_structured_output(db_pool, project_path, &jc).await;
-    maybe_store_background_batch_liveness_outcomes(
-        db_pool,
-        session_id,
-        project_path,
-        &jc,
-        evidence_id,
-    )
-    .await;
-    maybe_store_background_batch_port_outcomes(db_pool, session_id, project_path, &jc, evidence_id)
+    let typed_reconciliation =
+        golish_app_core::background_jobs::manager().reconciliation(&jc.job_id);
+    let skip_generic_persistence = typed_reconciliation
+        .as_ref()
+        .is_some_and(|value| value.skip_generic_persistence);
+    let generic_evidence_id = if skip_generic_persistence {
+        None
+    } else {
+        let evidence_id =
+            maybe_append_background_evidence(db_repo, session_id, project_path, &jc).await;
+        maybe_store_background_structured_output(db_pool, project_path, &jc).await;
+        maybe_store_background_batch_liveness_outcomes(
+            db_pool,
+            session_id,
+            project_path,
+            &jc,
+            evidence_id,
+        )
         .await;
-    maybe_store_background_batch_service_outcomes(
-        db_pool,
-        session_id,
-        project_path,
-        &jc,
-        evidence_id,
-    )
-    .await;
-    if let Some(evidence_id) = evidence_id {
+        maybe_store_background_batch_port_outcomes(
+            db_pool,
+            session_id,
+            project_path,
+            &jc,
+            evidence_id,
+        )
+        .await;
+        maybe_store_background_batch_service_outcomes(
+            db_pool,
+            session_id,
+            project_path,
+            &jc,
+            evidence_id,
+        )
+        .await;
+        evidence_id
+    };
+    let evidence_ids = typed_reconciliation
+        .as_ref()
+        .map(|value| value.evidence_ids.clone())
+        .unwrap_or_else(|| generic_evidence_id.into_iter().collect());
+    for evidence_id in evidence_ids {
         let evidence_kind = background_evidence_kind(&jc.command);
         let _ = event_tx.send(AiEvent::HarnessTrace {
             operation_id: session_id.to_string(),
@@ -393,12 +414,19 @@ async fn process_background_completion(
             trace: golish_core::events::HarnessTraceKind::EvidenceBooked {
                 tool: evidence_kind.to_string(),
                 evidence_id,
-                source: "background".to_string(),
+                source: if skip_generic_persistence {
+                    "background_typed".to_string()
+                } else {
+                    "background".to_string()
+                },
             },
         });
     }
 
-    let note = format_background_note(&jc, evidence_id);
+    let note = typed_reconciliation
+        .as_ref()
+        .and_then(|value| value.note.clone())
+        .unwrap_or_else(|| format_background_note(&jc, generic_evidence_id));
     match notes.lock() {
         Ok(mut queue) => queue.push(note),
         Err(poisoned) => poisoned.into_inner().push(note),
@@ -2802,20 +2830,22 @@ impl crate::ai::harness_submit_tool::BackgroundJobsQuery for ManagerBackgroundJo
                 job_id: j.job_id,
                 command: j.command,
                 elapsed_ms: j.elapsed_ms,
+                stdout_total_bytes: j.stdout_total_bytes,
+                stderr_total_bytes: j.stderr_total_bytes,
+                last_output_age_ms: j.last_output_age_ms,
             })
             .collect()
     }
 }
 
-/// Total time the submit-time reconciliation barrier (Piece 3) waits for a
-/// session's background scans to terminate and fully reconcile. The default
-/// covers the standard 30-minute hard job deadline plus landing grace, so the
-/// healthy path remains one submit invocation. The environment override is an
-/// operational escape hatch, not a prompt-level polling policy.
-const DEFAULT_SUBMIT_RECONCILE_WAIT_MS: u64 = 1_805_000;
+/// Brief submit-time observation window. This is not a process deadline: a
+/// still-live child remains managed and the AI/operator decides whether to
+/// inspect, wait, or kill it based on process and output activity.
+const DEFAULT_SUBMIT_RECONCILE_WAIT_MS: u64 = 1_000;
 
-fn submit_reconcile_wait_ms() -> u64 {
-    std::env::var("GOLISH_SUBMIT_RECONCILE_WAIT_MS")
+fn submit_reconcile_observe_ms() -> u64 {
+    std::env::var("GOLISH_SUBMIT_RECONCILE_OBSERVE_MS")
+        .or_else(|_| std::env::var("GOLISH_SUBMIT_RECONCILE_WAIT_MS"))
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(DEFAULT_SUBMIT_RECONCILE_WAIT_MS)
@@ -2909,7 +2939,7 @@ async fn register_pentest_tools(
         // on runtime lifecycle events until terminal results and side effects land.
         // Control tools remain exceptional recovery paths only.
         .with_background_jobs(std::sync::Arc::new(ManagerBackgroundJobs))
-        .with_reconcile_timeouts(submit_reconcile_wait_ms(), 1000);
+        .with_reconcile_observation(submit_reconcile_observe_ms(), 1000);
         // 乙 · scope the real-id suggestion to this chat session (the string both
         // evidence write paths stamp on the ledger) so a fabricated-ref needs_fix
         // can name the operation's real ids.
@@ -2969,12 +2999,12 @@ async fn register_visible_pty_tool(bridge: &AgentBridge, state: &AgentState) {
     );
     let mut registry = bridge.tool_registry().write().await;
     registry.register_tool(Arc::new(visible_cmd_tool));
-    // Companion poll tool for commands moved to the background on soft-timeout
-    // (shares the process-global background-job manager — no per-call state).
+    // Companion bounded-read tool for the same managed process after an initial
+    // yield returns control (shares the process-global manager — no per-call state).
     registry.register_tool(Arc::new(golish_app_core::pty_interactive::CheckJobTool));
     // Companion cancel tool: lets the agent kill a stuck background job (e.g. a
-    // hung DNS AXFR) after check_job shows no progress, instead of waiting out
-    // the hard-timeout watchdog. Same process-global manager — no per-call state.
+    // hung DNS AXFR) after check_job and workload context show no useful progress.
+    // Same process-global manager — no per-call state.
     registry.register_tool(Arc::new(golish_app_core::pty_interactive::KillJobTool));
     registry.register_tool(Arc::new(
         golish_app_core::pty_interactive::WaitForBackgroundJobsTool,
@@ -3164,7 +3194,7 @@ mod tests {
 
     #[test]
     fn submit_reconcile_default_defers_to_visible_wait_tool() {
-        assert_eq!(DEFAULT_SUBMIT_RECONCILE_WAIT_MS, 0);
+        assert_eq!(DEFAULT_SUBMIT_RECONCILE_WAIT_MS, 1_000);
     }
 
     #[test]

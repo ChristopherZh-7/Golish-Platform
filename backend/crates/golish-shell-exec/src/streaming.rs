@@ -14,7 +14,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use crate::common::{resolve_cwd, truncate_output, MAX_OUTPUT_SIZE};
-use crate::process_group::{configure_process_group, kill_process_group};
+use crate::process_group::configure_process_group;
 use crate::shell::{build_command, get_shell_config};
 
 /// Output chunk from a streaming command execution.
@@ -68,7 +68,8 @@ const FLUSH_INTERVAL_MS: u64 = 100;
 /// # Arguments
 /// * `command` — the shell command to execute.
 /// * `cwd` — optional working directory (relative to `workspace`).
-/// * `timeout_secs` — timeout in seconds.
+/// * `_legacy_timeout_secs` — retained for source compatibility; it does not
+///   control process lifetime.
 /// * `workspace` — workspace root path.
 /// * `shell_override` — optional shell path override.
 /// * `chunk_tx` — channel sender for output chunks.
@@ -78,7 +79,7 @@ const FLUSH_INTERVAL_MS: u64 = 100;
 pub async fn execute_streaming(
     command: &str,
     cwd: Option<&str>,
-    timeout_secs: u64,
+    _legacy_timeout_secs: u64,
     workspace: &Path,
     shell_override: Option<&str>,
     chunk_tx: mpsc::Sender<OutputChunk>,
@@ -133,7 +134,6 @@ pub async fn execute_streaming(
         }
     };
 
-    let timeout_duration = tokio::time::Duration::from_secs(timeout_secs);
     let flush_interval = tokio::time::Duration::from_millis(FLUSH_INTERVAL_MS);
 
     let stdout = child.stdout.take();
@@ -209,8 +209,6 @@ pub async fn execute_streaming(
         }
         accumulated
     });
-    let stdout_abort = stdout_handle.abort_handle();
-
     let chunk_tx_stderr = chunk_tx;
     let stderr_handle = tokio::spawn(async move {
         let mut accumulated = String::new();
@@ -276,38 +274,14 @@ pub async fn execute_streaming(
         }
         accumulated
     });
-    let stderr_abort = stderr_handle.abort_handle();
-
-    // Wait for process with timeout.
-    let result = tokio::time::timeout(timeout_duration, async {
-        let stdout_result = stdout_handle.await.unwrap_or_default();
-        let stderr_result = stderr_handle.await.unwrap_or_default();
-        let status = child.wait().await;
-        (stdout_result, stderr_result, status)
+    let stdout = stdout_handle.await.unwrap_or_default();
+    let stderr = stderr_handle.await.unwrap_or_default();
+    let status = child.wait().await;
+    let exit_code = status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+    Ok(StreamingResult {
+        stdout: truncate_output(stdout.as_bytes(), MAX_OUTPUT_SIZE),
+        stderr: truncate_output(stderr.as_bytes(), MAX_OUTPUT_SIZE),
+        exit_code,
+        timed_out: false,
     })
-    .await;
-
-    match result {
-        Ok((stdout, stderr, status)) => {
-            let exit_code = status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
-            Ok(StreamingResult {
-                stdout: truncate_output(stdout.as_bytes(), MAX_OUTPUT_SIZE),
-                stderr: truncate_output(stderr.as_bytes(), MAX_OUTPUT_SIZE),
-                exit_code,
-                timed_out: false,
-            })
-        }
-        Err(_) => {
-            // Timeout — abort reader tasks and kill the process.
-            stdout_abort.abort();
-            stderr_abort.abort();
-            kill_process_group(&mut child).await;
-            Ok(StreamingResult {
-                stdout: String::new(),
-                stderr: format!("Command timed out after {} seconds", timeout_secs),
-                exit_code: 124,
-                timed_out: true,
-            })
-        }
-    }
 }

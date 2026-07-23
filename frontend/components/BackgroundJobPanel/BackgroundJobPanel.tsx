@@ -78,8 +78,6 @@ export const BackgroundJobPanel = memo(function BackgroundJobPanel({
     : (terminal ?? "completed");
   const statusLabel = t(`ai.backgroundJobs.status.${status}`);
   const elapsedBackgroundMs = Math.max(0, nowMs - backgroundRun.backgroundedAt);
-  const deadlineMs =
-    job?.hardTimeoutMs != null ? Math.max(0, job.startedAt + job.hardTimeoutMs - nowMs) : null;
   const lastOutputMs = job?.lastOutputAt != null ? Math.max(0, nowMs - job.lastOutputAt) : null;
   const finalDuration = terminalDuration(terminalResult);
 
@@ -141,20 +139,7 @@ export const BackgroundJobPanel = memo(function BackgroundJobPanel({
             })}
           </div>
         ) : null}
-        {backgroundRun.softTimeoutMs != null && (
-          <div>
-            {t("ai.backgroundJobs.softTimeout", {
-              duration: formatDurationCompact(backgroundRun.softTimeoutMs),
-            })}
-          </div>
-        )}
-        {live && deadlineMs != null && (
-          <div>
-            {t("ai.backgroundJobs.deadlineIn", {
-              duration: formatDurationCompact(deadlineMs),
-            })}
-          </div>
-        )}
+        {live && <div>{t("ai.backgroundJobs.manualTermination")}</div>}
         {live && lastOutputMs != null && (
           <div>
             {t("ai.backgroundJobs.lastOutput", {

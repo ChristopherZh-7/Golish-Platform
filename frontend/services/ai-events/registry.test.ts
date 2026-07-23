@@ -274,8 +274,8 @@ describe("dispatchEvent", () => {
       job_id: "job_42",
       command: "naabu -host 10.0.0.1",
       partial_stdout: "scanning...",
-      soft_timeout_ms: 30_000,
-      hard_timeout_ms: 1_800_000,
+      initial_yield_ms: 10_000,
+      automatic_kill: false,
     };
     const event = {
       type: "tool_result" as const,
@@ -312,8 +312,8 @@ describe("dispatchEvent", () => {
         jobId: "job_42",
         toolName: "pentest_run",
         origin: { kind: "main_tool", requestId: "req-bg2" },
-        softTimeoutMs: 30_000,
-        hardTimeoutMs: 1_800_000,
+        initialYieldMs: 10_000,
+        automaticKill: false,
         state: "running",
       })
     );

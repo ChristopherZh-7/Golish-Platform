@@ -38,6 +38,8 @@
 `conversation-db-sync.ts` 的 autosave 指纹必须覆盖 timeline block 内容变化，而不只看 block 数量/最后一块 id；`sub_agent_activity.entries/toolCalls/result/thinking`、`ai_tool_execution.streamingOutput/result` 和 `Session.stageRuns[requestId]` 都是恢复 stage_run 历史详情所需状态，关窗前必须能触发 DB 保存。`terminal_state.stage_run_json` 允许 v2 包 `{ current, byRequestId }`，恢复端仍兼容旧的单个 `SessionStageRun` JSON。
 `terminal-restore.ts` 对进程丢失时持久化为 running 的 sub-agent、running/backgrounded tool 与 generating prompt 一律收敛为 interrupted/failed 投影；后台 job registry 不随 terminal 持久化，因此不能把旧外部工具伪装成仍在运行。后续 durable worker 以相同 `parent_request_id` 真正续跑时，store 的 started 边界只恢复父 Agent；旧 tool 保持 interrupted，新请求才显示 running，历史 entries/tool ids 不丢失。
 
+`i18n/en.json`与`zh-CN.json`的managed background文案只描述inline handoff和explicit stop；不得出现hard deadline/countdown。进程activity由live output/`check_job`提供，elapsed time本身不是失败或自动终止信号。
+
 ## 依赖
 
 - `@tauri-apps/api`（仅 `lib/api/client.ts`）；被 `components`/`hooks`/`store`/`services` 广泛消费

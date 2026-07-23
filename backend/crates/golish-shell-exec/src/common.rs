@@ -3,9 +3,6 @@
 
 use std::path::{Path, PathBuf};
 
-/// Default timeout in seconds for shell commands.
-pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 120;
-
 /// Maximum output size in bytes (10 MB).
 pub(crate) const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024;
 

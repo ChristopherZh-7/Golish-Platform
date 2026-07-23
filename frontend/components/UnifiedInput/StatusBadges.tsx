@@ -26,7 +26,7 @@ function formatUptime(startedAtMs: number, now = Date.now()): string {
   return `${seconds}s`;
 }
 
-/* ── Background Jobs Badge (Cursor-style "N running in background") ── */
+/* ── Background Jobs Badge (Codex-style "N running in background") ── */
 
 interface BackgroundJobsBadgeProps {
   jobs: BackgroundJob[];

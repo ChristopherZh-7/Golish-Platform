@@ -1,6 +1,6 @@
 # golish-shell-exec
 
-> **一句话职责**：shell 命令执行——从用户 rc 文件（`.zshrc`/`.bashrc`）继承 PATH 执行命令，含长命令的流式输出变体；提供 agent 的 `run_pty_cmd` 工具。
+> **一句话职责**：shell 命令执行——从用户 rc 文件（`.zshrc`/`.bashrc`）继承 PATH 执行命令，含长命令的流式输出变体；GUI/agent 的权威 `run_pty_cmd` 生命周期由 `golish-app-core` 受管进程层接管。
 
 - **类型**：crate（Layer 2 基础设施）
 - **路径**：`backend/crates/golish-shell-exec/`
@@ -15,7 +15,7 @@
 
 ## 职责
 
-执行 shell 命令并正确继承用户 shell 的 PATH；支持流式输出（mpsc 实时 chunk）。`RunPtyCmdTool` 是注册进 agent 工具表的同步工具（在 golish-tools 的 registry 注册）。
+执行 shell 命令并正确继承用户 shell 的 PATH；支持流式输出（mpsc 实时 chunk）。本 crate 的 `RunPtyCmdTool` 是兼容 fallback；GUI 主/子 agent 注册的是 `golish-app-core::VisibleRunPtyCmdTool`，从 spawn 起返回同一受管进程 handle。
 
 ## 公开接口 / 关键类型
 
@@ -41,14 +41,15 @@
 | `tool.rs` | `RunPtyCmdTool` |
 | `streaming.rs` | 流式执行 |
 | `shell.rs` / `cross_shell.rs` | shell 类型检测 + rc-file 感知包装 |
-| `process_group.rs` | Unix 进程组（超时/取消清理 pipeline） |
-| `common.rs` | `DEFAULT_TIMEOUT_SECS` / `MAX_OUTPUT_SIZE` / `resolve_cwd` / `truncate_output` |
+| `process_group.rs` | Unix 进程组（保留给显式取消清理整条 pipeline） |
+| `common.rs` | `MAX_OUTPUT_SIZE` / `resolve_cwd` / `truncate_output` |
 
 ## 注意事项 / 坑
 
 - `run_pty_cmd` 的成功/失败遵循 golish-tools 的契约（成功带 `exit_code:0`，失败非零/带 error）。
-- 长命令优先 `execute_streaming` 拿实时 chunk，别用同步 `execute` 干等。
-- 超时/取消靠进程组清理整条 pipeline，别只杀父进程。
+- agent 路径不得直接调用本 crate 的 `execute_streaming` 绕过共享 manager；`run_command` alias也必须路由到 `VisibleRunPtyCmdTool`。
+- legacy `timeout` 输入不再形成elapsed watchdog；兼容 fallback自然等待退出并返回`automatic_kill:false`。真正长命令由app-core manager提供live output、可调yield、`check_job`与显式`kill_job`。
+- 显式取消靠进程组清理整条 pipeline，别只杀父进程。
 
 ## 测试入口
 

@@ -77,8 +77,15 @@ function backgroundRunMetaFromResult(result: unknown): BackgroundRunMeta | undef
   return {
     jobId: value.job_id,
     backgroundedAt: Date.now(),
-    softTimeoutMs: typeof value.soft_timeout_ms === "number" ? value.soft_timeout_ms : undefined,
-    hardTimeoutMs: typeof value.hard_timeout_ms === "number" ? value.hard_timeout_ms : undefined,
+    initialYieldMs:
+      typeof value.initial_yield_ms === "number"
+        ? value.initial_yield_ms
+        : typeof value.inline_wait_ms === "number"
+          ? value.inline_wait_ms
+          : typeof value.soft_timeout_ms === "number"
+            ? value.soft_timeout_ms
+            : undefined,
+    automaticKill: false,
   };
 }
 
@@ -110,7 +117,7 @@ export interface AiState {
     string,
     Record<string, NonNullable<AiToolExecution["toolIntent"]>>
   >;
-  /** Backgrounded shell/pentest jobs still running per session (Cursor-style). */
+  /** Backgrounded shell/pentest jobs still running per session (Codex-style). */
   backgroundJobs: Record<string, BackgroundJob[]>;
 }
 
@@ -191,8 +198,8 @@ export interface AiActions {
    */
   interruptToolExecutionBlock: (sessionId: string, requestId: string, result?: unknown) => void;
   /**
-   * Mark a timeline tool card as "backgrounded": the command exceeded its soft
-   * timeout and was detached to a background job (still running). The card stays
+   * Mark a timeline tool card as managed/live: one bounded initial yield returned
+   * the same process handle while it kept running. The card stays
    * non-terminal until a `tool_background_completed` event flips it via
    * {@link completeToolExecutionBlock}.
    */
@@ -200,7 +207,7 @@ export interface AiActions {
   appendToolExecutionOutput: (sessionId: string, requestId: string, chunk: string) => void;
   finalizeRunningToolExecutions: (sessionId: string) => void;
 
-  /** Track a job just detached to the background (Cursor-style indicator). */
+  /** Track a managed process whose live handle was returned to the AI. */
   addBackgroundJob: (sessionId: string, job: BackgroundJob) => void;
   /** Drop a background job once it terminates (completed / killed). */
   removeBackgroundJob: (sessionId: string, jobId: string) => void;

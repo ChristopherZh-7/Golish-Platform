@@ -319,7 +319,7 @@ export const handleToolAutoApproved: EventHandler<{
   seedStageRunToolRequest(state, ctx.sessionId, event.tool_name, event.request_id, source);
 };
 
-/** A soft-timeout result whose command was detached to a background job. */
+/** A managed result whose still-live command moved to a background job. */
 export function isBackgroundedResult(result: unknown): boolean {
   return (
     result != null &&
@@ -342,8 +342,8 @@ type BackgroundJobRegistrar = {
       startedAt: number;
       backgroundedAt: number;
       lastOutputAt?: number;
-      softTimeoutMs?: number;
-      hardTimeoutMs?: number;
+      initialYieldMs?: number;
+      automaticKill: false;
       state: "running" | "stopping";
     }
   ) => void;
@@ -357,8 +357,8 @@ interface BackgroundJobOriginInput {
 }
 
 /**
- * Register a soft-timeout→backgrounded tool result into the Cursor-style
- * background-jobs indicator. Shared by the main-agent (`handleToolResult`) and
+ * Register a managed-process live handle after one bounded initial yield.
+ * Shared by the main-agent (`handleToolResult`) and
  * sub-agent (`handleSubAgentToolResult`) paths so both surface backgrounded
  * commands in the input-row badge + sub-agent detail header. No-op when the
  * result carries no `job_id`.
@@ -372,8 +372,10 @@ export function registerBackgroundJobFromResult(
   const bg = result as {
     job_id?: string;
     command?: string;
+    initial_yield_ms?: number;
+    inline_wait_ms?: number;
     soft_timeout_ms?: number;
-    hard_timeout_ms?: number;
+    automatic_kill?: boolean;
   };
   if (bg.job_id) {
     const parentRequestId = origin.parentRequestId;
@@ -387,16 +389,23 @@ export function registerBackgroundJobFromResult(
           }
         : { kind: "main_tool" as const, requestId: origin.requestId };
     const backgroundedAt = Date.now();
-    const softTimeoutMs = typeof bg.soft_timeout_ms === "number" ? bg.soft_timeout_ms : undefined;
+    const initialYieldMs =
+      typeof bg.initial_yield_ms === "number"
+        ? bg.initial_yield_ms
+        : typeof bg.inline_wait_ms === "number"
+          ? bg.inline_wait_ms
+          : typeof bg.soft_timeout_ms === "number"
+            ? bg.soft_timeout_ms
+            : undefined;
     state.addBackgroundJob(sessionId, {
       jobId: bg.job_id,
       command: bg.command ?? "(command)",
       toolName: origin.toolName,
       origin: jobOrigin,
-      startedAt: backgroundedAt - (softTimeoutMs ?? 0),
+      startedAt: backgroundedAt,
       backgroundedAt,
-      softTimeoutMs,
-      hardTimeoutMs: typeof bg.hard_timeout_ms === "number" ? bg.hard_timeout_ms : undefined,
+      initialYieldMs,
+      automaticKill: false,
       state: "running",
     });
   }
@@ -418,8 +427,8 @@ export const handleToolResult: EventHandler<{
 }> = (event, ctx) => {
   const state = ctx.getState();
 
-  // Soft-timeout → backgrounded: the command exceeded its soft timeout and was
-  // detached to a background job that is still running. The agent's turn
+  // Bounded initial yield → live handle: the same managed process remained
+  // running. The agent's turn
   // continues (it received this tool_result), so drop it from the active list,
   // but keep the timeline + interleaved cards visibly "running in background"
   // until a later `tool_background_completed` flips them to a terminal result.
@@ -478,8 +487,8 @@ export const handleToolOutputChunk: EventHandler<{
 /**
  * Handle tool_background_completed event.
  *
- * A shell/pentest command that had exceeded its soft timeout (and was moved to
- * the background) has now finished — emitted asynchronously, outside the turn
+ * A shell/pentest command whose bounded initial yield returned has now finished
+ * under the same manager handle — emitted asynchronously, outside the turn
  * that started it. We correlate it back to the originating tool card via
  * `job_id` (the backgrounded `tool_result` stored a result carrying the same
  * id) and flip that card from its "backgrounded" placeholder to the terminal
@@ -499,7 +508,7 @@ export const handleToolBackgroundCompleted: EventHandler<{
   seq?: number;
 }> = (event, ctx) => {
   const state = ctx.getState();
-  // Drop it from the Cursor-style "running in background" indicator.
+  // Drop it from the Codex-style "running in background" indicator.
   state.removeBackgroundJob(ctx.sessionId, event.job_id);
   const success = event.status === "done";
   const result = {

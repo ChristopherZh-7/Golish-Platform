@@ -29,6 +29,7 @@ pub(crate) fn configure_process_group(cmd: &mut Command) {
 pub(crate) fn configure_process_group(_cmd: &mut Command) {}
 
 #[cfg(unix)]
+#[allow(dead_code)] // reserved for explicit cancellation; elapsed timeout no longer calls it
 pub(crate) async fn kill_process_group(child: &mut tokio::process::Child) {
     if let Some(pid) = child.id() {
         let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
@@ -37,6 +38,7 @@ pub(crate) async fn kill_process_group(child: &mut tokio::process::Child) {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)] // reserved for explicit cancellation; elapsed timeout no longer calls it
 pub(crate) async fn kill_process_group(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
 }

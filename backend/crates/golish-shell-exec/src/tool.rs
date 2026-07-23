@@ -13,11 +13,11 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tracing::debug;
 
-use golish_core::utils::{get_optional_str, get_optional_u64, get_required_str};
+use golish_core::utils::{get_optional_str, get_required_str};
 use golish_core::Tool;
 
-use crate::common::{resolve_cwd, truncate_output, DEFAULT_TIMEOUT_SECS, MAX_OUTPUT_SIZE};
-use crate::process_group::{configure_process_group, kill_process_group};
+use crate::common::{resolve_cwd, truncate_output, MAX_OUTPUT_SIZE};
+use crate::process_group::configure_process_group;
 use crate::shell::{build_command, get_shell_config};
 
 /// Tool for executing shell commands.
@@ -71,10 +71,6 @@ impl Tool for RunPtyCmdTool {
                 "cwd": {
                     "type": "string",
                     "description": "Working directory (relative to workspace)"
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Timeout in seconds (default: 120)"
                 }
             },
             "required": ["command"]
@@ -88,8 +84,6 @@ impl Tool for RunPtyCmdTool {
         };
 
         let cwd = get_optional_str(&args, "cwd");
-        let timeout_secs = get_optional_u64(&args, "timeout").unwrap_or(DEFAULT_TIMEOUT_SECS);
-
         let working_dir = resolve_cwd(cwd, workspace);
 
         if !working_dir.exists() {
@@ -136,9 +130,7 @@ impl Tool for RunPtyCmdTool {
             }
         };
 
-        let timeout_duration = tokio::time::Duration::from_secs(timeout_secs);
-
-        let result = tokio::time::timeout(timeout_duration, async {
+        let (stdout_buf, stderr_buf, status) = async {
             let mut stdout_buf = Vec::new();
             let mut stderr_buf = Vec::new();
 
@@ -151,46 +143,33 @@ impl Tool for RunPtyCmdTool {
 
             let status = child.wait().await;
             (stdout_buf, stderr_buf, status)
-        })
+        }
         .await;
 
-        match result {
-            Ok((stdout_buf, stderr_buf, status)) => {
-                let stdout = truncate_output(&stdout_buf, MAX_OUTPUT_SIZE);
-                let stderr = truncate_output(&stderr_buf, MAX_OUTPUT_SIZE);
-                let exit_code = status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        let stdout = truncate_output(&stdout_buf, MAX_OUTPUT_SIZE);
+        let stderr = truncate_output(&stderr_buf, MAX_OUTPUT_SIZE);
+        let exit_code = status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
 
-                let mut response = json!({
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "exit_code": exit_code,
-                    "command": command_str
-                });
+        let mut response = json!({
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": exit_code,
+            "command": command_str,
+            "automatic_kill": false,
+        });
 
-                if let Some(c) = cwd {
-                    response["cwd"] = json!(c);
-                }
-
-                if exit_code != 0 {
-                    response["error"] = json!(format!(
-                        "Command exited with code {}: {}",
-                        exit_code,
-                        if stderr.is_empty() { &stdout } else { &stderr }
-                    ));
-                }
-
-                Ok(response)
-            }
-            Err(_) => {
-                kill_process_group(&mut child).await;
-
-                Ok(json!({
-                    "error": format!("Command timed out after {} seconds", timeout_secs),
-                    "exit_code": 124, // Standard timeout exit code
-                    "command": command_str,
-                    "timeout": true
-                }))
-            }
+        if let Some(c) = cwd {
+            response["cwd"] = json!(c);
         }
+
+        if exit_code != 0 {
+            response["error"] = json!(format!(
+                "Command exited with code {}: {}",
+                exit_code,
+                if stderr.is_empty() { &stdout } else { &stderr }
+            ));
+        }
+
+        Ok(response)
     }
 }

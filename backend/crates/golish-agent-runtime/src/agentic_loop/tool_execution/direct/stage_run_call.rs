@@ -3928,11 +3928,13 @@ fn build_org_objective(
         }
         obj.push_str(
             " If a tool is blocked by the stage boundary, switch technique or submit your \
-             deliverable — do NOT retry the blocked tool. Long scans may be backgrounded on a soft \
-             timeout: do NOT re-run the same command. submit_stage_deliverable waits for \
-             attributed background jobs to finish before grading; if it reports jobs still \
-             running, wait for their completion notes and resubmit. Only inspect/kill a \
-             background job if it is clearly hung.",
+             deliverable — do NOT retry the blocked tool. Long managed scans may return the same \
+             live job handle after an adjustable initial yield; that yield never kills, detaches, \
+             or respawns the process, so do NOT re-run the same command. submit_stage_deliverable briefly observes \
+             attributed jobs before grading; if it reports jobs still running, inspect their \
+             activity or wait for completion and resubmit. Only kill a background job after \
+             judging from process state, workload and output activity that it is genuinely stuck \
+             or no longer useful.",
         );
     }
     let capabilities = stage_capability_summary(stage);
@@ -3986,11 +3988,12 @@ fn build_org_objective(
              asset has no open ports, cannot resolve, or is URL-only for PORT/SERVICE, close the \
              applicable cells with honest checked_empty/blocked/not_applicable terminal coverage \
              and a concrete note instead of launching a speculative service sweep. If a scan is \
-             backgrounded, use wait_for_background_jobs as an incremental visible wait/check loop: \
+             returned as a managed job, use wait_for_background_jobs for one bounded visible read: \
              when any job completes, inspect its output and newly landed evidence before deciding \
-             whether the remaining jobs should continue, be narrowed, or be killed. If it returns \
-             idle_timeout or check_job shows no useful progress, kill_job the stuck/broad job \
-             before submitting or narrowing the batch.",
+             whether the remaining jobs should continue, be narrowed, or be killed. An \
+             a quiet read only ends that observation call; it is not proof of a hang. Compare \
+             process state, scan size, elapsed time, cumulative bytes and last-output age, then use \
+             kill_job only if the process is genuinely stuck, mis-scoped or no longer useful.",
         );
     }
     if let Some(operator_constraints) =
@@ -12201,8 +12204,9 @@ mod tests {
         assert!(obj.contains("Only call submit_stage_deliverable after ready_to_submit=true"));
         // Tool boundary is listed so the specialist stays in-stage + background guidance.
         assert!(obj.contains("recon/dns"));
-        assert!(obj.contains("submit_stage_deliverable waits"));
-        assert!(obj.contains("completion notes"));
+        assert!(obj.contains("adjustable initial yield"));
+        assert!(obj.contains("never kills, detaches, or respawns the process"));
+        assert!(obj.contains("submit_stage_deliverable briefly observes"));
         assert!(obj.contains("do NOT re-run"));
     }
 
@@ -12224,8 +12228,10 @@ mod tests {
         assert!(obj.contains("EAS SCAN STRATEGY"));
         assert!(obj.contains("Do not run broad `nmap -sV -iL`"));
         assert!(obj.contains("confirmed open host:port groups"));
-        assert!(obj.contains("visible wait/check loop"));
+        assert!(obj.contains("one bounded visible read"));
         assert!(obj.contains("inspect its output and newly landed evidence"));
+        assert!(obj.contains("quiet read only ends that observation call"));
+        assert!(obj.contains("cumulative bytes and last-output age"));
         assert!(obj.contains("kill_job"));
     }
 
