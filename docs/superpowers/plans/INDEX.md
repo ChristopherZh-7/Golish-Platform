@@ -48,6 +48,10 @@
 | 2026-07-02 | [asset-discovery-stage-and-delta-wave](2026-07-02-asset-discovery-stage-and-delta-wave.md) | ✅ |
 | 2026-07-02 | [eas-worker-evidence-and-service-fingerprint](2026-07-02-eas-worker-evidence-and-service-fingerprint.md) | ✅ |
 | 2026-07-05 | [stage-capability-tools](2026-07-05-stage-capability-tools.md) | ✅ |
+| 2026-07-29 | [tool-truth-coverage-contract](2026-07-29-tool-truth-coverage-contract.md) | ✅ |
+| 2026-07-29 | [hypothesis-registry-candidate-analysis](2026-07-29-hypothesis-registry-candidate-analysis.md) | ✅ |
+| 2026-07-29 | [verification-campaign-prepared-action-oracle](2026-07-29-verification-campaign-prepared-action-oracle.md) | ✅ |
+| 2026-07-29 | [investigation-workspace-reporting-rollout](2026-07-29-investigation-workspace-reporting-rollout.md) | ✅ |
 
 ## 2. Crate-per-service / Servitization / 架构健康 / P0 契约
 
@@ -110,4 +114,4 @@
 
 ---
 
-共 **71** 篇（66 日期前缀 + 5 legacy）。对应设计决策见 [`../../design/INDEX.md`](../../design/INDEX.md)；落地状态以 `feature_list.json` 为准。
+共 **75** 篇（70 日期前缀 + 5 legacy）。对应设计决策见 [`../../design/INDEX.md`](../../design/INDEX.md)；落地状态以 `feature_list.json` 为准。

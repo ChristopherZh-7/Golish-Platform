@@ -53,6 +53,7 @@
 | 2026-06-25 | [enumeration-js-api-collection](2026-06-25-enumeration-js-api-collection.md) | ✅ |
 | 2026-06-26 | [enumeration-deliverables-and-flow](2026-06-26-enumeration-deliverables-and-flow.md) | ✅ |
 | 2026-07-05 | [stage-capability-tools](2026-07-05-stage-capability-tools.md) | ✅ |
+| 2026-07-29 | [tool-truth-hypothesis-verification-loop](2026-07-29-tool-truth-hypothesis-verification-loop.md) | ✅ |
 
 ## 2. Asset Intel / Recon / Targets / Integrations
 
@@ -101,4 +102,4 @@
 
 ---
 
-共 **63** 篇（含 1 csv）。设计→实现的配套计划见 [`../superpowers/plans/INDEX.md`](../superpowers/plans/INDEX.md)。
+共 **64** 篇（含 1 csv）。设计→实现的配套计划见 [`../superpowers/plans/INDEX.md`](../superpowers/plans/INDEX.md)。

@@ -6,6 +6,16 @@
 
 ---
 
+# 会话记录：2026-07-29 · 红队 Tool Truth→Hypothesis→Verification→Reporting 总设计（PLANNED / COMMITTED）
+
+- **本轮目标**：按用户确认只做设计，不实现产品；逐阶段审计现有红队逻辑，把工具最终落地、Candidate 假设分析、多人 Verification 循环和 Reporting/rollout 拆成可执行计划，并在完成文档验证后单独 commit，不 push。
+- **已完成**：建立现行总设计及 Plan A–D。Plan A 将 coverage denominator 改为同事务 server-derived exact set，并用 encrypted vault callback 的不可构造 guard 封死 caller 少报/伪造 raw authority；Plan B 将 Candidate 从 FIFO 队列改为 Controller + 2–8 条只读 analyst/critic lane、全量 input/checklist/chunk census、canonical Hypothesis Registry 与 B-owned verification plan/proof paths；Plan C 将 Campaign 限定为 objective-local 多角色验证循环，Prepared Action/JIT、typed oracle、FactDelta 回流后只能由 revision adjudicator按 `Verified=存在完整proof path / Refuted=每条path均有designated falsifier` 写终态；Plan D 只消费 revision-level authority，交付 temporal-consistent Workspace、all-fresh report seal、declared/global coverage分离、安全renderer及三类独立hold。旧 Attempt 明确只能形成 grandfathered legacy只读projection，不能回填新 Registry 终态。
+- **运行过的验证**：仅执行文档/JSON定向检查。`jq empty feature_list.json`、四条本轮feature恰为`not_started`及零`in_progress`断言均 exit 0；五文档非空、围栏偶数（设计34、A146、B152、C102、D160）、无尾随空白、无planning placeholder均通过；预留`20260729000005`–`00008` migration均不存在；索引链接及目标存在；Plan A旧public raw writer/caller denominator seam与proof-path/legacy-backfill冲突扫描均0命中；tracked scope `git diff --check` exit 0。首轮组合检查只因我把设计标题错误限定成另一句文案而在header assertion exit 1，前置检查已全过；改成验证合法一级标题后同一剩余检查 exit 0，不是文档缺陷。按AGENTS §0.1未运行`init.sh`、precommit、Cargo、pnpm、全仓测试或真实目标/provider请求。
+- **已记录证据**：主agent复核三路并行审计；最终未发现残留P0，两个P1（替代proof-path被隐含AND否决、旧Attempt误回填canonical revision）已同步修正。五份文档SHA-256依次为`00556cb9af413224c716ab77ae3c4f043cf118d5f91d5afc4c32e1311dc72878`、`5f2f8203e721d43f3213a5b4ff6d62144b0ded7299818e4c0576ddcfeaa7f7e8`、`c80113932b78d3cf9461f5df39595370b46331e7bf87783ddcc52d7d7025ee4b`、`8c898fd69ca83843f7d22adb2481cf73921bd4ef228b5769d35c7e600b4d68c7`、`4f24533f74ce2cbe5682a587bd041c3785ecdf2f221c02d271113b61ee3086a2`。最终暂存快照仅9个设计/status文件，`git diff --cached --check`、name-status与cached JSON断言均exit 0（14215 insertions / 2 deletions）。本轮没有创建schema/migration/generated IPC，也没有修改模块职责，因此无需更新模块卡。
+- **提交记录**：本记录与总设计、四份计划、两张索引的HEAD-relative新增行及`feature_list.json`四条planned feature按精确scope提交为`docs(red-team): plan evidence-driven verification loop`；未push。共享dirty tree的代码、历史进度/索引/feature改动和旧未跟踪设计均未纳入。
+- **已知风险或未解决问题**：这是实现规划，不是已落地能力；四个feature仍为`not_started`。首批Plan C authoritative oracle adapter只承诺anonymous/auth differential与directory soft-404，Nuclei negative、browser/OAST/WebSocket/injection、多角色IDOR、race等在新增typed adapter前必须诚实显示`unassessed/adapter_missing`，所以权威逻辑可fail closed，但检测广度仍有限。四份旧的未跟踪历史设计仅由新总设计声明partial supersession，因它们属于共享dirty tree而未纳入本commit；其余大量用户/Agent未提交代码也保持原样。
+- **下一步最佳动作**：如要实施，从Plan A开始；先重新取得schema/migration明确授权，再按Task级RED→GREEN→focused验证推进`20260729000005`，A passing后才依次启动B、C、D。不要直接先改Candidate UI或让现有Nuclei队列冒充新Verification。
+
 # 会话记录：2026-07-23 · 全局 Codex 同会话进程 yield 对齐（PASS）
 
 - **本轮目标**：按用户纠正把上一轮 EAS 局部修复提升为所有 AI-owned raw shell/pentest command 的统一合同。进程从launch起受管；`yield-time_ms`只限制一次等待/读取；返回同一个`job_id`后由AI/用户依据存活、工作量和输出活动继续读、等或显式kill，不存在固定30秒业务逻辑。

@@ -2826,6 +2826,91 @@
       ],
       "evidence": "2026-06-13 BaJie MCP-agent-4（DISPATCH off，接力同会话 Phase A）：B1-B12 + C1-C6 整期铺完后统一门禁全绿（见 verification 前 8 条）。工人硬约束复用 CLI 已验证链路（resolve_slice 下沉共用 + set_harness_org_id/set_stage_allowlist/run_stage），resume 分支同样重设 allowlist。活体未跑 → 保持 in_progress。",
       "notes": "工位占用/释放信号 = sendPromptSession 在 task 模式 resolve(operation 跑完)/reject(BLOCK/失败)，无需新事件通道。engagementRole/workerMeta 走 localStorage 角色映射（rolePersistence，镜像 stage-marker 模式）恢复，conv DB 列不动。池循环 runPool 是模块级长 Promise，刷新丢池态（spec §10 接受）。K 默认 3。"
+    },
+    {
+      "id": "tool-truth-coverage-contract-2026-07-29",
+      "priority": 0,
+      "area": "golish-pentest-domain + golish-db capability receipts + pentest producers + harness Gate shadow assessment",
+      "title": "Tool Truth 七轴、Coverage denominator 与可追溯执行回执",
+      "user_visible_behavior": "每次工具执行把请求、运行、原始观测、结构化落地、业务落地、证据落地与覆盖结论分别记录；空输出、前置失败、部分解析或扫描器 no-match 不再被误判为完整检查为空，Gate 可区分控制决定与覆盖等级。",
+      "status": "not_started",
+      "design": "docs/design/2026-07-29-tool-truth-hypothesis-verification-loop.md",
+      "plan": "docs/superpowers/plans/2026-07-29-tool-truth-coverage-contract.md",
+      "verification": [
+        "cd backend && just space-guard && cargo nextest run -p golish-pentest-domain -E 'test(checked_empty_requires_every_axis_and_all_frozen_inputs) | test(positive_partial_is_not_complete) | test(stable_noncritical_exhaustion_can_be_allow_degraded) | test(critical_or_unaccepted_exhaustion_holds_even_when_stable) | test(byte_consistent_but_temporally_expired_fact_holds)'",
+        "cd backend && just space-guard && cargo nextest run -p golish-db --test capability_execution_receipts",
+        "cd backend && just space-guard && cargo nextest run -p golish-pentest-app -E 'test(whatweb_exit_zero_without_per_origin_witness_is_nonterminal) | test(blocked_preflight_keeps_all_content_axes_partial) | test(nuclei_complete_no_match_is_inconclusive_without_negative_oracle)'",
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -E 'test(tool_truth_) | test(stage_asset_wave_seals_denominator_before_return)'",
+        "cd backend && just space-guard && cargo clippy -p golish-pentest-domain -p golish-db -p golish-pentest-app -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets -- -D warnings",
+        "cd backend && just space-guard && cargo fmt -p golish-pentest-domain -p golish-db -p golish-pentest-app -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -- --check"
+      ],
+      "notes": "必须先执行本计划，再开始 Hypothesis Registry、Verification Campaign 与 Workspace。唯一预留 migration 为 20260729000005_capability_execution_receipts.sql；开始 schema/migration 前必须重新取得用户明确授权。本计划默认 legacy_v1，不提供 promotion，不把 shadow Gate grade 暴露给前端或报告。",
+      "evidence": "PLANNED 2026-07-29. 设计已获用户确认；Plan A 已规划同事务server-derived coverage denominator、稳定语义重算、不可caller过滤的multi-root checked/all-fresh bundle、per-fact temporal census、revalidation orchestrator、typed landing/lineage exact set，以及只在不可构造vault guard callback内落权威的加密raw witness vault。尚未实现、未创建migration、未运行产品测试。"
+    },
+    {
+      "id": "hypothesis-registry-candidate-analysis-2026-07-29",
+      "priority": 1,
+      "area": "golish-core investigation contract + Hypothesis Registry persistence + Candidate Analysis Team + minimal audit UI",
+      "title": "把 Candidate 队列重构为 Hypothesis Registry 与只读多 Agent 分析阶段",
+      "user_visible_behavior": "Candidate 阶段不再以 FIFO 队列作为产品模型，而由一个 company-scoped Controller 协调 2–8 个只读 analyst/critic lane，生成可追溯、可修订、可合并和可审计的假设；旧 Candidate 只作为冻结 operation 的兼容权威或 Registry 投影。",
+      "status": "not_started",
+      "design": "docs/design/2026-07-29-tool-truth-hypothesis-verification-loop.md",
+      "plan": "docs/superpowers/plans/2026-07-29-hypothesis-registry-candidate-analysis.md",
+      "verification": [
+        "cd backend && just space-guard && cargo nextest run -p golish-core -E 'test(investigation_) | test(legal_contract_mode_pairs)'",
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-kit --test hypothesis_registry_gate",
+        "cd backend && just space-guard && cargo nextest run -p golish-db --test hypothesis_registry",
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-app --test candidate_analysis_runtime --test investigation_ipc_authorization",
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-runtime -p golish-sub-agents -E 'test(candidate_analysis_) | test(candidate_hypothesis) | test(merge_conflict)'",
+        "pnpm exec vitest run frontend/components/Engagement/HypothesisRegistryAudit.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.candidate.test.tsx",
+        "pnpm exec biome check frontend/lib/api/investigation.ts frontend/components/Engagement/HypothesisRegistryAudit.tsx frontend/components/Engagement/HypothesisRegistryAudit.test.tsx",
+        "pnpm typecheck"
+      ],
+      "notes": "依赖 Plan A passing。唯一预留 migration 为 20260729000006_hypothesis_registry.sql；开始 schema/migration 与 generated IPC 前必须重新取得用户明确授权。五态 rollout 初始值保持 legacy_candidate_v1 + legacy_only，Plan B 不提供 promotion；两个新权威 mode 在 Plan C 未实现前只能记录 plan_c_verification_unavailable residual 并转 Reporting。",
+      "evidence": "PLANNED 2026-07-29. 设计已获用户确认；Plan B 已规划分布式input/checklist/chunk coverage census、server-checked Tool Truth snapshot、canonical claim components、唯一VerificationPlan/proof paths、feed snapshot与temporal cursor V2。尚未实现、未创建migration、未生成IPC、未运行产品测试。"
+    },
+    {
+      "id": "verification-campaign-prepared-action-oracle-2026-07-29",
+      "priority": 2,
+      "area": "verification campaign domain + durable multi-agent team + prepared action JIT + typed oracle + FactDelta loop",
+      "title": "把 Verification 重构为协作式 Campaign、Prepared Action 与 Typed Oracle",
+      "user_visible_behavior": "多个验证角色围绕一个假设反复提出策略、编译受控动作、按风险即时审批、执行并由确定性 oracle 判定；每轮事实增量回到 Hypothesis Registry，直到验证、反驳、残余风险或有界固定点收敛。",
+      "status": "not_started",
+      "design": "docs/design/2026-07-29-tool-truth-hypothesis-verification-loop.md",
+      "plan": "docs/superpowers/plans/2026-07-29-verification-campaign-prepared-action-oracle.md",
+      "verification": [
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-kit -E 'test(verification_campaign_)' --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-db --test verification_campaigns --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents -p golish-pentest-app -E 'test(verification_campaign_) | test(prepared_action_) | test(campaign_adjudication_)' --status-level fail",
+        "pnpm exec vitest run frontend/components/Engagement/PendingPreparedActionPanel.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.candidate.test.tsx",
+        "pnpm exec biome check frontend/components/Engagement/PendingPreparedActionPanel.tsx frontend/components/Engagement/PendingPreparedActionPanel.test.tsx frontend/lib/api/attack.ts",
+        "pnpm typecheck",
+        "cd backend && just space-guard && cargo clippy -p golish-agent-kit -p golish-db -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents -p golish-pentest-app --all-targets -- -D warnings"
+      ],
+      "notes": "依赖 Plan A 与 Plan B passing。唯一预留 migration 为 20260729000007_verification_campaigns.sql；开始 schema/migration 与 generated IPC 前必须重新取得用户明确授权。shadow_registry/dual_read_compare 不能执行 Prepared Action；只有 operation-frozen 的两个新权威 mode 可进入新 Campaign。Plan C 必须独立提供 cold-start 可发现的安全审批入口，不能依赖 Plan D。",
+      "evidence": "PLANNED 2026-07-29. 设计已获用户确认；Plan C 已规划objective-local Campaign、多角色团队、Prepared Action/JIT、per-key conflict、ConcurrentActionGroup、typed oracle、FactDelta与revision-level aggregate adjudication；outer truth严格使用存在proof path/全称designated falsifier量词，非决定性未决项只进入limitation。单Campaign不能创建Finding或终结revision。尚未实现、未创建migration、未生成IPC、未运行产品测试。"
+    },
+    {
+      "id": "investigation-workspace-reporting-rollout-2026-07-29",
+      "priority": 3,
+      "area": "versioned investigation read model + React workspace + canonical reporting + operation-frozen rollout promotion",
+      "title": "Investigation Workspace、Canonical Reporting 与安全 Rollout",
+      "user_visible_behavior": "用户通过统一 Workspace 查看 Hypotheses、Campaigns、Waves 与 Timeline，不再把内部队列当产品界面；报告只消费可证明的 canonical authority 与脱敏投影，并通过 frozen mode、whole-record comparison 和 promotion receipt 渐进切换。",
+      "status": "not_started",
+      "design": "docs/design/2026-07-29-tool-truth-hypothesis-verification-loop.md",
+      "plan": "docs/superpowers/plans/2026-07-29-investigation-workspace-reporting-rollout.md",
+      "verification": [
+        "cd backend && just space-guard && cargo nextest run -p golish-core -E 'test(investigation_rollout_)' --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-db --test investigation_projection_read_model --test investigation_rollout_migrations --test reporting_read_model_migrations --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-app --test investigation_ipc_authorization --test investigation_read_model --test investigation_legacy_replay --test reporting_authority --test reporting_ipc_authorization --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-reporting-domain -p golish-reporting-app -E 'test(report_)' --status-level fail",
+        "pnpm exec vitest run frontend/components/Engagement/InvestigationWorkspace/InvestigationWorkspace.test.tsx frontend/components/Engagement/InvestigationWorkspace/LegacyInvestigationAdapter.test.tsx frontend/components/Engagement/InvestigationWorkspace/InvestigationAuditDrawer.test.tsx",
+        "pnpm exec biome check frontend/components/Engagement/InvestigationWorkspace frontend/lib/api/investigation.ts frontend/store/investigation-workspace.test.ts",
+        "pnpm typecheck",
+        "cd backend && just space-guard && cargo clippy -p golish-core -p golish-db -p golish-agent-app -p golish -p golish-reporting-domain -p golish-reporting-app --all-targets -- -D warnings"
+      ],
+      "notes": "依赖 Plan A、B、C passing。唯一预留 migration 为 20260729000008_investigation_projection.sql；开始 schema/migration 与 generated IPC 前必须重新取得用户明确授权，rollout promotion 还需单独获批。Plan D 复用 Plan B 的 rollout/outbox/head/change ledger 与前三个 read commands，不创建第二套权威。",
+      "evidence": "PLANNED 2026-07-29. 设计已获用户确认；Plan D 已规划temporal-consistent Workspace、revision-verdict reporting、all-fresh report seal、stable historical read、per-sink renderer安全、三类独立hold以及带对抗corpus的rollout gate。尚未实现、未创建migration、未生成IPC、未运行产品测试或promotion。"
     }
   ]
 }
