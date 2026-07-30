@@ -186,6 +186,14 @@ pub struct AgenticLoopContext<'a> {
     pub sidecar_state: Option<&'a Arc<dyn SessionCaptureBackend>>,
     pub chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
     pub runtime_memory: Option<Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository>>,
+    /// Optional host-owned Plan B Candidate analysis runtime. The bridge only
+    /// snapshots this capability; repository construction and authorization
+    /// remain in the production composition root.
+    pub hypothesis_analysis_runtime: Option<
+        Arc<
+            dyn golish_agent_kit::task_orchestrator::hypothesis_analysis::HypothesisAnalysisStageRuntime,
+        >,
+    >,
     /// Whole-record source selected once by a trusted resume preflight. Every
     /// graph/worker/chain read in this request must honor the same value.
     pub resume_runtime_memory_source:

@@ -228,6 +228,8 @@ production seam 检查五个命令都在 report read/build/confirmation 分支�
 - snapshot freeze直接进入 DB-owned Plan A Checked-bundle callback；当前无 live managed-feed store时稳定返回持久化的 blocked snapshot而不是启动分析。Gate apply错误码保持 stable code，供 runtime fail closed。
 - `candidate_analysis_projection` 只从immutable snapshot input/chunk与current signed/known-version feed material构造bounded、`instruction_authority=false` payload；source change/delete后仍按冻结body/hash重放。
 - `candidate_analysis_runtime` 实现Controller dispatch → rolling Analyst → H1 seal → phased Critic map/reduce → H2/review → Controller final两波状态机；small input为1 lane，其余2–8 live lanes，lifetime work item不受8限制。返回`AnalysisArtifactsReady`仍需Task 9 Gate/apply，不能直接当stage完成。
+- `candidate_analysis_gate::AtomicCandidateFinalizer` 是唯一 pure Gate→canonical apply seam：只接受repository-owned opaque snapshot，先运行pure Gate并写host compilation seal，再重载DB-clock/epoch/feed/attempt/coverage/compiler material做逐字段全等，最后调用DB CAS apply。host reducer route与每个input disposition reason必须和Gate exact set一一对应；任何漂移都发生在apply前且不写半个revision/generation/outbox。
+- 当前production没有能从完整锁定行构造opaque `CandidateGateSnapshot` 的`HypothesisAnalysisRuntimeRepository`/submit-only executor adapter，且00006的managed feed store未安装；composition root因此显式不注入runtime。Registry-authoritative operation会在任何legacy seed/manifest/provider之前稳定fail closed，绝不回落旧Candidate。Plan B不提供rollout promotion；测试/未来adapter必须实现closed port后才能启用。
 
 ## Vuln operation-scoped coverage details（2026-07-19）
 

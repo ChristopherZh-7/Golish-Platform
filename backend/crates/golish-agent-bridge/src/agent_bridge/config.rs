@@ -166,6 +166,19 @@ impl AgentBridge {
         self.services.runtime_memory = Some(repository);
     }
 
+    /// Install the host-owned Plan B Candidate analysis runtime.
+    ///
+    /// The bridge deliberately accepts only the closed runtime port; it never
+    /// constructs a repository or derives database authority itself.
+    pub fn set_hypothesis_analysis_runtime(
+        &mut self,
+        runtime: Arc<
+            dyn golish_agent_kit::task_orchestrator::hypothesis_analysis::HypothesisAnalysisStageRuntime,
+        >,
+    ) {
+        self.services.hypothesis_analysis_runtime = Some(runtime);
+    }
+
     /// Inject the process-shared canonical Memory Fabric transaction port.
     /// Worker ownership remains exclusively in the host composition root.
     pub fn set_knowledge_memory(

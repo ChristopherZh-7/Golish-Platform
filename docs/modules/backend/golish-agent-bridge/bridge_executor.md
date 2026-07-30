@@ -70,6 +70,7 @@
 - lease 由外层 request 与 executor 共同持有，因此 reflector passes、stage retries 和 subtasks 不重新 acquire、不会自锁，并共用同一个 guard；3 次真实 per-org BLOCK 用尽后不会再次派发。last clone 在 success/error/cancel/unwind 路径 Drop 后释放，下一条 continuation 才能 acquire 并沿 durable worker chain 获取 fresh 有界预算。
 - `TopLevelRequestLease` 是 bridge 单会话 single-flight 的 RAII owner；`WorkerLeaseContext` 是数据库 worker mutation fence。两者生命周期、token 与职责完全不同，不能互相替代。
 - runtime identity 的唯一可信入口是 orchestrator 构造的 `ExecutionContext`。任何新增 direct executor / resume 路径都必须保留 operation → stage execution → Unit → worker lease 的完整链，并在进入 loop 前通过一致性校验；禁止从 LLM submission、hidden arg 或 `DbTracker.session_uuid` 猜身份。
+- Plan B Candidate runtime capability由bridge service注入并逐turn快照；executor只传播同一个Arc，不能按profile/default自行创建或选择Registry authority。当前production adapter未安装时保持`None`是封闭状态，不得回退旧Candidate执行器。
 - canonical knowledge 写入与 ContextPack 读取是两条不同端口：写入走 host-owned `KnowledgeUnitOfWork`，读取走 server-authorized `ContextPackProvider`。不要把 pool、可构造的 auth context 或 canonical UoW 暴露给 agent/runtime 查询参数。
 - Primary 进入 isolated loop 时必须用 `ExecutionContext.task_input` 填充 request-local `SubAgentContext.original_request`：headless CLI `-e` 与 GUI Task 都从这条共享 seam 进入 `stage_run` worker 的有界 operator-constraint 摘录。新 operation 使用 durable 初始请求；GUI resume 由 orchestrator 在不改写 durable `tasks.input` 的前提下送入本次非空 continuation/steering 文本，空 continuation 回退初始请求。不要把它写进 session preference，也不要用它重置 worker chain / reentry guard；它只是当前顶层请求的数据上下文。
 

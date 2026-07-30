@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+#[path = "../src/ai/candidate_analysis_gate.rs"]
+mod candidate_analysis_gate;
 #[path = "../src/ai/candidate_analysis_projection.rs"]
 mod candidate_analysis_projection;
 #[path = "../src/ai/candidate_analysis_runtime.rs"]

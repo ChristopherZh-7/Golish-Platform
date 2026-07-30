@@ -6,6 +6,7 @@
 //! `golish-agent-runtime`, `golish-agent-bridge`, `golish-prompts`,
 //! `golish-events`), mirroring exactly what the umbrella used to expose.
 
+pub mod candidate_analysis_gate;
 pub mod candidate_submit_tool;
 pub mod commands;
 pub mod db_bridge;

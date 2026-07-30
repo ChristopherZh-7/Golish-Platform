@@ -196,3 +196,4 @@ cd backend && cargo nextest run -p golish-agent-runtime agentic_loop
 
 - `candidate_analysis_agent_runner` 只执行注入的typed model client，并在provider dispatch前验证role/binding与submit-only schema；任何通用工具、未知authority字段或终态/server-only state都直接拒绝。它不访问网络provider本身，也没有scanner/browser/feed-refresh handle。
 - `stage_team_scheduler::candidate_artifact_receipt_output` 只把artifact id/hash包装为`artifact_recorded`通用业务收据；该disposition不代表found/checked-empty、Gate PASS或canonical hypothesis truth。
+- `stage_run_call` 对Candidate在任何legacy contract/seed/manifest/provider读取前重新加载exact `operation_state`，只按冻结mode的`policy().canonical_writer`二分Legacy/Registry；dispatcher不match五个mode，也不读request/deployment default。缺operation/repo/row、读取失败、operation/stage错配、runtime/executor未安装都返回稳定code、`provider_dispatched=false`。Registry分支绝不穿透旧Candidate scheduler。

@@ -392,6 +392,7 @@ impl AgentBridge {
             sidecar_state: self.services.sidecar_state.as_ref(),
             chain_persistence: self.services.chain_persistence.clone(),
             runtime_memory: self.services.runtime_memory.clone(),
+            hypothesis_analysis_runtime: self.services.hypothesis_analysis_runtime.clone(),
             resume_runtime_memory_source: *self.resume_runtime_memory_source.read().await,
             knowledge_context: self.services.knowledge_context.clone(),
             plan_manager: &self.plan_manager,
@@ -596,8 +597,92 @@ impl AgentBridge {
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use golish_agent_kit::task_orchestrator::hypothesis_analysis::{
+        HypothesisAnalysisAgentRunner, HypothesisAnalysisStageOutcome,
+        HypothesisAnalysisStageRequest, HypothesisAnalysisStageRuntime,
+    };
+    use golish_core::runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
+
     use super::execution_monitor_for_mode;
+    use super::AgentBridge;
     use golish_agent_kit::loop_detection::ExecutionMonitorMode;
+
+    #[derive(Debug)]
+    struct MockRuntime;
+
+    #[async_trait]
+    impl GolishRuntime for MockRuntime {
+        fn emit(&self, _event: RuntimeEvent) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+
+        async fn request_approval(
+            &self,
+            _request_id: String,
+            _tool_name: String,
+            _args: serde_json::Value,
+            _risk_level: String,
+        ) -> Result<ApprovalResult, RuntimeError> {
+            Err(RuntimeError::ApprovalTimeout(0))
+        }
+
+        fn is_interactive(&self) -> bool {
+            false
+        }
+
+        fn auto_approve(&self) -> bool {
+            false
+        }
+
+        async fn shutdown(&self) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    struct StubHypothesisRuntime;
+
+    #[async_trait]
+    impl HypothesisAnalysisStageRuntime for StubHypothesisRuntime {
+        async fn run(
+            &self,
+            _request: HypothesisAnalysisStageRequest,
+            _runner: &dyn HypothesisAnalysisAgentRunner,
+        ) -> anyhow::Result<HypothesisAnalysisStageOutcome> {
+            panic!("prepare plumbing test must not execute the runtime")
+        }
+    }
+
+    #[tokio::test]
+    async fn hypothesis_analysis_runtime_prepare_preserves_arc_identity() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let mut bridge = AgentBridge::new_openrouter_with_runtime(
+            workspace.path().to_path_buf(),
+            "test-model",
+            "test-key",
+            None,
+            Arc::new(MockRuntime),
+        )
+        .await
+        .expect("test bridge");
+        let runtime: Arc<dyn HypothesisAnalysisStageRuntime> = Arc::new(StubHypothesisRuntime);
+
+        bridge.set_hypothesis_analysis_runtime(runtime.clone());
+        let event_tx = bridge.get_or_create_event_tx();
+        let context = bridge.build_loop_context(&event_tx).await;
+        let prepared = context
+            .hypothesis_analysis_runtime
+            .expect("configured hypothesis runtime reaches loop context");
+
+        assert!(Arc::ptr_eq(&runtime, &prepared));
+    }
 
     #[test]
     fn execution_monitor_defaults_to_hard_runtime_supervisor() {

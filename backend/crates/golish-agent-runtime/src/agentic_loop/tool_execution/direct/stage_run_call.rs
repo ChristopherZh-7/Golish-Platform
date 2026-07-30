@@ -7762,6 +7762,101 @@ where
     execute_company_controller_scheduler(ctx, model, context, tool_id, spec, teams).await
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateAnalysisDispatchRoute {
+    Legacy,
+    Registry,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CandidateAnalysisOperationState<'a> {
+    ProviderUnavailable,
+    LoadFailed,
+    Missing,
+    Loaded(&'a golish_agent_kit::db_traits::OperationStateView),
+}
+
+const CANDIDATE_ANALYSIS_OPERATION_REQUIRED: &str = "CANDIDATE_ANALYSIS_OPERATION_REQUIRED";
+const CANDIDATE_ANALYSIS_STATE_PROVIDER_UNAVAILABLE: &str =
+    "CANDIDATE_ANALYSIS_STATE_PROVIDER_UNAVAILABLE";
+const CANDIDATE_ANALYSIS_STATE_LOAD_FAILED: &str = "CANDIDATE_ANALYSIS_STATE_LOAD_FAILED";
+const CANDIDATE_ANALYSIS_STATE_MISSING: &str = "CANDIDATE_ANALYSIS_STATE_MISSING";
+const CANDIDATE_ANALYSIS_OPERATION_MISMATCH: &str = "CANDIDATE_ANALYSIS_OPERATION_MISMATCH";
+const CANDIDATE_ANALYSIS_STAGE_MISMATCH: &str = "CANDIDATE_ANALYSIS_STAGE_MISMATCH";
+const CANDIDATE_ANALYSIS_REGISTRY_RUNTIME_UNAVAILABLE: &str =
+    "CANDIDATE_ANALYSIS_REGISTRY_RUNTIME_UNAVAILABLE";
+const CANDIDATE_ANALYSIS_REGISTRY_EXECUTOR_UNAVAILABLE: &str =
+    "CANDIDATE_ANALYSIS_REGISTRY_EXECUTOR_UNAVAILABLE";
+
+/// Select the Candidate canonical writer from the operation-frozen joint pair.
+///
+/// The operation row is loaded by the server immediately before this call. The
+/// request body and deployment defaults are deliberately absent from the
+/// signature, so neither can reinterpret an in-flight operation. Matching the
+/// closed authority enum also keeps this dispatcher independent of the five
+/// rollout variants and their non-routing policy fields.
+fn candidate_analysis_dispatch_route(
+    stage: StageKind,
+    expected_operation_id: Option<uuid::Uuid>,
+    state: CandidateAnalysisOperationState<'_>,
+    registry_runtime_available: bool,
+) -> std::result::Result<CandidateAnalysisDispatchRoute, &'static str> {
+    if stage != StageKind::AttackCandidate {
+        return Err(CANDIDATE_ANALYSIS_STAGE_MISMATCH);
+    }
+    let expected_operation_id =
+        expected_operation_id.ok_or(CANDIDATE_ANALYSIS_OPERATION_REQUIRED)?;
+    let operation = match state {
+        CandidateAnalysisOperationState::ProviderUnavailable => {
+            return Err(CANDIDATE_ANALYSIS_STATE_PROVIDER_UNAVAILABLE);
+        }
+        CandidateAnalysisOperationState::LoadFailed => {
+            return Err(CANDIDATE_ANALYSIS_STATE_LOAD_FAILED);
+        }
+        CandidateAnalysisOperationState::Missing => {
+            return Err(CANDIDATE_ANALYSIS_STATE_MISSING);
+        }
+        CandidateAnalysisOperationState::Loaded(operation) => operation,
+    };
+    if operation.operation_id != expected_operation_id {
+        return Err(CANDIDATE_ANALYSIS_OPERATION_MISMATCH);
+    }
+    if operation.current_stage != stage.as_str() {
+        return Err(CANDIDATE_ANALYSIS_STAGE_MISMATCH);
+    }
+
+    match operation
+        .investigation_rollout_mode
+        .policy()
+        .canonical_writer
+    {
+        golish_core::InvestigationAuthority::Legacy => Ok(CandidateAnalysisDispatchRoute::Legacy),
+        golish_core::InvestigationAuthority::Registry if registry_runtime_available => {
+            Ok(CandidateAnalysisDispatchRoute::Registry)
+        }
+        golish_core::InvestigationAuthority::Registry => {
+            Err(CANDIDATE_ANALYSIS_REGISTRY_RUNTIME_UNAVAILABLE)
+        }
+    }
+}
+
+fn candidate_analysis_dispatch_rejection(
+    stage: StageKind,
+    code: &'static str,
+    detail: impl Into<String>,
+) -> ToolExecutionResult {
+    ToolExecutionResult {
+        value: json!({
+            "code": code,
+            "error": detail.into(),
+            "passed": false,
+            "provider_dispatched": false,
+            "stage": stage.as_str(),
+        }),
+        success: false,
+    }
+}
+
 /// Handle the `stage_run` tool call: bounded company queue with one Controller
 /// per organization Unit.
 pub(super) async fn execute_stage_run<M>(
@@ -7801,6 +7896,102 @@ where
             });
         }
     };
+    let candidate_analysis_route = if stage == StageKind::AttackCandidate {
+        let Some(operation_id) = ctx.harness_operation_id else {
+            let code = candidate_analysis_dispatch_route(
+                stage,
+                None,
+                CandidateAnalysisOperationState::Missing,
+                false,
+            )
+            .expect_err("Candidate dispatch without an operation must fail closed");
+            return Ok(candidate_analysis_dispatch_rejection(
+                stage,
+                code,
+                "Candidate analysis requires the exact active operation id",
+            ));
+        };
+        let Some(repo) = ctx.events.db_tracker.and_then(|tracker| tracker.repo()) else {
+            let code = candidate_analysis_dispatch_route(
+                stage,
+                Some(operation_id),
+                CandidateAnalysisOperationState::ProviderUnavailable,
+                false,
+            )
+            .expect_err("Candidate dispatch without a state provider must fail closed");
+            return Ok(candidate_analysis_dispatch_rejection(
+                stage,
+                code,
+                "Candidate analysis could not load its operation-frozen rollout authority",
+            ));
+        };
+        let operation = match repo.operation_state_get(operation_id).await {
+            Ok(Some(operation)) => operation,
+            Ok(None) => {
+                let code = candidate_analysis_dispatch_route(
+                    stage,
+                    Some(operation_id),
+                    CandidateAnalysisOperationState::Missing,
+                    false,
+                )
+                .expect_err("Candidate dispatch without an operation row must fail closed");
+                return Ok(candidate_analysis_dispatch_rejection(
+                    stage,
+                    code,
+                    "Candidate analysis operation state is missing",
+                ));
+            }
+            Err(error) => {
+                let code = candidate_analysis_dispatch_route(
+                    stage,
+                    Some(operation_id),
+                    CandidateAnalysisOperationState::LoadFailed,
+                    false,
+                )
+                .expect_err("Candidate dispatch after a state load failure must fail closed");
+                return Ok(candidate_analysis_dispatch_rejection(
+                    stage,
+                    code,
+                    format!("Candidate analysis operation state load failed: {error}"),
+                ));
+            }
+        };
+        match candidate_analysis_dispatch_route(
+            stage,
+            Some(operation_id),
+            CandidateAnalysisOperationState::Loaded(&operation),
+            ctx.hypothesis_analysis_runtime.is_some(),
+        ) {
+            Ok(route) => Some(route),
+            Err(code) => {
+                return Ok(candidate_analysis_dispatch_rejection(
+                    stage,
+                    code,
+                    match code {
+                        CANDIDATE_ANALYSIS_OPERATION_MISMATCH => {
+                            "Candidate analysis operation state belongs to another operation"
+                        }
+                        CANDIDATE_ANALYSIS_STAGE_MISMATCH => {
+                            "Candidate analysis operation is not on the active Candidate stage"
+                        }
+                        CANDIDATE_ANALYSIS_REGISTRY_RUNTIME_UNAVAILABLE => {
+                            "Hypothesis Registry is canonical for this operation, but its dedicated runtime is unavailable"
+                        }
+                        _ => "Candidate analysis dispatch authority is unavailable",
+                    },
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    if candidate_analysis_route == Some(CandidateAnalysisDispatchRoute::Registry) {
+        return Ok(candidate_analysis_dispatch_rejection(
+            stage,
+            CANDIDATE_ANALYSIS_REGISTRY_EXECUTOR_UNAVAILABLE,
+            "Hypothesis Registry is canonical for this operation, but its dedicated stage executor is unavailable",
+        ));
+    }
     let persisted_runtime_contract = if let (Some(operation_id), Some(runtime_memory)) =
         (ctx.harness_operation_id, ctx.runtime_memory.as_ref())
     {
@@ -10081,6 +10272,226 @@ mod tests {
     use std::sync::Mutex;
     use tokio::sync::{Notify, Semaphore};
     use tokio::time::{timeout, Duration};
+
+    fn candidate_analysis_dispatch_operation(
+        operation_id: uuid::Uuid,
+        current_stage: StageKind,
+        mode: golish_core::InvestigationRolloutMode,
+    ) -> golish_agent_kit::db_traits::OperationStateView {
+        let investigation_contract_version =
+            if mode == golish_core::InvestigationRolloutMode::LegacyOnly {
+                golish_core::InvestigationContractVersion::LegacyCandidateV1
+            } else {
+                golish_core::InvestigationContractVersion::HypothesisRegistryV1
+            };
+        golish_agent_kit::db_traits::OperationStateView {
+            operation_id,
+            profile: "assessment".to_string(),
+            current_stage: current_stage.as_str().to_string(),
+            runtime_memory_contract:
+                golish_agent_kit::runtime_memory::RuntimeMemoryContract::V2Only,
+            tool_truth_contract: golish_agent_kit::db_traits::ToolTruthContract::ReceiptV1,
+            investigation_contract_version,
+            investigation_rollout_mode: mode,
+            project_scope_id: Some(uuid::Uuid::new_v4()),
+            engagement_org_id: Some(uuid::Uuid::new_v4()),
+            state_blob: json!({}),
+            stage_started_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn candidate_analysis_dispatch_routes_the_five_modes_by_canonical_writer() {
+        use golish_core::InvestigationRolloutMode::{
+            DualReadCompare, LegacyOnly, NewOnly, RegistryAuthoritativeLegacyProjection,
+            ShadowRegistry,
+        };
+
+        let operation_id = uuid::Uuid::new_v4();
+        for (mode, expected) in [
+            (LegacyOnly, CandidateAnalysisDispatchRoute::Legacy),
+            (ShadowRegistry, CandidateAnalysisDispatchRoute::Legacy),
+            (DualReadCompare, CandidateAnalysisDispatchRoute::Legacy),
+            (
+                RegistryAuthoritativeLegacyProjection,
+                CandidateAnalysisDispatchRoute::Registry,
+            ),
+            (NewOnly, CandidateAnalysisDispatchRoute::Registry),
+        ] {
+            let operation = candidate_analysis_dispatch_operation(
+                operation_id,
+                StageKind::AttackCandidate,
+                mode,
+            );
+            assert_eq!(
+                candidate_analysis_dispatch_route(
+                    StageKind::AttackCandidate,
+                    Some(operation_id),
+                    CandidateAnalysisOperationState::Loaded(&operation),
+                    true,
+                ),
+                Ok(expected),
+                "mode={} must route exclusively by its canonical writer",
+                mode.as_str(),
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_analysis_dispatch_operation_frozen_mode_wins_over_deployment_default() {
+        let operation_id = uuid::Uuid::new_v4();
+        let deployment_default = golish_core::InvestigationRolloutMode::LegacyOnly;
+        let operation = candidate_analysis_dispatch_operation(
+            operation_id,
+            StageKind::AttackCandidate,
+            golish_core::InvestigationRolloutMode::NewOnly,
+        );
+
+        assert_eq!(
+            deployment_default.policy().canonical_writer,
+            golish_core::InvestigationAuthority::Legacy,
+        );
+        assert_eq!(
+            candidate_analysis_dispatch_route(
+                StageKind::AttackCandidate,
+                Some(operation_id),
+                CandidateAnalysisOperationState::Loaded(&operation),
+                true,
+            ),
+            Ok(CandidateAnalysisDispatchRoute::Registry),
+        );
+    }
+
+    #[test]
+    fn candidate_analysis_dispatch_missing_authority_fails_closed_before_providers() {
+        let operation_id = uuid::Uuid::new_v4();
+        let operation = candidate_analysis_dispatch_operation(
+            operation_id,
+            StageKind::AttackCandidate,
+            golish_core::InvestigationRolloutMode::LegacyOnly,
+        );
+        let cases = [
+            (
+                None,
+                CandidateAnalysisOperationState::Loaded(&operation),
+                CANDIDATE_ANALYSIS_OPERATION_REQUIRED,
+            ),
+            (
+                Some(operation_id),
+                CandidateAnalysisOperationState::ProviderUnavailable,
+                CANDIDATE_ANALYSIS_STATE_PROVIDER_UNAVAILABLE,
+            ),
+            (
+                Some(operation_id),
+                CandidateAnalysisOperationState::LoadFailed,
+                CANDIDATE_ANALYSIS_STATE_LOAD_FAILED,
+            ),
+            (
+                Some(operation_id),
+                CandidateAnalysisOperationState::Missing,
+                CANDIDATE_ANALYSIS_STATE_MISSING,
+            ),
+        ];
+
+        for (expected_operation_id, state, expected_code) in cases {
+            let code = candidate_analysis_dispatch_route(
+                StageKind::AttackCandidate,
+                expected_operation_id,
+                state,
+                true,
+            )
+            .expect_err("missing dispatch authority must not select either provider");
+            assert_eq!(code, expected_code);
+            let rejection = candidate_analysis_dispatch_rejection(
+                StageKind::AttackCandidate,
+                code,
+                "dispatch rejected",
+            );
+            assert!(!rejection.success);
+            assert_eq!(rejection.value["passed"], false);
+            assert_eq!(rejection.value["provider_dispatched"], false);
+            assert_eq!(rejection.value["code"], expected_code);
+        }
+    }
+
+    #[test]
+    fn candidate_analysis_dispatch_identity_stage_and_runtime_fail_closed() {
+        let operation_id = uuid::Uuid::new_v4();
+        let mismatched_operation = candidate_analysis_dispatch_operation(
+            uuid::Uuid::new_v4(),
+            StageKind::AttackCandidate,
+            golish_core::InvestigationRolloutMode::LegacyOnly,
+        );
+        assert_eq!(
+            candidate_analysis_dispatch_route(
+                StageKind::AttackCandidate,
+                Some(operation_id),
+                CandidateAnalysisOperationState::Loaded(&mismatched_operation),
+                true,
+            ),
+            Err(CANDIDATE_ANALYSIS_OPERATION_MISMATCH),
+        );
+
+        let wrong_stage = candidate_analysis_dispatch_operation(
+            operation_id,
+            StageKind::Verification,
+            golish_core::InvestigationRolloutMode::LegacyOnly,
+        );
+        assert_eq!(
+            candidate_analysis_dispatch_route(
+                StageKind::AttackCandidate,
+                Some(operation_id),
+                CandidateAnalysisOperationState::Loaded(&wrong_stage),
+                true,
+            ),
+            Err(CANDIDATE_ANALYSIS_STAGE_MISMATCH),
+        );
+        assert_eq!(
+            candidate_analysis_dispatch_route(
+                StageKind::Verification,
+                Some(operation_id),
+                CandidateAnalysisOperationState::Loaded(&wrong_stage),
+                true,
+            ),
+            Err(CANDIDATE_ANALYSIS_STAGE_MISMATCH),
+        );
+
+        let registry_operation = candidate_analysis_dispatch_operation(
+            operation_id,
+            StageKind::AttackCandidate,
+            golish_core::InvestigationRolloutMode::NewOnly,
+        );
+        let code = candidate_analysis_dispatch_route(
+            StageKind::AttackCandidate,
+            Some(operation_id),
+            CandidateAnalysisOperationState::Loaded(&registry_operation),
+            false,
+        )
+        .expect_err("a missing Registry runtime must not fall back to Legacy");
+        assert_eq!(code, CANDIDATE_ANALYSIS_REGISTRY_RUNTIME_UNAVAILABLE);
+        let rejection = candidate_analysis_dispatch_rejection(
+            StageKind::AttackCandidate,
+            code,
+            "registry runtime unavailable",
+        );
+        assert_eq!(rejection.value["provider_dispatched"], false);
+
+        let legacy_operation = candidate_analysis_dispatch_operation(
+            operation_id,
+            StageKind::AttackCandidate,
+            golish_core::InvestigationRolloutMode::DualReadCompare,
+        );
+        assert_eq!(
+            candidate_analysis_dispatch_route(
+                StageKind::AttackCandidate,
+                Some(operation_id),
+                CandidateAnalysisOperationState::Loaded(&legacy_operation),
+                false,
+            ),
+            Ok(CandidateAnalysisDispatchRoute::Legacy),
+            "the Registry runtime is irrelevant when the frozen canonical writer is Legacy",
+        );
+    }
 
     #[test]
     fn parked_stage_team_finalizer_restores_the_provider_chain() {

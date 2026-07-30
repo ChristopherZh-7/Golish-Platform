@@ -140,6 +140,11 @@ pub(crate) struct BridgeServices {
     pub(crate) chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
     pub(crate) runtime_memory:
         Option<Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository>>,
+    pub(crate) hypothesis_analysis_runtime: Option<
+        Arc<
+            dyn golish_agent_kit::task_orchestrator::hypothesis_analysis::HypothesisAnalysisStageRuntime,
+        >,
+    >,
     pub(crate) knowledge_memory: Option<Arc<dyn golish_memory_app::KnowledgeUnitOfWork>>,
     pub(crate) knowledge_context: Option<Arc<dyn golish_memory_app::ContextPackProvider>>,
     pub(crate) indexer_state: Option<Arc<IndexerState>>,

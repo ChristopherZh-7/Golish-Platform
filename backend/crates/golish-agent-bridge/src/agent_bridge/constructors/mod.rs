@@ -346,6 +346,7 @@ impl AgentBridge {
                 db_tracker: None,
                 chain_persistence: None,
                 runtime_memory: None,
+                hypothesis_analysis_runtime: None,
                 knowledge_memory: None,
                 knowledge_context: None,
                 indexer_state: None,

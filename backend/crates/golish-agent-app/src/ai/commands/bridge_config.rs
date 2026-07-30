@@ -2719,6 +2719,11 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AgentState) {
     bridge.set_db_backend(tracking_backend, ready_gate, chain_persistence);
     bridge.set_runtime_memory_repository(runtime_memory);
 
+    // TODO(Plan B Task 9): install `PgHypothesisAnalysisStageRuntime` only
+    // after a production `HypothesisAnalysisRuntimeRepository` adapter exists.
+    // `GolishDbRepoProvider` is not that closed authority port, so leaving the
+    // optional bridge capability as `None` is the safe fail-closed default.
+
     let graph_backend = std::sync::Arc::new(crate::ai::graph_bridge::GraphClientBackend::new(
         state.db_pool.clone(),
     ));
@@ -3482,5 +3487,16 @@ mod tests {
         assert!(!source.contains(&forbidden_start));
         assert!(!source.contains(&forbidden_new));
         assert!(!source.contains(&forbidden_settings));
+    }
+
+    #[test]
+    fn candidate_analysis_runtime_is_not_fabricated_without_repository_adapter() {
+        let source = include_str!("bridge_config.rs");
+        let fabricated_setter = ["bridge.set_hypothesis_", "analysis_runtime("].concat();
+        let deferred_marker = ["TODO(Plan B", " Task 9)"].concat();
+        let required_port = ["HypothesisAnalysis", "RuntimeRepository"].concat();
+        assert!(!source.contains(&fabricated_setter));
+        assert!(source.contains(&deferred_marker));
+        assert!(source.contains(&required_port));
     }
 }

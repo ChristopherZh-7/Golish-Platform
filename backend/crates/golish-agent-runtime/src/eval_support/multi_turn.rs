@@ -150,6 +150,7 @@ where
             sidecar_state: None,
             chain_persistence: None,
             runtime_memory: None,
+            hypothesis_analysis_runtime: None,
             resume_runtime_memory_source: None,
             knowledge_context: None,
             plan_manager: &plan_manager,
