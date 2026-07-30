@@ -44,6 +44,7 @@ pub mod runtime_supervisor;
 pub mod stage_execution;
 pub mod stage_refiner;
 mod subtask_phases;
+pub mod tool_truth_revalidation;
 mod types;
 
 pub use continuity::build_existing_db_continuity_plan;

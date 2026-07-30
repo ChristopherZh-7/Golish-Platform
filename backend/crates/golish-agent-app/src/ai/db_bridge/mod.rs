@@ -31,11 +31,13 @@ pub mod knowledge_context;
 pub mod knowledge_memory;
 mod orchestration;
 mod recon;
+pub use recon::TargetIntelReceiptHost;
 pub mod reporting;
 pub(crate) mod reporting_gate;
 mod runtime_memory;
 mod tasks;
 mod tool_truth;
+pub mod tool_truth_revalidation;
 mod wiki;
 
 pub struct GolishDbRepoProvider {
