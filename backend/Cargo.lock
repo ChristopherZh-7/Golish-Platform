@@ -3215,6 +3215,7 @@ version = "0.2.43"
 dependencies = [
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "ts-rs",
  "url",
  "uuid",
