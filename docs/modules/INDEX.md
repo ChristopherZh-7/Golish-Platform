@@ -37,7 +37,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-db | PostgreSQL 持久化层（runtime/attack V2 rollout + immutable operation stage fork + plan-first reset/deletion + durable Stage Team/Candidate/Memory authority） | [→](backend/golish-db.md) | ✅ |
+| golish-db | PostgreSQL 持久化层（含 Tool Truth frozen denominator/receipt/raw lineage、shadow assessment与 held-by-default revalidation obligations） | [→](backend/golish-db.md) | ✅ |
 | golish-graphiti | legacy GraphClient + scoped temporal node/edge Assertion-lineage graph（attested generation rebuild，旧 API 兼容） | [→](backend/golish-graphiti.md) | ✅ |
 | golish-indexer | 代码索引基座（IndexerBackend + vtcode 后端 + git 工具） | [→](backend/golish-indexer.md) | ✅ |
 | golish-artifacts | 自动维护项目文档提案（README/CLAUDE，未集成） | [→](backend/golish-artifacts.md) | ✅ |
@@ -74,7 +74,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-pentest-domain | pentest 领域层（纯类型/业务规则、共享 confirmed-target Web Origin identity、I/O 边界 trait） | [→](backend/golish-pentest-domain.md) | ✅ |
+| golish-pentest-domain | pentest 领域层（纯 Tool Truth contract/reducer、共享 confirmed-target Web Origin identity、I/O 边界 trait） | [→](backend/golish-pentest-domain.md) | ✅ |
 | golish-pentest | pentest 工具执行引擎 + trusted-tool scoped output landing + multi-origin fingerprint observations + producer-org guarded 证据账本 | [→](backend/golish-pentest.md) | ✅ |
 | golish-pentest-mcp | MCP server 二进制（把 pentest 工具作为 MCP 工具暴露） | [→](backend/golish-pentest-mcp.md) | ✅ |
 | golish-vuln-intel-domain | 漏洞情报领域层（纯类型 + I/O 边界 trait，无 I/O 依赖） | [→](backend/golish-vuln-intel-domain.md) | ✅ |
@@ -103,7 +103,7 @@
 | golish-cleanup-app | Cleanup P7b exact terminal truth、backoff/fair DB-global worker、Gate/residual 与可恢复两阶段组织删除 | [→](backend/golish-cleanup-app.md) | ✅ |
 | golish-agent-app | agent 服务命令面（GUI/CLI shared task-operation/stage-fork kernel + Enumeration-manifest Vuln coverage + Stage Team/Candidate/Memory/Cleanup/Reporting authority） | [→](backend/golish-agent-app.md) | ✅ |
 | golish-pentest-app | pentest 服务命令面（operation-bound Enumeration producers + parameter-aware Nuclei DAST + 7-day adysec freshness/operation-pinned N-day proof + guarded EAS/Vuln producers + typed evidence landing） | [→](backend/golish-pentest-app.md) | ✅ |
-| golish-recon-app | recon 服务命令面（stable candidate/unit-review ts-rs contracts + existing-child identity projection + exact-target transaction dedup/query-seed 分层 asset-intel landing） | [→](backend/golish-recon-app.md) | ✅ |
+| golish-recon-app | recon 服务命令面（含 TargetIntel fixed-endpoint pinned transport与 opaque raw-witness handoff；不拥有 canonical receipt DB） | [→](backend/golish-recon-app.md) | ✅ |
 | golish-vuln-app | vuln-intel 服务命令面（feed/搜索/匹配/PoC·Nuclei 富化 + wiki） | [→](backend/golish-vuln-app.md) | ✅ |
 | golish-platform-app | platform 服务命令面（vault/audit/notes/recordings） | [→](backend/golish-platform-app.md) | ✅ |
 | golish-memory-app | Memory Fabric 应用服务（atomic canonical outbox + deterministic projectors + opaque-auth scoped ContextPack retrieval） | [→](backend/golish-memory-app.md) | ✅ |
@@ -217,3 +217,4 @@
 - `golish-app-core`, `golish-agent-app/ai`, `golish-sub-agents/executor`, `frontend/services`, `frontend/store`, and `frontend/components` are current as of 2026-07-21 for runtime-owned background-job reconciliation: terminal-unreconciled retention, exactly-once lag replay, one-invocation event waiting, recovery-only control tools, exact-origin global navigation, and persistent background lifecycle Detail panels. Statuses remain ✅.
 - `golish-agent-runtime` and `golish-agent-runtime/agentic_loop` are current as of 2026-07-21 for rolling-refill lock convergence: child completions remain pollable while the single durable refill claim waits on the same operation row lock, `None` pauses until child progress, and all existing concurrency, cancellation landing, evidence and Gate boundaries remain unchanged. Statuses remain ✅.
 - `golish-agent-runtime` and `golish-agent-runtime/agentic_loop` are current as of 2026-07-21 for parked-Controller queued continuation: unfinished required producer WorkItems enter the rolling drain even when no WorkerRun exists yet, so restart resume can claim durable queued shards instead of misreporting `NoRunnableChild`; operator recovery priority and claim authority remain unchanged. Statuses remain ✅.
+- `golish-pentest-domain`, `golish-db`, `golish-db/repo`, `golish-pentest-app/pentest_bridge`, `golish-agent-kit/harness`, `golish-agent-kit/db_traits`, `golish-agent-app/ai`, `golish-agent-runtime/agentic_loop`, and `golish-recon-app` are current as of 2026-07-30 for Tool Truth Plan A: operation-frozen legacy-safe rollout, server-derived denominators, immutable exact receipts/raw lineage, shadow-only Gate grades, current-attempt TargetIntel pinned transport, and held-by-default bounded revalidation obligations. Statuses remain ✅; promotion and Plans B/C/D are not implemented.

@@ -148,6 +148,12 @@ agentic loop 的公开表面 + 子模块实现。`turn/` 是 phase 调度本体�
 cd backend && cargo nextest run -p golish-agent-runtime agentic_loop
 ```
 
+## Tool Truth Plan A runtime boundary（2026-07-30）
+
+- Stage Team在任何 worker dispatch前由 host从 frozen wave/unit source seal exact denominator；缺失、歧义或 source重绑会阻止派发，worker不能自报 applicability集合。
+- runtime仍负责 scheduler/fence/lease，不拥有 receipt verdict、raw vault或 Gate truth；provider/工具在 DB transaction外运行，closeout通过 app/DB短事务提交。
+- shadow assessment只追加审计，不改变 legacy runtime Gate。Plan A不提供 promotion、Prepared Action/JIT或 user-visible PASS_WITH_GAPS。
+
 ## Stage Team dispatch canonicalization（2026-07-17）
 
 - Company Controller 的 dispatch host router 在任何 durable write 前 canonicalize 全批 `subject_refs`：合法

@@ -74,3 +74,9 @@
 ```bash
 cd backend && cargo nextest run -p golish-agent-kit db_traits
 ```
+
+## Tool Truth Plan A DB seam（2026-07-30）
+
+- DB traits只传 server-owned operation/org/stage authority、sealed denominator/receipt projection与 shadow assessment；模型/CLI request不能选择 rollout contract或提交 manifest count/hash。
+- operation contract默认 `legacy_v1` 并在创建时冻结；`shadow_v1`只写审计 assessment，`receipt_v1`才允许 canonical receipt读取成为 coverage authority。
+- denominator seal必须发生在 worker/provider dispatch前；缺 repo、ambiguous root、epoch drift或任何读取错误都 fail closed，不回退 latest session/global truth。

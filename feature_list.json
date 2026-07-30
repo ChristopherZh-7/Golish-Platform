@@ -2833,7 +2833,7 @@
       "area": "golish-pentest-domain + golish-db capability receipts + pentest producers + harness Gate shadow assessment",
       "title": "Tool Truth 七轴、Coverage denominator 与可追溯执行回执",
       "user_visible_behavior": "每次工具执行把请求、运行、原始观测、结构化落地、业务落地、证据落地与覆盖结论分别记录；空输出、前置失败、部分解析或扫描器 no-match 不再被误判为完整检查为空，Gate 可区分控制决定与覆盖等级。",
-      "status": "not_started",
+      "status": "passing",
       "design": "docs/design/2026-07-29-tool-truth-hypothesis-verification-loop.md",
       "plan": "docs/superpowers/plans/2026-07-29-tool-truth-coverage-contract.md",
       "verification": [
@@ -2844,8 +2844,8 @@
         "cd backend && just space-guard && cargo clippy -p golish-pentest-domain -p golish-db -p golish-pentest-app -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime --all-targets -- -D warnings",
         "cd backend && just space-guard && cargo fmt -p golish-pentest-domain -p golish-db -p golish-pentest-app -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -- --check"
       ],
-      "notes": "必须先执行本计划，再开始 Hypothesis Registry、Verification Campaign 与 Workspace。唯一预留 migration 为 20260729000005_capability_execution_receipts.sql；开始 schema/migration 前必须重新取得用户明确授权。本计划默认 legacy_v1，不提供 promotion，不把 shadow Gate grade 暴露给前端或报告。",
-      "evidence": "PLANNED 2026-07-29. 设计已获用户确认；Plan A 已规划同事务server-derived coverage denominator、稳定语义重算、不可caller过滤的multi-root checked/all-fresh bundle、per-fact temporal census、revalidation orchestrator、typed landing/lineage exact set，以及只在不可构造vault guard callback内落权威的加密raw witness vault。尚未实现、未创建migration、未运行产品测试。"
+      "notes": "Plan A已完成；只有完整commit链进入目标分支后才能开始Plan B。唯一migration为20260729000005_capability_execution_receipts.sql；deployment/new-operation默认仍是legacy_v1，operation冻结后不可原地切换。本计划没有production promotion/revalidation-release endpoint，不把shadow grade暴露给frontend/report；T2/T3 Prepared Action/JIT、Campaign refutation、Workspace与Reporting cutover留给Plans B/C/D。",
+      "evidence": "PASSING 2026-07-30（隔离worktree /tmp/golish-plan-a-task5.cjdLLq）。用户已在本线程明确授权实现Plan A及修改唯一未应用migration。实现commit链：234639d9、1705f517、3dd673c6、90df2f98、cc34590f、1f541d85、fefbaec3、ada624d3、cf6041cc、ed044ea7、383ffa87，Task11文档/证据commit见随后git记录。新鲜定向证据：domain reducer 5/5 nextest a5ff0794-235a-42bd-891a-d3858cb48652；capability_execution_receipts完整focused target 43/43 nextest 0c889620-dadf-4357-9924-d78ceb419cb3（含migration、direct-SQL guards、TargetIntel lifecycle、revalidation）；pentest producer fault paths 3/3 nextest 18c3a3c8-823b-42b6-9b1d-58399b22a7bd；agent-kit/app/runtime Gate与seal 9/9 nextest fcf82f1b-dac4-43d5-9000-b02a0d2b6140；Task10b 10/10 nextest 3f2283b7-87bd-4bd1-9ac7-6e021570f84f；provider pinned transport/public-IP 8/8 nextest 3e12437e-d997-4aa1-b22c-8066d4bb244e。受影响六crate all-target clippy -D warnings、额外recon/intel/golish scoped clippy、六crate fmt check、resource Biome、JSON/diff检查均exit 0。schema保持additive；default legacy_v1；没有promotion setter、frontend/generated/report变更或真实provider请求。按AGENTS.md §0.1未获授权，./init.sh、just precommit、全workspace check/test/clippy按项目策略未运行。"
     },
     {
       "id": "hypothesis-registry-candidate-analysis-2026-07-29",

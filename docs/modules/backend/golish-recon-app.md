@@ -65,3 +65,10 @@
 ```bash
 cd backend && cargo nextest run -p golish-recon-app
 ```
+
+## Tool Truth Plan A TargetIntel provider host seam（2026-07-30）
+
+- `intel_providers::ObservedProviderExecutionEnvelope` 返回 exact input、typed observations、actual budget、真实 pinned network hops与 opaque raw witness token；recon-app不依赖 golish-db，也不写 canonical receipt。
+- HTTP provider固定使用 registry endpoint与 pinned transport：每次 initial/retry/redirect send前重验 HTTPS host/port/path、全量 A/AAAA public-only集合并固定一个实际地址；mixed/private/reserved/rebind/越界或 N+1 request在 send前拒绝。
+- FOFA/Hunter/Shodan只在 `ReceiptV1`路径使用该 managed seam；legacy/shadow行为保持兼容。empty只有 normalized count为零且 versioned exhaustive contract成立才可成为 no-match。
+- raw plaintext只在容量有界的进程内 token registry短暂存在，agent-app成功/失败 finalize后释放；project持久化 canonical witness是 ciphertext。focused入口：`cargo nextest run -p golish-recon-app -E 'test(provider_transport_) | test(provider_empty_requires_exhaustive_contract)'`。

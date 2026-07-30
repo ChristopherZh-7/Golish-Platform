@@ -215,6 +215,13 @@ fail-closed。该测试通过 dev-only
 embedded PG 覆盖 trusted exact scope 与 foreign/retired/unsealed/untrusted 统一拒绝，静态
 production seam 检查五个命令都在 report read/build/confirmation 分支之前复用 authorizer。
 
+## Tool Truth Plan A composition root（2026-07-30）
+
+- `db_bridge::recon` 是 TargetIntel managed receipt host：dispatch前锁定 current context并seal fixed provider policy，provider在事务外执行，host随后从 opaque raw handoff封存 ciphertext并原子 finalize receipt，最后才写 legacy compatibility row。
+- `stage_coverage` 按 operation-frozen contract分流；`receipt_v1`只读 current exact TargetIntel receipt projection，过期 authority先记录 deterministic revalidation obligation再保持 pending/HOLD。
+- `db_bridge::tool_truth_revalidation::{PgToolTruthRevalidationRecorder,PgToolTruthRevalidationStore}` 是 DB adapter；Candidate/Campaign/Reporting/UI/read路径没有 executor引用，默认 held head不会触网。
+- raw witness plaintext只在 provider-host handoff和vault callback的 bounded进程内生命周期出现；DTO/DB不暴露 vault object key。Plan A不新增 Tauri/frontend/report API。
+
 ## Vuln operation-scoped coverage details（2026-07-19）
 
 - `ai_get_stage_asset_coverage` 接受可选 operation id；Vuln UI调用必须提供并通过 active exact stage/org/sealed-scope校验，后端禁止 latest-operation fallback。Vuln snapshot从相关 Nuclei evidence读取 attempt ordinal/retry/failure owner/class并只附到 partial/error/blocked cell details，供 UI区分历史 attempt 与当前执行。

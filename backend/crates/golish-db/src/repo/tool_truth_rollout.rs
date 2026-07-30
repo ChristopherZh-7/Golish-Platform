@@ -15,9 +15,7 @@ pub struct ToolTruthRolloutRow {
 /// Plan A deliberately exposes no setter or promotion seam. The database also
 /// rejects direct singleton mutation, so every new operation freezes the same
 /// legacy-safe contract until a separately authorized forward migration lands.
-pub async fn get_for_share(
-    tx: &mut Transaction<'_, Postgres>,
-) -> Result<ToolTruthContract> {
+pub async fn get_for_share(tx: &mut Transaction<'_, Postgres>) -> Result<ToolTruthContract> {
     let row = sqlx::query_as::<_, ToolTruthRolloutRow>(
         "SELECT new_operation_contract FROM tool_truth_rollout WHERE singleton=TRUE FOR SHARE",
     )

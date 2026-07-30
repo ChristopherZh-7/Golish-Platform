@@ -142,3 +142,10 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 ```bash
 cd backend && cargo nextest run -p golish-agent-kit harness
 ```
+
+## Tool Truth Plan A Gate 与重验证（2026-07-30）
+
+- `harness::tool_truth` 从 embedded StageSpec/applicability catalog派生 exact denominator并计算 `complete|degraded|incomplete`；shadow assessment不改变 legacy Gate decision，missing/pending/orphan authority统一 HOLD。
+- TargetIntel assessment只接受同 `stage_execution_id + attempt_epoch + denominator_id` 的 current consistent exact receipt set；上一 attempt与 legacy source terminal row不能补齐 current manifest。
+- `task_orchestrator::tool_truth_revalidation` 是唯一 refresh owner seam。默认 manual/held、T2/T3、inactive operation、缺 authority/budget或 bounded exhaustion均零 dispatch；mandatory residual不能 risk-accept。
+- focused入口：`cargo nextest run -p golish-agent-kit -E 'test(tool_truth_revalidation_) | test(tool_truth_shadow_grade_does_not_change_legacy_gate_result)'`。

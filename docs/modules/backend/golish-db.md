@@ -137,3 +137,11 @@
 ```bash
 cd backend && cargo nextest run -p golish-db
 ```
+
+## Tool Truth Plan A 持久化（2026-07-30）
+
+- additive migration `20260729000005_capability_execution_receipts.sql` 持有 frozen operation contract、server-derived denominator、immutable receipt/reconciliation/raw-witness/network-hop/budget/temporal lineage、shadow Gate assessment与 revalidation obligation/outbox。
+- denominator owner 是 locked source transaction；receipt owner 是 managed producer lifecycle。调用方不能提交 asset/item/count/hash，complete receipt 还必须具备 exact child、budget、network-hop 与 canonical reconciliation lineage。
+- raw persistent bytes只以 AEAD ciphertext留在 project vault；key material位于用户 data-local key root，DB仅保存 opaque token/hash与审计元数据。事务内不做 provider HTTP 或 vault 长耗操作。
+- revalidation默认 `manual_only + held generation 0`，Plan A没有生产 release setter；重复 consumer只合并 deterministic obligation，成功只能绑定新的 denominator/receipt，旧 authority保持不可变。
+- focused DB入口：`cargo nextest run -p golish-db --test capability_execution_receipts -E 'test(target_intel) | test(late_prior_attempt) | test(tool_truth_revalidation_)'`。
