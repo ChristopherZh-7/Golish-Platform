@@ -212,3 +212,11 @@ cd backend && cargo nextest run -p golish-db repo
 - operation创建在既有runtime/attack锁后固定按Tool Truth→Investigation取得share lock，一次INSERT完整joint pair；resume与stage transition的row projection都保留三轴。
 - stage fork不以deployment default决定target：无adoption时精确继承source；有adoption时只允许七态joint rank前进一级，并把source final-seal census、adoption exact set与stable request写成append-only receipt。
 - `operation_stage_forks.manifest`冻结source/target Tool Truth、Investigation contract/mode和adoption receipt identity；deferred DB guard在commit重验fork继承、adoption或普通fresh deployment authority。Plan B没有promotion API。
+
+## Hypothesis Registry / Candidate Analysis repositories（2026-07-30）
+
+- `candidate_analysis::{freeze_candidate_snapshot,load_snapshot_page,load_snapshot_chunk_page,...}` 是模型不可伪造的 snapshot/attempt/coverage port；stable request之外的 bundle/root/feed/hash/time authority 均由 repository 派生。缺 live managed-feed source时冻结完整 unavailable census并阻断，不回退旧 row 或网络。
+- `candidate_analysis::seal_candidate_compilation` 只接受当前 TeamPlan 唯一 final submitter 的 live lease/write fence，把 host 编译出的 mutation、claim-component、VerificationContract、verification-plan 与 generation-transition exact-set hash 写成 append-only pre-apply seal；普通 analyst/critic artifact 仍使用各自 worker fence，不能冒充 Controller。
+- `hypothesis_registry::{load_candidate_gate_material,apply_candidate_gate_pass}` 把 pure Gate 输出当作待重验建议：首次 Gate 从 pre-apply host compilation seal 读取 compiled authority，不依赖尚未存在的 canonical rows；提交前再用数据库时间重算 temporal/feed reevaluation hash、复核 frozen source/coverage/compiler seal与 generation transition，并原子写 canonical + outbox。split/merge/derive/narrow relation和 consumed/retained membership由 server 重建；response-loss replay仍重算并精确比对完整 apply envelope。
+- `investigation_projection::projector` 在整批 transaction 内验证 outbox header/member exact set、source predecessor和 entity direct predecessor，最后一次推进 projection head；reader以 captured head读取，不能看到半批。
+- focused test：`cargo nextest run -p golish-db --test hypothesis_registry`。

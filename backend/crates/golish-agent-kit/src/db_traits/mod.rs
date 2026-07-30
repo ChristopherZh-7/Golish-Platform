@@ -7,12 +7,14 @@
 //! - [`DbReadinessGate`] — PG startup readiness gate
 //! - [`TextEmbedder`] — text embedding for semantic memory search
 
+pub mod hypothesis_registry;
 pub mod memory;
 pub mod repo;
 pub mod runtime_memory;
 pub mod tracking;
 pub mod types;
 
+pub use hypothesis_registry::*;
 pub use memory::*;
 pub use repo::*;
 pub use runtime_memory::*;

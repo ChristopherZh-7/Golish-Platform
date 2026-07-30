@@ -27,6 +27,7 @@ use golish_app_core::ports::vuln::{
 mod attack_execution;
 mod convert;
 pub(crate) mod evidence;
+pub mod hypothesis_registry;
 pub mod knowledge_context;
 pub mod knowledge_memory;
 mod orchestration;

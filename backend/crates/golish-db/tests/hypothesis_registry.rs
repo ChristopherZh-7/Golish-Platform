@@ -1,6 +1,13 @@
 use std::borrow::Cow;
 
-use golish_core::{InvestigationContractVersion, InvestigationRolloutMode};
+use golish_core::{
+    hypothesis_semantic_key::CanonicalJsonObject,
+    investigation_projection::{
+        HypothesisProjectionRecordV1, ProjectionChangeKind, ProjectionSourceSnapshotV1,
+        ProjectionSourceTimeStatusV1,
+    },
+    InvestigationContractVersion, InvestigationRolloutMode,
+};
 use golish_db::{embedded::EmbeddedPg, DbConfig, GolishDb};
 use golish_pentest_domain::tool_truth::ToolTruthContract;
 use serial_test::serial;
@@ -10,6 +17,22 @@ use sqlx::{
     Error as SqlxError,
 };
 use uuid::Uuid;
+
+// Task 5 repository contract: these modules must be registered as public, typed ports.
+// Keeping this as a compile-time dependency ensures callers never fall back to raw SQL.
+use golish_db::repo::{
+    candidate_analysis::{
+        freeze_candidate_snapshot, load_candidate_gate_material, CandidateSnapshotDispositionRow,
+        FreezeCandidateSnapshotInput, LoadCandidateGateMaterialInput,
+    },
+    hypothesis_legacy_projection::ProjectionSourceBatchView,
+    hypothesis_registry::ApplyCandidateGatePassInput,
+    investigation_projection::{
+        capture_projection_head, enqueue_projection_batch_on, project_projection_batch,
+        read_projection_at_head, ProjectionOutboxBatchInput, ProjectionOutboxMemberInput,
+        ProjectionProjectOutcome, ProjectionSourceStorageV1,
+    },
+};
 
 const PLAN_A_MIGRATION_VERSION: i64 = 20260729000005;
 const PLAN_B_MIGRATION_VERSION: i64 = 20260729000006;
@@ -78,14 +101,437 @@ async fn insert_operation(pool: &PgPool, operation_id: Uuid) {
     .expect("insert legacy operation");
 }
 
+fn projection_hypothesis_source(
+    entity_id: Uuid,
+    entity_version: u64,
+    label: &str,
+) -> ProjectionSourceSnapshotV1 {
+    let body = CanonicalJsonObject::try_from_value(serde_json::json!({
+        "label": label,
+        "entity_version": entity_version,
+    }))
+    .expect("canonical projection body");
+    ProjectionSourceSnapshotV1::Hypothesis(
+        HypothesisProjectionRecordV1::try_new(entity_id.to_string(), entity_version, 1, body)
+            .expect("bounded typed projection source"),
+    )
+}
+
+fn projection_batch_input(
+    operation_id: Uuid,
+    batch_id: Uuid,
+    stable_request_id: Uuid,
+    entity_id: Uuid,
+    entity_version: u64,
+    label: &str,
+    storage: ProjectionSourceStorageV1,
+) -> ProjectionOutboxBatchInput {
+    ProjectionOutboxBatchInput {
+        batch_id,
+        operation_id,
+        project_scope_id: None,
+        stable_request_id,
+        source_transaction_id: Uuid::new_v4(),
+        source_occurred_at: None,
+        source_time_status: ProjectionSourceTimeStatusV1::HistoricalUnknown,
+        members: vec![ProjectionOutboxMemberInput {
+            outbox_member_id: Uuid::new_v4(),
+            change_kind: if entity_version == 1 {
+                ProjectionChangeKind::Insert
+            } else {
+                ProjectionChangeKind::Supersede
+            },
+            source: projection_hypothesis_source(entity_id, entity_version, label),
+            source_occurred_at: None,
+            source_time_status: ProjectionSourceTimeStatusV1::HistoricalUnknown,
+            invalidation_reason: None,
+            storage,
+        }],
+    }
+}
+
+async fn enqueue_projection_batch(
+    pool: &PgPool,
+    input: ProjectionOutboxBatchInput,
+) -> golish_db::repo::investigation_projection::ProjectionBatchEnqueueReceipt {
+    let mut tx = pool
+        .begin()
+        .await
+        .expect("begin projection source transaction");
+    let receipt = enqueue_projection_batch_on(&mut tx, input)
+        .await
+        .expect("append immutable projection source batch");
+    tx.commit()
+        .await
+        .expect("commit projection source transaction");
+    receipt
+}
+
 fn digest(nibble: char) -> String {
     format!("sha256:{}", nibble.to_string().repeat(64))
+}
+
+#[test]
+fn registry_repository_modules_are_public_typed_ports() {
+    // Reaching this test proves the compile-time imports above resolved through
+    // `golish_db::repo`; runtime callers do not need raw SQL escape hatches.
+    let ports = [
+        std::any::type_name::<FreezeCandidateSnapshotInput>(),
+        std::any::type_name::<ApplyCandidateGatePassInput>(),
+        std::any::type_name::<ProjectionSourceBatchView>(),
+    ];
+    assert!(ports.iter().all(|port| port.contains("golish_db::repo")));
+}
+
+#[tokio::test]
+#[serial]
+async fn projection_batch_projects_atomically_and_replays_exact_once() {
+    let (db, _data_dir) = fixture("projection-batch-replay").await;
+    let operation_id = Uuid::new_v4();
+    insert_operation(db.pool(), operation_id).await;
+    let batch_id = Uuid::new_v4();
+    let source = projection_batch_input(
+        operation_id,
+        batch_id,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        1,
+        "initial",
+        ProjectionSourceStorageV1::Inline,
+    );
+    let source_receipt = enqueue_projection_batch(db.pool(), source).await;
+    assert_eq!(source_receipt.source_batch_seq, 1);
+
+    let applied = project_projection_batch(db.pool(), operation_id, batch_id)
+        .await
+        .expect("project complete source batch");
+    let first = match applied {
+        ProjectionProjectOutcome::Applied(receipt) => receipt,
+        other => panic!("expected applied batch, got {other:?}"),
+    };
+    assert_eq!((first.first_change_seq, first.last_change_seq), (1, 1));
+
+    let replayed = project_projection_batch(db.pool(), operation_id, batch_id)
+        .await
+        .expect("replay projected batch");
+    assert!(matches!(replayed, ProjectionProjectOutcome::Replay(_)));
+    let head = capture_projection_head(db.pool(), operation_id)
+        .await
+        .expect("capture projection head");
+    let page = read_projection_at_head(db.pool(), &head)
+        .await
+        .expect("read materialized projection");
+    assert_eq!(head.change_seq, 1);
+    assert_eq!(page.entities.len(), 1);
+    assert_eq!(page.changes.len(), 1);
+}
+
+#[tokio::test]
+#[serial]
+async fn projection_rebuild_stability_preserves_identity_and_canonical_manifests() {
+    let (first_db, _first_data_dir) = fixture("projection-rebuild-first").await;
+    let (second_db, _second_data_dir) = fixture("projection-rebuild-second").await;
+    let operation_id = Uuid::new_v4();
+    insert_operation(first_db.pool(), operation_id).await;
+    insert_operation(second_db.pool(), operation_id).await;
+    let batch_id = Uuid::new_v4();
+    let source = projection_batch_input(
+        operation_id,
+        batch_id,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        1,
+        "stable-rebuild",
+        ProjectionSourceStorageV1::Inline,
+    );
+    enqueue_projection_batch(first_db.pool(), source.clone()).await;
+    enqueue_projection_batch(second_db.pool(), source).await;
+    let first = match project_projection_batch(first_db.pool(), operation_id, batch_id)
+        .await
+        .expect("project first materialization")
+    {
+        ProjectionProjectOutcome::Applied(receipt) => receipt,
+        other => panic!("expected first applied batch, got {other:?}"),
+    };
+    let rebuilt = match project_projection_batch(second_db.pool(), operation_id, batch_id)
+        .await
+        .expect("project rebuilt materialization")
+    {
+        ProjectionProjectOutcome::Applied(receipt) => receipt,
+        other => panic!("expected rebuilt applied batch, got {other:?}"),
+    };
+    assert_eq!(first.batch_id, rebuilt.batch_id);
+    assert_eq!(first.source_batch_seq, rebuilt.source_batch_seq);
+    assert_eq!(first.first_change_seq, rebuilt.first_change_seq);
+    assert_eq!(first.last_change_seq, rebuilt.last_change_seq);
+    assert_eq!(
+        first.entity_version_manifest_hash,
+        rebuilt.entity_version_manifest_hash
+    );
+    assert_eq!(first.change_manifest_hash, rebuilt.change_manifest_hash);
+    assert_eq!(first.timeline_manifest_hash, rebuilt.timeline_manifest_hash);
+    let first_head = capture_projection_head(first_db.pool(), operation_id)
+        .await
+        .expect("capture first rebuilt head");
+    let rebuilt_head = capture_projection_head(second_db.pool(), operation_id)
+        .await
+        .expect("capture second rebuilt head");
+    let first_page = read_projection_at_head(first_db.pool(), &first_head)
+        .await
+        .expect("read first materialization");
+    let rebuilt_page = read_projection_at_head(second_db.pool(), &rebuilt_head)
+        .await
+        .expect("read rebuilt materialization");
+    assert_eq!(first_page.entities, rebuilt_page.entities);
+    let canonical_change =
+        |change: &golish_db::repo::investigation_projection::InvestigationProjectionChange| {
+            format!(
+                "{}|{}|{}|{}|{}|{:?}|{}|{}|{:?}|{:?}|{:?}|{}|{:?}|{:?}",
+                change.change_seq,
+                change.event_id,
+                change.batch_id,
+                change.source_batch_seq,
+                change.outbox_member_id,
+                change.entity_kind,
+                change.entity_id.clone(),
+                change.entity_version,
+                change.change_kind,
+                change.timeline_event_kind,
+                change.invalidation_reason,
+                change.change_hash.clone(),
+                change.source_occurred_at,
+                change.source_time_status,
+            )
+        };
+    assert_eq!(
+        first_page
+            .changes
+            .iter()
+            .map(canonical_change)
+            .collect::<Vec<_>>(),
+        rebuilt_page
+            .changes
+            .iter()
+            .map(canonical_change)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn projection_entity_predecessor_failure_rolls_back_whole_batch() {
+    let (db, _data_dir) = fixture("projection-predecessor").await;
+    let operation_id = Uuid::new_v4();
+    let entity_id = Uuid::new_v4();
+    insert_operation(db.pool(), operation_id).await;
+    let first_batch = Uuid::new_v4();
+    enqueue_projection_batch(
+        db.pool(),
+        projection_batch_input(
+            operation_id,
+            first_batch,
+            Uuid::new_v4(),
+            entity_id,
+            1,
+            "v1",
+            ProjectionSourceStorageV1::Inline,
+        ),
+    )
+    .await;
+    project_projection_batch(db.pool(), operation_id, first_batch)
+        .await
+        .expect("project predecessor");
+
+    let invalid_batch = Uuid::new_v4();
+    enqueue_projection_batch(
+        db.pool(),
+        projection_batch_input(
+            operation_id,
+            invalid_batch,
+            Uuid::new_v4(),
+            entity_id,
+            3,
+            "forged-v3",
+            ProjectionSourceStorageV1::Inline,
+        ),
+    )
+    .await;
+    let error = project_projection_batch(db.pool(), operation_id, invalid_batch)
+        .await
+        .expect_err("version three cannot skip predecessor version two");
+    assert_eq!(
+        error.code(),
+        "INVESTIGATION_PROJECTION_ENTITY_PREDECESSOR_INVALID"
+    );
+    let head = capture_projection_head(db.pool(), operation_id)
+        .await
+        .expect("capture unchanged head");
+    assert_eq!(head.change_seq, 1);
+    let materialized: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM investigation_projection_entity_versions WHERE batch_id=$1",
+    )
+    .bind(invalid_batch)
+    .fetch_one(db.pool())
+    .await
+    .expect("count invalid batch entity versions");
+    let receipts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM investigation_projection_batch_receipts WHERE batch_id=$1",
+    )
+    .bind(invalid_batch)
+    .fetch_one(db.pool())
+    .await
+    .expect("count invalid batch receipts");
+    assert_eq!((materialized, receipts), (0, 0));
+}
+
+#[tokio::test]
+#[serial]
+async fn projection_batch_source_order_waits_for_predecessor_receipt() {
+    let (db, _data_dir) = fixture("projection-source-order").await;
+    let operation_id = Uuid::new_v4();
+    let entity_id = Uuid::new_v4();
+    insert_operation(db.pool(), operation_id).await;
+    let first_batch = Uuid::new_v4();
+    let second_batch = Uuid::new_v4();
+    enqueue_projection_batch(
+        db.pool(),
+        projection_batch_input(
+            operation_id,
+            first_batch,
+            Uuid::new_v4(),
+            entity_id,
+            1,
+            "v1",
+            ProjectionSourceStorageV1::Inline,
+        ),
+    )
+    .await;
+    enqueue_projection_batch(
+        db.pool(),
+        projection_batch_input(
+            operation_id,
+            second_batch,
+            Uuid::new_v4(),
+            entity_id,
+            2,
+            "v2",
+            ProjectionSourceStorageV1::Inline,
+        ),
+    )
+    .await;
+
+    assert!(matches!(
+        project_projection_batch(db.pool(), operation_id, second_batch)
+            .await
+            .expect("future batch remains pending"),
+        ProjectionProjectOutcome::PredecessorPending(_)
+    ));
+    project_projection_batch(db.pool(), operation_id, first_batch)
+        .await
+        .expect("project first batch");
+    let second = project_projection_batch(db.pool(), operation_id, second_batch)
+        .await
+        .expect("project second batch after predecessor");
+    assert!(matches!(second, ProjectionProjectOutcome::Applied(_)));
+    assert_eq!(
+        capture_projection_head(db.pool(), operation_id)
+            .await
+            .expect("capture ordered head")
+            .change_seq,
+        2
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn projection_source_snapshot_blob_is_self_contained_and_immutable() {
+    let (db, _data_dir) = fixture("projection-source-blob").await;
+    let operation_id = Uuid::new_v4();
+    insert_operation(db.pool(), operation_id).await;
+    let batch_id = Uuid::new_v4();
+    enqueue_projection_batch(
+        db.pool(),
+        projection_batch_input(
+            operation_id,
+            batch_id,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            1,
+            "blob-backed",
+            ProjectionSourceStorageV1::Blob {
+                redaction_contract_version: "projection_redaction.v1".into(),
+            },
+        ),
+    )
+    .await;
+    let storage: (bool, bool) = sqlx::query_as(
+        "SELECT immutable_source_body IS NULL,source_blob_id IS NOT NULL FROM investigation_projection_outbox WHERE batch_id=$1",
+    )
+    .bind(batch_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("inspect immutable blob storage");
+    assert_eq!(storage, (true, true));
+    project_projection_batch(db.pool(), operation_id, batch_id)
+        .await
+        .expect("project exclusively from outbox-owned blob");
+    let head = capture_projection_head(db.pool(), operation_id)
+        .await
+        .expect("capture blob projection head");
+    assert_eq!(
+        read_projection_at_head(db.pool(), &head)
+            .await
+            .expect("read blob-backed entity")
+            .entities
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn projection_head_isolation_keeps_captured_old_or_complete_new_head() {
+    let (db, _data_dir) = fixture("projection-head-isolation").await;
+    let operation_id = Uuid::new_v4();
+    insert_operation(db.pool(), operation_id).await;
+    let old_head = capture_projection_head(db.pool(), operation_id)
+        .await
+        .expect("capture old head");
+    let batch_id = Uuid::new_v4();
+    enqueue_projection_batch(
+        db.pool(),
+        projection_batch_input(
+            operation_id,
+            batch_id,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            1,
+            "new",
+            ProjectionSourceStorageV1::Inline,
+        ),
+    )
+    .await;
+    project_projection_batch(db.pool(), operation_id, batch_id)
+        .await
+        .expect("publish complete batch");
+    let new_head = capture_projection_head(db.pool(), operation_id)
+        .await
+        .expect("capture new head");
+    let old_page = read_projection_at_head(db.pool(), &old_head)
+        .await
+        .expect("old captured head remains readable");
+    let new_page = read_projection_at_head(db.pool(), &new_head)
+        .await
+        .expect("new captured head is complete");
+    assert_eq!((old_page.entities.len(), old_page.changes.len()), (0, 0));
+    assert_eq!((new_page.entities.len(), new_page.changes.len()), (1, 1));
 }
 
 #[derive(Debug, Clone, Copy)]
 struct CandidateAuthorityFixture {
     operation_id: Uuid,
     organization_id: Uuid,
+    scope_snapshot_id: Uuid,
     snapshot_id: Uuid,
     analysis_attempt_id: Uuid,
 }
@@ -445,6 +891,7 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
     CandidateAuthorityFixture {
         operation_id,
         organization_id,
+        scope_snapshot_id,
         snapshot_id,
         analysis_attempt_id,
     }
@@ -461,6 +908,91 @@ struct HypothesisCompoundInput<'a> {
     event_kind: &'a str,
     origin_authority: &'a str,
     authority_receipt_kind: &'a str,
+}
+
+#[tokio::test]
+#[serial]
+async fn snapshot_tool_truth_authority_repo_freezes_blocked_feed_census_without_attempt() {
+    let (db, _data_dir) = fixture("snapshot-blocked-feed").await;
+    let authority = seed_candidate_authority_fixture(db.pool(), "snapshot-blocked-feed").await;
+    let snapshot = freeze_candidate_snapshot(
+        db.pool(),
+        FreezeCandidateSnapshotInput {
+            stable_consumer_request_id: Uuid::new_v4(),
+            operation_id: authority.operation_id,
+            scope_snapshot_id: authority.scope_snapshot_id,
+            organization_id: authority.organization_id,
+        },
+    )
+    .await
+    .expect("freeze fail-closed Candidate authority snapshot");
+    assert_eq!(
+        snapshot.disposition,
+        CandidateSnapshotDispositionRow::BlockedAuthorityBundle
+    );
+    assert_eq!(snapshot.tool_truth_authority_root_count, 4);
+    assert_eq!(snapshot.authority_roots.len(), 4);
+    let (attempts, inputs, feed_members, obligations): (i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT
+             (SELECT COUNT(*) FROM candidate_analysis_attempts WHERE snapshot_id=$1),
+             (SELECT COUNT(*) FROM candidate_analysis_snapshot_inputs WHERE snapshot_id=$1),
+             (SELECT COUNT(*) FROM candidate_analysis_knowledge_feed_snapshot_members WHERE snapshot_id=$1),
+             (SELECT COUNT(*) FROM candidate_analysis_enrichment_obligations WHERE snapshot_id=$1)"#,
+    )
+    .bind(snapshot.snapshot_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("inspect blocked snapshot closure");
+    assert_eq!((attempts, inputs, feed_members, obligations), (0, 0, 5, 5));
+}
+
+#[tokio::test]
+#[serial]
+async fn gate_material_rejects_unavailable_feed_before_any_canonical_or_outbox_write() {
+    let (db, _data_dir) = fixture("finalizer-feed-reevaluation").await;
+    let authority =
+        seed_candidate_authority_fixture(db.pool(), "finalizer-feed-reevaluation").await;
+    let before: (i64, i64, i64) = sqlx::query_as(
+        r#"SELECT
+             (SELECT COUNT(*) FROM attack_hypotheses WHERE operation_id=$1),
+             (SELECT COUNT(*) FROM hypothesis_generations WHERE operation_id=$1),
+             (SELECT COUNT(*) FROM investigation_projection_outbox_batches WHERE operation_id=$1)"#,
+    )
+    .bind(authority.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count canonical rows before rejected apply");
+    let error = load_candidate_gate_material(
+        db.pool(),
+        LoadCandidateGateMaterialInput {
+            operation_id: authority.operation_id,
+            scope_snapshot_id: authority.scope_snapshot_id,
+            organization_id: authority.organization_id,
+            snapshot_id: authority.snapshot_id,
+            analysis_attempt_id: authority.analysis_attempt_id,
+            analysis_attempt_ordinal: 0,
+            expected_snapshot_row_version: 0,
+            expected_attempt_row_version: 0,
+        },
+    )
+    .await
+    .expect_err("unavailable managed feeds must fail Gate-time material reevaluation");
+    let error_text = error.to_string();
+    assert!(
+        error_text.contains("HYPOTHESIS_REGISTRY_AUTHORITY_MISMATCH"),
+        "unexpected apply rejection: {error_text}"
+    );
+    let after: (i64, i64, i64) = sqlx::query_as(
+        r#"SELECT
+             (SELECT COUNT(*) FROM attack_hypotheses WHERE operation_id=$1),
+             (SELECT COUNT(*) FROM hypothesis_generations WHERE operation_id=$1),
+             (SELECT COUNT(*) FROM investigation_projection_outbox_batches WHERE operation_id=$1)"#,
+    )
+    .bind(authority.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count canonical rows after rejected apply");
+    assert_eq!(after, before);
 }
 
 async fn insert_hypothesis_compound(
@@ -492,6 +1024,7 @@ async fn insert_hypothesis_compound(
     let gate_decision_id = Uuid::new_v4();
     let mutation_id = Uuid::new_v4();
     let gate_member_hash = digest('9');
+    let gate_transition_hash = digest('0');
 
     let (predicate_set_hash, control_set_hash, pair_set_hash, ordered_set_hash): (
         String,
@@ -521,7 +1054,17 @@ async fn insert_hypothesis_compound(
         path_member_set_hash,
         proof_path_set_hash,
         gate_mutation_set_hash,
-    ): (String, String, String, String, String, String, String) = sqlx::query_as(
+        gate_transition_set_hash,
+    ): (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = sqlx::query_as(
         r#"SELECT
                investigation_exact_member_set_hash(
                    'hypothesis_verification_plan_required_components.v1',ARRAY[$1]::TEXT[]),
@@ -535,14 +1078,17 @@ async fn insert_hypothesis_compound(
                    'hypothesis_verification_plan_path_members.v1',ARRAY[$3]::TEXT[]),
                investigation_exact_member_set_hash(
                    'hypothesis_verification_plan_paths.v1',ARRAY[$4]::TEXT[]),
-               investigation_exact_member_set_hash(
-                   'hypothesis_candidate_gate_mutation_set.v1',ARRAY[$5]::TEXT[])"#,
+               candidate_gate_exact_member_set_hash(
+                   'candidate_mutations.v1',ARRAY[$5]::TEXT[]),
+               candidate_gate_exact_member_set_hash(
+                   'candidate_generation_transitions.v1',ARRAY[$6]::TEXT[])"#,
     )
     .bind(&component_member_hash)
     .bind(&plan_objective_member_hash)
     .bind(&path_member_hash)
     .bind(&path_hash)
     .bind(&gate_member_hash)
+    .bind(&gate_transition_hash)
     .fetch_one(&mut *connection)
     .await
     .expect("derive HypothesisPlan and Gate exact-set hashes");
@@ -779,8 +1325,9 @@ async fn insert_hypothesis_compound(
         r#"INSERT INTO hypothesis_candidate_gate_decisions(
                decision_id,stable_request_id,operation_id,organization_id,
                candidate_snapshot_id,analysis_attempt_id,mutation_count,
-               mutation_set_hash,gate_authority_hash,decision_hash
-           ) VALUES($1,$2,$3,$4,$5,$6,1,$7,$8,$9)"#,
+               mutation_set_hash,generation_transition_count,generation_transition_set_hash,
+               gate_authority_hash,decision_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,1,$7,1,$8,$9,$10)"#,
     )
     .bind(gate_decision_id)
     .bind(Uuid::new_v4())
@@ -789,6 +1336,7 @@ async fn insert_hypothesis_compound(
     .bind(authority.snapshot_id)
     .bind(authority.analysis_attempt_id)
     .bind(&gate_mutation_set_hash)
+    .bind(&gate_transition_set_hash)
     .bind(digest('a'))
     .bind(digest('b'))
     .execute(&mut *connection)
@@ -798,8 +1346,8 @@ async fn insert_hypothesis_compound(
         r#"INSERT INTO hypothesis_candidate_gate_decision_members(
                mutation_id,decision_id,operation_id,organization_id,ordinal,route_kind,
                root_id,successor_revision_id,semantic_key_hash,successor_epistemic_state,
-               origin_decision_hash,member_hash
-           ) VALUES($1,$2,$3,$4,0,'create_initial',$5,$6,$7,'proposed',$8,$9)"#,
+               origin_decision_hash,generation_transition_hash,member_hash
+           ) VALUES($1,$2,$3,$4,0,'create_initial',$5,$6,$7,'proposed',$8,$9,$10)"#,
     )
     .bind(mutation_id)
     .bind(gate_decision_id)
@@ -809,6 +1357,7 @@ async fn insert_hypothesis_compound(
     .bind(revision_id)
     .bind(&semantic_key_hash)
     .bind(&origin_decision_hash)
+    .bind(&gate_transition_hash)
     .bind(&gate_member_hash)
     .execute(&mut *connection)
     .await
@@ -1491,7 +2040,7 @@ async fn hypothesis_state_authority_schema_rejects_terminal_forgery() {
 
 #[tokio::test]
 #[serial]
-async fn hypothesis_state_authority_schema_accepts_nonterminal_and_rejects_candidate_terminal() {
+async fn hypothesis_state_authority_schema_rejects_partial_candidate_compound_and_terminal() {
     let (mut db, _data_dir) = fixture("state_events").await;
     let authority = seed_candidate_authority_fixture(db.pool(), "state-events").await;
     let mut legal = db.pool().begin().await.expect("begin legal creating event");
@@ -1511,17 +2060,21 @@ async fn hypothesis_state_authority_schema_accepts_nonterminal_and_rejects_candi
         },
     )
     .await;
-    legal
+    let partial_error = legal
         .commit()
         .await
-        .expect("commit legal nonterminal authority");
+        .expect_err("Candidate compound without generation/outbox apply receipt must fail");
+    assert_database_rejection(
+        &partial_error,
+        "HYPOTHESIS_CANDIDATE_CANONICAL_APPLY_RECEIPT_REQUIRED",
+    );
     let retained: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM attack_hypothesis_revisions WHERE revision_id=$1")
             .bind(revision_id)
             .fetch_one(db.pool())
             .await
             .expect("confirm legal nonterminal revision committed");
-    assert_eq!(retained, 1);
+    assert_eq!(retained, 0);
 
     let mut forged = db
         .pool()
@@ -1564,6 +2117,7 @@ async fn candidate_analysis_attempt_schema_has_immutable_two_wave_spine() {
             "candidate_analysis_page_receipts",
             "candidate_analysis_work_items",
             "candidate_analysis_artifacts",
+            "candidate_analysis_host_compilation_seals",
             "hypothesis_proposals",
             "candidate_analysis_proposal_censuses",
             "candidate_analysis_proposal_census_members",
@@ -1579,14 +2133,15 @@ async fn candidate_analysis_attempt_schema_has_immutable_two_wave_spine() {
            WHERE NOT trigger.tgisinternal
              AND table_ref.relname IN (
                  'candidate_analysis_attempts','candidate_analysis_attempt_state_events',
-                 'candidate_analysis_page_receipts','candidate_analysis_artifacts'
+                 'candidate_analysis_page_receipts','candidate_analysis_artifacts',
+                 'candidate_analysis_host_compilation_seals'
              )
              AND function_ref.proname='investigation_reject_append_only'"#,
     )
     .fetch_one(db.pool())
     .await
     .expect("inspect attempt append-only triggers");
-    assert_eq!(append_only, 4);
+    assert_eq!(append_only, 5);
     db.stop().await;
 }
 

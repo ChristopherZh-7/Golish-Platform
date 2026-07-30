@@ -426,6 +426,41 @@ pub enum StageWorkerOutputDisposition {
     Found,
     CheckedEmpty,
     Blocked,
+    ArtifactRecorded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateAnalysisArtifactOutputReceipt {
+    pub artifact_id: Uuid,
+    pub artifact_hash: String,
+}
+
+impl CandidateAnalysisArtifactOutputReceipt {
+    pub fn new(artifact_id: Uuid, artifact_hash: String) -> Result<Self, RuntimeMemoryError> {
+        if artifact_id.is_nil()
+            || artifact_hash.len() != 71
+            || !artifact_hash.starts_with("sha256:")
+            || !artifact_hash[7..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(RuntimeMemoryError::Conflict {
+                code: "CANDIDATE_ARTIFACT_RECEIPT_INVALID",
+            });
+        }
+        Ok(Self {
+            artifact_id,
+            artifact_hash,
+        })
+    }
+
+    pub fn canonical_output(&self) -> Value {
+        serde_json::json!({
+            "artifact_hash": self.artifact_hash,
+            "artifact_id": self.artifact_id,
+            "schema": "candidate_analysis_artifact_receipt.v1",
+        })
+    }
 }
 
 impl StageWorkerOutputDisposition {
@@ -434,6 +469,7 @@ impl StageWorkerOutputDisposition {
             Self::Found => "found",
             Self::CheckedEmpty => "checked_empty",
             Self::Blocked => "blocked",
+            Self::ArtifactRecorded => "artifact_recorded",
         }
     }
 
@@ -442,6 +478,7 @@ impl StageWorkerOutputDisposition {
             "found" => Some(Self::Found),
             "checked_empty" => Some(Self::CheckedEmpty),
             "blocked" => Some(Self::Blocked),
+            "artifact_recorded" => Some(Self::ArtifactRecorded),
             _ => None,
         }
     }

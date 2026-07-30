@@ -39,6 +39,8 @@ pub enum ReducerDecision {
     },
     Derive {
         source_root_id: Uuid,
+        source_revision_id: Uuid,
+        derivation_rule_hash: String,
         successor_root_id: Uuid,
     },
     NarrowSuccessor {
@@ -241,6 +243,8 @@ impl ReducerCatalog {
                 derivation_rule_hash,
             } => Ok(ReducerDecision::Derive {
                 source_root_id: *source_root_id,
+                source_revision_id: *source_revision_id,
+                derivation_rule_hash: derivation_rule_hash.clone(),
                 successor_root_id: derive_root_id(
                     proposal.operation_id,
                     &proposal.semantic_key,

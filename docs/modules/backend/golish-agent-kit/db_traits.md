@@ -82,3 +82,9 @@ cd backend && cargo nextest run -p golish-agent-kit db_traits
 - DB traits只传 server-owned operation/org/stage authority、sealed denominator/receipt projection与 shadow assessment；模型/CLI request不能选择 rollout contract或提交 manifest count/hash。
 - operation contract默认 `legacy_v1` 并在创建时冻结；`shadow_v1`只写审计 assessment，`receipt_v1`才允许 canonical receipt读取成为 coverage authority。
 - denominator seal必须发生在 worker/provider dispatch前；缺 repo、ambiguous root、epoch drift或任何读取错误都 fail closed，不回退 latest session/global truth。
+
+## Hypothesis Registry Plan B port（2026-07-30）
+
+- `HypothesisRegistryRepository` 是 Candidate runtime 唯一 persistence port，覆盖 snapshot freeze/page、artifact、H1/H2 coverage census/reducer、final-submitter-only host compilation seal、Gate material与 atomic apply。
+- request DTO 只携带 server-owned operation/scope/org/team/worker/attempt/version fence；没有 bundle root清单、fresh token、caller timestamp、feed signer或任意 canonical JSON write口。
+- `CandidateGateMaterial` 保留 frozen authority、DB-clock temporal/feed reevaluation hashes及pre-apply compiler seal，供 pure Gate exact比较；canonical mutation transport显式携带 generation transition/mutation hash，但终态 state和Plan C adjudication不在此port。

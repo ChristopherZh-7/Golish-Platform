@@ -43,6 +43,35 @@ AS $$
     FROM canonical
 $$;
 
+-- Candidate Gate uses a length-prefixed binary writer rather than the core
+-- JSON-array envelope above. Keep the SQL constraint byte-identical to the
+-- pure Rust Gate so the canonical writer cannot silently reseal a mutation.
+CREATE FUNCTION candidate_gate_exact_member_set_hash(
+    domain_tag TEXT,
+    member_hashes TEXT[]
+) RETURNS TEXT
+LANGUAGE plpgsql
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+AS $$
+DECLARE
+    payload BYTEA;
+    member_hash TEXT;
+BEGIN
+    payload := int8send(octet_length(domain_tag)::BIGINT)
+        || convert_to(domain_tag,'UTF8');
+    FOR member_hash IN
+        SELECT value FROM unnest(member_hashes) AS member(value) ORDER BY value
+    LOOP
+        payload := payload
+            || int8send(octet_length(member_hash)::BIGINT)
+            || convert_to(member_hash,'UTF8');
+    END LOOP;
+    RETURN 'sha256:' || encode(digest(payload,'sha256'),'hex');
+END;
+$$;
+
 -- VerificationContractV1 uses its dedicated binary DomainHashWriter: a
 -- u32 count field followed by each already-canonical member hash field.
 CREATE FUNCTION verification_contract_exact_member_set_hash(
@@ -709,6 +738,10 @@ CREATE TABLE hypothesis_candidate_gate_decisions (
     analysis_attempt_id UUID NOT NULL,
     mutation_count BIGINT NOT NULL CHECK (mutation_count>0),
     mutation_set_hash TEXT NOT NULL CHECK (mutation_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    generation_transition_count BIGINT NOT NULL CHECK (generation_transition_count>0),
+    generation_transition_set_hash TEXT NOT NULL CHECK (
+        generation_transition_set_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
     gate_authority_hash TEXT NOT NULL CHECK (gate_authority_hash ~ '^sha256:[0-9a-f]{64}$'),
     decision_hash TEXT NOT NULL CHECK (decision_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
@@ -723,7 +756,8 @@ CREATE TABLE hypothesis_candidate_gate_decision_members (
     organization_id UUID NOT NULL,
     ordinal INTEGER NOT NULL CHECK (ordinal>=0),
     route_kind TEXT NOT NULL CHECK (route_kind IN (
-        'create_initial','reopen_historical','split','merge','derive','narrow_successor'
+        'attach_current','no_semantic_change','create_initial','reopen_historical',
+        'split','merge','derive','narrow_successor'
     )),
     root_id UUID NOT NULL,
     predecessor_revision_id UUID,
@@ -733,18 +767,23 @@ CREATE TABLE hypothesis_candidate_gate_decision_members (
         'proposed','supported','contested','inconclusive'
     )),
     origin_decision_hash TEXT NOT NULL CHECK (origin_decision_hash ~ '^sha256:[0-9a-f]{64}$'),
+    generation_transition_hash TEXT NOT NULL CHECK (
+        generation_transition_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
     member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK (
-        (route_kind IN ('create_initial','split','merge','derive')
+        (route_kind IN (
+            'attach_current','no_semantic_change','create_initial',
+            'split','merge','derive','narrow_successor'
+        )
             AND predecessor_revision_id IS NULL)
-        OR (route_kind IN ('reopen_historical','narrow_successor')
+        OR (route_kind='reopen_historical'
             AND predecessor_revision_id IS NOT NULL)
     ),
     UNIQUE(decision_id,ordinal),
     UNIQUE(decision_id,mutation_id),
     UNIQUE(decision_id,root_id),
-    UNIQUE(successor_revision_id),
     UNIQUE(
         mutation_id,operation_id,organization_id,root_id,predecessor_revision_id,
         successor_revision_id,semantic_key_hash,successor_epistemic_state,
@@ -766,6 +805,10 @@ CREATE TABLE hypothesis_candidate_gate_decision_members (
         ) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
 );
 
+CREATE UNIQUE INDEX hypothesis_candidate_gate_writing_successor_unique
+    ON hypothesis_candidate_gate_decision_members(successor_revision_id)
+    WHERE route_kind NOT IN ('attach_current','no_semantic_change');
+
 CREATE FUNCTION enforce_hypothesis_candidate_gate_decision_exact_set()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -777,16 +820,22 @@ DECLARE
     minimum_ordinal INTEGER;
     maximum_ordinal INTEGER;
     actual_set_hash TEXT;
+    actual_transition_set_hash TEXT;
 BEGIN
     SELECT * INTO STRICT decision
       FROM hypothesis_candidate_gate_decisions
      WHERE decision_id=NEW.decision_id;
     SELECT COUNT(*),COUNT(DISTINCT ordinal),MIN(ordinal),MAX(ordinal),
-           investigation_exact_member_set_hash(
-               'hypothesis_candidate_gate_mutation_set.v1',
+           candidate_gate_exact_member_set_hash(
+               'candidate_mutations.v1',
                COALESCE(array_agg(member_hash ORDER BY ordinal),ARRAY[]::TEXT[])
+           ),
+           candidate_gate_exact_member_set_hash(
+               'candidate_generation_transitions.v1',
+               COALESCE(array_agg(generation_transition_hash ORDER BY ordinal),ARRAY[]::TEXT[])
            )
-      INTO actual_count,ordinal_count,minimum_ordinal,maximum_ordinal,actual_set_hash
+      INTO actual_count,ordinal_count,minimum_ordinal,maximum_ordinal,
+           actual_set_hash,actual_transition_set_hash
       FROM hypothesis_candidate_gate_decision_members
      WHERE decision_id=decision.decision_id;
     IF actual_count<>decision.mutation_count
@@ -794,6 +843,8 @@ BEGIN
        OR minimum_ordinal<>0
        OR maximum_ordinal<>actual_count-1
        OR actual_set_hash<>decision.mutation_set_hash
+       OR actual_count<>decision.generation_transition_count
+       OR actual_transition_set_hash<>decision.generation_transition_set_hash
     THEN
         RAISE EXCEPTION 'HYPOTHESIS_CANDIDATE_GATE_MUTATION_EXACT_SET_REQUIRED'
             USING ERRCODE='23514';
@@ -1260,6 +1311,7 @@ CREATE TABLE investigation_projection_outbox_batches (
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK ((source_time_status='known')=(source_occurred_at IS NOT NULL)),
     UNIQUE(operation_id,source_batch_seq),
+    UNIQUE(operation_id,stable_request_id),
     UNIQUE(batch_id,operation_id),
     UNIQUE(batch_id,operation_id,source_batch_seq),
     FOREIGN KEY(predecessor_batch_id) REFERENCES investigation_projection_outbox_batches(batch_id)
@@ -1363,6 +1415,13 @@ $$;
 CREATE TRIGGER investigation_projection_head_identity_immutable
 BEFORE UPDATE OF projection_schema_version,cursor_salt ON investigation_projection_heads
 FOR EACH ROW EXECUTE FUNCTION enforce_investigation_projection_head_identity_immutable();
+
+CREATE TRIGGER investigation_projection_source_heads_delete_forbidden
+BEFORE DELETE ON investigation_projection_source_heads
+FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER investigation_projection_heads_delete_forbidden
+BEFORE DELETE ON investigation_projection_heads
+FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 
 CREATE TRIGGER investigation_projection_batches_append_only
 BEFORE UPDATE OR DELETE ON investigation_projection_outbox_batches
@@ -2111,6 +2170,7 @@ CREATE TABLE hypothesis_generations (
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
     generation_ordinal INTEGER NOT NULL CHECK (generation_ordinal>=0),
     candidate_snapshot_id UUID NOT NULL,
+    candidate_gate_decision_id UUID NOT NULL UNIQUE,
     candidate_snapshot_authority_hash TEXT NOT NULL CHECK (candidate_snapshot_authority_hash ~ '^sha256:[0-9a-f]{64}$'),
     previous_generation_id UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
@@ -2119,6 +2179,9 @@ CREATE TABLE hypothesis_generations (
     UNIQUE(generation_id,previous_generation_id,operation_id,organization_id),
     FOREIGN KEY(candidate_snapshot_id,operation_id,organization_id)
         REFERENCES candidate_analysis_snapshots(snapshot_id,operation_id,organization_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(candidate_gate_decision_id,operation_id,organization_id)
+        REFERENCES hypothesis_candidate_gate_decisions(decision_id,operation_id,organization_id)
         ON DELETE RESTRICT,
     FOREIGN KEY(previous_generation_id,operation_id,organization_id)
         REFERENCES hypothesis_generations(generation_id,operation_id,organization_id)
@@ -2208,8 +2271,142 @@ CREATE TABLE hypothesis_generation_seals (
     controller_worker_run_id UUID NOT NULL REFERENCES stage_worker_runs(id) ON DELETE RESTRICT,
     generation_hash TEXT NOT NULL CHECK (generation_hash ~ '^sha256:[0-9a-f]{64}$'),
     sealed_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-    UNIQUE(seal_id,generation_id,generation_hash)
+    UNIQUE(seal_id,generation_id,generation_hash),
+    UNIQUE(seal_id,generation_id)
 );
+
+CREATE TABLE hypothesis_candidate_canonical_apply_receipts (
+    apply_receipt_id UUID PRIMARY KEY,
+    stable_request_id UUID NOT NULL UNIQUE,
+    operation_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    analysis_attempt_id UUID NOT NULL REFERENCES candidate_analysis_attempts(analysis_attempt_id) ON DELETE RESTRICT,
+    candidate_gate_decision_id UUID NOT NULL UNIQUE,
+    generation_id UUID NOT NULL UNIQUE,
+    generation_seal_id UUID NOT NULL UNIQUE,
+    projection_outbox_batch_id UUID NOT NULL UNIQUE,
+    revision_count BIGINT NOT NULL CHECK (revision_count>=0),
+    revision_set_hash TEXT NOT NULL CHECK (revision_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    receipt_hash TEXT NOT NULL CHECK (receipt_hash ~ '^sha256:[0-9a-f]{64}$'),
+    committed_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(apply_receipt_id,operation_id,organization_id),
+    FOREIGN KEY(candidate_gate_decision_id,operation_id,organization_id)
+        REFERENCES hypothesis_candidate_gate_decisions(decision_id,operation_id,organization_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(generation_id,operation_id,organization_id)
+        REFERENCES hypothesis_generations(generation_id,operation_id,organization_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(generation_seal_id,generation_id)
+        REFERENCES hypothesis_generation_seals(seal_id,generation_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(projection_outbox_batch_id,operation_id)
+        REFERENCES investigation_projection_outbox_batches(batch_id,operation_id)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE hypothesis_candidate_canonical_apply_receipt_members (
+    apply_receipt_member_id UUID PRIMARY KEY,
+    apply_receipt_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    revision_id UUID NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal>=0),
+    revision_hash TEXT NOT NULL CHECK (revision_hash ~ '^sha256:[0-9a-f]{64}$'),
+    member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
+    UNIQUE(apply_receipt_id,ordinal),
+    UNIQUE(apply_receipt_id,revision_id),
+    UNIQUE(revision_id),
+    FOREIGN KEY(apply_receipt_id,operation_id,organization_id)
+        REFERENCES hypothesis_candidate_canonical_apply_receipts(
+            apply_receipt_id,operation_id,organization_id
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(revision_id,revision_hash)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,revision_hash
+        ) ON DELETE RESTRICT
+);
+
+CREATE FUNCTION enforce_hypothesis_candidate_apply_receipt_exact_set()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    receipt hypothesis_candidate_canonical_apply_receipts%ROWTYPE;
+    actual_count BIGINT;
+    actual_set_hash TEXT;
+    gate_writing_count BIGINT;
+    gate_matched_count BIGINT;
+BEGIN
+    SELECT * INTO STRICT receipt
+      FROM hypothesis_candidate_canonical_apply_receipts
+     WHERE apply_receipt_id=NEW.apply_receipt_id;
+    SELECT COUNT(*),candidate_gate_exact_member_set_hash(
+               'candidate_apply_revisions.v1',
+               COALESCE(array_agg(member_hash ORDER BY ordinal),ARRAY[]::TEXT[]))
+      INTO actual_count,actual_set_hash
+      FROM hypothesis_candidate_canonical_apply_receipt_members
+     WHERE apply_receipt_id=receipt.apply_receipt_id;
+    SELECT COUNT(*) INTO gate_writing_count
+      FROM hypothesis_candidate_gate_decision_members gate_member
+     WHERE gate_member.decision_id=receipt.candidate_gate_decision_id
+       AND gate_member.route_kind NOT IN ('attach_current','no_semantic_change');
+    SELECT COUNT(*) INTO gate_matched_count
+      FROM hypothesis_candidate_gate_decision_members gate_member
+     WHERE gate_member.decision_id=receipt.candidate_gate_decision_id
+       AND gate_member.route_kind NOT IN ('attach_current','no_semantic_change')
+       AND EXISTS(
+           SELECT 1 FROM hypothesis_candidate_canonical_apply_receipt_members receipt_member
+            WHERE receipt_member.apply_receipt_id=receipt.apply_receipt_id
+              AND receipt_member.revision_id=gate_member.successor_revision_id
+       );
+    IF actual_count<>receipt.revision_count
+       OR actual_set_hash<>receipt.revision_set_hash
+       OR gate_writing_count<>receipt.revision_count
+       OR gate_matched_count<>receipt.revision_count
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_CANDIDATE_APPLY_RECEIPT_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER hypothesis_candidate_apply_receipt_exact_set
+AFTER INSERT ON hypothesis_candidate_canonical_apply_receipts
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_hypothesis_candidate_apply_receipt_exact_set();
+CREATE CONSTRAINT TRIGGER hypothesis_candidate_apply_receipt_member_exact_set
+AFTER INSERT ON hypothesis_candidate_canonical_apply_receipt_members
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_hypothesis_candidate_apply_receipt_exact_set();
+
+CREATE FUNCTION enforce_hypothesis_candidate_revision_apply_membership()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS(
+        SELECT 1 FROM attack_hypothesis_state_events event
+         WHERE event.successor_revision_id=NEW.revision_id
+           AND event.origin_authority='candidate_analysis'
+    ) AND NOT EXISTS(
+        SELECT 1 FROM hypothesis_candidate_canonical_apply_receipt_members member
+         WHERE member.revision_id=NEW.revision_id
+           AND member.operation_id=NEW.operation_id
+           AND member.organization_id=NEW.organization_id
+           AND member.revision_hash=NEW.revision_hash
+    ) THEN
+        RAISE EXCEPTION 'HYPOTHESIS_CANDIDATE_CANONICAL_APPLY_RECEIPT_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_revisions_apply_receipt_required
+AFTER INSERT ON attack_hypothesis_revisions
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_hypothesis_candidate_revision_apply_membership();
 
 CREATE TABLE hypothesis_residual_risks (
     residual_id UUID PRIMARY KEY,
@@ -2253,6 +2450,57 @@ CREATE TRIGGER hypothesis_residual_risks_append_only BEFORE UPDATE OR DELETE ON 
 -- ---------------------------------------------------------------------------
 -- Candidate snapshot source, temporal, and managed-feed exact authorities
 -- ---------------------------------------------------------------------------
+
+CREATE TABLE candidate_managed_feed_trust_stores (
+    trust_store_version BIGINT PRIMARY KEY CHECK (trust_store_version>0),
+    trust_store_hash TEXT NOT NULL UNIQUE CHECK (trust_store_hash ~ '^sha256:[0-9a-f]{64}$'),
+    key_revocation_epoch BIGINT NOT NULL CHECK (key_revocation_epoch>=0),
+    key_revocation_epoch_hash TEXT NOT NULL CHECK (
+        key_revocation_epoch_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    installed_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(trust_store_version,trust_store_hash,key_revocation_epoch,key_revocation_epoch_hash)
+);
+
+CREATE TABLE candidate_managed_feed_signer_keys (
+    signer_key_member_id UUID PRIMARY KEY,
+    trust_store_version BIGINT NOT NULL,
+    trust_store_hash TEXT NOT NULL,
+    key_revocation_epoch BIGINT NOT NULL,
+    key_revocation_epoch_hash TEXT NOT NULL,
+    signer_id TEXT NOT NULL CHECK (btrim(signer_id)<>''),
+    signer_key_id TEXT NOT NULL CHECK (btrim(signer_key_id)<>''),
+    signature_algorithm TEXT NOT NULL CHECK (
+        signature_algorithm IN ('ed25519','ecdsa_p256_sha256')
+    ),
+    revoked BOOLEAN NOT NULL,
+    key_member_hash TEXT NOT NULL CHECK (key_member_hash ~ '^sha256:[0-9a-f]{64}$'),
+    installed_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(trust_store_version,signer_key_id),
+    UNIQUE(trust_store_version,signer_id,signer_key_id,signature_algorithm,
+           revoked,key_member_hash),
+    FOREIGN KEY(trust_store_version,trust_store_hash,key_revocation_epoch,
+                key_revocation_epoch_hash)
+        REFERENCES candidate_managed_feed_trust_stores(
+            trust_store_version,trust_store_hash,key_revocation_epoch,
+            key_revocation_epoch_hash
+        ) ON DELETE RESTRICT
+);
+
+CREATE TABLE candidate_managed_feed_trust_store_head (
+    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    trust_store_version BIGINT NOT NULL,
+    trust_store_hash TEXT NOT NULL,
+    key_revocation_epoch BIGINT NOT NULL,
+    key_revocation_epoch_hash TEXT NOT NULL,
+    head_version BIGINT NOT NULL DEFAULT 0 CHECK (head_version>=0),
+    FOREIGN KEY(trust_store_version,trust_store_hash,key_revocation_epoch,
+                key_revocation_epoch_hash)
+        REFERENCES candidate_managed_feed_trust_stores(
+            trust_store_version,trust_store_hash,key_revocation_epoch,
+            key_revocation_epoch_hash
+        ) ON DELETE RESTRICT
+);
 
 CREATE TABLE candidate_analysis_snapshot_source_sets (
     source_set_id UUID PRIMARY KEY,
@@ -2447,10 +2695,12 @@ CREATE TABLE candidate_analysis_knowledge_feed_snapshot_members (
     signer_key_id TEXT,
     signature_algorithm TEXT,
     signature_verification_receipt_hash TEXT,
+    signer_key_member_hash TEXT,
     provenance JSONB NOT NULL DEFAULT '{}'::JSONB CHECK (jsonb_typeof(provenance)='object'),
     age_policy_version TEXT NOT NULL CHECK (btrim(age_policy_version)<>''),
     age_policy_digest TEXT NOT NULL CHECK (age_policy_digest ~ '^sha256:[0-9a-f]{64}$'),
     computed_age_seconds BIGINT CHECK (computed_age_seconds IS NULL OR computed_age_seconds>=0),
+    effective_valid_until TIMESTAMPTZ,
     disposition TEXT NOT NULL CHECK (disposition IN (
         'current','stale','signature_invalid','signer_revoked','unavailable'
     )),
@@ -2459,11 +2709,14 @@ CREATE TABLE candidate_analysis_knowledge_feed_snapshot_members (
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK (
         (disposition='unavailable' AND feed_id IS NULL AND content_hash IS NULL
-            AND signed_manifest_hash IS NULL AND immutable_feed_body IS NULL)
+            AND signed_manifest_hash IS NULL AND immutable_feed_body IS NULL
+            AND signer_key_member_hash IS NULL AND effective_valid_until IS NULL)
         OR (disposition<>'unavailable' AND feed_id IS NOT NULL
             AND content_hash ~ '^sha256:[0-9a-f]{64}$'
             AND signed_manifest_hash ~ '^sha256:[0-9a-f]{64}$'
             AND signature_verification_receipt_hash ~ '^sha256:[0-9a-f]{64}$'
+            AND signer_key_member_hash ~ '^sha256:[0-9a-f]{64}$'
+            AND effective_valid_until IS NOT NULL
             AND jsonb_typeof(immutable_feed_body)='object')
     ),
     UNIQUE(feed_snapshot_id,ordinal),
@@ -2582,6 +2835,10 @@ CREATE TRIGGER candidate_analysis_temporal_validity_census_members_append_only B
 CREATE TRIGGER candidate_analysis_stale_evidence_residuals_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_stale_evidence_residuals FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_revalidation_obligations_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_revalidation_obligations FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_knowledge_feed_denominators_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_knowledge_feed_denominators FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER hypothesis_candidate_canonical_apply_receipts_append_only BEFORE UPDATE OR DELETE ON hypothesis_candidate_canonical_apply_receipts FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER hypothesis_candidate_canonical_apply_receipt_members_append_only BEFORE UPDATE OR DELETE ON hypothesis_candidate_canonical_apply_receipt_members FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_managed_feed_trust_stores_append_only BEFORE UPDATE OR DELETE ON candidate_managed_feed_trust_stores FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_managed_feed_signer_keys_append_only BEFORE UPDATE OR DELETE ON candidate_managed_feed_signer_keys FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_knowledge_feed_denominator_members_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_knowledge_feed_denominator_members FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_knowledge_feed_snapshots_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_knowledge_feed_snapshots FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_knowledge_feed_snapshot_members_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_knowledge_feed_snapshot_members FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
@@ -2631,9 +2888,14 @@ CREATE TABLE candidate_analysis_input_chunk_censuses (
     chunk_member_set_hash TEXT NOT NULL CHECK (chunk_member_set_hash ~ '^sha256:[0-9a-f]{64}$'),
     census_hash TEXT NOT NULL CHECK (census_hash ~ '^sha256:[0-9a-f]{64}$'),
     sealed_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-    CHECK ((disposition='source_empty')=(chunk_count=0)),
-    CHECK (disposition NOT IN ('blocked_oversize','blocked_unrepresentable') OR chunk_count=0),
+    CHECK (
+        (disposition='complete' AND chunk_count>0)
+        OR (disposition IN ('source_empty','blocked_oversize','blocked_unrepresentable')
+            AND chunk_count=0)
+    ),
     UNIQUE(chunk_census_id,snapshot_input_id,snapshot_id),
+    UNIQUE(chunk_census_id,snapshot_input_id,snapshot_id,census_hash,
+           source_byte_count,chunking_contract_version,redaction_contract_version),
     FOREIGN KEY(snapshot_input_id,snapshot_id)
         REFERENCES candidate_analysis_snapshot_inputs(snapshot_input_id,snapshot_id)
         ON DELETE RESTRICT
@@ -2690,7 +2952,17 @@ WHERE event_kind IN ('superseded_missed_hypothesis','sealed','blocked');
 CREATE TABLE candidate_analysis_page_receipts (
     page_receipt_id UUID PRIMARY KEY,
     analysis_attempt_id UUID NOT NULL REFERENCES candidate_analysis_attempts(analysis_attempt_id) ON DELETE RESTRICT,
-    snapshot_input_id UUID NOT NULL REFERENCES candidate_analysis_snapshot_inputs(snapshot_input_id) ON DELETE RESTRICT,
+    snapshot_id UUID NOT NULL REFERENCES candidate_analysis_snapshots(snapshot_id) ON DELETE RESTRICT,
+    page_kind TEXT NOT NULL CHECK (page_kind IN ('input_page','chunk_page')),
+    stable_request_id UUID NOT NULL,
+    snapshot_input_id UUID REFERENCES candidate_analysis_snapshot_inputs(snapshot_input_id) ON DELETE RESTRICT,
+    chunk_census_id UUID REFERENCES candidate_analysis_input_chunk_censuses(chunk_census_id) ON DELETE RESTRICT,
+    chunk_census_hash TEXT CHECK (
+        chunk_census_hash IS NULL OR chunk_census_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    source_size_bytes BIGINT CHECK (source_size_bytes IS NULL OR source_size_bytes>=0),
+    chunking_contract_version TEXT,
+    redaction_contract_version TEXT,
     consumer_worker_run_id UUID NOT NULL REFERENCES stage_worker_runs(id) ON DELETE RESTRICT,
     server_cursor TEXT NOT NULL CHECK (btrim(server_cursor)<>''),
     first_key TEXT,
@@ -2699,7 +2971,27 @@ CREATE TABLE candidate_analysis_page_receipts (
     page_hash TEXT NOT NULL CHECK (page_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK ((returned_count=0)=(first_key IS NULL AND last_key IS NULL)),
-    UNIQUE(analysis_attempt_id,consumer_worker_run_id,server_cursor)
+    CHECK (
+        (page_kind='input_page' AND snapshot_input_id IS NULL
+            AND chunk_census_id IS NULL AND chunk_census_hash IS NULL
+            AND source_size_bytes IS NULL AND chunking_contract_version IS NULL
+            AND redaction_contract_version IS NULL)
+        OR
+        (page_kind='chunk_page' AND snapshot_input_id IS NOT NULL
+            AND chunk_census_id IS NOT NULL AND chunk_census_hash IS NOT NULL
+            AND source_size_bytes IS NOT NULL AND btrim(chunking_contract_version)<>''
+            AND btrim(redaction_contract_version)<>'')
+    ),
+    UNIQUE(analysis_attempt_id,consumer_worker_run_id,stable_request_id),
+    FOREIGN KEY(snapshot_input_id,snapshot_id)
+        REFERENCES candidate_analysis_snapshot_inputs(snapshot_input_id,snapshot_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(chunk_census_id,snapshot_input_id,snapshot_id,chunk_census_hash,
+                source_size_bytes,chunking_contract_version,redaction_contract_version)
+        REFERENCES candidate_analysis_input_chunk_censuses(
+            chunk_census_id,snapshot_input_id,snapshot_id,census_hash,
+            source_byte_count,chunking_contract_version,redaction_contract_version
+        ) ON DELETE RESTRICT
 );
 
 CREATE TABLE candidate_analysis_work_items (
@@ -2738,6 +3030,33 @@ CREATE TABLE candidate_analysis_artifacts (
     FOREIGN KEY(candidate_work_item_id,analysis_attempt_id)
         REFERENCES candidate_analysis_work_items(candidate_work_item_id,analysis_attempt_id)
         ON DELETE RESTRICT
+);
+
+-- Server-owned compiler output authority. This is deliberately separate from
+-- model-produced analysis artifacts: the final Controller cannot self-report
+-- any of these exact-set hashes, and the Gate can load them before canonical
+-- Registry rows exist.
+CREATE TABLE candidate_analysis_host_compilation_seals (
+    compilation_seal_id UUID PRIMARY KEY,
+    stable_compilation_request_id UUID NOT NULL UNIQUE,
+    analysis_attempt_id UUID NOT NULL,
+    snapshot_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    final_submitter_worker_run_id UUID NOT NULL REFERENCES stage_worker_runs(id) ON DELETE RESTRICT,
+    mutation_set_hash TEXT NOT NULL CHECK (mutation_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    claim_component_set_hash TEXT NOT NULL CHECK (claim_component_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    verification_contract_set_hash TEXT NOT NULL CHECK (verification_contract_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    verification_plan_set_hash TEXT NOT NULL CHECK (verification_plan_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    generation_transition_set_hash TEXT NOT NULL CHECK (generation_transition_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    compiler_seal_hash TEXT NOT NULL CHECK (compiler_seal_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(analysis_attempt_id),
+    UNIQUE(compilation_seal_id,analysis_attempt_id),
+    FOREIGN KEY(analysis_attempt_id,snapshot_id,operation_id,organization_id)
+        REFERENCES candidate_analysis_attempts(
+            analysis_attempt_id,snapshot_id,operation_id,organization_id
+        ) ON DELETE RESTRICT
 );
 
 CREATE FUNCTION enforce_candidate_artifact_recorded_output()
@@ -2926,6 +3245,7 @@ CREATE TRIGGER candidate_analysis_attempt_state_events_append_only BEFORE UPDATE
 CREATE TRIGGER candidate_analysis_page_receipts_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_page_receipts FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_work_items_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_work_items FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_artifacts_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_artifacts FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_analysis_host_compilation_seals_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_host_compilation_seals FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER hypothesis_proposals_append_only BEFORE UPDATE OR DELETE ON hypothesis_proposals FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER hypothesis_proposal_refs_append_only BEFORE UPDATE OR DELETE ON hypothesis_proposal_refs FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_proposal_censuses_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_proposal_censuses FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();

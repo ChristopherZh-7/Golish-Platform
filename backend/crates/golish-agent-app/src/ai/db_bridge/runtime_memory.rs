@@ -3176,8 +3176,25 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
-    use golish_agent_kit::db_traits::TaskStatus;
+    use golish_agent_kit::db_traits::{CandidateAnalysisArtifactOutputReceipt, TaskStatus};
     use golish_agent_kit::harness::attack_execution::{AttackReadSource, AttackShadowComparison};
+
+    #[test]
+    fn candidate_artifact_recorded_disposition_round_trips_without_fact_authority() {
+        let receipt = CandidateAnalysisArtifactOutputReceipt::new(
+            Uuid::new_v4(),
+            format!("sha256:{}", "a".repeat(64)),
+        )
+        .expect("valid server receipt");
+        assert_eq!(
+            StageWorkerOutputDisposition::try_parse("artifact_recorded"),
+            Some(StageWorkerOutputDisposition::ArtifactRecorded)
+        );
+        assert_eq!(
+            receipt.canonical_output()["schema"],
+            "candidate_analysis_artifact_receipt.v1"
+        );
+    }
 
     #[test]
     fn stage_team_seed_seals_each_unit_before_return() {

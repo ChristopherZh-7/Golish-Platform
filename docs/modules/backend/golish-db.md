@@ -157,3 +157,10 @@ cd backend && cargo nextest run -p golish-db
 - Candidate snapshot 只能绑定完整 Plan A bundle；deferred trigger要求四个 ordinal/四个 root family exact set，`sealed_ready`还要求全部 `consistent_fresh`。Attempt/event、knowledge feed/product-version/match、replayable input chunks、H1 proposal census、recursive H2 coverage reviews与 phase transition 都保留 immutable/append-only spine。
 - projection source batch、redacted source snapshot/blob、entity direct predecessor、change、batch receipt、legacy projection version和comparison sample均append-only；source/projection heads是唯一可变行，并由完整batch/receipt的连续CAS trigger推进。Plan C future entity词汇只存在于closed projection catalog，`verification_capability_assessments`、revision adjudication/terminal-decision表仍不存在。
 - focused schema入口：`cargo nextest run -p golish-db --test hypothesis_registry`。
+
+## Hypothesis Registry Plan B repository kernel（2026-07-30）
+
+- `repo::candidate_analysis` 通过 Plan A 的同事务 Checked-bundle callback 冻结 Candidate snapshot；当前仓库没有可读取的 managed-feed store/rollout authority，因此生产实现把五类 required feed 完整记为 `unavailable`，落 `blocked_authority_bundle` 与 obligation，并在创建 attempt/Gate 前 fail closed。它不会把缺失 feed 当作 authoritative empty，也不会在事务内联网刷新。
+- `repo::hypothesis_registry` 在单一事务内重验 snapshot、DB-clock temporal/target-epoch/feed authority、attempt 与 H1/H2/coverage/checklist/compiled-plan exact sets，再写 canonical root/revision/component/contract/plan/generation/transition/disposition/relation 与 immutable projection outbox；不直接写 materialized/legacy projection，也不推进 projection head。
+- `repo::investigation_projection` 仅消费 outbox-owned typed source snapshot，按 `source_batch_seq` 和 direct predecessor 整批物化并在最后 CAS head；response-loss replay复用receipt，重建排除 `projected_at` 后 identity/manifest稳定。`repo::hypothesis_legacy_projection` 只是只读兼容投影入口。
+- Plan B 唯一 migration `00006` 同步收紧 Candidate Gate mutation length-prefixed exact-set trigger，以及 narrow successor 的无 predecessor creating-event形状；未修改 `00005` 或任何既有 migration。
