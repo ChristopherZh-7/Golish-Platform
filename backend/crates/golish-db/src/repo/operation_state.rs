@@ -8,11 +8,12 @@
 use crate::Result;
 use chrono::{DateTime, Utc};
 use golish_core::AttackExecutionContract;
+use golish_pentest_domain::tool_truth::ToolTruthContract;
 use serde::{Deserialize, Serialize};
 use sqlx::{Executor, PgPool, Postgres};
 use uuid::Uuid;
 
-use super::attack_execution_rollout;
+use super::{attack_execution_rollout, tool_truth_rollout};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OperationContractValidationError {
@@ -76,6 +77,11 @@ fn parse_attack_execution_contract(value: &str) -> Result<AttackExecutionContrac
             "unknown attack-execution contract: {other}"
         ))),
     }
+}
+
+fn parse_tool_truth_contract(value: &str) -> Result<ToolTruthContract> {
+    ToolTruthContract::try_from(value)
+        .map_err(|error| crate::DbError::Other(anyhow::Error::new(error)))
 }
 
 fn validate_frozen_operation_contracts(
@@ -354,6 +360,9 @@ pub struct OperationStateRow {
     pub profile: String,
     pub current_stage: String,
     pub runtime_memory_contract: String,
+    /// Immutable Tool Truth execution/evidence contract selected at operation
+    /// creation. Existing rows and the Plan A deployment default are legacy_v1.
+    pub tool_truth_contract: String,
     /// Stable workspace identity for runtime-memory V2. Legacy rows remain
     /// nullable; every newly created runtime operation supplies this value.
     pub project_scope_id: Option<Uuid>,
@@ -386,21 +395,21 @@ pub struct OperationEpochRow {
 /// 创建一个新 operation_state 行 (新 operation 入口).
 const INSERT_OPERATION_SQL: &str = r#"INSERT INTO operation_state
         (operation_id, profile, current_stage, runtime_memory_contract,
-         attack_execution_contract)
-    VALUES ($1, $2, $3, $4, $5)"#;
+         attack_execution_contract, tool_truth_contract)
+    VALUES ($1, $2, $3, $4, $5, $6)"#;
 
 #[cfg(test)]
 const OPERATION_STATE_ROW_COLUMNS: &str = r#"operation_id, profile, current_stage,
-    runtime_memory_contract, project_scope_id, stage_started_at,
+    runtime_memory_contract, tool_truth_contract, project_scope_id, stage_started_at,
     last_evidence_audit_id, last_classification_id, last_scope_version,
     state_blob, superseded_by, engagement_org_id"#;
 
 const INSERT_OPERATION_WITH_EXECUTOR_SQL: &str = r#"INSERT INTO operation_state
         (operation_id, profile, current_stage, runtime_memory_contract, project_scope_id,
-         attack_execution_contract)
-    VALUES ($1, $2, $3, $4, $5, $6)
+         attack_execution_contract, tool_truth_contract)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING operation_id, profile, current_stage, runtime_memory_contract,
-              project_scope_id, stage_started_at, last_evidence_audit_id,
+              tool_truth_contract, project_scope_id, stage_started_at, last_evidence_audit_id,
               last_classification_id, last_scope_version, state_blob,
               superseded_by, engagement_org_id"#;
 
@@ -413,6 +422,7 @@ pub async fn insert(
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
     let attack_rollout = attack_execution_rollout::get_for_share(&mut tx).await?;
+    let tool_truth_contract = tool_truth_rollout::get_for_share(&mut tx).await?;
     let attack_contract = parse_attack_execution_contract(&attack_rollout.contract)?;
     validate_frozen_operation_contracts(runtime_memory_contract, attack_contract)?;
     sqlx::query(INSERT_OPERATION_SQL)
@@ -421,6 +431,7 @@ pub async fn insert(
         .bind(current_stage)
         .bind(runtime_memory_contract)
         .bind(attack_contract.as_str())
+        .bind(tool_truth_contract.as_str())
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -439,6 +450,7 @@ pub async fn insert_with_executor<'e, E>(
     runtime_memory_contract: &str,
     project_scope_id: Uuid,
     attack_execution_contract: AttackExecutionContract,
+    tool_truth_contract: ToolTruthContract,
 ) -> Result<OperationStateRow>
 where
     E: Executor<'e, Database = Postgres>,
@@ -451,6 +463,7 @@ where
         .bind(runtime_memory_contract)
         .bind(project_scope_id)
         .bind(attack_execution_contract.as_str())
+        .bind(tool_truth_contract.as_str())
         .fetch_one(executor)
         .await?;
     Ok(row)
@@ -460,7 +473,7 @@ where
 pub async fn get(pool: &PgPool, operation_id: Uuid) -> Result<Option<OperationStateRow>> {
     let row = sqlx::query_as::<_, OperationStateRow>(
         r#"SELECT operation_id, profile, current_stage, runtime_memory_contract,
-                  project_scope_id, stage_started_at,
+                  tool_truth_contract, project_scope_id, stage_started_at,
                   last_evidence_audit_id, last_classification_id,
                   last_scope_version, state_blob, superseded_by, engagement_org_id
            FROM operation_state
@@ -470,6 +483,22 @@ pub async fn get(pool: &PgPool, operation_id: Uuid) -> Result<Option<OperationSt
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// Read and strictly decode the immutable Tool Truth contract. Unknown values
+/// fail closed instead of projecting legacy semantics.
+pub async fn get_tool_truth_contract(
+    pool: &PgPool,
+    operation_id: Uuid,
+) -> Result<Option<ToolTruthContract>> {
+    let value: Option<String> =
+        sqlx::query_scalar("SELECT tool_truth_contract FROM operation_state WHERE operation_id=$1")
+            .bind(operation_id)
+            .fetch_optional(pool)
+            .await?;
+    value
+        .map(|value| parse_tool_truth_contract(&value))
+        .transpose()
 }
 
 /// Read and strictly decode the immutable Candidate execution contract without
@@ -739,6 +768,7 @@ mod tests {
             profile: "assessment".to_string(),
             current_stage: "external_attack_surface".to_string(),
             runtime_memory_contract: "dual_write_legacy_read".to_string(),
+            tool_truth_contract: "legacy_v1".to_string(),
             project_scope_id: Some(Uuid::new_v4()),
             stage_started_at: Utc::now(),
             last_evidence_audit_id: Some(42),
@@ -753,6 +783,7 @@ mod tests {
         assert_eq!(row.operation_id, back.operation_id);
         assert_eq!(row.current_stage, back.current_stage);
         assert_eq!(row.runtime_memory_contract, back.runtime_memory_contract);
+        assert_eq!(row.tool_truth_contract, back.tool_truth_contract);
         assert_eq!(row.state_blob, back.state_blob);
     }
 
@@ -760,6 +791,30 @@ mod tests {
     fn operation_insert_freezes_runtime_memory_contract() {
         assert!(INSERT_OPERATION_SQL.contains("runtime_memory_contract"));
         assert!(INSERT_OPERATION_SQL.contains("$4"));
+    }
+
+    #[test]
+    fn operation_insert_freezes_tool_truth_contract() {
+        assert!(INSERT_OPERATION_SQL.contains("tool_truth_contract"));
+        assert!(INSERT_OPERATION_WITH_EXECUTOR_SQL.contains("tool_truth_contract"));
+        assert!(OPERATION_STATE_ROW_COLUMNS.contains("tool_truth_contract"));
+    }
+
+    #[test]
+    fn tool_truth_contract_does_not_fallback_on_unknown_value() {
+        let error = parse_tool_truth_contract("future_contract")
+            .expect_err("unknown persisted contract must fail closed");
+        assert_eq!(
+            error.to_string(),
+            "unknown tool-truth contract: future_contract"
+        );
+    }
+
+    #[test]
+    fn runtime_operation_creation_locks_tool_truth_rollout() {
+        let source = include_str!("runtime_memory_tx.rs");
+        assert!(source.contains("tool_truth_rollout::get_for_share"));
+        assert!(source.contains("source_tool_truth_contract"));
     }
 
     #[test]

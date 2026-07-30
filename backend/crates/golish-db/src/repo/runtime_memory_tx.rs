@@ -30,7 +30,7 @@ use crate::repo::{
     canonical_fact_refs, message_chains, operation_org_scope, operation_scope_decisions,
     operation_state, operation_turns, project_scopes, runtime_memory_rollout,
     runtime_memory_shadow, stage_asset_waves, stage_episodes, stage_handoffs, stage_purge,
-    stage_run_units, stage_runs, stage_teams, stage_worker_runs, tasks,
+    stage_run_units, stage_runs, stage_teams, stage_worker_runs, tasks, tool_truth_rollout,
 };
 
 const MEMORY_EPISODE_STAGE_KINDS: [&str; 4] = [
@@ -1139,6 +1139,23 @@ async fn create_runtime_operation_inner(
             });
         }
     };
+    let source_tool_truth_contract = if let Some(stage_fork) = stage_fork {
+        let source_contract: String = sqlx::query_scalar(
+            "SELECT tool_truth_contract FROM operation_state WHERE operation_id=$1 FOR SHARE",
+        )
+        .bind(stage_fork.source_operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "stage_fork_source_operation",
+        })?;
+        golish_pentest_domain::tool_truth::ToolTruthContract::try_from(source_contract.as_str())
+            .map_err(|_| RuntimeMemoryStoreError::Conflict {
+                code: "unknown_tool_truth_contract",
+            })?
+    } else {
+        tool_truth_rollout::get_for_share(&mut tx).await?
+    };
     let project = project_scopes::get_active_for_share(&mut *tx, input.project_scope_id)
         .await?
         .ok_or(RuntimeMemoryStoreError::Missing {
@@ -1160,6 +1177,7 @@ async fn create_runtime_operation_inner(
         &rollout.contract,
         input.project_scope_id,
         attack_contract,
+        source_tool_truth_contract,
     )
     .await?;
     operation_turns::insert_initial_with_executor(&mut *tx, input.operation_id, &input.input)
