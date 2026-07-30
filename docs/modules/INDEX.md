@@ -37,7 +37,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-db | PostgreSQL 持久化层（含 Tool Truth frozen denominator/receipt/raw lineage、target epoch、multi-root checked/all-fresh bundle与 held-by-default revalidation） | [→](backend/golish-db.md) | ✅ |
+| golish-db | PostgreSQL 持久化层（含 Tool Truth multi-root authority；Investigation freeze；Hypothesis Registry/Candidate exact-set/projection schema） | [→](backend/golish-db.md) | ✅ |
 | golish-graphiti | legacy GraphClient + scoped temporal node/edge Assertion-lineage graph（attested generation rebuild，旧 API 兼容） | [→](backend/golish-graphiti.md) | ✅ |
 | golish-indexer | 代码索引基座（IndexerBackend + vtcode 后端 + git 工具） | [→](backend/golish-indexer.md) | ✅ |
 | golish-artifacts | 自动维护项目文档提案（README/CLAUDE，未集成） | [→](backend/golish-artifacts.md) | ✅ |

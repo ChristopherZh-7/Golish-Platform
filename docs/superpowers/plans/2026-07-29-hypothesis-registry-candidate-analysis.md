@@ -429,6 +429,19 @@ git commit -m "feat(investigation): define frozen rollout contract"
 
 ## Task 2：在唯一 migration 中建立完整 Plan B schema
 
+> **2026-07-30 implementation correction (repository facts):** The referenced
+> `application_model_operation_contract.rs` fixture does not exist, so the RED/GREEN
+> suite uses the existing `capability_execution_receipts.rs` embedded-Postgres fixture
+> and the `runtime_memory_rollout_attestation.rs` migration-subset upgrade pattern.
+> Plan A rejects a missing or cross-organization required root before invoking the
+> checked-bundle callback; Plan B therefore leaves no snapshot/attempt in that case.
+> A complete four-root census that is semantic/temporal non-fresh may create only a
+> `blocked_authority_bundle` snapshot inside the callback transaction. Plan B adds
+> compound candidate keys to Plan A tables in `00006` and references them, but does
+> not modify `00005` or reimplement freshness. The bundle header freezes the policy
+> **set** hash; per-root/per-receipt policy identities remain in census members because
+> Plan A intentionally permits distinct policies across roots.
+
 **PAUSE A：没有本轮明确 schema/migration 授权时，不执行本 Task。**
 
 **文件：**

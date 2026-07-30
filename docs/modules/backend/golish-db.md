@@ -39,6 +39,7 @@
 | `repo::*`（sessions / tool_calls / memories / audit …） | 各表 CRUD（scoped） |
 | Runtime Memory rollout repos | frozen four-rank contract、Worker admission、whole-record shadow sample、DB-generated promotion receipt 与 typed post-commit reconcile |
 | Candidate V2 repos | operation-frozen rollout + admission cutoff/DB-generated promotion receipt、`Initial|Current|Terminal` Wave authority、manifest/plan-bound approval、Attempt+WorkerRun+lane compound lease、TerminalIntent/barrier/operator recovery、typed Verification handoff/terminal receipt、FactDelta direct/no-attack/pending consolidation、verified Finding lineage |
+| Hypothesis Registry Plan B schema | 唯一 `20260729000006_hypothesis_registry.sql`：Investigation 五态默认/operation freeze/adoption、canonical Hypothesis revision/event/VerificationContract/VerificationPlan、Candidate two-wave exact-set census、Plan A bundle复合绑定、projection outbox/head/legacy compatibility/compare；不含 Plan C authority |
 | Candidate/Post-Exploit hash bridge | CandidateAttempt authority 保留 canonical `sha256:<hex>`；进入既有 Post-Exploit Foothold seam 时只在 trusted repo/DB validator 边界比较同一 64-hex digest，不放宽 operation/org/target/Attempt 绑定 |
 | Runtime Memory final seal | 四信息阶段的 Unit/Worker/Handoff/completion + `StageEpisode` + `StageEpisodeClosed.v1` deliveries 原子提交 |
 | Runtime Memory dev full reset | 四 Company stage 的 sealed-frozen-scope compound reset：exact active external tool在mutation前阻断、runtime/state/graph/cursor 与 ownership-safe facts 同事务，typed direct-row purge counts 只在 commit 后返回 |
@@ -146,3 +147,12 @@ cd backend && cargo nextest run -p golish-db
 - `with_checked_tool_truth_authority_bundle` 只接受 stable consumer request、operation、organization与closed consumer kind；host在同一 `REPEATABLE READ` transaction 内选择完整四 root、重算derived graph/semantic/freshness/temporal/policy/epoch census、写stale obligations并seal bundle，再把不可Clone/Serialize/构造的borrowed guard交给consumer callback。`with_all_fresh_tool_truth_authority_bundle` 只有四 root 全部semantic-consistent且时效fresh时才调用callback；callback错误会连同bundle、obligation和consumer writes整体回滚。
 - revalidation默认 `manual_only + held generation 0`，Plan A没有生产 release setter；重复 consumer只合并 deterministic obligation，成功只能绑定新的 denominator/receipt，旧 authority保持不可变。
 - focused DB入口：`cargo nextest run -p golish-db --test capability_execution_receipts`；multi-root窄入口为 `-E 'test(authority_bundle_)'`。
+
+## Hypothesis Registry Plan B schema（2026-07-30）
+
+- `20260729000006_hypothesis_registry.sql` 是唯一 Plan B migration；它不修改 `00005`，只给 Plan A bundle header/member 增加复合 candidate key，再由 Candidate snapshot/member 逐字段 FK 绑定 sealed 四-root authority。
+- `investigation_rollout` 默认固定 `legacy_candidate_v1 + legacy_only` 且禁止直接 mutation；`operation_joint_contract_rank()` 是 Tool Truth + Investigation 七个合法组合的数据库闭集。operation 两个 Investigation 字段不可变；fork adoption receipt 只能相邻 rank、append-only，并通过 deferred target FK 与 target operation 同事务提交。
+- canonical Registry 保存 root/revision、exact-one creating event、claim component、VerificationContract、HypothesisVerificationPlan/path、generation/transition/residual。Candidate origin只能创建四种非终态；`invalid`必须绑定 server validation receipt；Plan C revision adjudication authority尚未安装并固定拒绝。
+- Candidate snapshot 只能绑定完整 Plan A bundle；deferred trigger要求四个 ordinal/四个 root family exact set，`sealed_ready`还要求全部 `consistent_fresh`。Attempt/event、knowledge feed/product-version/match、replayable input chunks、H1 proposal census、recursive H2 coverage reviews与 phase transition 都保留 immutable/append-only spine。
+- projection source batch、redacted source snapshot/blob、entity direct predecessor、change、batch receipt、legacy projection version和comparison sample均append-only；source/projection heads是唯一可变行，并由完整batch/receipt的连续CAS trigger推进。Plan C future entity词汇只存在于closed projection catalog，`verification_capability_assessments`、revision adjudication/terminal-decision表仍不存在。
+- focused schema入口：`cargo nextest run -p golish-db --test hypothesis_registry`。
