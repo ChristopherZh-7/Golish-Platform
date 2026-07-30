@@ -200,6 +200,15 @@ impl CleanupCloseoutGateSnapshot {
 /// it through `DbTracker::repo()`.
 #[async_trait]
 pub trait DbRepoProvider: Send + Sync {
+    /// Read the immutable Tool Truth contract for a known operation. Test and
+    /// standalone adapters retain legacy behavior unless they model rollout.
+    async fn tool_truth_contract(
+        &self,
+        _operation_id: Uuid,
+    ) -> anyhow::Result<golish_pentest_domain::tool_truth::ToolTruthContract> {
+        Ok(golish_pentest_domain::tool_truth::ToolTruthContract::LegacyV1)
+    }
+
     // ── Wiki KB ─────────────────────────────────────────────────────────
 
     async fn wiki_upsert_page(&self, page: &NewWikiPage) -> anyhow::Result<()>;

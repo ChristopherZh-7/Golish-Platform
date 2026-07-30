@@ -3172,6 +3172,7 @@ mod tests {
             profile: "assessment".to_string(),
             current_stage: "scoping".to_string(),
             runtime_memory_contract: contract.to_string(),
+            tool_truth_contract: "legacy_v1".to_string(),
             project_scope_id: Some(project_scope_id),
             stage_started_at: Utc::now(),
             last_evidence_audit_id: None,

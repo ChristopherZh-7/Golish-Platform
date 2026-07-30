@@ -6,6 +6,7 @@
 //! 是否算通过——取代旧的「子 agent 跑完即通过」。纯函数部分单测覆盖。
 
 use chrono::{DateTime, Utc};
+use golish_pentest_domain::tool_truth::ToolTruthContract;
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::collections::{BTreeSet, HashMap};
@@ -161,9 +162,16 @@ fn target_intel_deliverable_with_organization_aliases(
     normalized
 }
 
-fn trusted_enumeration_blocked_source(technique: &str, source: Option<&str>) -> bool {
+fn trusted_enumeration_blocked_source(
+    contract: ToolTruthContract,
+    technique: &str,
+    source: Option<&str>,
+) -> bool {
     match source {
-        Some(TRUSTED_ENUM_BLOCKED_SOURCE) => ENUM_CONTENT_TECHNIQUES.contains(&technique),
+        Some(TRUSTED_ENUM_BLOCKED_SOURCE) => {
+            !contract.enforces_fail_safe_projection()
+                && ENUM_CONTENT_TECHNIQUES.contains(&technique)
+        }
         Some(TRUSTED_ENUM_ROUTE_RECOVERY_BLOCKED_SOURCE) => technique == "GOLISH-ENUM-DIR",
         Some(TRUSTED_ENUM_COLLECTION_RECOVERY_BLOCKED_SOURCE) => matches!(
             technique,
@@ -300,6 +308,15 @@ pub fn apply_technique_outcome_rows(
     facts: &mut Vec<EvidenceFact>,
     rows: &[TechniqueOutcomeFact],
 ) {
+    apply_technique_outcome_rows_for_contract(ToolTruthContract::LegacyV1, stage, facts, rows);
+}
+
+pub fn apply_technique_outcome_rows_for_contract(
+    contract: ToolTruthContract,
+    stage: StageKind,
+    facts: &mut Vec<EvidenceFact>,
+    rows: &[TechniqueOutcomeFact],
+) {
     let enumeration_blocked_evidence: std::collections::HashSet<(String, String, i64)> =
         if stage == StageKind::Enumeration {
             facts
@@ -421,7 +438,7 @@ pub fn apply_technique_outcome_rows(
         }
         if stage == StageKind::Enumeration
             && outcome == "blocked"
-            && !trusted_enumeration_blocked_source(technique, source.as_deref())
+            && !trusted_enumeration_blocked_source(contract, technique, source.as_deref())
         {
             return None;
         }
@@ -753,6 +770,18 @@ pub async fn evaluate_org_stage_gate(
                 Default::default(),
             )
         }
+    };
+    let tool_truth_contract = match operation_id {
+        Some(operation_id) => match repo.tool_truth_contract(operation_id).await {
+            Ok(contract) => contract,
+            Err(error) => {
+                return GateResult::block(
+                    vec![format!("Tool Truth contract query failed: {error}")],
+                    Default::default(),
+                )
+            }
+        },
+        None => ToolTruthContract::LegacyV1,
     };
     if let Some(error) = current_wave_gate_error(current_wave, org_id, stage) {
         return GateResult::block(vec![error], Default::default());
@@ -1224,7 +1253,12 @@ pub async fn evaluate_org_stage_gate(
     } else if stage == StageKind::VulnTriage {
         not_applicable_coverage.extend(vuln_not_applicable_from_outcomes(&outcome_rows));
     }
-    apply_technique_outcome_rows(stage, &mut facts, &outcome_rows);
+    apply_technique_outcome_rows_for_contract(
+        tool_truth_contract,
+        stage,
+        &mut facts,
+        &outcome_rows,
+    );
 
     let source_queries = match (stage_accepts_source_query_completion(stage), org_id) {
         (true, Some(oid)) => match repo.source_query_facts(oid, session_id).await {
@@ -2210,6 +2244,54 @@ mod tests {
             );
             assert_eq!(facts.len(), 1, "preflight should own blocked {technique}");
         }
+    }
+
+    #[test]
+    fn preflight_blocked_is_prerequisite_gap_not_content_coverage() {
+        let mut facts = vec![EvidenceFact {
+            asset: "https://app.example.test".to_string(),
+            technique: "GOLISH-ENUM-JS".to_string(),
+            outcome: EvidenceOutcome::Blocked,
+            evidence_id: 41,
+        }];
+        apply_technique_outcome_rows_for_contract(
+            golish_pentest_domain::tool_truth::ToolTruthContract::ReceiptV1,
+            StageKind::Enumeration,
+            &mut facts,
+            &[TechniqueOutcomeFact::new(
+                "https://app.example.test",
+                "GOLISH-ENUM-JS",
+                "blocked",
+                41,
+                Some(TRUSTED_ENUM_BLOCKED_SOURCE.to_string()),
+            )],
+        );
+        assert!(facts.is_empty());
+    }
+
+    #[test]
+    fn legacy_preflight_rows_keep_frozen_compatibility() {
+        let mut facts = vec![EvidenceFact {
+            asset: "https://legacy.example.test".to_string(),
+            technique: "GOLISH-ENUM-JS".to_string(),
+            outcome: EvidenceOutcome::Blocked,
+            evidence_id: 42,
+        }];
+        apply_technique_outcome_rows_for_contract(
+            golish_pentest_domain::tool_truth::ToolTruthContract::LegacyV1,
+            StageKind::Enumeration,
+            &mut facts,
+            &[TechniqueOutcomeFact::new(
+                "https://legacy.example.test",
+                "GOLISH-ENUM-JS",
+                "blocked",
+                42,
+                Some(TRUSTED_ENUM_BLOCKED_SOURCE.to_string()),
+            )],
+        );
+        assert!(facts
+            .iter()
+            .any(|fact| fact.outcome == EvidenceOutcome::Blocked));
     }
 
     #[test]

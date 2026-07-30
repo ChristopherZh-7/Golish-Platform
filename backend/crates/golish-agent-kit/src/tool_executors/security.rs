@@ -1414,7 +1414,7 @@ fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverag
         "max_page_size": 50,
         "worklist_semantics": "This list is derived from check_stage_asset_coverage and narrowed to EAS-confirmed exact web origins. Pending/error/partial roots are unfinished. Run enum_preflight_web_origins once on each page before producers. Fresh exact-origin producer evidence owns found/empty. Blocked requires current-target evidence from preflight on all four axes, route recovery on DIR, or browser recovery on JS/JSAPI/PARAM. Business rows remain discovery context.",
         "execution_order": [
-            "enum_preflight_web_origins once for the page; exclude only trusted blocked roots from producers",
+            "enum_preflight_web_origins once for the page; keep transport-prerequisite failures partial and route them to the producer or an approved alternate transport",
             "enum_crawl_same_origin_urls once as bounded same-origin browser seed discovery",
             "browser_collect_js_api for GOLISH-ENUM-JS plus runtime API/parameter outcomes",
             "js_extract_apis",
@@ -1422,7 +1422,7 @@ fn enumeration_web_roots_worklist(snapshot: Value, limit: usize, include_coverag
             "parameter extraction from observed requests, query strings, forms, and targeted param_hints",
             "check_stage_asset_coverage before submit_stage_deliverable"
         ],
-        "tool_boundary": "Call enum_preflight_web_origins first with target_id + exact target_url, then call browser_collect_js_api/js_extract_apis/route_probe_paths only for reachable/pending roots; use enum_crawl_same_origin_urls for bounded crawler supplements. Model-authored terminal_exceptions and coverage are forbidden. A direct producer may publish blocked only after its bounded backend recovery breaker exhausts; do not retry a persisted recovery_exhausted blocked cell. Directory discovery must use route_probe_paths. Do not use ffuf/gobuster/feroxbuster, raw katana/pentest_run, or manage_targets in enumeration.",
+        "tool_boundary": "Call enum_preflight_web_origins first with target_id + exact target_url, then call browser_collect_js_api/js_extract_apis/route_probe_paths for reachable or still-partial roots; a preflight transport failure is a prerequisite gap, not content coverage. Use enum_crawl_same_origin_urls for bounded crawler supplements. Model-authored terminal_exceptions and coverage are forbidden. A direct producer may publish blocked only after its bounded backend recovery breaker exhausts; do not retry a persisted recovery_exhausted blocked cell. Directory discovery must use route_probe_paths. Do not use ffuf/gobuster/feroxbuster, raw katana/pentest_run, or manage_targets in enumeration.",
     })
 }
 
@@ -1995,7 +1995,7 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
         "worklist_contract": if is_eas {
             "Items are derived from DB/gate truth. Close each suggested_capabilities item for the named asset x technique cell; suggested_tools are implementation hints. For WEB fingerprint cells, copy recommended_args.target_urls unchanged into eas_fingerprint_web_stack.target_urls and never rebuild a scheme from a port number. EAS tool split: httpx only for domain/URL/web-origin liveness, naabu/masscan for concrete IP/CIDR port discovery and alive-by-port, nmap -sV for every confirmed open port including newly discovered ports, and whatweb once per confirmed HTTP(S) web origin. Refresh this worklist after tools land DB evidence; do not mark work complete by natural-language assertion."
         } else if is_enumeration {
-            "Items are derived from current-run fresh exact-origin technique_outcomes. One response contains at most 200 cells and at most 50 distinct exact-origin roots; deduplicate items by asset, call enum_preflight_web_origins once for those roots, then send only reachable/pending roots to content producers. Resume ordinary partial/error results, but do not retry a producer cell after a persisted recovery_exhausted blocked outcome. Non-empty terminal_exceptions are rejected. Business rows and deliverable prose cannot create terminal outcomes."
+            "Items are derived from current-run fresh exact-origin technique_outcomes. One response contains at most 200 cells and at most 50 distinct exact-origin roots; deduplicate items by asset, call enum_preflight_web_origins once for those roots, then send reachable and transport-partial roots to content producers or an approved alternate transport. Resume ordinary partial/error results, but do not retry a producer cell after a persisted recovery_exhausted blocked outcome. Non-empty terminal_exceptions are rejected. Business rows and deliverable prose cannot create terminal outcomes."
         } else {
             "Items are derived from DB/gate truth. Close the suggested_capabilities for each asset x technique cell; suggested_tools are implementation hints. Then call stage_worklist_next/status again; do not mark work complete by natural-language assertion."
         },
@@ -2133,7 +2133,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
     } else if is_eas {
         "Do not submit yet. Close EAS gap_examples by the tool boundary: domain/URL/web-origin LIVENESS uses httpx; concrete IP/CIDR LIVENESS uses naabu/masscan PORT discovery first; SERVICE uses eas_fingerprint_services/nmap -sV for every confirmed open host:port set (use details.missing_open_ports when present). WhatWeb is HTTP(S)-only technology fingerprinting, not a generic service-fingerprint fallback."
     } else {
-        "Do not submit yet. Close pending/error/partial cells with the suggested tools. For pending Enumeration roots, run enum_preflight_web_origins first; never hand-author blocked/not_applicable coverage, and honor persisted producer recovery-exhausted blocked outcomes as terminal."
+        "Do not submit yet. Close pending/error/partial cells with the suggested tools. For pending Enumeration roots, run enum_preflight_web_origins first; preflight transport failures remain partial and require the content producer or an approved alternate transport. Never hand-author blocked/not_applicable coverage, and honor persisted producer recovery-exhausted blocked outcomes as terminal."
     };
     let mut out = json!({
         "ready_to_submit": ready_to_submit,
@@ -2166,7 +2166,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
         out["eas_transport_excluded_origins"] =
             Value::Array(excluded.into_iter().take(50).collect());
         out["worklist_semantics"] = json!("Enumeration assets are narrowed to EAS-confirmed live web roots and keyed by exact Web Origin. Only current-run fresh exact-origin technique_outcomes close JS/JSAPI/DIR/PARAM as found or checked_empty; directory_entries/api_endpoints/js_analysis_results are discovery context and cannot close a cell.");
-        out["deliverable_contract"] = json!("Submit findings: [] and coverage: []. Fresh exact-origin producer outcomes own found/empty. enum_preflight_web_origins evidence owns all-axis transport blocked; route_probe_paths recovery evidence owns DIR blocked; browser_collect_js_api recovery evidence owns JS/JSAPI/PARAM blocked. Non-web/rootless hosts never enter the denominator, and business rows or prose cannot close cells.");
+        out["deliverable_contract"] = json!("Submit findings: [] and coverage: []. Fresh exact-origin content producers own found/empty. enum_preflight_web_origins records only a nonterminal transport prerequisite gap; route_probe_paths recovery evidence owns DIR blocked; browser_collect_js_api recovery evidence owns JS/JSAPI/PARAM blocked. Non-web/rootless hosts never enter the denominator, and business rows or prose cannot close cells.");
     } else if is_eas {
         out["worklist_semantics"] = json!("EAS cells are split by asset and technique: domain/URL assets need HTTP liveness; concrete IP/CIDR assets need port discovery first, and fresh open-port/no-open-port evidence closes their LIVENESS. Port discovery should be batch-first with naabu/masscan; service fingerprinting is eas_fingerprint_services/nmap -sV on every confirmed open port, including details.missing_open_ports when present; WEB-FINGERPRINT is WhatWeb per confirmed HTTP(S) origin.");
         out["deliverable_contract"] = json!("Submit only slim terminal coverage the DB cannot derive. DB-derived found domain/URL LIVENESS comes from httpx; concrete IP/CIDR LIVENESS and PORT come from naabu/masscan output-store writes; SERVICE-FINGERPRINT found comes from nmap/port-level service landing for every confirmed open port; WEB-FINGERPRINT comes from WhatWeb web-origin fingerprints. WhatWeb does not replace IP:port SERVICE-FINGERPRINT.");
@@ -3195,11 +3195,10 @@ mod tests {
         assert!(compact["deliverable_contract"]
             .as_str()
             .unwrap()
-            .contains("Fresh exact-origin producer outcomes"));
-        assert!(compact["deliverable_contract"]
-            .as_str()
-            .unwrap()
-            .contains("enum_preflight_web_origins evidence owns all-axis transport blocked"));
+            .contains("Fresh exact-origin content producers"));
+        assert!(compact["deliverable_contract"].as_str().unwrap().contains(
+            "enum_preflight_web_origins records only a nonterminal transport prerequisite gap"
+        ));
         assert!(compact["deliverable_contract"]
             .as_str()
             .unwrap()

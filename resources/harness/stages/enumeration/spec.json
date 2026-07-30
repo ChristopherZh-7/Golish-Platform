@@ -32,13 +32,19 @@
       "op": "for_all",
       "over": "claims",
       "require": { "pred": "non_empty", "field": "evidence_ids" },
-      "on_fail": { "reason": "claim evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_ids unless a real ledger id is explicitly available"] }
+      "on_fail": {
+        "reason": "claim evidence ids are optional; cited ids, if any, must be real",
+        "hints": ["omit evidence_ids unless a real ledger id is explicitly available"]
+      }
     },
     {
       "op": "for_all",
       "over": "findings",
       "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "finding evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
+      "on_fail": {
+        "reason": "finding evidence ids are optional; cited ids, if any, must be real",
+        "hints": ["omit evidence_refs unless a real ledger id is explicitly available"]
+      }
     },
     {
       "op": "coverage_complete",
@@ -46,12 +52,12 @@
       "authoritative_found": true,
       "require_note_for_other": true,
       "error_is_terminal": false,
-      "$comment_derive": "Enumeration is current-run evidence authoritative on the exact Web Origin × four-axis matrix. found/checked_empty ownership is unchanged and strict: JS=browser_collect_js_api, JSAPI/PARAM=js_extract_apis, DIR=route_probe_paths. Browser/JS endpoint success must also publish the normalized operation+origin endpoint/parameter manifest; manifest persistence failure keeps JSAPI/PARAM incomplete. blocked has a separate narrow producer matrix: enum_preflight_web_origins + enumeration_transport_blocked may close JS/DIR/PARAM/JSAPI; route_probe_paths + dir_probe_recovery_exhausted may close DIR only; browser_collect_js_api + enumeration_collection_recovery_exhausted may close JS/JSAPI/PARAM only. Every terminal projection requires fresh evidence bound to the current organization, authorized target, exact origin, technique, outcome, and evidence id. Model-authored blocked/not_applicable cannot close a cell.",
+      "$comment_derive": "Enumeration is current-run evidence authoritative on the exact Web Origin × four-axis matrix. found/checked_empty ownership is strict: JS=browser_collect_js_api, JSAPI/PARAM=js_extract_apis, DIR=route_probe_paths. Browser/JS endpoint success must also publish the normalized operation+origin endpoint/parameter manifest; manifest persistence failure keeps JSAPI/PARAM incomplete. enum_preflight_web_origins records a transport prerequisite gap and leaves every content axis partial. blocked has a narrow producer matrix: route_probe_paths + dir_probe_recovery_exhausted may close DIR only; browser_collect_js_api + enumeration_collection_recovery_exhausted may close JS/JSAPI/PARAM only. Every terminal projection requires fresh evidence bound to the current organization, authorized target, exact origin, technique, outcome, and evidence id. Model-authored blocked/not_applicable cannot close a cell.",
       "on_fail": {
         "reason": "content enumeration incomplete: some alive in-scope services were not fully enumerated (js/api / dir / param)",
         "hints": [
           "for EVERY EAS-confirmed live web root, take GOLISH-ENUM-JSAPI (browser_collect_js_api -> mandatory same-set js_extract_apis), GOLISH-ENUM-DIR (route_probe_paths once after JS/API landing with target_id + base_url; omit wordlist_recursion_depth for the finite default that runs DB/observed/curated parent probes plus one local/built-in root wordlist pass; explicit 1..6 recursion is opt-in and any candidate-generation limit remains partial), and GOLISH-ENUM-PARAM (browser observations remain raw/partial until same-set js_extract_apis folds request/query/form parameters and static param_hints) to a terminal state",
-          "do NOT hand-write coverage cells: fresh exact-origin producer outcomes close found/checked_empty; trusted current-target evidence may close blocked only through enum_preflight_web_origins transport preflight, route_probe_paths DIR recovery exhaustion, or browser_collect_js_api JS/JSAPI/PARAM recovery exhaustion. A producer-reported persisted blocked/recovery_exhausted cell is terminal and must not be retried. Raw non-web/rootless hosts never enter the denominator; raw business rows and deliverable prose cannot close cells; submit coverage=[]"
+          "do NOT hand-write coverage cells: fresh exact-origin content producer outcomes close found/checked_empty; enum_preflight_web_origins transport failures remain partial and require the producer or an approved alternate transport. Trusted current-target evidence may close blocked only through route_probe_paths DIR recovery exhaustion or browser_collect_js_api JS/JSAPI/PARAM recovery exhaustion. A producer-reported persisted blocked/recovery_exhausted cell is terminal and must not be retried. Raw non-web/rootless hosts never enter the denominator; raw business rows and deliverable prose cannot close cells; submit coverage=[]"
         ]
       }
     }
@@ -59,7 +65,10 @@
 
   "$comment_expected_techniques": "\u679a\u4e3e\u9636\u6bb5\u5185\u5bb9\u6280\u672f\uff08GOLISH-ENUM-*\uff0c\u767b\u8bb0\u4e8e technique_taxonomy.json\uff09\u3002\u9636\u6bb5\u91cd\u6392 2026-06-09\uff1a\u7aef\u53e3/\u670d\u52a1\u5df2\u5728 EAS \u505a\uff0c\u672c\u9636\u6bb5\u53ea\u6316\u5185\u5bb9\u3002coverage_complete \u5bf9\u6bcf\u4e2a\u5b58\u6d3b\u670d\u52a1\u9010\u7c7b\u6838\u7ec8\u6001\uff1b\u4ea7\u51fa\u53ef\u6d4b\u5355\u5143\u662f vuln_triage total_units \u5206\u6bcd\u6765\u6e90\u3002",
   "expected_techniques": [
-    "GOLISH-ENUM-JS", "GOLISH-ENUM-DIR", "GOLISH-ENUM-PARAM", "GOLISH-ENUM-JSAPI"
+    "GOLISH-ENUM-JS",
+    "GOLISH-ENUM-DIR",
+    "GOLISH-ENUM-PARAM",
+    "GOLISH-ENUM-JSAPI"
   ],
 
   "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout \u00a73.2): specialist = the per-org sub-agent stage_run fans out (enumeration \u2192 enumerator, the ACTIVE content-enumeration specialist split from Pentester, mirroring prober for EAS); coverage_axis = the human-readable technique columns StageRunView renders per org row (one per expected technique: js / dir / param / jsapi).",
@@ -75,10 +84,7 @@
     "global_provider_cap": 4,
     "max_workers": 3,
     "max_dynamic_requests": 8,
-    "allowed_dynamic_request_kinds": [
-      "content_enumeration",
-      "coverage_recheck"
-    ],
+    "allowed_dynamic_request_kinds": ["content_enumeration", "coverage_recheck"],
     "max_dynamic_subject_refs": 32,
     "risk_lane": "active_recon"
   },

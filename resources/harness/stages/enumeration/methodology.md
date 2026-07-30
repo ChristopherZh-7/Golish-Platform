@@ -303,9 +303,10 @@ downstream scan input.
   If `ready_to_submit=false`, use `stage_worklist_next.items` first and
   `gap_examples` as supporting context to enumerate the missing service/technique
   cells. For pending roots, run `enum_preflight_web_origins` before content
-  producers. Transport preflight may block all four axes; after bounded producer
-  recovery, `route_probe_paths` may block DIR only and `browser_collect_js_api`
-  may block JS/JSAPI/PARAM only. A persisted producer `blocked` outcome with
+  producers. A transport prerequisite failure leaves all four axes partial;
+  continue with the content producer or an operator-approved alternate
+  transport. After bounded producer recovery, `route_probe_paths` may block DIR
+  only and `browser_collect_js_api` may block JS/JSAPI/PARAM only. A persisted producer `blocked` outcome with
   `recovery_exhausted=true` is terminal and must not be retried.
   Submit only when the latest preflight says `ready_to_submit=true`, with
   `coverage: []`. This is a
@@ -315,12 +316,13 @@ downstream scan input.
   `directory_entries`, `api_endpoints`, and
   `js_analysis_results` retain discovery truth, but only the current stage-run's
   fresh exact-origin `technique_outcomes` plus matching evidence close
-  Enumeration cells. For `blocked`, the evidence producer/kind/axis must be one
-  of: `enum_preflight_web_origins` + `enumeration_transport_blocked` on any of
-  the four axes; `route_probe_paths` + `dir_probe_recovery_exhausted` on DIR;
-  `browser_collect_js_api` + `enumeration_collection_recovery_exhausted` on
-  JS/JSAPI/PARAM. `error` and `partial` remain unfinished and cannot produce a
-  pass token. Trusted context alone supplies `not_applicable`.
+  Enumeration cells. `enum_preflight_web_origins` records only the nonterminal
+  `enumeration_transport_prerequisite_failed` gap. For `blocked`, the evidence
+  producer/kind/axis must be `route_probe_paths` +
+  `dir_probe_recovery_exhausted` on DIR or `browser_collect_js_api` +
+  `enumeration_collection_recovery_exhausted` on JS/JSAPI/PARAM. `error` and
+  `partial` remain unfinished and cannot produce a pass token. Trusted context
+  alone supplies `not_applicable`.
 - A terminal `found`/`empty`/`blocked` also requires real evidence from the same current
   session, organization, authorized target, exact-origin asset, technique, and
   outcome, created after the stage freshness cutoff. Evidence is appended to an

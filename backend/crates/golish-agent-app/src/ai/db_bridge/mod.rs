@@ -96,6 +96,15 @@ fn summarize_scope_review_results(
 
 #[async_trait]
 impl DbRepoProvider for GolishDbRepoProvider {
+    async fn tool_truth_contract(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<golish_pentest_domain::tool_truth::ToolTruthContract> {
+        golish_db::repo::operation_state::get_tool_truth_contract(&self.pool, operation_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_OPERATION_CONTRACT_MISSING"))
+    }
+
     // ── Wiki KB ──────────────────────────────────────────────
     async fn wiki_upsert_page(&self, page: &NewWikiPage) -> anyhow::Result<()> {
         self.wiki_upsert_page_impl(page).await
