@@ -29,6 +29,7 @@ pub mod tool_name;
 
 pub mod event_emitter;
 pub mod hitl;
+pub mod investigation_contract;
 pub mod jsonl;
 pub mod os;
 pub mod paths;
@@ -65,6 +66,11 @@ pub use events::*; // Re-export all event types
 pub use hitl::{
     ApprovalDecision, ApprovalPattern, RiskLevel, ToolApprovalConfig,
     HITL_AUTO_APPROVE_MIN_APPROVALS, HITL_AUTO_APPROVE_THRESHOLD,
+};
+pub use investigation_contract::{
+    CampaignWritePolicy, ComparePolicy, InvestigationAuthority, InvestigationContractParseError,
+    InvestigationContractVersion, InvestigationErrorCode, InvestigationModePolicy,
+    InvestigationRolloutMode, LegacyProjectionPolicy,
 };
 pub use message::{PromptPart, PromptPayload};
 pub use pentest_context::PentestEngineContext;

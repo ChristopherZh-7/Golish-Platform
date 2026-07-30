@@ -24,7 +24,7 @@
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
 | golish-platform | 跨平台抽象层，全仓库唯一允许写 cfg(target_os) 的地方 | [→](backend/golish-platform.md) | ✅ |
-| golish-core | 最底层基础类型与 trait（Tool/会话/HITL/operation rollout + opaque Candidate context + safe terminal/consolidation trace wire） | [→](backend/golish-core.md) | ✅ |
+| golish-core | 最底层基础类型与 trait（Tool/会话/HITL/operation rollout + Investigation 五态 contract/policy + opaque Candidate context + safe terminal/consolidation trace wire） | [→](backend/golish-core.md) | ✅ |
 | golish-settings | 集中式 TOML 配置（env 插值/原子写/类型安全 schema） | [→](backend/golish-settings.md) | ✅ |
 | golish-events | AI 事件协调 + transcript/op_trace（含 Candidate Attempt terminal / Wave consolidation 安全摘要） | [→](backend/golish-events.md) | ✅ |
 | golish-models | LLM 模型注册表与能力定义（metadata 取代字符串猜） | [→](backend/golish-models.md) | ✅ |

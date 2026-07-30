@@ -26,6 +26,8 @@
 | `GolishRuntime` / `RuntimeEvent` / `ApprovalResult` | 运行时抽象 |
 | `TaskPlan` / `PlanStep` / `StepStatus` | 计划系统类型 |
 | `AttackExecutionContract` | operation-frozen Candidate 执行 rollout 枚举；稳定值为 `legacy` / `dual_write_read_legacy` / `dual_write_read_v2_fallback` / `v2_only` |
+| `InvestigationContractVersion` / `InvestigationRolloutMode` / `InvestigationModePolicy` | Candidate/Hypothesis Registry 的 operation-frozen contract、五态 rollout 与唯一纯 policy matrix；未知 wire 值严格拒绝，不 fallback |
+| `InvestigationErrorCode` | Investigation read/write/authority 边界使用的 8 个稳定错误码闭集 |
 | `CandidateAttemptContextRef` / `check_candidate_tool_boundary` | opaque verifier identity 与 dependency-floor closed-tool/foreground guard；不携带 plan/action/budget/scope |
 | HITL：`ApprovalDecision` / `ApprovalPattern` / `RiskLevel` / `ToolApprovalConfig` | 人类在环审批 |
 | `PromptContributor` / `PromptContext` / `PromptSection` | prompt 组装贡献机制 |
@@ -52,12 +54,13 @@
 
 ## 关键文件（单文件模块）
 
-`agent_mode.rs`、`agent_session.rs`、`attack_execution.rs`、`hitl.rs`、`plan.rs`、`prompt.rs`、`runtime.rs`、`session_manager.rs`、`tool.rs`、`tool_args.rs`、`textual_tool_call.rs`、`ready_gate.rs`、`skill_provider.rs`、`pentest_context.rs`、`event_emitter.rs`、`vault.rs`、`web_fetch.rs`、`paths.rs`、`os.rs`、`jsonl.rs`、`time.rs`、`utils.rs`、`message.rs`、`api_request_stats.rs`、`session_kind.rs`。
+`agent_mode.rs`、`agent_session.rs`、`attack_execution.rs`、`investigation_contract.rs`、`hitl.rs`、`plan.rs`、`prompt.rs`、`runtime.rs`、`session_manager.rs`、`tool.rs`、`tool_args.rs`、`textual_tool_call.rs`、`ready_gate.rs`、`skill_provider.rs`、`pentest_context.rs`、`event_emitter.rs`、`vault.rs`、`web_fetch.rs`、`paths.rs`、`os.rs`、`jsonl.rs`、`time.rs`、`utils.rs`、`message.rs`、`api_request_stats.rs`、`session_kind.rs`。
 
 ## 注意事项 / 坑
 
 - 跨 IPC 的类型若在此定义，必须 `#[derive(ts_rs::TS)]` 同步前端（不变量 I5）。
 - `AttackExecutionContract` 在这里仅定义稳定纯类型与 rollout 语义；deployment default、operation row 冻结、DB constraint/immutable trigger 属于 Candidate V2 后续 schema/repo task，不能用环境变量在 operation 中途覆盖。
+- `InvestigationRolloutMode::policy()` 是 Plan B/C/D 共用的唯一 final policy。这里不读取 deployment/operation row；上层必须先冻结合法 contract/mode pair，再消费 policy，不能按组件另造布尔解释。
 - `agent_session.rs` 的 task-local attribution 是 best-effort：只对 inline awaited work 生效，启动后台 job 时要立即 capture，不能等到 spawned task 里再读。`AgentToolContext.operation_id` 来自 runtime 的 active harness operation/stage attempt，不能从模型参数猜；`organization_id` 承载当前 harness org。后台 completion 用这些可信绑定把结构化扫描结果、证据和 coverage outcome 写回正确 run/org。
 - `AgentToolCancellation` 是 sticky task-local取消通道：wrapper/runner在 inline scope捕获 clone，Stop 后所有观察者都能看到同一状态；等待实现必须在注册 `Notify` 前后都重查 flag，避免 cancel 与 waiter注册竞态。它只传递取消，不替代具体工具的 kill/await/landing责任。
 - direct/bridge 工具如果要让前端实时看到“工具现在在看什么”，用 `emit_current_agent_tool_output_chunk` 发 chunk；主 loop / sub-agent executor 会注入 `with_agent_tool_output_sender`。如果工具自己 `tokio::spawn` 读子进程 stderr/stdout，必须先在 inline scope capture `current_agent_tool_context()` 和 `current_agent_tool_output_sender()`，spawn 里不能再读 task-local。
