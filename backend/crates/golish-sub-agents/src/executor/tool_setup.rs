@@ -20,6 +20,37 @@ use crate::executor_types::{
 };
 use crate::MAX_AGENT_DEPTH;
 
+pub(super) fn is_closed_candidate_analysis_role(agent_id: &str) -> bool {
+    matches!(
+        agent_id,
+        "candidate_hypothesis_controller"
+            | "candidate_hypothesis_analyst"
+            | "merge_conflict_critic"
+    )
+}
+
+/// Fail closed if a mutable/custom definition attempts to widen one of the
+/// three built-in Candidate reasoning roles.
+pub(super) fn validate_closed_candidate_analysis_definition(
+    agent_def: &SubAgentDefinition,
+) -> anyhow::Result<()> {
+    if !is_closed_candidate_analysis_role(&agent_def.id) {
+        return Ok(());
+    }
+    if !agent_def.readonly
+        || agent_def.allowed_tools.as_slice() != [BARRIER_TOOL_NAME]
+        || !agent_def.delegatable_agents.is_empty()
+        || agent_def.prompt_template.is_some()
+    {
+        anyhow::bail!(
+            "closed Candidate analysis role {} must be read-only, static-prompt, non-delegating, and expose only {}",
+            agent_def.id,
+            BARRIER_TOOL_NAME
+        );
+    }
+    Ok(())
+}
+
 /// Construct the full tool list for a sub-agent iteration.
 pub(super) async fn build_tool_definitions<P: ToolProvider>(
     agent_def: &SubAgentDefinition,
@@ -28,6 +59,13 @@ pub(super) async fn build_tool_definitions<P: ToolProvider>(
     tool_provider: &P,
 ) -> Vec<ToolDefinition> {
     let agent_id = &agent_def.id;
+
+    // This hard boundary deliberately bypasses static catalogues, mutable MCP
+    // registries, stage leader controls and nested delegation. Even if another
+    // layer is misconfigured, a closed Candidate reasoner sees one barrier.
+    if is_closed_candidate_analysis_role(agent_id) {
+        return vec![barrier_tool_definition(false)];
+    }
 
     // Filter static catalogue against the agent's allowlist.
     let all_tools = tool_provider.get_all_tool_definitions();
@@ -427,6 +465,35 @@ mod tests {
                 "required": ["plan"]
             }),
         }
+    }
+
+    #[test]
+    fn candidate_hypothesis_definition_rejects_every_authority_widening() {
+        let valid = SubAgentDefinition::new(
+            "candidate_hypothesis_analyst",
+            "Candidate Hypothesis Analyst",
+            "closed",
+            "closed",
+        )
+        .with_tools(vec![BARRIER_TOOL_NAME.to_string()])
+        .with_readonly(true);
+        validate_closed_candidate_analysis_definition(&valid).expect("closed definition");
+
+        let mut writable = valid.clone();
+        writable.readonly = false;
+        assert!(validate_closed_candidate_analysis_definition(&writable).is_err());
+
+        let mut mcp_widened = valid.clone();
+        mcp_widened.allowed_tools.push("mcp_dynamic".to_string());
+        assert!(validate_closed_candidate_analysis_definition(&mcp_widened).is_err());
+
+        let mut delegating = valid.clone();
+        delegating.delegatable_agents.push("researcher".to_string());
+        assert!(validate_closed_candidate_analysis_definition(&delegating).is_err());
+
+        let mut generated = valid;
+        generated.prompt_template = Some("mutable architect".to_string());
+        assert!(validate_closed_candidate_analysis_definition(&generated).is_err());
     }
 
     #[test]

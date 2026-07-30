@@ -1,7 +1,8 @@
 use super::builder::{create_default_sub_agents, create_default_sub_agents_from_registry};
 use super::prompts::{
-    build_attack_analyst_prompt, build_browser_prompt, build_candidate_verifier_prompt,
-    build_coder_prompt, build_enumerator_prompt, build_orchestrator_prompt, build_pentester_prompt,
+    build_attack_analyst_prompt, build_browser_prompt, build_candidate_hypothesis_analyst_prompt,
+    build_candidate_verifier_prompt, build_coder_prompt, build_enumerator_prompt,
+    build_merge_conflict_critic_prompt, build_orchestrator_prompt, build_pentester_prompt,
     build_planner_prompt, build_post_exploit_operator_prompt, build_prober_prompt,
     build_recon_prompt, build_researcher_prompt, build_vuln_scanner_prompt,
 };
@@ -17,7 +18,7 @@ fn test_create_default_sub_agents_count() {
     // active surface-mapper) + enumerator (enumeration active content-mapper)
     // + vuln_scanner (formulaic vuln-triage worker) + post_exploit_operator —
     // the stage_run per-org specialists (2026-06-13-stage-run-fanout / C6 P6b).
-    assert_eq!(agents.len(), 20);
+    assert_eq!(agents.len(), 23);
 }
 
 #[test]
@@ -36,6 +37,9 @@ fn test_create_default_sub_agents_ids() {
     assert!(ids.contains(&"enumerator"));
     assert!(ids.contains(&"vuln_scanner"));
     assert!(ids.contains(&"attack_analyst"));
+    assert!(ids.contains(&"candidate_hypothesis_controller"));
+    assert!(ids.contains(&"candidate_hypothesis_analyst"));
+    assert!(ids.contains(&"merge_conflict_critic"));
     assert!(ids.contains(&"candidate_verifier"));
     assert!(ids.contains(&"post_exploit_operator"));
     assert!(ids.contains(&"memorist"));
@@ -598,6 +602,101 @@ fn candidate_specialist_prompts_do_not_own_the_durable_wave_cursor() {
         );
     }
     assert!(verifier.contains("never accepts, consumes, or opens"));
+}
+
+#[test]
+fn candidate_hypothesis_team_has_exact_tool_free_readonly_surface() {
+    let agents = create_default_sub_agents();
+    let expected = [
+        "candidate_hypothesis_controller",
+        "candidate_hypothesis_analyst",
+        "merge_conflict_critic",
+    ];
+
+    for id in expected {
+        let agent = agents
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .unwrap_or_else(|| panic!("missing Candidate analysis role {id}"));
+        assert!(agent.readonly, "{id} must be read-only");
+        assert_eq!(agent.allowed_tools, ["submit_result"]);
+        assert!(agent.delegatable_agents.is_empty());
+        assert_eq!(agent.max_iterations, 8);
+        assert_eq!(agent.idle_timeout_secs, Some(180));
+        for forbidden in [
+            "run_pty_cmd",
+            "pentest_run",
+            "web_search",
+            "web_fetch",
+            "browser_collect_js_api",
+            "search_knowledge_base",
+            "read_knowledge",
+            "write_knowledge",
+            "ingest_cve",
+            "feed_refresh",
+        ] {
+            assert!(!has_tool(agent, forbidden), "{id} exposes {forbidden}");
+        }
+    }
+
+    let controller = agents
+        .iter()
+        .find(|agent| agent.id == "candidate_hypothesis_controller")
+        .expect("controller");
+    assert!(controller.system_prompt.contains("unique final submitter"));
+    assert!(controller
+        .system_prompt
+        .contains("instruction_authority=false"));
+
+    let analyst = build_candidate_hypothesis_analyst_prompt();
+    for required in [
+        "closed frozen input",
+        "instruction_authority=false",
+        "knowledge_signal",
+        "unknown product version",
+        "stale feed",
+        "must not claim proof or refutation",
+        "must not invent identity or hash",
+    ] {
+        assert!(
+            analyst.contains(required),
+            "missing analyst rule: {required}"
+        );
+    }
+}
+
+#[test]
+fn merge_conflict_critic_prompt_closes_review_and_synthesis_schemas() {
+    let prompt = build_merge_conflict_critic_prompt();
+    for required in [
+        "proposal_conflict_review.v1",
+        "hypothesis_coverage_subreview.v1",
+        "hypothesis_coverage_synthesis.v1",
+        "attack-class",
+        "trust-boundary",
+        "second",
+        "third",
+        "designated immutable chunks",
+        "cross_chunk",
+        "cross_input_partition",
+        "cross_input_reduce",
+        "cross_dimension_reduce",
+        "global_semantic_root",
+        "transitive descendant-worker set",
+        "page receipt is not proof of understanding",
+        "sampling_omitted",
+        "blocked",
+        "degraded",
+    ] {
+        assert!(prompt.contains(required), "missing critic rule: {required}");
+    }
+    for forbidden_claim in [
+        "page receipt proves understanding",
+        "adequate means complete security coverage",
+        "knowledge_signal is proof",
+    ] {
+        assert!(!prompt.contains(forbidden_claim));
+    }
 }
 
 #[test]

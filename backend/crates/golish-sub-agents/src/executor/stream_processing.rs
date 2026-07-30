@@ -18,6 +18,8 @@ use crate::executor_types::wait_for_cancelled;
 use golish_core::events::AiEvent;
 use golish_llm_providers::{ProviderStreamQuirks, ReasoningHandling};
 
+use super::tool_setup::is_closed_candidate_analysis_role;
+
 /// Accumulated result from processing an LLM streaming response.
 pub(super) struct StreamResult {
     pub text_content: String,
@@ -414,6 +416,24 @@ where
         has_tool_calls = true;
     }
 
+    // Provider-side tool hallucinations must fail before dispatch. Tool setup
+    // hides every non-barrier tool and response parsing repeats the fence, but
+    // this streaming ingress check also covers native/textual calls fabricated
+    // by a provider without a supplied definition.
+    if is_closed_candidate_analysis_role(agent_id) {
+        if let Some(forbidden) = tool_calls_to_execute
+            .iter()
+            .find(|call| call.function.name != crate::executor_types::BARRIER_TOOL_NAME)
+        {
+            stream_error = Some(format!(
+                "closed Candidate analysis role attempted forbidden tool '{}'",
+                forbidden.function.name
+            ));
+            tool_calls_to_execute.clear();
+            has_tool_calls = false;
+        }
+    }
+
     // Record reasoning/thinking content on the llm_completion span if present.
     if !thinking_text.is_empty() {
         let mut end = thinking_text.len().min(2000);
@@ -465,6 +485,10 @@ mod tests {
     }
 
     async fn run(text: &str) -> StreamResult {
+        run_as("pentester", text).await
+    }
+
+    async fn run_as(agent_id: &str, text: &str) -> StreamResult {
         let mut stream = text_stream(text);
         let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
         let last_activity = Arc::new(AtomicU64::new(epoch_secs()));
@@ -472,7 +496,7 @@ mod tests {
         let span = tracing::Span::none();
         process_llm_stream(
             &mut stream,
-            "pentester",
+            agent_id,
             "req-1",
             &event_tx,
             &last_activity,
@@ -482,6 +506,22 @@ mod tests {
             &quirks,
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn candidate_hypothesis_stream_rejects_hallucinated_non_barrier_tool() {
+        let sr = run_as(
+            "candidate_hypothesis_controller",
+            "<tool_call><function=web_fetch><parameter=url>https://example.invalid</parameter></function></tool_call>",
+        )
+        .await;
+
+        assert!(!sr.has_tool_calls);
+        assert!(sr.tool_calls.is_empty());
+        assert!(sr
+            .stream_error
+            .as_deref()
+            .is_some_and(|error| error.contains("forbidden tool 'web_fetch'")));
     }
 
     #[tokio::test]

@@ -12,6 +12,7 @@
 
 mod code_research;
 mod execution_planning;
+mod hypothesis_analysis;
 mod orchestration;
 mod reporting;
 
@@ -20,6 +21,10 @@ pub(super) use execution_planning::{
     build_adviser_prompt, build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
     build_pentester_prompt, build_planner_prompt, build_prober_prompt, build_recon_prompt,
     build_reflector_prompt, build_vuln_scanner_prompt,
+};
+pub(super) use hypothesis_analysis::{
+    build_candidate_hypothesis_analyst_prompt, build_candidate_hypothesis_controller_prompt,
+    build_merge_conflict_critic_prompt,
 };
 pub(super) use orchestration::{
     build_attack_analyst_prompt, build_browser_prompt, build_candidate_verifier_prompt,

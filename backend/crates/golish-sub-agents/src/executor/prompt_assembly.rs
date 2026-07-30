@@ -15,6 +15,8 @@ use crate::definition::SubAgentDefinition;
 use crate::executor_types::{SubAgentExecutorContext, BARRIER_TOOL_NAME};
 use golish_core::events::AiEvent;
 
+use super::tool_setup::is_closed_candidate_analysis_role;
+
 /// Compose the final system prompt the sub-agent will run with.
 pub(super) async fn assemble_effective_system_prompt<M>(
     agent_def: &SubAgentDefinition,
@@ -29,7 +31,12 @@ where
 {
     let agent_id = &agent_def.id;
 
-    let mut effective = if let Some(ref template) = agent_def.prompt_template {
+    let closed_candidate_role = is_closed_candidate_analysis_role(agent_id);
+    let mut effective = if closed_candidate_role {
+        // Closed Candidate roles never invoke the prompt architect and never
+        // accept a mutable generated prompt in place of the reviewed fallback.
+        agent_def.system_prompt.clone()
+    } else if let Some(ref template) = agent_def.prompt_template {
         generate_optimized_prompt(
             agent_id,
             template,
@@ -45,17 +52,21 @@ where
         agent_def.system_prompt.clone()
     };
 
-    if let Some(ref briefing) = ctx.briefing {
-        effective.push_str("\n\n");
-        effective.push_str(briefing);
-        tracing::info!(
-            "[sub-agent:{}] Injected orchestrator briefing ({} chars)",
-            agent_id,
-            briefing.len()
-        );
+    if !closed_candidate_role {
+        if let Some(ref briefing) = ctx.briefing {
+            effective.push_str("\n\n");
+            effective.push_str(briefing);
+            tracing::info!(
+                "[sub-agent:{}] Injected orchestrator briefing ({} chars)",
+                agent_id,
+                briefing.len()
+            );
+        }
     }
 
-    inject_matched_skills(agent_id, task, ctx, &mut effective).await;
+    if !closed_candidate_role {
+        inject_matched_skills(agent_id, task, ctx, &mut effective).await;
+    }
 
     if ctx
         .bound_worker_chain

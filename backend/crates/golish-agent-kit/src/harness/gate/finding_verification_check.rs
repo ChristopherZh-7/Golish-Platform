@@ -75,6 +75,7 @@ mod tests {
             expected_techniques: vec![],
             specialist: None,
             team_scheduler: None,
+            candidate_analysis_team: None,
             runtime_memory: None,
             coverage_axis: vec![],
             facts_from_db_truth: false,

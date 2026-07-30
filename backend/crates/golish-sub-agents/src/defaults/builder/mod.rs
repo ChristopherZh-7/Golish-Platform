@@ -15,12 +15,13 @@ use crate::definition::SubAgentDefinition;
 
 use super::prompts::{
     build_adviser_prompt, build_attack_analyst_prompt, build_browser_prompt,
+    build_candidate_hypothesis_analyst_prompt, build_candidate_hypothesis_controller_prompt,
     build_candidate_verifier_prompt, build_coder_prompt, build_enricher_prompt,
     build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
-    build_orchestrator_prompt, build_pentester_prompt, build_planner_prompt,
-    build_post_exploit_operator_prompt, build_prober_prompt, build_recon_prompt,
-    build_refiner_prompt, build_reflector_prompt, build_reporter_prompt, build_researcher_prompt,
-    build_vuln_scanner_prompt,
+    build_merge_conflict_critic_prompt, build_orchestrator_prompt, build_pentester_prompt,
+    build_planner_prompt, build_post_exploit_operator_prompt, build_prober_prompt,
+    build_recon_prompt, build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
+    build_researcher_prompt, build_vuln_scanner_prompt,
 };
 
 /// Create default sub-agents for common tasks.
@@ -163,6 +164,36 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "submit_stage_deliverable".to_string(),
         ])
         .with_max_iterations(30)
+        .with_idle_timeout(180),
+        SubAgentDefinition::new(
+            "candidate_hypothesis_controller",
+            "Candidate Hypothesis Controller",
+            "Read-only Controller over one server-frozen Candidate snapshot; the unique final submitter for the closed analysis team.",
+            build_candidate_hypothesis_controller_prompt(),
+        )
+        .with_tools(vec!["submit_result".to_string()])
+        .with_readonly(true)
+        .with_max_iterations(8)
+        .with_idle_timeout(180),
+        SubAgentDefinition::new(
+            "candidate_hypothesis_analyst",
+            "Candidate Hypothesis Analyst",
+            "Read-only analyst over one server-frozen Candidate microbatch.",
+            build_candidate_hypothesis_analyst_prompt(),
+        )
+        .with_tools(vec!["submit_result".to_string()])
+        .with_readonly(true)
+        .with_max_iterations(8)
+        .with_idle_timeout(180),
+        SubAgentDefinition::new(
+            "merge_conflict_critic",
+            "Merge Conflict Critic",
+            "Read-only critic for closed proposal-conflict, coverage-subreview, and synthesis artifacts.",
+            build_merge_conflict_critic_prompt(),
+        )
+        .with_tools(vec!["submit_result".to_string()])
+        .with_readonly(true)
+        .with_max_iterations(8)
         .with_idle_timeout(180),
         SubAgentDefinition::new(
             "candidate_verifier",

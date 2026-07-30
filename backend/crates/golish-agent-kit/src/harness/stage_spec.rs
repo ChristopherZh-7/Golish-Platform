@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use golish_pentest_domain::tool_truth::ToolTruthRootFamilyV1;
+
 use super::types::{AgentContinuity, FindingSeverity, RiskLevel, StageKind};
 use super::StageRuntimeContract;
 
@@ -103,6 +105,127 @@ pub struct StageTeamSchedulerPolicy {
     pub max_dynamic_subject_refs: u32,
     #[serde(default)]
     pub risk_lane: String,
+}
+
+/// Candidate-only two-wave reasoning policy. This authority is intentionally
+/// separate from the general Company Controller scheduler and from the
+/// Verification execution policy: it bounds read-only analysis over a frozen
+/// registry snapshot, never tools or target interaction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateAnalysisTeamPolicy {
+    pub schema_version: u32,
+    pub controller_role: String,
+    pub analyst_role: String,
+    pub critic_role: String,
+    pub final_submitter_role: String,
+    pub min_live_analysis_lanes: u32,
+    pub max_live_analysis_lanes: u32,
+    pub single_lane_input_limit: u32,
+    pub max_inputs_per_microbatch: u32,
+    pub chunking_contract_version: u32,
+    pub redaction_contract_version: u32,
+    pub attack_class_checklist_contract_version: u32,
+    pub trust_boundary_checklist_contract_version: u32,
+    pub coverage_partition_contract_version: u32,
+    pub coverage_synthesis_contract_version: u32,
+    pub hypothesis_coverage_sampling_contract_version: u32,
+    pub require_checked_tool_truth_temporal_authority: bool,
+    pub knowledge_feed_snapshot_contract_version: u32,
+    pub product_version_match_contract_version: u32,
+    pub max_knowledge_feed_age_seconds: u64,
+    pub require_signed_knowledge_feeds: bool,
+    pub required_tool_truth_root_families: Vec<ToolTruthRootFamilyV1>,
+    pub max_source_bytes_per_input: u64,
+    pub max_chunk_bytes: u32,
+    pub max_chunks_per_input: u32,
+    pub max_chunks_per_coverage_partition: u32,
+    pub max_coverage_subreview_work_items: u32,
+    pub max_synthesis_inputs_per_partition: u32,
+    pub max_proposals_per_artifact: u32,
+    pub max_controller_page_size: u32,
+    pub max_attempts_per_work_item: u32,
+    pub max_analysis_attempts: u32,
+    pub require_read_only_children: bool,
+    pub require_tool_free_children: bool,
+}
+
+impl CandidateAnalysisTeamPolicy {
+    fn validate(&self) -> Result<(), String> {
+        let roles = [
+            self.controller_role.as_str(),
+            self.analyst_role.as_str(),
+            self.critic_role.as_str(),
+        ];
+        if roles.iter().any(|role| role.trim().is_empty()) {
+            return Err("Candidate analysis roles must be non-empty".to_string());
+        }
+        if self.final_submitter_role != self.controller_role
+            || self.controller_role == self.analyst_role
+            || self.controller_role == self.critic_role
+            || self.analyst_role == self.critic_role
+        {
+            return Err(
+                "Candidate Controller must be the unique final submitter and all roles must differ"
+                    .to_string(),
+            );
+        }
+        if self.min_live_analysis_lanes < 2
+            || self.min_live_analysis_lanes > self.max_live_analysis_lanes
+            || self.max_live_analysis_lanes > 8
+            || self.single_lane_input_limit == 0
+        {
+            return Err("Candidate live-lane bounds must satisfy 2 <= min <= max <= 8 and the single-lane threshold must be non-zero".to_string());
+        }
+
+        let contract_versions = [
+            self.schema_version,
+            self.chunking_contract_version,
+            self.redaction_contract_version,
+            self.attack_class_checklist_contract_version,
+            self.trust_boundary_checklist_contract_version,
+            self.coverage_partition_contract_version,
+            self.coverage_synthesis_contract_version,
+            self.hypothesis_coverage_sampling_contract_version,
+            self.knowledge_feed_snapshot_contract_version,
+            self.product_version_match_contract_version,
+        ];
+        let u32_ceilings = [
+            self.max_inputs_per_microbatch,
+            self.max_chunk_bytes,
+            self.max_chunks_per_input,
+            self.max_chunks_per_coverage_partition,
+            self.max_coverage_subreview_work_items,
+            self.max_synthesis_inputs_per_partition,
+            self.max_proposals_per_artifact,
+            self.max_controller_page_size,
+            self.max_attempts_per_work_item,
+            self.max_analysis_attempts,
+        ];
+        if contract_versions.contains(&0)
+            || u32_ceilings.contains(&0)
+            || self.max_source_bytes_per_input == 0
+            || self.max_knowledge_feed_age_seconds == 0
+        {
+            return Err(
+                "Candidate contract versions and hard ceilings must be non-zero".to_string(),
+            );
+        }
+        if !self.require_checked_tool_truth_temporal_authority
+            || !self.require_signed_knowledge_feeds
+            || !self.require_read_only_children
+            || !self.require_tool_free_children
+        {
+            return Err("Candidate analysis must require checked temporal Tool Truth, signed feeds, and read-only tool-free children".to_string());
+        }
+        if self.required_tool_truth_root_families.as_slice() != ToolTruthRootFamilyV1::ALL {
+            return Err(
+                "Candidate analysis must require the exact Plan A TI/EAS/Enum/Vuln root set"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Doc 3 §4.1 StageSpec.
@@ -206,6 +329,11 @@ pub struct StageSpec {
     /// means the stage remains on its existing single-worker scheduler.
     #[serde(default)]
     pub team_scheduler: Option<StageTeamSchedulerPolicy>,
+
+    /// Independent Candidate registry analysis policy. It is legal only for
+    /// `attack_candidate` and deliberately owns no Tool Truth TTL/skew fields.
+    #[serde(default)]
+    pub candidate_analysis_team: Option<CandidateAnalysisTeamPolicy>,
 
     /// Display-only coverage technique columns the `stage_run` view renders per
     /// org (intel → `["DNS","WHOIS","ASN","CT","SUBDOMAIN","OSINT"]`). Distinct
@@ -318,10 +446,22 @@ fn default_findings_allowed() -> bool {
 pub enum StageSpecLoadError {
     #[error("invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid stage contract: {0}")]
+    InvalidContract(String),
 }
 
 pub fn load_stage_spec_from_json(raw: &str) -> Result<StageSpec, StageSpecLoadError> {
     let spec: StageSpec = serde_json::from_str(raw)?;
+    if let Some(policy) = spec.candidate_analysis_team.as_ref() {
+        if spec.kind != StageKind::AttackCandidate {
+            return Err(StageSpecLoadError::InvalidContract(
+                "candidate_analysis_team is legal only on attack_candidate".to_string(),
+            ));
+        }
+        policy
+            .validate()
+            .map_err(StageSpecLoadError::InvalidContract)?;
+    }
     Ok(spec)
 }
 
@@ -343,6 +483,9 @@ mod tests {
 
     const REPORTING_JSON: &str =
         include_str!("../../../../../resources/harness/stages/reporting/spec.json");
+
+    const ATTACK_CANDIDATE_JSON: &str =
+        include_str!("../../../../../resources/harness/stages/attack_candidate/spec.json");
 
     const POST_EXPLOIT_STAGE_JSON: [&str; 4] = [
         include_str!("../../../../../resources/harness/stages/access_validation/spec.json"),
@@ -466,6 +609,119 @@ mod tests {
             &[StageKind::VulnTriage]
         );
         assert!(spec.team_scheduler.is_none());
+    }
+
+    #[test]
+    fn candidate_analysis_team_is_closed_bounded_and_uses_plan_a_authority() {
+        use golish_pentest_domain::tool_truth::ToolTruthRootFamilyV1;
+
+        let spec = load_stage_spec_from_json(ATTACK_CANDIDATE_JSON).expect("parse Candidate spec");
+        let team = spec
+            .candidate_analysis_team
+            .expect("Candidate analysis team policy");
+
+        assert_eq!(team.schema_version, 1);
+        assert_eq!(team.controller_role, "candidate_hypothesis_controller");
+        assert_eq!(team.analyst_role, "candidate_hypothesis_analyst");
+        assert_eq!(team.critic_role, "merge_conflict_critic");
+        assert_eq!(team.final_submitter_role, team.controller_role);
+        assert_ne!(team.controller_role, team.analyst_role);
+        assert_ne!(team.controller_role, team.critic_role);
+        assert_ne!(team.analyst_role, team.critic_role);
+        assert!((2..=8).contains(&team.min_live_analysis_lanes));
+        assert!((team.min_live_analysis_lanes..=8).contains(&team.max_live_analysis_lanes));
+        assert!(team.single_lane_input_limit > 0);
+
+        for version in [
+            team.chunking_contract_version,
+            team.redaction_contract_version,
+            team.attack_class_checklist_contract_version,
+            team.trust_boundary_checklist_contract_version,
+            team.coverage_partition_contract_version,
+            team.coverage_synthesis_contract_version,
+            team.hypothesis_coverage_sampling_contract_version,
+            team.knowledge_feed_snapshot_contract_version,
+            team.product_version_match_contract_version,
+        ] {
+            assert!(version > 0);
+        }
+        for ceiling in [
+            team.max_inputs_per_microbatch,
+            team.max_chunk_bytes,
+            team.max_chunks_per_input,
+            team.max_chunks_per_coverage_partition,
+            team.max_coverage_subreview_work_items,
+            team.max_synthesis_inputs_per_partition,
+            team.max_proposals_per_artifact,
+            team.max_controller_page_size,
+            team.max_attempts_per_work_item,
+            team.max_analysis_attempts,
+        ] {
+            assert!(ceiling > 0);
+        }
+        assert!(team.max_source_bytes_per_input > 0);
+        assert!(team.max_knowledge_feed_age_seconds > 0);
+        assert!(team.require_checked_tool_truth_temporal_authority);
+        assert!(team.require_signed_knowledge_feeds);
+        assert!(team.require_read_only_children);
+        assert!(team.require_tool_free_children);
+        assert_eq!(
+            team.required_tool_truth_root_families,
+            ToolTruthRootFamilyV1::ALL
+        );
+
+        let raw: serde_json::Value = serde_json::from_str(ATTACK_CANDIDATE_JSON).expect("json");
+        let policy = raw["candidate_analysis_team"]
+            .as_object()
+            .expect("team object");
+        for duplicate_authority in [
+            "temporal_policy_version",
+            "temporal_policy_hash",
+            "max_cross_observation_skew_ms",
+            "positive_ttl_ms",
+            "negative_ttl_ms",
+            "refutation_ttl_ms",
+        ] {
+            assert!(!policy.contains_key(duplicate_authority));
+        }
+    }
+
+    #[test]
+    fn candidate_analysis_team_rejects_invalid_stage_roots_and_bounds() {
+        let source =
+            serde_json::from_str::<serde_json::Value>(ATTACK_CANDIDATE_JSON).expect("json");
+
+        let mut wrong_stage = source.clone();
+        wrong_stage["kind"] = serde_json::json!("reporting");
+        assert!(load_stage_spec_from_json(&wrong_stage.to_string()).is_err());
+
+        for (field, invalid) in [
+            ("min_live_analysis_lanes", serde_json::json!(1)),
+            ("max_live_analysis_lanes", serde_json::json!(9)),
+            ("single_lane_input_limit", serde_json::json!(0)),
+            ("coverage_partition_contract_version", serde_json::json!(0)),
+            ("coverage_synthesis_contract_version", serde_json::json!(0)),
+            ("max_coverage_subreview_work_items", serde_json::json!(0)),
+            ("max_synthesis_inputs_per_partition", serde_json::json!(0)),
+            ("max_analysis_attempts", serde_json::json!(0)),
+            ("require_signed_knowledge_feeds", serde_json::json!(false)),
+            (
+                "require_checked_tool_truth_temporal_authority",
+                serde_json::json!(false),
+            ),
+        ] {
+            let mut invalid_spec = source.clone();
+            invalid_spec["candidate_analysis_team"][field] = invalid;
+            assert!(
+                load_stage_spec_from_json(&invalid_spec.to_string()).is_err(),
+                "invalid field must fail closed: {field}"
+            );
+        }
+
+        let mut duplicate_root = source;
+        duplicate_root["candidate_analysis_team"]["required_tool_truth_root_families"] =
+            serde_json::json!(["ti", "eas", "enum", "enum"]);
+        assert!(load_stage_spec_from_json(&duplicate_root.to_string()).is_err());
     }
 
     #[test]

@@ -40,7 +40,7 @@ use super::response_parsing::{
     dispatch_tool_calls, StageStallGuard, SubmitRepairModeUpdate, STAGE_STALL_THRESHOLD,
 };
 use super::stream_processing::process_llm_stream;
-use super::tool_setup::build_tool_definitions;
+use super::tool_setup::{build_tool_definitions, validate_closed_candidate_analysis_definition};
 use super::CheckpointedChainId;
 
 const MAX_BOUND_STAGE_SUBMIT_REPROMPTS: usize = 2;
@@ -137,6 +137,7 @@ where
     P: ToolProvider,
 {
     let agent_id = &agent_def.id;
+    validate_closed_candidate_analysis_definition(agent_def)?;
 
     let transcript_writer: Option<Arc<SubAgentTranscriptWriter>> = if let (
         Some(base_dir),
