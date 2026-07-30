@@ -31,6 +31,7 @@ import * as history from "./history";
 import * as indexer from "./indexer";
 import * as integrations from "./integrations";
 import * as intel from "./intel";
+import * as investigation from "./investigation";
 import * as mcp from "./mcp";
 import * as methodology from "./methodology";
 import * as modelRegistry from "./model-registry";
@@ -69,6 +70,7 @@ export {
   indexer,
   integrations,
   intel,
+  investigation,
   sidecar,
   stageTeam,
   security,
@@ -109,6 +111,7 @@ export const api = {
   indexer,
   integrations,
   intel,
+  investigation,
   sidecar,
   stageTeam,
   security,

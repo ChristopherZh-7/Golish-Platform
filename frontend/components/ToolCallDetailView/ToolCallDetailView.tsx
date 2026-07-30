@@ -23,6 +23,7 @@ import {
 } from "@/components/Engagement/AttackCandidateStageRunRows";
 import { CandidateAttemptRows } from "@/components/Engagement/CandidateAttemptRows";
 import { CleanupObligationList } from "@/components/Engagement/CleanupObligationList";
+import { HypothesisRegistryAudit } from "@/components/Engagement/HypothesisRegistryAudit";
 import { ReportReadModelView } from "@/components/Engagement/ReportReadModelView";
 import {
   isCompanyControllerStageRunRows,
@@ -129,6 +130,26 @@ export function isAttackCandidateStageRun(
     return explicitStages.every((stage) => stage === "attack_candidate");
   }
   return rows.length > 0 && rows.every((row) => row.stage === "attack_candidate");
+}
+
+/**
+ * Resolve the Registry audit owner only from the selected Candidate stage-run
+ * rows. Every row must carry the same non-empty operation identity; the
+ * session-level review hint is intentionally not an input to this function.
+ */
+export function getCandidateStageRunOperationId(
+  toolName: string,
+  args: unknown,
+  result: unknown,
+  rows: readonly { stage?: string; operationId?: string }[]
+): string | null {
+  if (!isAttackCandidateStageRun(toolName, args, result, rows)) return null;
+  if (rows.length === 0 || rows.some((row) => row.stage !== "attack_candidate")) return null;
+
+  const operationIds = rows.map((row) => row.operationId?.trim() ?? "");
+  const operationId = operationIds[0];
+  if (!operationId || operationIds.some((candidate) => candidate !== operationId)) return null;
+  return operationId;
 }
 
 export function isCleanupStageRun(toolName: string, args: unknown): boolean {
@@ -651,6 +672,12 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     execution.result,
     stageRun?.rows ?? []
   );
+  const candidateOperationId = getCandidateStageRunOperationId(
+    execution.toolName,
+    execution.args,
+    execution.result,
+    stageRun?.rows ?? []
+  );
   const backgroundJob = execution.backgroundRun
     ? (backgroundJobs.find((job) => job.jobId === execution.backgroundRun?.jobId) ?? null)
     : null;
@@ -767,6 +794,12 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
               waveRunId={candidateReviewHint.waveRunId}
               refreshVersion={candidateReviewHint.refreshVersion}
             />
+          </div>
+        )}
+
+        {candidateOperationId && (
+          <div className="border-b border-border/20 px-4 py-3">
+            <HypothesisRegistryAudit operationId={candidateOperationId} />
           </div>
         )}
 

@@ -1,6 +1,7 @@
 export { AttackCandidateReview } from "./AttackCandidateReview";
 export { CandidateAttemptRows } from "./CandidateAttemptRows";
 export { CleanupObligationList } from "./CleanupObligationList";
+export { HypothesisRegistryAudit } from "./HypothesisRegistryAudit";
 export { ReportReadModelView } from "./ReportReadModelView";
 export { StageAssetCoveragePanel } from "./StageAssetCoveragePanel";
 export { StageRunOrgRows } from "./StageRunOrgRows";

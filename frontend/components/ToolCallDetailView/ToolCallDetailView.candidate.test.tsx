@@ -1,7 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type AiToolExecution, useStore } from "@/store";
-import { ToolCallDetailView } from "./ToolCallDetailView";
+import {
+  getCandidateStageRunOperationId,
+  ToolCallDetailView,
+} from "./ToolCallDetailView";
 
 vi.mock("@/components/Engagement/AttackCandidateReview", () => ({
   AttackCandidateReview: (props: Record<string, unknown>) => (
@@ -12,6 +15,12 @@ vi.mock("@/components/Engagement/AttackCandidateReview", () => ({
 vi.mock("@/components/Engagement/CandidateAttemptRows", () => ({
   CandidateAttemptRows: (props: Record<string, unknown>) => (
     <div data-testid="candidate-attempts-production-entry">{JSON.stringify(props)}</div>
+  ),
+}));
+
+vi.mock("@/components/Engagement/HypothesisRegistryAudit", () => ({
+  HypothesisRegistryAudit: (props: Record<string, unknown>) => (
+    <div data-testid="hypothesis-registry-audit-production-entry">{JSON.stringify(props)}</div>
   ),
 }));
 
@@ -122,6 +131,75 @@ function setSelectedRunningCandidateStageRun() {
   });
 }
 
+function setSelectedCandidateStageRunWithOperationIds(operationIds: Array<string | undefined>) {
+  const execution: AiToolExecution = {
+    requestId: REQUEST_ID,
+    toolName: "stage_run",
+    args: { orgs: [] },
+    result: { stage: "attack_candidate", passed: true },
+    status: "completed",
+    startedAt: "2026-07-30T00:00:00Z",
+    completedAt: "2026-07-30T00:00:01Z",
+    durationMs: 1000,
+  };
+  useStore.setState({
+    sessions: {
+      [SESSION_ID]: {
+        id: SESSION_ID,
+        name: "Candidate registry detail",
+        workingDirectory: "/tmp/candidate-detail",
+        createdAt: "2026-07-30T00:00:00Z",
+        mode: "agent",
+        detailViewMode: "tool-detail",
+        toolDetailRequestIds: [REQUEST_ID],
+        candidateReviewHint: {
+          operationId: "session-global-hint-must-not-own-audit",
+          waveRunId: "wave-candidate-1",
+          status: "resume_pending",
+          resumeVersion: 2,
+          refreshVersion: 7,
+        },
+        stageRuns: {
+          [REQUEST_ID]: {
+            requestId: REQUEST_ID,
+            stageLabel: "Attack Candidate",
+            roleLabel: "Attack Analyst",
+            coverageAxis: ["CANDIDATES"],
+            rows: operationIds.map((operationId, index) => ({
+              id: `org-candidate-${index + 1}`,
+              operationId,
+              name: `Candidate org ${index + 1}`,
+              ownershipPercent: null,
+              status: "passed" as const,
+              evidenceCount: 1,
+              coverage: {},
+              stage: "attack_candidate",
+            })),
+            summary: {
+              total: operationIds.length,
+              covered: operationIds.length,
+              active: 0,
+              queued: 0,
+              blocked: 0,
+            },
+          },
+        },
+      },
+    },
+    timelines: {
+      [SESSION_ID]: [
+        {
+          id: `tool-exec-${REQUEST_ID}`,
+          type: "ai_tool_execution",
+          timestamp: "2026-07-30T00:00:00Z",
+          data: execution,
+        },
+      ],
+    },
+    backgroundJobs: {},
+  });
+}
+
 describe("ToolCallDetailView Candidate production entry", () => {
   beforeEach(() => {
     useStore.setState({ sessions: {}, timelines: {}, backgroundJobs: {} });
@@ -162,5 +240,59 @@ describe("ToolCallDetailView Candidate production entry", () => {
       REQUEST_ID,
       `${REQUEST_ID}::org::org-candidate-1`,
     ]);
+  });
+
+  it("mounts Registry Audit only from one exact operation on every Candidate row", () => {
+    setSelectedCandidateStageRunWithOperationIds(["operation-registry-1", "operation-registry-1"]);
+
+    render(<ToolCallDetailView sessionId={SESSION_ID} />);
+
+    expect(screen.getByTestId("hypothesis-registry-audit-production-entry")).toHaveTextContent(
+      JSON.stringify({ operationId: "operation-registry-1" })
+    );
+    expect(screen.getByTestId("hypothesis-registry-audit-production-entry")).not.toHaveTextContent(
+      "session-global-hint-must-not-own-audit"
+    );
+  });
+
+  it.each([
+    { operationIds: ["operation-registry-1", undefined], label: "missing" },
+    {
+      operationIds: ["operation-registry-1", "operation-registry-2"],
+      label: "conflicting",
+    },
+  ] as const)(
+    "does not mount Registry Audit for $label Candidate row identity",
+    ({ operationIds }) => {
+      setSelectedCandidateStageRunWithOperationIds([...operationIds]);
+
+      render(<ToolCallDetailView sessionId={SESSION_ID} />);
+
+      expect(
+        screen.queryByTestId("hypothesis-registry-audit-production-entry")
+      ).not.toBeInTheDocument();
+    }
+  );
+
+  it("fails the pure Candidate audit helper closed without exact row authority", () => {
+    expect(
+      getCandidateStageRunOperationId(
+        "stage_run",
+        { orgs: [] },
+        { stage: "attack_candidate" },
+        [
+          { stage: "attack_candidate", operationId: "operation-1" },
+          { stage: "attack_candidate", operationId: " operation-1 " },
+        ]
+      )
+    ).toBe("operation-1");
+    expect(
+      getCandidateStageRunOperationId(
+        "stage_run",
+        { stage: "verification" },
+        { stage: "attack_candidate" },
+        [{ stage: "attack_candidate", operationId: "operation-1" }]
+      )
+    ).toBeNull();
   });
 });

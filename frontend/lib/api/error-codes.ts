@@ -26,6 +26,15 @@ export const GOLISH_ERROR_CODES = [
   "ATTACK_REVIEW_ALREADY_CLOSED",
   "ATTACK_RESUME_NOT_READY",
   "ATTACK_RECOVERY_CONFLICT",
+  "ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT",
+  "INVESTIGATION_FORBIDDEN",
+  "INVESTIGATION_INVALID_ID",
+  "INVESTIGATION_INVALID_ARGUMENT",
+  "INVESTIGATION_CURSOR_INVALID",
+  "INVESTIGATION_PROJECTION_STALE",
+  "INVESTIGATION_AUTHORITY_CORRUPT",
+  "INVESTIGATION_DATABASE",
+  "INVESTIGATION_LEGACY_PROJECTION_DIVERGED",
   "STAGE_TEAM_INVALID_ID",
   "STAGE_TEAM_SCOPE_MISMATCH",
   "STAGE_TEAM_DATABASE",
@@ -64,6 +73,19 @@ const MESSAGES: Record<GolishErrorCode | typeof UNKNOWN_ERROR_CODE, string> = {
   ATTACK_RESUME_NOT_READY: "The durable Candidate review is not ready to resume verification.",
   ATTACK_RECOVERY_CONFLICT:
     "The Candidate recovery state changed or the requested recovery is not valid. Refresh before deciding again.",
+  ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT:
+    "This operation uses the Hypothesis Registry contract. Legacy Candidate mutation is unavailable.",
+  INVESTIGATION_FORBIDDEN: "You are not authorized to read this investigation.",
+  INVESTIGATION_INVALID_ID: "The investigation identity is invalid.",
+  INVESTIGATION_INVALID_ARGUMENT: "The investigation filter or request is invalid.",
+  INVESTIGATION_CURSOR_INVALID: "The investigation page cursor is invalid.",
+  INVESTIGATION_PROJECTION_STALE:
+    "The investigation projection changed or expired. Restart from the first page.",
+  INVESTIGATION_AUTHORITY_CORRUPT:
+    "The investigation authority snapshot is incomplete or inconsistent.",
+  INVESTIGATION_DATABASE: "The investigation projection could not be read.",
+  INVESTIGATION_LEGACY_PROJECTION_DIVERGED:
+    "The legacy compatibility projection diverged from the Hypothesis Registry.",
   STAGE_TEAM_INVALID_ID: "The Stage Team execution identity is invalid.",
   STAGE_TEAM_SCOPE_MISMATCH:
     "The Stage Team execution does not belong to this operation or operator scope.",
