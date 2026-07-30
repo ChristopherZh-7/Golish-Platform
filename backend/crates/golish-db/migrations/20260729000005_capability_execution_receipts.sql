@@ -250,6 +250,13 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'tool_truth_scope_snapshot_unsealed' USING ERRCODE='23514';
     END IF;
+    NEW.binding_hash := tool_truth_sha256(jsonb_build_object(
+        'stage_asset_wave_id',NEW.stage_asset_wave_id,
+        'operation_id',NEW.operation_id,'project_scope_id',NEW.project_scope_id,
+        'project_path_at_freeze',NEW.project_path_at_freeze,
+        'scope_snapshot_id',NEW.scope_snapshot_id,'organization_id',NEW.organization_id,
+        'stage_execution_id',NEW.stage_execution_id,'stage_kind',NEW.stage_kind
+    )::TEXT);
     RETURN NEW;
 END;
 $$;
@@ -476,6 +483,12 @@ BEGIN
     ] THEN
         RAISE EXCEPTION 'tool_truth_evidence_producer_envelope_invalid' USING ERRCODE='23514';
     END IF;
+    NEW.production_binding_hash := tool_truth_sha256(jsonb_build_object(
+        'execution_authority_id',NEW.execution_authority_id,
+        'execution_authority_hash',NEW.execution_authority_hash,
+        'evidence_audit_id',NEW.evidence_audit_id,
+        'evidence_classification_id',NEW.evidence_classification_id
+    )::TEXT);
     RETURN NEW;
 END;
 $$;
@@ -529,6 +542,9 @@ RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE binding tool_truth_evidence_production_bindings%ROWTYPE;
 DECLARE audit audit_log%ROWTYPE;
 DECLARE classification evidence_classifications%ROWTYPE;
+DECLARE expected_audit_hash TEXT;
+DECLARE expected_classification_hash TEXT;
+DECLARE expected_chain_hash TEXT;
 BEGIN
     SELECT * INTO binding FROM tool_truth_evidence_production_bindings
      WHERE id=NEW.production_binding_id AND execution_authority_id=NEW.execution_authority_id FOR SHARE;
@@ -545,6 +561,23 @@ BEGIN
        OR classification.classification<>'in_scope' THEN
         RAISE EXCEPTION 'tool_truth_evidence_classification_invalid' USING ERRCODE='23514';
     END IF;
+    expected_audit_hash := tool_truth_sha256(to_jsonb(audit)::TEXT);
+    expected_classification_hash := tool_truth_sha256(to_jsonb(classification)::TEXT);
+    expected_chain_hash := tool_truth_sha256(jsonb_build_object(
+        'audit_row_hash',expected_audit_hash,
+        'classification_row_hash',expected_classification_hash
+    )::TEXT);
+    NEW.audit_row_hash := expected_audit_hash;
+    NEW.classification_row_hash := expected_classification_hash;
+    NEW.evidence_chain_hash := expected_chain_hash;
+    NEW.authority_hash := tool_truth_sha256(jsonb_build_object(
+        'production_binding_id',NEW.production_binding_id,
+        'execution_authority_id',NEW.execution_authority_id,
+        'execution_authority_hash',NEW.execution_authority_hash,
+        'evidence_audit_id',NEW.evidence_audit_id,
+        'evidence_classification_id',NEW.evidence_classification_id,
+        'evidence_chain_hash',expected_chain_hash
+    )::TEXT);
     RETURN NEW;
 END;
 $$;
@@ -694,13 +727,15 @@ BEGIN
         RAISE EXCEPTION 'tool_truth_business_ref_owner_mismatch' USING ERRCODE='23514';
     END IF;
     expected_hash := tool_truth_sha256(expected_snapshot::TEXT);
-    IF NEW.canonical_snapshot IS DISTINCT FROM expected_snapshot
-       OR NEW.source_observed_at IS DISTINCT FROM expected_observed_at THEN
-        RAISE EXCEPTION 'tool_truth_business_ref_snapshot_mismatch' USING ERRCODE='23514';
-    END IF;
-    IF NEW.source_hash IS DISTINCT FROM expected_hash THEN
-        RAISE EXCEPTION 'tool_truth_business_ref_source_hash_mismatch' USING ERRCODE='23514';
-    END IF;
+    NEW.canonical_snapshot := expected_snapshot;
+    NEW.source_observed_at := expected_observed_at;
+    NEW.source_hash := expected_hash;
+    NEW.authority_hash := tool_truth_sha256(jsonb_build_object(
+        'execution_authority_id',NEW.execution_authority_id,
+        'evidence_authority_id',NEW.evidence_authority_id,
+        'ref_kind',NEW.ref_kind,'ref_uuid',NEW.ref_uuid,'ref_bigint',NEW.ref_bigint,
+        'source_hash',expected_hash
+    )::TEXT);
     RETURN NEW;
 END;
 $$;
@@ -760,6 +795,7 @@ CREATE TABLE coverage_denominators (
     UNIQUE(execution_authority_id,stable_seal_request_id),
     UNIQUE(id,execution_authority_id),
     UNIQUE(id,execution_authority_id,denominator_hash),
+    UNIQUE(id,execution_authority_id,input_manifest_hash),
     FOREIGN KEY(execution_authority_id,operation_id,project_scope_id,project_path_at_freeze,
                 scope_snapshot_id,organization_id,stage_execution_id,stage_kind,execution_authority_hash)
         REFERENCES tool_truth_execution_authorities(id,operation_id,project_scope_id,project_path_at_freeze,
@@ -888,6 +924,7 @@ CREATE TABLE evidence_temporal_validity_policies (
         policy_hash ~ '^sha256:[0-9a-f]{64}$'
         AND (member_set_hash IS NULL OR member_set_hash ~ '^sha256:[0-9a-f]{64}$')),
     UNIQUE(id,execution_authority_id),UNIQUE(id,execution_authority_id,policy_hash),
+    UNIQUE(execution_authority_id,policy_hash),
     FOREIGN KEY(execution_authority_id) REFERENCES tool_truth_execution_authorities(id) ON DELETE RESTRICT
 );
 CREATE TABLE evidence_temporal_validity_policy_members (
@@ -973,15 +1010,110 @@ CREATE TABLE capability_execution_receipts (
             AND observation_completed_at IS NOT NULL AND valid_until>observation_completed_at)),
     UNIQUE(denominator_id,execution_authority_id,capability,attempt_ordinal),
     UNIQUE(id,execution_authority_id),
+    UNIQUE(id,denominator_id,execution_authority_id),
     UNIQUE(id,execution_authority_id,receipt_authority_hash),
     UNIQUE(id,destination_policy_id,execution_authority_id),
-    FOREIGN KEY(denominator_id,execution_authority_id)
-        REFERENCES coverage_denominators(id,execution_authority_id) ON DELETE RESTRICT,
+    FOREIGN KEY(denominator_id,execution_authority_id,input_manifest_hash)
+        REFERENCES coverage_denominators(id,execution_authority_id,input_manifest_hash) ON DELETE RESTRICT,
     FOREIGN KEY(destination_policy_id,execution_authority_id,destination_policy_hash)
         REFERENCES capability_execution_destination_policies(id,execution_authority_id,policy_hash) ON DELETE RESTRICT,
     FOREIGN KEY(temporal_validity_policy_id,execution_authority_id,temporal_validity_policy_hash)
         REFERENCES evidence_temporal_validity_policies(id,execution_authority_id,policy_hash) ON DELETE RESTRICT
 );
+
+CREATE FUNCTION tool_truth_guard_receipt()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    denominator_hash TEXT;
+    expected_receipt_hash TEXT;
+BEGIN
+    IF TG_OP='DELETE' THEN
+        RAISE EXCEPTION 'tool_truth_receipt_append_only' USING ERRCODE='23514';
+    END IF;
+    IF TG_OP='UPDATE' THEN
+        IF (to_jsonb(NEW) - ARRAY[
+                'attempt_state','landing_state','observation_state','coverage_extent',
+                'coverage_gap_reason','reconciliation_state','security_interpretation',
+                'typed_landing','residual','raw_witness_artifact_id','parser_census_id',
+                'temporal_census_id','current_semantic_authority_version',
+                'current_semantic_reconciliation_id','current_semantic_reconciliation_hash',
+                'row_version','observation_completed_at','valid_until','finalized_at'
+            ]) IS DISTINCT FROM
+           (to_jsonb(OLD) - ARRAY[
+                'attempt_state','landing_state','observation_state','coverage_extent',
+                'coverage_gap_reason','reconciliation_state','security_interpretation',
+                'typed_landing','residual','raw_witness_artifact_id','parser_census_id',
+                'temporal_census_id','current_semantic_authority_version',
+                'current_semantic_reconciliation_id','current_semantic_reconciliation_hash',
+                'row_version','observation_completed_at','valid_until','finalized_at'
+            ]) THEN
+            RAISE EXCEPTION 'tool_truth_receipt_authority_immutable' USING ERRCODE='23514';
+        END IF;
+        IF NEW.row_version<>OLD.row_version+1 THEN
+            RAISE EXCEPTION 'tool_truth_receipt_cas_required' USING ERRCODE='23514';
+        END IF;
+        IF (OLD.raw_witness_artifact_id IS NOT NULL
+                AND NEW.raw_witness_artifact_id IS DISTINCT FROM OLD.raw_witness_artifact_id)
+           OR (OLD.parser_census_id IS NOT NULL
+                AND NEW.parser_census_id IS DISTINCT FROM OLD.parser_census_id)
+           OR (OLD.temporal_census_id IS NOT NULL
+                AND NEW.temporal_census_id IS DISTINCT FROM OLD.temporal_census_id)
+           OR (OLD.finalized_at IS NOT NULL AND NEW.finalized_at IS DISTINCT FROM OLD.finalized_at) THEN
+            RAISE EXCEPTION 'tool_truth_receipt_terminal_binding_immutable' USING ERRCODE='23514';
+        END IF;
+        IF NEW.current_semantic_authority_version NOT IN (
+                OLD.current_semantic_authority_version,
+                OLD.current_semantic_authority_version+1
+            ) THEN
+            RAISE EXCEPTION 'tool_truth_receipt_semantic_version_invalid' USING ERRCODE='23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    SELECT d.denominator_hash INTO denominator_hash
+      FROM coverage_denominators d
+     WHERE d.id=NEW.denominator_id
+       AND d.execution_authority_id=NEW.execution_authority_id
+       AND d.input_manifest_hash=NEW.input_manifest_hash
+       AND d.sealed_at IS NOT NULL
+     FOR SHARE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'tool_truth_denominator_unsealed_or_mismatch' USING ERRCODE='23514';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM capability_execution_destination_policies p
+         WHERE p.id=NEW.destination_policy_id
+           AND p.execution_authority_id=NEW.execution_authority_id
+           AND p.policy_hash=NEW.destination_policy_hash
+           AND p.sealed_at IS NOT NULL FOR SHARE
+    ) OR NOT EXISTS (
+        SELECT 1 FROM evidence_temporal_validity_policies p
+         WHERE p.id=NEW.temporal_validity_policy_id
+           AND p.execution_authority_id=NEW.execution_authority_id
+           AND p.policy_hash=NEW.temporal_validity_policy_hash
+           AND p.sealed_at IS NOT NULL FOR SHARE
+    ) THEN
+        RAISE EXCEPTION 'tool_truth_receipt_policy_unsealed_or_mismatch' USING ERRCODE='23514';
+    END IF;
+    expected_receipt_hash := tool_truth_sha256(jsonb_build_object(
+        'denominator_id',NEW.denominator_id,
+        'denominator_hash',denominator_hash,
+        'execution_authority_id',NEW.execution_authority_id,
+        'capability',NEW.capability,
+        'attempt_ordinal',NEW.attempt_ordinal,
+        'input_manifest_hash',NEW.input_manifest_hash,
+        'destination_policy_hash',NEW.destination_policy_hash,
+        'temporal_validity_policy_hash',NEW.temporal_validity_policy_hash
+    )::TEXT);
+    NEW.receipt_authority_hash := expected_receipt_hash;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER capability_execution_receipt_guard
+BEFORE INSERT OR UPDATE OR DELETE ON capability_execution_receipts
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_receipt();
 
 CREATE TABLE capability_raw_witness_artifacts (
     id UUID PRIMARY KEY,
@@ -1233,9 +1365,16 @@ CREATE TABLE capability_execution_budget_observations (
         REFERENCES capability_execution_budget_contract_axes(receipt_id,axis,execution_authority_id) ON DELETE RESTRICT,
     CHECK ((observed AND actual_value IS NOT NULL) OR (NOT observed AND actual_value IS NULL))
 );
+CREATE TRIGGER capability_budget_contract_append_only
+BEFORE UPDATE OR DELETE ON capability_execution_budget_contract_axes
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();
+CREATE TRIGGER capability_budget_observation_append_only
+BEFORE UPDATE OR DELETE ON capability_execution_budget_observations
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();
 
 CREATE TABLE capability_execution_receipt_inputs (
-    id UUID PRIMARY KEY, receipt_id UUID NOT NULL, denominator_item_id UUID NOT NULL,
+    id UUID PRIMARY KEY, receipt_id UUID NOT NULL, denominator_id UUID NOT NULL,
+    denominator_item_id UUID NOT NULL,
     execution_authority_id UUID NOT NULL, input_key TEXT NOT NULL,
     attempt_state TEXT NOT NULL CHECK (attempt_state IN (
         'not_started','running','succeeded','failed','outcome_unknown','exhausted','superseded')),
@@ -1250,9 +1389,9 @@ CREATE TABLE capability_execution_receipt_inputs (
         member_set_hash IS NULL OR member_set_hash ~ '^sha256:[0-9a-f]{64}$'),
     UNIQUE(receipt_id,denominator_item_id),UNIQUE(receipt_id,input_key),
     UNIQUE(id,receipt_id,denominator_item_id,execution_authority_id),
-    FOREIGN KEY(receipt_id,execution_authority_id)
-        REFERENCES capability_execution_receipts(id,execution_authority_id) ON DELETE RESTRICT,
-    FOREIGN KEY(denominator_item_id,receipt_id,execution_authority_id)
+    FOREIGN KEY(receipt_id,denominator_id,execution_authority_id)
+        REFERENCES capability_execution_receipts(id,denominator_id,execution_authority_id) ON DELETE RESTRICT,
+    FOREIGN KEY(denominator_item_id,denominator_id,execution_authority_id)
         REFERENCES coverage_denominator_items(id,denominator_id,execution_authority_id) ON DELETE RESTRICT
 );
 CREATE TABLE capability_execution_input_evidence_members (
@@ -1277,15 +1416,98 @@ CREATE TABLE capability_execution_input_business_ref_members (
     FOREIGN KEY(business_ref_authority_id,execution_authority_id)
         REFERENCES tool_truth_business_ref_authorities(id,execution_authority_id) ON DELETE RESTRICT
 );
-CREATE TRIGGER capability_receipt_input_immutable
+
+CREATE FUNCTION tool_truth_guard_receipt_input_header()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    evidence_count BIGINT;
+    evidence_min BIGINT;
+    evidence_max BIGINT;
+    business_count BIGINT;
+    business_min BIGINT;
+    business_max BIGINT;
+    actual_hash TEXT;
+BEGIN
+    IF TG_OP='INSERT' THEN
+        IF NEW.sealed_at IS NOT NULL OR NEW.member_count IS NOT NULL OR NEW.member_set_hash IS NOT NULL THEN
+            RAISE EXCEPTION 'tool_truth_unsealed_authority' USING ERRCODE='23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP='DELETE' OR OLD.sealed_at IS NOT NULL OR NEW.sealed_at IS NULL THEN
+        RAISE EXCEPTION 'tool_truth_sealed_parent_immutable' USING ERRCODE='23514';
+    END IF;
+    IF (to_jsonb(NEW)-ARRAY['sealed_at','member_count','member_set_hash']) IS DISTINCT FROM
+       (to_jsonb(OLD)-ARRAY['sealed_at','member_count','member_set_hash']) THEN
+        RAISE EXCEPTION 'tool_truth_sealed_parent_immutable' USING ERRCODE='23514';
+    END IF;
+
+    SELECT count(*)::BIGINT,COALESCE(min(ordinal),0)::BIGINT,COALESCE(max(ordinal),-1)::BIGINT
+      INTO evidence_count,evidence_min,evidence_max
+      FROM capability_execution_input_evidence_members WHERE input_id=NEW.id;
+    SELECT count(*)::BIGINT,COALESCE(min(ordinal),0)::BIGINT,COALESCE(max(ordinal),-1)::BIGINT
+      INTO business_count,business_min,business_max
+      FROM capability_execution_input_business_ref_members WHERE input_id=NEW.id;
+    IF (evidence_count>0 AND (evidence_min<>0 OR evidence_max<>evidence_count-1))
+       OR (business_count>0 AND (business_min<>0 OR business_max<>business_count-1)) THEN
+        RAISE EXCEPTION 'tool_truth_set_ordinal_invalid' USING ERRCODE='23514';
+    END IF;
+    SELECT tool_truth_sha256(COALESCE(jsonb_agg(member ORDER BY source_kind,ordinal),'[]'::jsonb)::TEXT)
+      INTO actual_hash
+      FROM (
+        SELECT 'evidence'::TEXT AS source_kind,ordinal,
+               jsonb_build_object('kind','evidence','hash',member_hash) AS member
+          FROM capability_execution_input_evidence_members WHERE input_id=NEW.id
+        UNION ALL
+        SELECT 'business_ref'::TEXT AS source_kind,ordinal,
+               jsonb_build_object('kind','business_ref','hash',member_hash) AS member
+          FROM capability_execution_input_business_ref_members WHERE input_id=NEW.id
+      ) exact_members;
+    NEW.member_count := evidence_count+business_count;
+    NEW.member_set_hash := actual_hash;
+    NEW.sealed_at := statement_timestamp();
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION tool_truth_guard_receipt_input_member()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE parent_sealed_at TIMESTAMPTZ;
+BEGIN
+    IF TG_OP<>'INSERT' THEN
+        RAISE EXCEPTION 'tool_truth_member_append_only' USING ERRCODE='23514';
+    END IF;
+    SELECT sealed_at INTO parent_sealed_at
+      FROM capability_execution_receipt_inputs WHERE id=NEW.input_id FOR SHARE;
+    IF parent_sealed_at IS NOT NULL THEN
+        RAISE EXCEPTION 'tool_truth_sealed_parent_immutable' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER capability_receipt_input_header_guard
 BEFORE UPDATE OR DELETE ON capability_execution_receipt_inputs
-FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_immutable('tool_truth_sealed_parent_immutable');
-CREATE TRIGGER capability_input_evidence_append_only
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_receipt_input_header();
+CREATE TRIGGER capability_receipt_input_insert_guard
+BEFORE INSERT ON capability_execution_receipt_inputs
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_receipt_input_header();
+CREATE TRIGGER capability_input_evidence_member_guard
 BEFORE UPDATE OR DELETE ON capability_execution_input_evidence_members
-FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_immutable('tool_truth_member_append_only');
-CREATE TRIGGER capability_input_business_append_only
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_receipt_input_member();
+CREATE TRIGGER capability_input_evidence_insert_guard
+BEFORE INSERT ON capability_execution_input_evidence_members
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_receipt_input_member();
+CREATE TRIGGER capability_input_business_member_guard
 BEFORE UPDATE OR DELETE ON capability_execution_input_business_ref_members
-FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_immutable('tool_truth_member_append_only');
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_receipt_input_member();
+CREATE TRIGGER capability_input_business_insert_guard
+BEFORE INSERT ON capability_execution_input_business_ref_members
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_receipt_input_member();
 
 -- ---------------------------------------------------------------------------
 -- Semantic reconciliation and freshness.
@@ -1334,10 +1556,82 @@ CREATE TABLE capability_execution_reconciliation_members (
     FOREIGN KEY(business_ref_authority_id,execution_authority_id)
         REFERENCES tool_truth_business_ref_authorities(id,execution_authority_id) ON DELETE RESTRICT
 );
+
+CREATE FUNCTION tool_truth_guard_reconciliation_header()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    actual_count BIGINT;
+    min_ordinal BIGINT;
+    max_ordinal BIGINT;
+    actual_member_hash TEXT;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.sealed_at IS NOT NULL
+           OR NEW.reconciliation_state <> 'pending'
+           OR NEW.member_count IS NOT NULL
+           OR NEW.member_set_hash IS NOT NULL
+           OR NEW.semantic_reconciliation_hash IS NOT NULL THEN
+            RAISE EXCEPTION 'tool_truth_unsealed_authority' USING ERRCODE='23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_OP = 'DELETE' OR OLD.sealed_at IS NOT NULL OR NEW.sealed_at IS NULL THEN
+        RAISE EXCEPTION 'tool_truth_sealed_parent_immutable' USING ERRCODE='23514';
+    END IF;
+    IF (to_jsonb(NEW) - ARRAY[
+            'sealed_at','member_count','member_set_hash','reconciliation_state',
+            'reason_code','observed_artifact_sha256','observed_artifact_byte_count',
+            'semantic_reconciliation_hash'
+        ]) IS DISTINCT FROM
+       (to_jsonb(OLD) - ARRAY[
+            'sealed_at','member_count','member_set_hash','reconciliation_state',
+            'reason_code','observed_artifact_sha256','observed_artifact_byte_count',
+            'semantic_reconciliation_hash'
+        ]) THEN
+        RAISE EXCEPTION 'tool_truth_sealed_parent_immutable' USING ERRCODE='23514';
+    END IF;
+    IF NEW.reconciliation_state = 'pending' THEN
+        RAISE EXCEPTION 'tool_truth_reconciliation_terminal_state_required' USING ERRCODE='23514';
+    END IF;
+    IF NEW.reconciliation_state <> 'consistent'
+       AND (NEW.reason_code IS NULL OR BTRIM(NEW.reason_code)='') THEN
+        RAISE EXCEPTION 'tool_truth_reconciliation_reason_required' USING ERRCODE='23514';
+    END IF;
+
+    SELECT count(*)::BIGINT,
+           COALESCE(min(ordinal),0)::BIGINT,
+           COALESCE(max(ordinal),-1)::BIGINT,
+           tool_truth_sha256(COALESCE(jsonb_agg(member_hash ORDER BY ordinal),'[]'::jsonb)::TEXT)
+      INTO actual_count,min_ordinal,max_ordinal,actual_member_hash
+      FROM capability_execution_reconciliation_members
+     WHERE reconciliation_id=NEW.id;
+    IF actual_count>0 AND (min_ordinal<>0 OR max_ordinal<>actual_count-1) THEN
+        RAISE EXCEPTION 'tool_truth_set_ordinal_invalid' USING ERRCODE='23514';
+    END IF;
+
+    NEW.member_count := actual_count;
+    NEW.member_set_hash := actual_member_hash;
+    NEW.semantic_reconciliation_hash := tool_truth_sha256(jsonb_build_object(
+        'receipt_id',NEW.receipt_id,
+        'execution_authority_id',NEW.execution_authority_id,
+        'semantic_authority_version',NEW.semantic_authority_version,
+        'predecessor_reconciliation_id',NEW.predecessor_reconciliation_id,
+        'reconciliation_state',NEW.reconciliation_state,
+        'reason_code',NEW.reason_code,
+        'observed_artifact_sha256',NEW.observed_artifact_sha256,
+        'observed_artifact_byte_count',NEW.observed_artifact_byte_count,
+        'member_set_hash',actual_member_hash
+    )::TEXT);
+    NEW.sealed_at := statement_timestamp();
+    RETURN NEW;
+END;
+$$;
 CREATE TRIGGER capability_reconciliation_header_guard
 BEFORE INSERT OR UPDATE OR DELETE ON capability_execution_reconciliations
-FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_header(
-    'capability_execution_reconciliation_members','reconciliation_id','member_hash','true');
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_reconciliation_header();
 CREATE TRIGGER capability_reconciliation_member_guard
 BEFORE INSERT OR UPDATE OR DELETE ON capability_execution_reconciliation_members
 FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_member(

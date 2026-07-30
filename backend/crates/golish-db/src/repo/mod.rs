@@ -15,6 +15,7 @@ pub mod audit;
 pub mod candidate_attempts;
 pub mod candidate_recovery;
 pub mod canonical_fact_refs;
+pub mod capability_execution_receipts;
 pub mod cleanup_absence_checks;
 pub mod cleanup_attempts;
 pub mod cleanup_obligations;
