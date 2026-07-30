@@ -463,6 +463,7 @@ impl StageForkTaskOperationLaunch {
                     .iter()
                     .map(|stage| stage.as_str().to_string())
                     .collect(),
+                operation_contract_adoption: None,
             }),
         })
     }

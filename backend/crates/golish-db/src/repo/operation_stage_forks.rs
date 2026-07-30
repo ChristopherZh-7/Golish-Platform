@@ -210,6 +210,20 @@ struct LockedForkAuthority {
     target_runtime_memory_contract: String,
     source_attack_execution_contract: String,
     target_attack_execution_contract: String,
+    source_tool_truth_contract: String,
+    target_tool_truth_contract: String,
+    source_investigation_contract_version: String,
+    target_investigation_contract_version: String,
+    source_investigation_rollout_mode: String,
+    target_investigation_rollout_mode: String,
+    adoption_id: Option<Uuid>,
+    adoption_receipt_hash: Option<String>,
+    adoption_source_tool_truth_contract: Option<String>,
+    adoption_source_investigation_contract_version: Option<String>,
+    adoption_source_investigation_rollout_mode: Option<String>,
+    adoption_target_tool_truth_contract: Option<String>,
+    adoption_target_investigation_contract_version: Option<String>,
+    adoption_target_investigation_rollout_mode: Option<String>,
     source_project_scope_id: Option<Uuid>,
     target_project_scope_id: Option<Uuid>,
     source_superseded_by: Option<Uuid>,
@@ -513,12 +527,29 @@ pub async fn materialize_with_connection(
                   target.runtime_memory_contract AS target_runtime_memory_contract,
                   source.attack_execution_contract AS source_attack_execution_contract,
                   target.attack_execution_contract AS target_attack_execution_contract,
+                  source.tool_truth_contract AS source_tool_truth_contract,
+                  target.tool_truth_contract AS target_tool_truth_contract,
+                  source.investigation_contract_version AS source_investigation_contract_version,
+                  target.investigation_contract_version AS target_investigation_contract_version,
+                  source.investigation_rollout_mode AS source_investigation_rollout_mode,
+                  target.investigation_rollout_mode AS target_investigation_rollout_mode,
+                  adoption.adoption_id,
+                  adoption.receipt_hash AS adoption_receipt_hash,
+                  adoption.source_tool_truth_contract AS adoption_source_tool_truth_contract,
+                  adoption.source_investigation_contract_version AS adoption_source_investigation_contract_version,
+                  adoption.source_investigation_rollout_mode AS adoption_source_investigation_rollout_mode,
+                  adoption.target_tool_truth_contract AS adoption_target_tool_truth_contract,
+                  adoption.target_investigation_contract_version AS adoption_target_investigation_contract_version,
+                  adoption.target_investigation_rollout_mode AS adoption_target_investigation_rollout_mode,
                   source.project_scope_id AS source_project_scope_id,
                   target.project_scope_id AS target_project_scope_id,
                   source.superseded_by AS source_superseded_by,
                   project.canonical_project_path
              FROM operation_state AS source
              JOIN operation_state AS target ON target.operation_id=$2
+             LEFT JOIN operation_contract_adoptions AS adoption
+               ON adoption.source_operation_id=source.operation_id
+              AND adoption.target_operation_id=target.operation_id
              JOIN operation_org_scope_snapshots AS source_scope
                ON source_scope.id=$3 AND source_scope.operation_id=source.operation_id
              JOIN operation_org_scope_snapshots AS target_scope
@@ -555,6 +586,44 @@ pub async fn materialize_with_connection(
     {
         return Err(OperationStageForkError::Conflict {
             code: "stage_fork_operation_contract_mismatch",
+        });
+    }
+    let joint_pair_is_inherited = authority.source_tool_truth_contract
+        == authority.target_tool_truth_contract
+        && authority.source_investigation_contract_version
+            == authority.target_investigation_contract_version
+        && authority.source_investigation_rollout_mode
+            == authority.target_investigation_rollout_mode;
+    if !joint_pair_is_inherited {
+        let adoption_matches = authority.adoption_id.is_some()
+            && authority.adoption_source_tool_truth_contract.as_deref()
+                == Some(authority.source_tool_truth_contract.as_str())
+            && authority
+                .adoption_source_investigation_contract_version
+                .as_deref()
+                == Some(authority.source_investigation_contract_version.as_str())
+            && authority
+                .adoption_source_investigation_rollout_mode
+                .as_deref()
+                == Some(authority.source_investigation_rollout_mode.as_str())
+            && authority.adoption_target_tool_truth_contract.as_deref()
+                == Some(authority.target_tool_truth_contract.as_str())
+            && authority
+                .adoption_target_investigation_contract_version
+                .as_deref()
+                == Some(authority.target_investigation_contract_version.as_str())
+            && authority
+                .adoption_target_investigation_rollout_mode
+                .as_deref()
+                == Some(authority.target_investigation_rollout_mode.as_str());
+        if !adoption_matches {
+            return Err(OperationStageForkError::Conflict {
+                code: "STAGE_FORK_OPERATION_CONTRACT_ADOPTION_RECEIPT_REQUIRED",
+            });
+        }
+    } else if authority.adoption_id.is_some() {
+        return Err(OperationStageForkError::Conflict {
+            code: "STAGE_FORK_OPERATION_CONTRACT_ADOPTION_UNEXPECTED",
         });
     }
 
@@ -942,6 +1011,14 @@ pub async fn materialize_with_connection(
         "profile": authority.source_profile,
         "runtime_memory_contract": authority.source_runtime_memory_contract,
         "attack_execution_contract": authority.source_attack_execution_contract,
+        "source_tool_truth_contract": authority.source_tool_truth_contract,
+        "target_tool_truth_contract": authority.target_tool_truth_contract,
+        "source_investigation_contract_version": authority.source_investigation_contract_version,
+        "target_investigation_contract_version": authority.target_investigation_contract_version,
+        "source_investigation_rollout_mode": authority.source_investigation_rollout_mode,
+        "target_investigation_rollout_mode": authority.target_investigation_rollout_mode,
+        "operation_contract_adoption_id": authority.adoption_id,
+        "operation_contract_adoption_receipt_hash": authority.adoption_receipt_hash,
         "entry_stage": request.entry_stage,
         "terminal_stage": request.terminal_stage,
         "adopted_stage_kinds": request.adopted_stage_kinds,

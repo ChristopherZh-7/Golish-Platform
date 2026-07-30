@@ -23,6 +23,7 @@
 |---|---|
 | `DbRepoProvider` | legacy/通用仓库操作与 deterministic harness truth seams（含 Candidate review/Verification truth/Wave consolidation/Reporting） |
 | `RuntimeMemoryRepository` | typed runtime-memory 边界：project scope 注册/rename CAS、Task+operation/stage execution 原子创建与轮转、trusted submission/scope freeze、Unit/Worker seed/claim/prebound-chain/checkpoint/heartbeat/tool fence/terminal mutation，以及 Candidate Wave authority、Attempt terminalization、VerificationUnit close；错误保持 `RuntimeMemoryError`，不藏进 `anyhow` |
+| `OperationStateView` / `StageForkCreate` | SQLx-free完整operation合同视图：runtime、Tool Truth、Investigation contract/mode三轴严格解析；stage fork可携带typed `OperationContractForkAdoption`，普通fork固定为`None`并由repo继承source pair |
 | `DbTrackingBackend` | fire-and-forget 记录 + memory 存/搜 |
 | `DbReadinessGate` | PG 启动就绪门 |
 | `TextEmbedder` | 语义记忆文本嵌入 |
@@ -43,6 +44,7 @@
 
 - **依赖倒置核心**：本 crate 定义 trait，golish-agent-app 注入实现——别在此引 golish-db/sqlx（会破坏 agent 栈的可测/解耦）。
 - `RuntimeMemoryContract` 只有 `LegacyV1 → DualWriteLegacyRead → DualWriteV2Preferred → V2Only` 四个单调状态；operation 创建时从 DB singleton 冻结，request/model/CLI 参数不得自行选择。`OperationStateView.project_scope_id` 对新 runtime operation 必须为 `Some`，legacy V1 row 可为 `None`。
+- `OperationStateView`还必须完整保留Tool Truth + Investigation contract/mode；bridge遇到未知值或七态外组合必须fail closed。fork adoption只接受server/trusted配置中的typed target与expected hashes，模型文本不能构造或改变。
 - Worker runtime mutation 只能走 compound DTO/API；`RuntimeWorkerFence` 必须同时携带 operation/execution/unit/worker/token/epoch/checkpoint-version。`DualWriteV2Preferred` 的 `LoadedWorkerCheckpoint` 每次选择一条完整 V2 记录或一条完整 legacy fallback，禁止跨源拼字段。
 - 本地 DTO 与 golish-db 的 row 类型是两套，由 bridge 转换。
 - harness gate 相关读写也走 `DbRepoProvider` seam：`technique_outcome_facts` 必须返回保留 `source` 的 `TechniqueOutcomeFact`，不能退回丢 provenance 的四元组；Enumeration `blocked` 的 submit/final gate 据此只接受 preflight→四轴、route recovery→DIR、browser recovery→JS/JSAPI/PARAM 的 source/axis 组合，并要求匹配 current-target guarded evidence。audit `kind` 的精确校验由 app bridge 在投影前完成，不能指望 kit trait 自行查询 DB。`source_query_facts` 投影 `source_query_log` terminal rows，但只证明 source 尝试、不证明 found。legacy 名称 `mark_target_intel_dns_empty_outcomes` 是 target_intel DNS attempt 的 app-side hook：runtime 拿到真实 evidence id 后调用，trait 默认 no-op，生产实现分别写 `technique_outcomes(GOLISH-INTEL-DNS, empty|error)`；只有明确 no-record 才 empty，resolver/transport failure 必须是非终态 error。

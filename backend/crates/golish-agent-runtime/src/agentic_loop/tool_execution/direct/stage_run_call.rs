@@ -12998,6 +12998,10 @@ mod tests {
             current_stage: "target_intel".to_string(),
             runtime_memory_contract:
                 golish_agent_kit::runtime_memory::RuntimeMemoryContract::LegacyV1,
+            tool_truth_contract: golish_agent_kit::db_traits::ToolTruthContract::LegacyV1,
+            investigation_contract_version:
+                golish_core::InvestigationContractVersion::LegacyCandidateV1,
+            investigation_rollout_mode: golish_core::InvestigationRolloutMode::LegacyOnly,
             project_scope_id: None,
             engagement_org_id: None,
             state_blob: json!({}),

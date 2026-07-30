@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use golish_pentest_domain::tool_truth::ToolTruthContract;
+
 // ── Status enums ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +234,12 @@ pub struct OperationStateView {
     /// Immutable runtime-memory rollout contract frozen when this operation was
     /// created. Unknown persisted values fail closed in the app bridge.
     pub runtime_memory_contract: crate::runtime_memory::RuntimeMemoryContract,
+    /// Tool/evidence authority contract frozen with the operation.
+    pub tool_truth_contract: ToolTruthContract,
+    /// Candidate/Hypothesis Registry schema contract frozen with the operation.
+    pub investigation_contract_version: golish_core::InvestigationContractVersion,
+    /// Candidate/Hypothesis Registry rollout mode frozen with the operation.
+    pub investigation_rollout_mode: golish_core::InvestigationRolloutMode,
     /// Stable project/workspace authorization identity frozen when the runtime
     /// operation is created. Legacy operations may remain unbound.
     pub project_scope_id: Option<Uuid>,

@@ -1,9 +1,11 @@
+use golish_core::{InvestigationContractVersion, InvestigationRolloutMode};
 use golish_db::models::NewSession;
 use golish_db::repo::{
-    attack_candidates, attack_waves, operation_stage_forks, operator_principals,
+    attack_candidates, attack_waves, operation_rollout, operation_stage_forks, operator_principals,
     organization_deletion_jobs, project_scopes, runtime_memory_tx, sessions, stage_handoffs,
 };
 use golish_db::{DbConfig, GolishDb};
+use golish_pentest_domain::tool_truth::ToolTruthContract;
 use serial_test::serial;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -219,7 +221,7 @@ async fn insert_final_stage_handoff(db: &GolishDb, fixture: FinalStageHandoffFix
 
 #[tokio::test]
 #[serial]
-async fn shared_db_candidate_fork_materializes_scoping_prefix_targets_and_wave_entry() {
+async fn stage_fork_shared_db_candidate_materializes_contracts_prefix_targets_and_wave_entry() {
     let data_dir = tempfile::tempdir().expect("temporary postgres data directory");
     let workspace = format!("/tmp/stage-fork-{}", Uuid::new_v4().simple());
     let config = DbConfig {
@@ -503,6 +505,30 @@ async fn shared_db_candidate_fork_materializes_scoping_prefix_targets_and_wave_e
     .await
     .expect("snapshot source operation before fork");
 
+    // Test-only simulation of a future authorized Plan D default commit. Plan
+    // B exposes no promotion API; this proves a fork does not silently rebind
+    // an older source operation to the later deployment singleton.
+    sqlx::query(
+        "ALTER TABLE tool_truth_rollout DISABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+    )
+    .execute(db.pool())
+    .await
+    .expect("disable immutable rollout guard in isolated fixture");
+    sqlx::query(
+        r#"UPDATE tool_truth_rollout
+              SET new_operation_contract='shadow_v1',row_version=row_version+1,updated_at=NOW()
+            WHERE singleton=TRUE"#,
+    )
+    .execute(db.pool())
+    .await
+    .expect("simulate later complete deployment default");
+    sqlx::query(
+        "ALTER TABLE tool_truth_rollout ENABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+    )
+    .execute(db.pool())
+    .await
+    .expect("restore immutable rollout guard");
+
     let target_session = sessions::create(
         db.pool(),
         NewSession {
@@ -555,11 +581,31 @@ async fn shared_db_candidate_fork_materializes_scoping_prefix_targets_and_wave_e
                 "enumeration".to_string(),
                 "vuln_triage".to_string(),
             ],
+            operation_contract_adoption: None,
         },
     )
     .await
     .expect("atomically create CLI fork from GUI-shaped source DB truth");
     assert_eq!(created.operation.operation_id, target_operation_id);
+    let source_contracts: (String, String, String) = sqlx::query_as(
+        r#"SELECT tool_truth_contract,investigation_contract_version,
+                  investigation_rollout_mode
+             FROM operation_state WHERE operation_id=$1"#,
+    )
+    .bind(source_operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read source frozen joint contract");
+    let target_contracts: (String, String, String) = sqlx::query_as(
+        r#"SELECT tool_truth_contract,investigation_contract_version,
+                  investigation_rollout_mode
+             FROM operation_state WHERE operation_id=$1"#,
+    )
+    .bind(target_operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read inherited target joint contract");
+    assert_eq!(target_contracts, source_contracts);
     let target_scope_snapshot_id: Uuid =
         sqlx::query_scalar("SELECT id FROM operation_org_scope_snapshots WHERE operation_id=$1")
             .bind(target_operation_id)
@@ -573,6 +619,15 @@ async fn shared_db_candidate_fork_materializes_scoping_prefix_targets_and_wave_e
     assert_eq!(fork.source_operation_id, source_operation_id);
     assert_eq!(fork.expected_input_count, 5);
     assert_eq!(fork.expected_target_count, 1);
+    assert_eq!(
+        fork.manifest["source_tool_truth_contract"],
+        serde_json::json!(source_contracts.0.clone())
+    );
+    assert_eq!(
+        fork.manifest["target_investigation_contract_version"],
+        serde_json::json!(source_contracts.1.clone())
+    );
+    assert!(fork.manifest["operation_contract_adoption_id"].is_null());
     let inputs = operation_stage_forks::list_inputs(db.pool(), target_operation_id)
         .await
         .expect("load immutable fork inputs");
@@ -588,6 +643,240 @@ async fn shared_db_candidate_fork_materializes_scoping_prefix_targets_and_wave_e
         .expect("load immutable current Target snapshot");
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].live_target_id, target_id);
+
+    let adopted_stage_kinds = vec![
+        "scoping".to_string(),
+        "target_intel".to_string(),
+        "external_attack_surface".to_string(),
+        "enumeration".to_string(),
+        "vuln_triage".to_string(),
+    ];
+    let mut witness_connection = db
+        .pool()
+        .acquire()
+        .await
+        .expect("acquire witness connection");
+    let witness = operation_rollout::prepare_stage_fork_adoption_witness(
+        &mut witness_connection,
+        source_operation_id,
+        source_scope_snapshot_id,
+        &adopted_stage_kinds,
+        ToolTruthContract::ShadowV1,
+        InvestigationContractVersion::LegacyCandidateV1,
+        InvestigationRolloutMode::LegacyOnly,
+    )
+    .await
+    .expect("derive server-owned adjacent adoption witness");
+    drop(witness_connection);
+    let adoption = operation_rollout::OperationContractForkAdoptionRow {
+        request_id: Uuid::new_v4().to_string(),
+        target_tool_truth_contract: ToolTruthContract::ShadowV1,
+        target_investigation_contract_version: InvestigationContractVersion::LegacyCandidateV1,
+        target_investigation_rollout_mode: InvestigationRolloutMode::LegacyOnly,
+        source_final_seal_hash: witness.source_final_seal_hash.clone(),
+        adoption_exact_set_hash: witness.adoption_exact_set_hash.clone(),
+    };
+    let adoption_target_operation_id = Uuid::new_v4();
+    let mut adoption_tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin adoption writer probe");
+    let adopted_pair = operation_rollout::choose_stage_fork_pair_and_write_adoption(
+        &mut adoption_tx,
+        source_operation_id,
+        adoption_target_operation_id,
+        source_scope_snapshot_id,
+        &adopted_stage_kinds,
+        Some(&adoption),
+    )
+    .await
+    .expect("write exact adjacent adoption receipt");
+    assert_eq!(adopted_pair.joint_rank, 1);
+    operation_rollout::choose_stage_fork_pair_and_write_adoption(
+        &mut adoption_tx,
+        source_operation_id,
+        adoption_target_operation_id,
+        source_scope_snapshot_id,
+        &adopted_stage_kinds,
+        Some(&adoption),
+    )
+    .await
+    .expect("exact stable-request replay is idempotent");
+    let drift = operation_rollout::choose_stage_fork_pair_and_write_adoption(
+        &mut adoption_tx,
+        source_operation_id,
+        Uuid::new_v4(),
+        source_scope_snapshot_id,
+        &adopted_stage_kinds,
+        Some(&adoption),
+    )
+    .await
+    .expect_err("stable-request target drift must fail closed");
+    assert_eq!(
+        drift.code(),
+        "STAGE_FORK_OPERATION_CONTRACT_ADOPTION_REQUEST_DRIFT"
+    );
+    adoption_tx.rollback().await.expect("rollback writer probe");
+
+    let mut forged = adoption.clone();
+    forged.source_final_seal_hash = format!("sha256:{}", "f".repeat(64));
+    let mut forged_tx = db.pool().begin().await.expect("begin forged seal probe");
+    let forged_error = operation_rollout::choose_stage_fork_pair_and_write_adoption(
+        &mut forged_tx,
+        source_operation_id,
+        Uuid::new_v4(),
+        source_scope_snapshot_id,
+        &adopted_stage_kinds,
+        Some(&forged),
+    )
+    .await
+    .expect_err("caller-forged source seal must fail closed");
+    assert_eq!(
+        forged_error.code(),
+        "STAGE_FORK_OPERATION_CONTRACT_SOURCE_SEAL_DRIFT"
+    );
+    forged_tx
+        .rollback()
+        .await
+        .expect("rollback forged seal probe");
+
+    let mut forged_set = adoption.clone();
+    forged_set.adoption_exact_set_hash = format!("sha256:{}", "e".repeat(64));
+    let mut forged_set_tx = db.pool().begin().await.expect("begin forged set probe");
+    let forged_set_error = operation_rollout::choose_stage_fork_pair_and_write_adoption(
+        &mut forged_set_tx,
+        source_operation_id,
+        Uuid::new_v4(),
+        source_scope_snapshot_id,
+        &adopted_stage_kinds,
+        Some(&forged_set),
+    )
+    .await
+    .expect_err("caller-forged adoption set must fail closed");
+    assert_eq!(
+        forged_set_error.code(),
+        "STAGE_FORK_OPERATION_CONTRACT_ADOPTION_SET_DRIFT"
+    );
+    forged_set_tx
+        .rollback()
+        .await
+        .expect("rollback forged adoption-set probe");
+
+    let mut skip_connection = db
+        .pool()
+        .acquire()
+        .await
+        .expect("acquire skip probe connection");
+    let skip_error = operation_rollout::prepare_stage_fork_adoption_witness(
+        &mut skip_connection,
+        source_operation_id,
+        source_scope_snapshot_id,
+        &adopted_stage_kinds,
+        ToolTruthContract::ShadowV1,
+        InvestigationContractVersion::HypothesisRegistryV1,
+        InvestigationRolloutMode::ShadowRegistry,
+    )
+    .await
+    .expect_err("fork adoption may not skip a joint rank");
+    assert_eq!(
+        skip_error.code(),
+        "STAGE_FORK_OPERATION_CONTRACT_ADOPTION_NOT_ADJACENT"
+    );
+    drop(skip_connection);
+
+    let adoption_session = sessions::create(
+        db.pool(),
+        NewSession {
+            title: Some("CLI adjacent-contract fork".to_string()),
+            workspace_path: Some(workspace.clone()),
+            workspace_label: None,
+            model: Some("source-model".to_string()),
+            provider: Some("source-provider".to_string()),
+            project_path: Some(workspace.clone()),
+        },
+    )
+    .await
+    .expect("create adjacent-adoption fork session");
+    let adoption_operation_id = Uuid::new_v4();
+    let adopted = runtime_memory_tx::create_runtime_operation_with_stage_fork(
+        db.pool(),
+        &runtime_memory_tx::CreateRuntimeOperationRow {
+            operation_id: adoption_operation_id,
+            initial_stage_execution_id: Uuid::new_v4(),
+            session_id: adoption_session.id,
+            title: Some("CLI adjacent-contract fork".to_string()),
+            input: "run Candidate with adjacent contract".to_string(),
+            profile: "red_team".to_string(),
+            entry_stage: "attack_candidate".to_string(),
+            project_scope_id: project.project_scope_id,
+            cli_scope: Some(runtime_memory_tx::CliRuntimeScopeRow {
+                root_organization_id,
+                include_subsidiaries: false,
+                subsidiary_threshold: 51,
+                units: vec![runtime_memory_tx::CliRuntimeScopeUnitRow {
+                    organization_id: root_organization_id,
+                    parent_organization_id: None,
+                    organization_name: "Root Org".to_string(),
+                    depth: 0,
+                    ordinal: 0,
+                    ownership_percent: None,
+                    approval_source: serde_json::json!({"kind": "stage_fork_source_scope"}),
+                }],
+            }),
+        },
+        &runtime_memory_tx::StageForkCreateRow {
+            source_operation_id,
+            source_scope_snapshot_id,
+            entry_stage: "attack_candidate".to_string(),
+            terminal_stage: "attack_candidate".to_string(),
+            adopted_stage_kinds: adopted_stage_kinds.clone(),
+            operation_contract_adoption: Some(adoption.clone()),
+        },
+    )
+    .await
+    .expect("commit adjacent adoption, target operation and fork atomically");
+    assert_eq!(adopted.operation.tool_truth_contract, "shadow_v1");
+    assert_eq!(
+        adopted.operation.investigation_contract_version,
+        "legacy_candidate_v1"
+    );
+    let adoption_receipt: (i64, String) = sqlx::query_as(
+        r#"SELECT COUNT(*),MIN(receipt_hash)
+             FROM operation_contract_adoptions
+            WHERE target_operation_id=$1"#,
+    )
+    .bind(adoption_operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read exact committed adoption receipt");
+    assert_eq!(adoption_receipt.0, 1);
+    assert!(adoption_receipt.1.starts_with("sha256:"));
+    let adopted_fork = operation_stage_forks::get(db.pool(), adoption_operation_id)
+        .await
+        .expect("read adopted fork")
+        .expect("adopted fork exists");
+    assert!(!adopted_fork.manifest["operation_contract_adoption_id"].is_null());
+    assert_eq!(
+        adopted_fork.manifest["operation_contract_adoption_receipt_hash"],
+        serde_json::json!(adoption_receipt.1)
+    );
+    sqlx::query(
+        "UPDATE stage_runs SET status='completed',completed_at=NOW() \
+         WHERE operation_id=$1 AND status='started'",
+    )
+    .bind(adoption_operation_id)
+    .execute(db.pool())
+    .await
+    .expect("close adoption fixture stage execution");
+    sqlx::query(
+        "UPDATE tasks SET status='finished',result='adoption fixture closed',updated_at=NOW() \
+         WHERE id=$1",
+    )
+    .bind(adoption_operation_id)
+    .execute(db.pool())
+    .await
+    .expect("close adoption fixture task before organization-deletion assertions");
 
     let deletion_principal = operator_principals::current_local(db.pool())
         .await
@@ -930,6 +1219,7 @@ async fn shared_db_candidate_fork_materializes_scoping_prefix_targets_and_wave_e
                 "enumeration".to_string(),
                 "vuln_triage".to_string(),
             ],
+            operation_contract_adoption: None,
         },
     )
     .await

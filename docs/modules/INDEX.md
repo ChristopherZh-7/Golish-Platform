@@ -90,7 +90,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-agent-kit | agent runtime 底层构件（typed stage/runtime/stage-fork contracts + Vuln gate + org-bound evidence + runtime tool owner fence + Candidate/whole-source resume selector） | [→](backend/golish-agent-kit.md) | ✅ |
+| golish-agent-kit | agent runtime 底层构件（typed stage/runtime/stage-fork joint contracts + Vuln gate + org-bound evidence + runtime tool owner fence + Candidate/whole-source resume selector） | [→](backend/golish-agent-kit.md) | ✅ |
 | golish-agent-runtime | 高层 agent runtime（流式 loop + source-pinned restore + shared stage-fork Candidate Wave + 每公司持久 Company Controller滚动补位/claim锁收敛/queued续跑 + exact-gap repair/continuation） | [→](backend/golish-agent-runtime.md) | ✅ |
 | golish-agent-bridge | app↔runtime 桥接层（stable request owner + request-local resume source + trusted lease/runtime-memory/UoW/ContextPack 注入） | [→](backend/golish-agent-bridge.md) | ✅ |
 | golish-sub-agents | sub-agent 系统（source-pinned V2 lifecycle + trusted Company Controller plan/dispatch controls + foreground Nuclei specialist + Wave-read-only analyst + opaque Attempt verifier） | [→](backend/golish-sub-agents.md) | ✅ |
@@ -101,7 +101,7 @@
 |---|---|---|---|
 | golish-app-core | 应用边界共享类型（L5：GolishError/DbState/scoping/runtime + opaque trusted operator + exact trusted-target promotion + generation-guarded recon ports） | [→](backend/golish-app-core.md) | ✅ |
 | golish-cleanup-app | Cleanup P7b exact terminal truth、backoff/fair DB-global worker、Gate/residual 与可恢复两阶段组织删除 | [→](backend/golish-cleanup-app.md) | ✅ |
-| golish-agent-app | agent 服务命令面（GUI/CLI shared task-operation/stage-fork kernel + Enumeration-manifest Vuln coverage + Stage Team/Candidate/Memory/Cleanup/Reporting authority） | [→](backend/golish-agent-app.md) | ✅ |
+| golish-agent-app | agent 服务命令面（GUI/CLI shared task-operation/stage-fork joint-contract bridge + Enumeration-manifest Vuln coverage + Stage Team/Candidate/Memory/Cleanup/Reporting authority） | [→](backend/golish-agent-app.md) | ✅ |
 | golish-pentest-app | pentest 服务命令面（operation-bound Enumeration producers + parameter-aware Nuclei DAST + 7-day adysec freshness/operation-pinned N-day proof + guarded EAS/Vuln producers + typed evidence landing） | [→](backend/golish-pentest-app.md) | ✅ |
 | golish-recon-app | recon 服务命令面（含 TargetIntel fixed-endpoint pinned transport与 opaque raw-witness handoff；不拥有 canonical receipt DB） | [→](backend/golish-recon-app.md) | ✅ |
 | golish-vuln-app | vuln-intel 服务命令面（feed/搜索/匹配/PoC·Nuclei 富化 + wiki） | [→](backend/golish-vuln-app.md) | ✅ |

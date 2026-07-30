@@ -7,13 +7,15 @@
 
 use crate::Result;
 use chrono::{DateTime, Utc};
-use golish_core::AttackExecutionContract;
+use golish_core::{
+    AttackExecutionContract, InvestigationContractVersion, InvestigationRolloutMode,
+};
 use golish_pentest_domain::tool_truth::ToolTruthContract;
 use serde::{Deserialize, Serialize};
 use sqlx::{Executor, PgPool, Postgres};
 use uuid::Uuid;
 
-use super::{attack_execution_rollout, tool_truth_rollout};
+use super::{attack_execution_rollout, operation_rollout};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OperationContractValidationError {
@@ -363,6 +365,11 @@ pub struct OperationStateRow {
     /// Immutable Tool Truth execution/evidence contract selected at operation
     /// creation. Existing rows and the Plan A deployment default are legacy_v1.
     pub tool_truth_contract: String,
+    /// Immutable Candidate/Hypothesis Registry schema contract selected in the
+    /// same transaction as the Tool Truth contract.
+    pub investigation_contract_version: String,
+    /// Immutable five-state rollout mode paired with the schema contract.
+    pub investigation_rollout_mode: String,
     /// Stable workspace identity for runtime-memory V2. Legacy rows remain
     /// nullable; every newly created runtime operation supplies this value.
     pub project_scope_id: Option<Uuid>,
@@ -395,21 +402,25 @@ pub struct OperationEpochRow {
 /// 创建一个新 operation_state 行 (新 operation 入口).
 const INSERT_OPERATION_SQL: &str = r#"INSERT INTO operation_state
         (operation_id, profile, current_stage, runtime_memory_contract,
-         attack_execution_contract, tool_truth_contract)
-    VALUES ($1, $2, $3, $4, $5, $6)"#;
+         attack_execution_contract, tool_truth_contract,
+         investigation_contract_version, investigation_rollout_mode)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#;
 
 #[cfg(test)]
 const OPERATION_STATE_ROW_COLUMNS: &str = r#"operation_id, profile, current_stage,
-    runtime_memory_contract, tool_truth_contract, project_scope_id, stage_started_at,
+    runtime_memory_contract, tool_truth_contract, investigation_contract_version,
+    investigation_rollout_mode, project_scope_id, stage_started_at,
     last_evidence_audit_id, last_classification_id, last_scope_version,
     state_blob, superseded_by, engagement_org_id"#;
 
 const INSERT_OPERATION_WITH_EXECUTOR_SQL: &str = r#"INSERT INTO operation_state
         (operation_id, profile, current_stage, runtime_memory_contract, project_scope_id,
-         attack_execution_contract, tool_truth_contract)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+         attack_execution_contract, tool_truth_contract,
+         investigation_contract_version, investigation_rollout_mode)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     RETURNING operation_id, profile, current_stage, runtime_memory_contract,
-              tool_truth_contract, project_scope_id, stage_started_at, last_evidence_audit_id,
+              tool_truth_contract, investigation_contract_version,
+              investigation_rollout_mode, project_scope_id, stage_started_at, last_evidence_audit_id,
               last_classification_id, last_scope_version, state_blob,
               superseded_by, engagement_org_id"#;
 
@@ -422,7 +433,9 @@ pub async fn insert(
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
     let attack_rollout = attack_execution_rollout::get_for_share(&mut tx).await?;
-    let tool_truth_contract = tool_truth_rollout::get_for_share(&mut tx).await?;
+    let joint_contract = operation_rollout::deployment_pair_for_share(&mut tx)
+        .await
+        .map_err(operation_rollout::map_to_db_error)?;
     let attack_contract = parse_attack_execution_contract(&attack_rollout.contract)?;
     validate_frozen_operation_contracts(runtime_memory_contract, attack_contract)?;
     sqlx::query(INSERT_OPERATION_SQL)
@@ -431,7 +444,9 @@ pub async fn insert(
         .bind(current_stage)
         .bind(runtime_memory_contract)
         .bind(attack_contract.as_str())
-        .bind(tool_truth_contract.as_str())
+        .bind(joint_contract.tool_truth_contract.as_str())
+        .bind(joint_contract.investigation_contract_version.as_str())
+        .bind(joint_contract.investigation_rollout_mode.as_str())
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -451,11 +466,19 @@ pub async fn insert_with_executor<'e, E>(
     project_scope_id: Uuid,
     attack_execution_contract: AttackExecutionContract,
     tool_truth_contract: ToolTruthContract,
+    investigation_contract_version: InvestigationContractVersion,
+    investigation_rollout_mode: InvestigationRolloutMode,
 ) -> Result<OperationStateRow>
 where
     E: Executor<'e, Database = Postgres>,
 {
     validate_frozen_operation_contracts(runtime_memory_contract, attack_execution_contract)?;
+    operation_rollout::validate_joint_pair(
+        tool_truth_contract,
+        investigation_contract_version,
+        investigation_rollout_mode,
+    )
+    .map_err(operation_rollout::map_to_db_error)?;
     let row = sqlx::query_as::<_, OperationStateRow>(INSERT_OPERATION_WITH_EXECUTOR_SQL)
         .bind(operation_id)
         .bind(profile)
@@ -464,6 +487,8 @@ where
         .bind(project_scope_id)
         .bind(attack_execution_contract.as_str())
         .bind(tool_truth_contract.as_str())
+        .bind(investigation_contract_version.as_str())
+        .bind(investigation_rollout_mode.as_str())
         .fetch_one(executor)
         .await?;
     Ok(row)
@@ -473,7 +498,8 @@ where
 pub async fn get(pool: &PgPool, operation_id: Uuid) -> Result<Option<OperationStateRow>> {
     let row = sqlx::query_as::<_, OperationStateRow>(
         r#"SELECT operation_id, profile, current_stage, runtime_memory_contract,
-                  tool_truth_contract, project_scope_id, stage_started_at,
+                  tool_truth_contract, investigation_contract_version,
+                  investigation_rollout_mode, project_scope_id, stage_started_at,
                   last_evidence_audit_id, last_classification_id,
                   last_scope_version, state_blob, superseded_by, engagement_org_id
            FROM operation_state
@@ -769,6 +795,8 @@ mod tests {
             current_stage: "external_attack_surface".to_string(),
             runtime_memory_contract: "dual_write_legacy_read".to_string(),
             tool_truth_contract: "legacy_v1".to_string(),
+            investigation_contract_version: "legacy_candidate_v1".to_string(),
+            investigation_rollout_mode: "legacy_only".to_string(),
             project_scope_id: Some(Uuid::new_v4()),
             stage_started_at: Utc::now(),
             last_evidence_audit_id: Some(42),
@@ -784,6 +812,14 @@ mod tests {
         assert_eq!(row.current_stage, back.current_stage);
         assert_eq!(row.runtime_memory_contract, back.runtime_memory_contract);
         assert_eq!(row.tool_truth_contract, back.tool_truth_contract);
+        assert_eq!(
+            row.investigation_contract_version,
+            back.investigation_contract_version
+        );
+        assert_eq!(
+            row.investigation_rollout_mode,
+            back.investigation_rollout_mode
+        );
         assert_eq!(row.state_blob, back.state_blob);
     }
 
@@ -801,6 +837,14 @@ mod tests {
     }
 
     #[test]
+    fn operation_insert_freezes_investigation_contract() {
+        assert!(INSERT_OPERATION_SQL.contains("investigation_contract_version"));
+        assert!(INSERT_OPERATION_SQL.contains("investigation_rollout_mode"));
+        assert!(INSERT_OPERATION_WITH_EXECUTOR_SQL.contains("investigation_contract_version"));
+        assert!(OPERATION_STATE_ROW_COLUMNS.contains("investigation_rollout_mode"));
+    }
+
+    #[test]
     fn tool_truth_contract_does_not_fallback_on_unknown_value() {
         let error = parse_tool_truth_contract("future_contract")
             .expect_err("unknown persisted contract must fail closed");
@@ -813,8 +857,8 @@ mod tests {
     #[test]
     fn runtime_operation_creation_locks_tool_truth_rollout() {
         let source = include_str!("runtime_memory_tx.rs");
-        assert!(source.contains("tool_truth_rollout::get_for_share"));
-        assert!(source.contains("source_tool_truth_contract"));
+        assert!(source.contains("operation_rollout::deployment_pair_for_share"));
+        assert!(source.contains("operation_rollout::choose_stage_fork_pair_and_write_adoption"));
     }
 
     #[test]

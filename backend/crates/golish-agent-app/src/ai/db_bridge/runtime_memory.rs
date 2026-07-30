@@ -1162,7 +1162,7 @@ fn project_scope_registration_from_db(
     }
 }
 
-fn operation_state_view_from_db(
+pub(super) fn operation_state_view_from_db(
     row: golish_db::repo::operation_state::OperationStateRow,
 ) -> Result<OperationStateView, RuntimeMemoryError> {
     let runtime_memory_contract =
@@ -1171,11 +1171,41 @@ fn operation_state_view_from_db(
                 "decode persisted runtime-memory contract: {error}"
             ))
         })?;
+    let tool_truth_contract = golish_pentest_domain::tool_truth::ToolTruthContract::try_from(
+        row.tool_truth_contract.as_str(),
+    )
+    .map_err(|error| {
+        RuntimeMemoryError::Storage(format!("decode persisted Tool Truth contract: {error}"))
+    })?;
+    let investigation_contract_version = golish_core::InvestigationContractVersion::try_from(
+        row.investigation_contract_version.as_str(),
+    )
+    .map_err(|error| {
+        RuntimeMemoryError::Storage(format!("decode persisted investigation contract: {error}"))
+    })?;
+    let investigation_rollout_mode =
+        golish_core::InvestigationRolloutMode::try_from(row.investigation_rollout_mode.as_str())
+            .map_err(|error| {
+                RuntimeMemoryError::Storage(format!(
+                    "decode persisted investigation rollout mode: {error}"
+                ))
+            })?;
+    golish_db::repo::operation_rollout::validate_joint_pair(
+        tool_truth_contract,
+        investigation_contract_version,
+        investigation_rollout_mode,
+    )
+    .map_err(|error| {
+        RuntimeMemoryError::Storage(format!("decode persisted joint contract: {error}"))
+    })?;
     Ok(OperationStateView {
         operation_id: row.operation_id,
         profile: row.profile,
         current_stage: row.current_stage,
         runtime_memory_contract,
+        tool_truth_contract,
+        investigation_contract_version,
+        investigation_rollout_mode,
         project_scope_id: row.project_scope_id,
         engagement_org_id: row.engagement_org_id,
         state_blob: row.state_blob,
@@ -1292,6 +1322,18 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
                     entry_stage: fork.entry_stage,
                     terminal_stage: fork.terminal_stage,
                     adopted_stage_kinds: fork.adopted_stage_kinds,
+                    operation_contract_adoption: fork.operation_contract_adoption.map(|adoption| {
+                        golish_db::repo::operation_rollout::OperationContractForkAdoptionRow {
+                            request_id: adoption.request_id,
+                            target_tool_truth_contract: adoption.target_tool_truth_contract,
+                            target_investigation_contract_version: adoption
+                                .target_investigation_contract_version,
+                            target_investigation_rollout_mode: adoption
+                                .target_investigation_rollout_mode,
+                            source_final_seal_hash: adoption.source_final_seal_hash,
+                            adoption_exact_set_hash: adoption.adoption_exact_set_hash,
+                        }
+                    }),
                 },
             );
         let row = CreateRuntimeOperationRow {
@@ -3218,6 +3260,8 @@ mod tests {
             current_stage: "scoping".to_string(),
             runtime_memory_contract: contract.to_string(),
             tool_truth_contract: "legacy_v1".to_string(),
+            investigation_contract_version: "legacy_candidate_v1".to_string(),
+            investigation_rollout_mode: "legacy_only".to_string(),
             project_scope_id: Some(project_scope_id),
             stage_started_at: Utc::now(),
             last_evidence_audit_id: None,
@@ -3397,6 +3441,18 @@ mod tests {
             assert_eq!(view.task.status, TaskStatus::Created);
             assert_eq!(view.operation.operation_id, operation_id);
             assert_eq!(view.operation.runtime_memory_contract, expected);
+            assert_eq!(
+                view.operation.tool_truth_contract,
+                golish_pentest_domain::tool_truth::ToolTruthContract::LegacyV1
+            );
+            assert_eq!(
+                view.operation.investigation_contract_version,
+                golish_core::InvestigationContractVersion::LegacyCandidateV1
+            );
+            assert_eq!(
+                view.operation.investigation_rollout_mode,
+                golish_core::InvestigationRolloutMode::LegacyOnly
+            );
             assert_eq!(view.operation.project_scope_id, Some(project_scope_id));
             assert_eq!(view.initial_stage_execution_id, initial_stage_execution_id);
         }
@@ -3456,6 +3512,23 @@ mod tests {
         assert!(matches!(
             unknown,
             RuntimeMemoryError::Storage(message) if message.contains("future_contract")
+        ));
+
+        let mut unknown_investigation = db_operation(operation_id, project_scope_id, "legacy_v1");
+        unknown_investigation.investigation_rollout_mode = "future_mode".to_string();
+        let unknown_investigation = created_runtime_operation_from_db(
+            CreatedRuntimeOperationRow {
+                task: db_task(operation_id),
+                operation: unknown_investigation,
+                initial_stage_execution_id,
+            },
+            project_scope_id,
+            initial_stage_execution_id,
+        )
+        .expect_err("unknown persisted investigation mode must fail closed");
+        assert!(matches!(
+            unknown_investigation,
+            RuntimeMemoryError::Storage(message) if message.contains("future_mode")
         ));
 
         let wrong_scope = created_runtime_operation_from_db(

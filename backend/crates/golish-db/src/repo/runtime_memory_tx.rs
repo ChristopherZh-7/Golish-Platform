@@ -27,10 +27,11 @@ use crate::repo::stage_run_units::StageRunUnitRow;
 use crate::repo::stage_worker_runs::StageWorkerRunRow;
 use crate::repo::{
     attack_candidates, attack_execution_rollout, attack_execution_shadow, audit,
-    canonical_fact_refs, message_chains, operation_org_scope, operation_scope_decisions,
-    operation_state, operation_turns, project_scopes, runtime_memory_rollout,
-    runtime_memory_shadow, stage_asset_waves, stage_episodes, stage_handoffs, stage_purge,
-    stage_run_units, stage_runs, stage_teams, stage_worker_runs, tasks, tool_truth_rollout,
+    canonical_fact_refs, message_chains, operation_org_scope, operation_rollout,
+    operation_scope_decisions, operation_state, operation_turns, project_scopes,
+    runtime_memory_rollout, runtime_memory_shadow, stage_asset_waves, stage_episodes,
+    stage_handoffs, stage_purge, stage_run_units, stage_runs, stage_teams, stage_worker_runs,
+    tasks,
 };
 
 const MEMORY_EPISODE_STAGE_KINDS: [&str; 4] = [
@@ -283,6 +284,7 @@ pub struct StageForkCreateRow {
     pub entry_stage: String,
     pub terminal_stage: String,
     pub adopted_stage_kinds: Vec<String>,
+    pub operation_contract_adoption: Option<operation_rollout::OperationContractForkAdoptionRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1139,22 +1141,47 @@ async fn create_runtime_operation_inner(
             });
         }
     };
-    let source_tool_truth_contract = if let Some(stage_fork) = stage_fork {
-        let source_contract: String = sqlx::query_scalar(
-            "SELECT tool_truth_contract FROM operation_state WHERE operation_id=$1 FOR SHARE",
+    let joint_contract = if let Some(stage_fork) = stage_fork {
+        operation_rollout::choose_stage_fork_pair_and_write_adoption(
+            &mut tx,
+            stage_fork.source_operation_id,
+            input.operation_id,
+            stage_fork.source_scope_snapshot_id,
+            &stage_fork.adopted_stage_kinds,
+            stage_fork.operation_contract_adoption.as_ref(),
         )
-        .bind(stage_fork.source_operation_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(RuntimeMemoryStoreError::Missing {
-            entity: "stage_fork_source_operation",
-        })?;
-        golish_pentest_domain::tool_truth::ToolTruthContract::try_from(source_contract.as_str())
-            .map_err(|_| RuntimeMemoryStoreError::Conflict {
-                code: "unknown_tool_truth_contract",
-            })?
+        .await
+        .map_err(|error| match error {
+            operation_rollout::OperationRolloutError::Conflict { code } => {
+                RuntimeMemoryStoreError::Conflict { code }
+            }
+            operation_rollout::OperationRolloutError::IdentityMismatch { code } => {
+                RuntimeMemoryStoreError::IdentityMismatch { code }
+            }
+            operation_rollout::OperationRolloutError::Missing { entity } => {
+                RuntimeMemoryStoreError::Missing { entity }
+            }
+            operation_rollout::OperationRolloutError::Sqlx(error) => {
+                RuntimeMemoryStoreError::Sqlx(error)
+            }
+        })?
     } else {
-        tool_truth_rollout::get_for_share(&mut tx).await?
+        operation_rollout::deployment_pair_for_share(&mut tx)
+            .await
+            .map_err(|error| match error {
+                operation_rollout::OperationRolloutError::Conflict { code } => {
+                    RuntimeMemoryStoreError::Conflict { code }
+                }
+                operation_rollout::OperationRolloutError::IdentityMismatch { code } => {
+                    RuntimeMemoryStoreError::IdentityMismatch { code }
+                }
+                operation_rollout::OperationRolloutError::Missing { entity } => {
+                    RuntimeMemoryStoreError::Missing { entity }
+                }
+                operation_rollout::OperationRolloutError::Sqlx(error) => {
+                    RuntimeMemoryStoreError::Sqlx(error)
+                }
+            })?
     };
     let project = project_scopes::get_active_for_share(&mut *tx, input.project_scope_id)
         .await?
@@ -1177,7 +1204,9 @@ async fn create_runtime_operation_inner(
         &rollout.contract,
         input.project_scope_id,
         attack_contract,
-        source_tool_truth_contract,
+        joint_contract.tool_truth_contract,
+        joint_contract.investigation_contract_version,
+        joint_contract.investigation_rollout_mode,
     )
     .await?;
     operation_turns::insert_initial_with_executor(&mut *tx, input.operation_id, &input.input)
@@ -1249,7 +1278,8 @@ async fn create_runtime_operation_inner(
 }
 
 const LOCK_OPERATION_STATE_ROW_SQL: &str = r#"SELECT operation_id, profile, current_stage,
-    runtime_memory_contract, project_scope_id, stage_started_at,
+    runtime_memory_contract, tool_truth_contract, investigation_contract_version,
+    investigation_rollout_mode, project_scope_id, stage_started_at,
     last_evidence_audit_id, last_classification_id, last_scope_version,
     state_blob, superseded_by, engagement_org_id
 FROM operation_state
@@ -1263,7 +1293,8 @@ WHERE operation_id = $1
   AND current_stage = $3
   AND superseded_by IS NULL
 RETURNING operation_id, profile, current_stage, runtime_memory_contract,
-          project_scope_id, stage_started_at, last_evidence_audit_id,
+          tool_truth_contract, investigation_contract_version,
+          investigation_rollout_mode, project_scope_id, stage_started_at, last_evidence_audit_id,
           last_classification_id, last_scope_version, state_blob,
           superseded_by, engagement_org_id"#;
 

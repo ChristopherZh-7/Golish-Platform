@@ -73,6 +73,17 @@ pub struct StageForkCreate {
     pub entry_stage: String,
     pub terminal_stage: String,
     pub adopted_stage_kinds: Vec<String>,
+    pub operation_contract_adoption: Option<OperationContractForkAdoption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationContractForkAdoption {
+    pub request_id: String,
+    pub target_tool_truth_contract: golish_pentest_domain::tool_truth::ToolTruthContract,
+    pub target_investigation_contract_version: golish_core::InvestigationContractVersion,
+    pub target_investigation_rollout_mode: golish_core::InvestigationRolloutMode,
+    pub source_final_seal_hash: String,
+    pub adoption_exact_set_hash: String,
 }
 
 /// One organization selected by trusted CLI flags before a V2-writing

@@ -199,6 +199,38 @@ DECLARE
     deployed_contract TEXT;
     deployed_mode TEXT;
 BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM operation_contract_adoptions adoption
+          JOIN operation_state source ON source.operation_id=adoption.source_operation_id
+          JOIN operation_stage_forks fork
+            ON fork.operation_id=NEW.operation_id
+           AND fork.source_operation_id=source.operation_id
+         WHERE adoption.target_operation_id=NEW.operation_id
+           AND adoption.source_tool_truth_contract=source.tool_truth_contract
+           AND adoption.source_investigation_contract_version=source.investigation_contract_version
+           AND adoption.source_investigation_rollout_mode=source.investigation_rollout_mode
+           AND adoption.target_tool_truth_contract=NEW.tool_truth_contract
+           AND adoption.target_investigation_contract_version=NEW.investigation_contract_version
+           AND adoption.target_investigation_rollout_mode=NEW.investigation_rollout_mode
+    ) THEN
+        RETURN NEW;
+    END IF;
+    IF EXISTS (
+        SELECT 1
+          FROM operation_stage_forks fork
+          JOIN operation_state source ON source.operation_id=fork.source_operation_id
+         WHERE fork.operation_id=NEW.operation_id
+           AND source.tool_truth_contract=NEW.tool_truth_contract
+           AND source.investigation_contract_version=NEW.investigation_contract_version
+           AND source.investigation_rollout_mode=NEW.investigation_rollout_mode
+           AND NOT EXISTS (
+               SELECT 1 FROM operation_contract_adoptions adoption
+                WHERE adoption.target_operation_id=NEW.operation_id
+           )
+    ) THEN
+        RETURN NEW;
+    END IF;
     SELECT new_operation_contract INTO deployed_tool
       FROM tool_truth_rollout WHERE singleton FOR SHARE;
     SELECT contract_version,rollout_mode INTO deployed_contract,deployed_mode
@@ -208,21 +240,13 @@ BEGIN
     THEN
         RETURN NEW;
     END IF;
-    IF EXISTS (
-        SELECT 1 FROM operation_contract_adoptions adoption
-         WHERE adoption.target_operation_id=NEW.operation_id
-           AND adoption.target_tool_truth_contract=NEW.tool_truth_contract
-           AND adoption.target_investigation_contract_version=NEW.investigation_contract_version
-           AND adoption.target_investigation_rollout_mode=NEW.investigation_rollout_mode
-    ) THEN
-        RETURN NEW;
-    END IF;
     RAISE EXCEPTION 'operation_joint_contract_not_deployed_or_adopted' USING ERRCODE='23514';
 END;
 $$;
 
-CREATE TRIGGER operation_state_joint_contract_insert_guard
-BEFORE INSERT ON operation_state
+CREATE CONSTRAINT TRIGGER operation_state_joint_contract_insert_guard
+AFTER INSERT ON operation_state
+DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION validate_operation_joint_contract_insert();
 
 -- ---------------------------------------------------------------------------

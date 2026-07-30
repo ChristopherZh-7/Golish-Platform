@@ -56,21 +56,9 @@ impl GolishDbRepoProvider {
         operation_id: Uuid,
     ) -> anyhow::Result<Option<OperationStateView>> {
         let row = golish_db::repo::operation_state::get(&self.pool, operation_id).await?;
-        row.map(|r| {
-            let runtime_memory_contract =
-                RuntimeMemoryContract::try_from(r.runtime_memory_contract.as_str())?;
-            Ok(OperationStateView {
-                operation_id: r.operation_id,
-                profile: r.profile,
-                current_stage: r.current_stage,
-                runtime_memory_contract,
-                project_scope_id: r.project_scope_id,
-                engagement_org_id: r.engagement_org_id,
-                state_blob: r.state_blob,
-                stage_started_at: r.stage_started_at,
-            })
-        })
-        .transpose()
+        row.map(super::runtime_memory::operation_state_view_from_db)
+            .transpose()
+            .map_err(Into::into)
     }
 
     pub(super) async fn operation_state_set_engagement_org_impl(

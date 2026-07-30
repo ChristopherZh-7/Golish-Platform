@@ -1171,6 +1171,18 @@ git commit -m "feat(db): add hypothesis registry schema"
 
 ## Task 3：冻结 operation mode、resume 与 fork adoption
 
+> **2026-07-30 implementation correction (fork inheritance):** `operation_state`
+> must exist before the existing `operation_stage_forks` row can reference it, so
+> a synchronous insert trigger cannot distinguish an unauthorized non-default pair
+> from a no-adoption fork inheriting an older source pair. The sole `00006` migration
+> therefore installs a deferred constraint trigger: at commit it first verifies an
+> exact adoption receipt or exact source/target fork inheritance, and only then reads
+> Tool Truth followed by Investigation deployment defaults for an ordinary fresh
+> operation. Plan B still exposes no promotion setter. The adoption set hash excludes
+> the not-yet-allocated target operation id and binds source operation/scope, adopted
+> stage exact set, source final-seal census and both joint pairs; the final receipt
+> additionally binds target operation and stable request id.
+
 **文件：**
 
 - 创建：`backend/crates/golish-db/src/repo/investigation_rollout.rs`

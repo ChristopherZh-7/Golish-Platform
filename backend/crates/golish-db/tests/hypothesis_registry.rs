@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 
+use golish_core::{InvestigationContractVersion, InvestigationRolloutMode};
 use golish_db::{embedded::EmbeddedPg, DbConfig, GolishDb};
+use golish_pentest_domain::tool_truth::ToolTruthContract;
 use serial_test::serial;
 use sqlx::{
     migrate::Migrator,
@@ -78,6 +80,205 @@ async fn insert_operation(pool: &PgPool, operation_id: Uuid) {
 
 fn digest(nibble: char) -> String {
     format!("sha256:{}", nibble.to_string().repeat(64))
+}
+
+#[test]
+fn operation_repository_joint_contract_rank_is_closed() {
+    use golish_db::repo::operation_rollout::joint_contract_rank;
+
+    assert_eq!(
+        joint_contract_rank(
+            ToolTruthContract::LegacyV1,
+            InvestigationContractVersion::LegacyCandidateV1,
+            InvestigationRolloutMode::LegacyOnly,
+        ),
+        Some(0)
+    );
+    assert_eq!(
+        joint_contract_rank(
+            ToolTruthContract::ReceiptV1,
+            InvestigationContractVersion::HypothesisRegistryV1,
+            InvestigationRolloutMode::NewOnly,
+        ),
+        Some(6)
+    );
+    assert_eq!(
+        joint_contract_rank(
+            ToolTruthContract::LegacyV1,
+            InvestigationContractVersion::HypothesisRegistryV1,
+            InvestigationRolloutMode::ShadowRegistry,
+        ),
+        None
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn operation_repository_freezes_and_resumes_complete_joint_pair() {
+    let (mut db, _data_dir) = fixture("operation_repo_freeze").await;
+    let operation_id = Uuid::new_v4();
+    let runtime_contract: String =
+        sqlx::query_scalar("SELECT contract FROM runtime_memory_rollout WHERE singleton_id=1")
+            .fetch_one(db.pool())
+            .await
+            .expect("read compatible runtime deployment contract");
+
+    golish_db::repo::operation_state::insert(
+        db.pool(),
+        operation_id,
+        "assessment",
+        "target_intel",
+        &runtime_contract,
+    )
+    .await
+    .expect("freeze deployment defaults at operation creation");
+
+    let created = golish_db::repo::operation_state::get(db.pool(), operation_id)
+        .await
+        .expect("load created operation")
+        .expect("created operation exists");
+    assert_eq!(created.tool_truth_contract, "legacy_v1");
+    assert_eq!(
+        created.investigation_contract_version,
+        "legacy_candidate_v1"
+    );
+    assert_eq!(created.investigation_rollout_mode, "legacy_only");
+
+    let resumed = golish_db::repo::operation_state::get(db.pool(), operation_id)
+        .await
+        .expect("resume operation")
+        .expect("resumed operation exists");
+    assert_eq!(
+        (
+            resumed.tool_truth_contract,
+            resumed.investigation_contract_version,
+            resumed.investigation_rollout_mode,
+        ),
+        (
+            created.tool_truth_contract,
+            created.investigation_contract_version,
+            created.investigation_rollout_mode,
+        )
+    );
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn operation_repository_concurrent_default_commit_never_freezes_torn_pair() {
+    let (mut db, _data_dir) = fixture("operation_repo_concurrent").await;
+    let runtime_contract: String =
+        sqlx::query_scalar("SELECT contract FROM runtime_memory_rollout WHERE singleton_id=1")
+            .fetch_one(db.pool())
+            .await
+            .expect("read compatible runtime deployment contract");
+    let old_operation_id = Uuid::new_v4();
+    golish_db::repo::operation_state::insert(
+        db.pool(),
+        old_operation_id,
+        "assessment",
+        "target_intel",
+        &runtime_contract,
+    )
+    .await
+    .expect("freeze the old complete joint pair");
+
+    for statement in [
+        "ALTER TABLE tool_truth_rollout DISABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+        "ALTER TABLE investigation_rollout DISABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    ] {
+        sqlx::query(statement)
+            .execute(db.pool())
+            .await
+            .expect("disable immutable rollout guard in isolated fixture");
+    }
+
+    let promoter_pool = db.pool().clone();
+    let (tool_locked_tx, tool_locked_rx) = tokio::sync::oneshot::channel();
+    let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+    let promoter = tokio::spawn(async move {
+        let mut tx = promoter_pool
+            .begin()
+            .await
+            .expect("begin simulated promotion");
+        sqlx::query(
+            r#"UPDATE tool_truth_rollout
+                  SET new_operation_contract='shadow_v1',row_version=row_version+1,updated_at=NOW()
+                WHERE singleton=TRUE"#,
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("lock and update Tool Truth first");
+        tool_locked_tx.send(()).expect("signal Tool Truth lock");
+        finish_rx.await.expect("release simulated promotion");
+        sqlx::query(
+            r#"UPDATE investigation_rollout
+                  SET contract_version='hypothesis_registry_v1',rollout_mode='shadow_registry',
+                      mode_rank=1,row_version=row_version+1,updated_at=NOW()
+                WHERE singleton=TRUE"#,
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("update Investigation second");
+        tx.commit().await.expect("commit complete simulated pair");
+    });
+    tool_locked_rx
+        .await
+        .expect("observe simulated promotion between singleton writes");
+
+    let creator_pool = db.pool().clone();
+    let creator_runtime_contract = runtime_contract.clone();
+    let new_operation_id = Uuid::new_v4();
+    let mut creator = tokio::spawn(async move {
+        golish_db::repo::operation_state::insert(
+            &creator_pool,
+            new_operation_id,
+            "assessment",
+            "target_intel",
+            &creator_runtime_contract,
+        )
+        .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(150), &mut creator)
+            .await
+            .is_err(),
+        "creator must wait for the Tool Truth share lock, not read a torn pair"
+    );
+    finish_tx
+        .send(())
+        .expect("finish simulated complete deployment commit");
+    promoter.await.expect("join simulated promoter");
+    creator
+        .await
+        .expect("join concurrent operation creator")
+        .expect("create from the complete new pair");
+
+    let old = golish_db::repo::operation_state::get(db.pool(), old_operation_id)
+        .await
+        .expect("read old operation")
+        .expect("old operation exists");
+    assert_eq!(old.tool_truth_contract, "legacy_v1");
+    assert_eq!(old.investigation_contract_version, "legacy_candidate_v1");
+    assert_eq!(old.investigation_rollout_mode, "legacy_only");
+    let new = golish_db::repo::operation_state::get(db.pool(), new_operation_id)
+        .await
+        .expect("read new operation")
+        .expect("new operation exists");
+    assert_eq!(new.tool_truth_contract, "shadow_v1");
+    assert_eq!(new.investigation_contract_version, "hypothesis_registry_v1");
+    assert_eq!(new.investigation_rollout_mode, "shadow_registry");
+
+    for statement in [
+        "ALTER TABLE investigation_rollout ENABLE TRIGGER investigation_rollout_direct_mutation_guard",
+        "ALTER TABLE tool_truth_rollout ENABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+    ] {
+        sqlx::query(statement)
+            .execute(db.pool())
+            .await
+            .expect("restore immutable rollout guard");
+    }
+    db.stop().await;
 }
 
 async fn assert_tables_exist(pool: &PgPool, tables: &[&str]) {
@@ -209,13 +410,13 @@ async fn hypothesis_registry_schema_joint_pairs_and_operation_freeze_are_closed(
                operation_id,profile,current_stage,runtime_memory_contract,
                attack_execution_contract,tool_truth_contract,
                investigation_contract_version,investigation_rollout_mode
-           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','legacy_v1',
-                    'hypothesis_registry_v1','shadow_registry')"#,
+           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','shadow_v1',
+                    'legacy_candidate_v1','legacy_only')"#,
     )
     .bind(invalid_id)
     .execute(db.pool())
     .await
-    .expect_err("an illegal joint pair must fail at the database boundary");
+    .expect_err("a legal but neither deployed nor adopted pair must fail at the database boundary");
     assert_database_rejection(&invalid, "operation_joint_contract_not_deployed_or_adopted");
     db.stop().await;
 }
@@ -265,16 +466,12 @@ async fn hypothesis_registry_schema_adoption_is_adjacent_and_append_only() {
     .execute(&mut *tx)
     .await
     .expect("insert the exact adopted target pair");
-    tx.commit()
-        .await
-        .expect("commit adjacent adoption atomically");
-
     let frozen: (String, String, String) = sqlx::query_as(
         r#"SELECT tool_truth_contract,investigation_contract_version,investigation_rollout_mode
              FROM operation_state WHERE operation_id=$1"#,
     )
     .bind(target_operation_id)
-    .fetch_one(db.pool())
+    .fetch_one(&mut *tx)
     .await
     .expect("read adopted operation contract");
     assert_eq!(
@@ -290,10 +487,13 @@ async fn hypothesis_registry_schema_adoption_is_adjacent_and_append_only() {
         sqlx::query("UPDATE operation_contract_adoptions SET receipt_hash=$2 WHERE adoption_id=$1")
             .bind(adoption_id)
             .bind(digest('d'))
-            .execute(db.pool())
+            .execute(&mut *tx)
             .await
             .expect_err("adoption receipts are append-only");
     assert_database_rejection(&mutation, "investigation_append_only");
+    tx.rollback()
+        .await
+        .expect("rollback schema-only adoption fixture without a stage-fork edge");
 
     let jump = sqlx::query(
         r#"INSERT INTO operation_contract_adoptions(

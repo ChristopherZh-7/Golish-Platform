@@ -170,6 +170,10 @@ impl MemRepo {
                 profile: profile.to_string(),
                 current_stage: current_stage.to_string(),
                 runtime_memory_contract: crate::runtime_memory::RuntimeMemoryContract::LegacyV1,
+                tool_truth_contract: golish_pentest_domain::tool_truth::ToolTruthContract::LegacyV1,
+                investigation_contract_version:
+                    golish_core::InvestigationContractVersion::LegacyCandidateV1,
+                investigation_rollout_mode: golish_core::InvestigationRolloutMode::LegacyOnly,
                 project_scope_id: None,
                 engagement_org_id: None,
                 state_blob: serde_json::Value::Null,
@@ -433,6 +437,10 @@ impl RuntimeMemoryRepository for MemRepo {
             current_stage: input.entry_stage,
             runtime_memory_contract:
                 crate::runtime_memory::RuntimeMemoryContract::DualWriteLegacyRead,
+            tool_truth_contract: golish_pentest_domain::tool_truth::ToolTruthContract::LegacyV1,
+            investigation_contract_version:
+                golish_core::InvestigationContractVersion::LegacyCandidateV1,
+            investigation_rollout_mode: golish_core::InvestigationRolloutMode::LegacyOnly,
             project_scope_id: Some(input.project_scope.project_scope_id),
             engagement_org_id: None,
             state_blob: serde_json::Value::Null,
@@ -696,6 +704,10 @@ impl DbRepoProvider for MemRepo {
                 profile: profile.to_string(),
                 current_stage: current_stage.to_string(),
                 runtime_memory_contract,
+                tool_truth_contract: golish_pentest_domain::tool_truth::ToolTruthContract::LegacyV1,
+                investigation_contract_version:
+                    golish_core::InvestigationContractVersion::LegacyCandidateV1,
+                investigation_rollout_mode: golish_core::InvestigationRolloutMode::LegacyOnly,
                 project_scope_id: None,
                 engagement_org_id: None,
                 state_blob: serde_json::Value::Null,
