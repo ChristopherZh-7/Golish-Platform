@@ -6,6 +6,22 @@
 
 ---
 
+# 会话记录：2026-07-30 · Plan A multi-root authority bundle 补漏（PASSING / COMMITTED）
+
+- **本轮目标**：纠正上一轮过早标记 `passing` 的判断，只在 `codex/tool-truth-plan-a` 隔离工作树补齐 Plan A 已明确承诺、且 Plan B 直接依赖的 multi-root authority bundle seam：TI/EAS/Enumeration/VulnTriage server-derived root census、operation-frozen temporal policy/target epoch、opaque checked/all-fresh guards、同事务 consumer callback、stale obligation 与 open→members→seal 持久化。
+- **开工状态**：Plan A HEAD=`a451b8725ad18de78710d8a65d933c182f8f21d2`，worktree clean；Plan B worktree `/private/tmp/golish-plan-b.y1uUH3` 同样 clean 且停在旧 Plan A SHA，本轮不修改。经重新对照 Plan A 文档，`tool_truth_authority_bundle_seals/members`、`CheckedToolTruthAuthorityBundle<'guard>`、`AllFreshToolTruthAuthorityBundle<'guard>` 与 `with_checked_tool_truth_authority_bundle` 确属 Plan A contract，不是 Plan B 临时加码；因此 feature 已从 `passing` 退回 `in_progress`。
+- **定向验证方案**：先写 multi-root omission/filtering、mixed temporal disposition、all-fresh conversion、exact replay/drift、post-seal mutation与callback rollback RED tests；每次 Cargo 前运行 `just space-guard`；只运行 `golish-pentest-domain` 精确测试、`golish-db --test capability_execution_receipts` 的 authority-bundle selector、受影响 crate scoped clippy/fmt、JSON/diff/status检查。按项目策略不运行 `init.sh`、`just precommit` 或全 workspace 门禁。
+- **并行只读审计**：三路 SubAgent 分别复核 schema/temporal epoch、公开 Rust API/lifetime、Plan B consumption/test matrix；均不得写文件或运行 Cargo。主 agent 负责实现、复核与证据。
+- **已完成**：在唯一 `20260729000005` migration 内补齐 append-only target-state epoch event/CAS head、temporal census 的 exact policy-member/target-epoch binding，以及 TI/EAS/Enum/Vuln 四 root 的 authority bundle header/member、compound FK、root-family/scope validator和open→members→seal immutability；单 root authority set现可覆盖root+derived denominator graph。领域层公开closed `ToolTruthRootFamilyV1`与sealed temporal-policy view。DB repo新增caller不可提交root/member/hash/time/TTL的`CheckToolTruthAuthorityBundle`，以及不可Clone/Serialize/构造、绑定同一`REPEATABLE READ` transaction lifetime的`CheckedToolTruthAuthorityBundle<'guard>`/`AllFreshToolTruthAuthorityBundle<'guard>`和两个callback host；host完整保留semantic-invalid/expired/mixed-epoch/skew disposition，同事务落deterministic revalidation obligations，只有exact四root全fresh才进入all-fresh callback，callback失败整体回滚。Plan B代码、migration、worktree均未修改。
+- **RED→GREEN证据**：domain RED因`ToolTruthRootFamilyV1`/`EvidenceTemporalValidityPolicyV1`不存在编译失败，随后2/2通过（nextest `b45537ad-9b9d-4a00-8da1-935657aba27d`）；schema RED确认4张bundle/epoch表为0/4（`ad823e0d-1f26-410f-8227-77e3f4be5734`），随后schema 1/1（`52e93933-7ade-42e3-9ae0-07a5c50234a3`）。bundle lifecycle逐步GREEN：4/4 `9a546ce3-c5a6-4d1f-8d2b-ce37c4101bba`、epoch/semantic修正后5/5 `09ead526-f56d-4541-b2ed-fa61450b3cd6`；覆盖all-fresh exact replay、post-seal mutation拒绝、callback commit/rollback、mixed epoch、semantic orphan、缺root callback零调用。
+- **运行过的验证 / 已记录证据**：所有Cargo build/test/clippy前均先运行`just space-guard`并exit 0。`cargo nextest run -p golish-db --test capability_execution_receipts`为48/48（`27071d56-ea23-438e-94ce-4d167e3979dc`）；`cargo nextest run -p golish-pentest-domain`为71/71（`be0cf45c-d10e-47c8-8edf-e2b3aa3d7290`）；producer focused为3/3（`62678863-6dbb-4e4d-9b5d-2771d8c3a9fd`）；agent-kit/app/runtime focused为9/9（`adb786a2-eaaf-4e58-8fd9-3244f8941d4f`）。六crate `cargo clippy ... --all-targets -- -D warnings`、六crate scoped `cargo fmt -- --check`、`git diff --check`均exit 0。首次把nextest从repo root启动因Cargo workspace实际位于`backend/`而exit 102，测试未执行；立即纠正工作目录后原选择器5/5通过，未把无效尝试计为通过证据。按AGENTS §0.1未运行未获授权的`init.sh`、`just precommit`或全workspace门禁。
+- **提交记录**：实现、migration、测试、Plan A实现更正与模块卡已提交为`aa597823 fix(tool-truth): seal multi-root authority bundles`；本记录与`feature_list.json`证据状态进入紧随其后的final evidence commit。未push。
+- **已知风险 / 未解决问题**：Plan A仍按原边界保持deployment/new-operation `legacy_v1`默认，不提供promotion；未实现Plan B/C/D、frontend/generated IPC、Reporting，也未访问真实数据库、provider或目标。未获授权的大型门禁未运行；新鲜focused matrix已覆盖本补漏的schema/API与原Plan A跨层回归。
+- **下一步最佳动作**：Plan B worktree `/private/tmp/golish-plan-b.y1uUH3` 仍clean并停在旧SHA `a451b8725ad18de78710d8a65d933c182f8f21d2`；让Plan B从本记录所在的新Plan A final HEAD重新创建worktree或安全前移后，再按其Task 2/5直接消费本次公开bundle seam，不要在`00006`重造或弱化authority。
+- **收尾状态**：本补漏实现已提交；本记录与`feature_list.json`提交后该隔离worktree应clean。主共享dirty worktree未触碰，Plan B worktree未触碰。
+
+---
+
 # 会话记录：2026-07-30 · Plan A Tool Truth Coverage Contract Task 7–11 连续实施（PASSING / COMMITTED）
 
 - **本轮目标**：从已提交的 Task 1–6 后继续 Task 7→8→9→10→10b→11，逐 Task 执行 RED→GREEN、定向验证与精确提交；严格沿用唯一 migration、Schema Amendment v2 与 operation-frozen legacy 默认，不做 Plan B/C/D、frontend、generated IPC、Reporting、真实扫描、外部请求或全仓门禁。
