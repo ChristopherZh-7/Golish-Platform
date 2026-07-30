@@ -111,3 +111,8 @@
 ```bash
 cd backend && cargo nextest run -p golish-agent-kit task_orchestrator
 ```
+
+## Hypothesis Analysis runtime contract（Plan B，2026-07-30）
+
+- `hypothesis_analysis` 定义Controller/Analyst/Critic closed input/output schemas、bounded payload digest、server binding、artifact receipt与runtime/repository/runner ports。它不持有数据库、provider client、Gate或Plan C authority。
+- runtime末态 `AnalysisArtifactsReady` 只表示两波artifact与Controller final receipt已持久化；它不是stage PASS。只有Task 9 finalizer得到canonical generation seal后才可 closeout/advance。

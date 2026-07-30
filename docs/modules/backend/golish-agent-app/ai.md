@@ -226,6 +226,8 @@ production seam 检查五个命令都在 report read/build/confirmation 分支�
 
 - `db_bridge::hypothesis_registry::PgHypothesisRegistryRepository` 完整实现 kit 的 typed port，只做 DTO 与 `golish-db` repo 转换；host compilation seal逐字段转发且只接受 final Controller fence，不会从模型字符串补 operation/org/root/feed authority，也不暴露 `PgPool` 或 SQL row。
 - snapshot freeze直接进入 DB-owned Plan A Checked-bundle callback；当前无 live managed-feed store时稳定返回持久化的 blocked snapshot而不是启动分析。Gate apply错误码保持 stable code，供 runtime fail closed。
+- `candidate_analysis_projection` 只从immutable snapshot input/chunk与current signed/known-version feed material构造bounded、`instruction_authority=false` payload；source change/delete后仍按冻结body/hash重放。
+- `candidate_analysis_runtime` 实现Controller dispatch → rolling Analyst → H1 seal → phased Critic map/reduce → H2/review → Controller final两波状态机；small input为1 lane，其余2–8 live lanes，lifetime work item不受8限制。返回`AnalysisArtifactsReady`仍需Task 9 Gate/apply，不能直接当stage完成。
 
 ## Vuln operation-scoped coverage details（2026-07-19）
 

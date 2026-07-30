@@ -191,3 +191,8 @@ cd backend && cargo nextest run -p golish-agent-runtime agentic_loop
 - replay 已持久化 shard 时，queued/retry-pending 是 claimable，claimed/running/waiting-dependency 是 in-flight，recovery-required是 operator-owned。只有前两类都为零时才可称自动执行耗尽；不得把另一 scheduler已有在飞 Worker误报成 exhausted。
 - budget recovery不是离线改写旧结果：它必须真实调用升级后的guarded wrapper。600秒内完成会发布found/empty；只有wrapper认证的foreground deadline再次耗尽并由producer evidence-first落成blocked后，Gate才可把该cell视为终态。
 - legacy finalizer no-purge replacement在构建Vuln worklist前调用DB adoption，仅重放same operation/source epoch的exact terminal audit witnesses并恢复source Unit freshness；随后必须重读coverage。finalizer retry checkpoint的provider chain可为array/object，runtime只解包server-owned wrapper。structural N/A落库继续使用exact `scheme://host:port`，不按host折叠 sibling origins。
+
+## Hypothesis Candidate submit-only runner（Plan B，2026-07-30）
+
+- `candidate_analysis_agent_runner` 只执行注入的typed model client，并在provider dispatch前验证role/binding与submit-only schema；任何通用工具、未知authority字段或终态/server-only state都直接拒绝。它不访问网络provider本身，也没有scanner/browser/feed-refresh handle。
+- `stage_team_scheduler::candidate_artifact_receipt_output` 只把artifact id/hash包装为`artifact_recorded`通用业务收据；该disposition不代表found/checked-empty、Gate PASS或canonical hypothesis truth。

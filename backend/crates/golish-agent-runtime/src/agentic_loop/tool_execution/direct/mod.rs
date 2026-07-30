@@ -23,6 +23,8 @@ use golish_agent_kit::tool_executors::{
 mod sub_agent_call;
 use self::sub_agent_call::execute_sub_agent_call;
 
+#[allow(dead_code)] // wired into stage_run_call by Task 9 composition work
+pub mod candidate_analysis_agent_runner;
 pub mod candidate_verification;
 mod stage_team_scheduler;
 

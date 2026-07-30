@@ -38,6 +38,7 @@ pub mod continuity;
 pub mod harness_backfill;
 pub mod harness_resume;
 mod helpers;
+pub mod hypothesis_analysis;
 mod orchestrator;
 pub(crate) mod refiner;
 pub mod runtime_supervisor;

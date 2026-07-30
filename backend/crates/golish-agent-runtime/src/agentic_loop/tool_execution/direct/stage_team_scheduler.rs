@@ -5,9 +5,10 @@
 //! byte-identical rows before any provider dispatch.
 
 use golish_agent_kit::db_traits::{
-    NewStageWorkerOutput, RuntimeStageTeamPlanStatus, RuntimeStageWorkItemStatus, SeedStageRuntime,
-    SeedStageTeamRuntime, StageTeamPlanSeed, StageTeamPlanView, StageWorkItemSeed,
-    StageWorkItemView, StageWorkerOutputDisposition, StageWorkerOutputView,
+    CandidateAnalysisArtifactOutputReceipt, NewStageWorkerOutput, RuntimeStageTeamPlanStatus,
+    RuntimeStageWorkItemStatus, SeedStageRuntime, SeedStageTeamRuntime, StageTeamPlanSeed,
+    StageTeamPlanView, StageWorkItemSeed, StageWorkItemView, StageWorkerOutputDisposition,
+    StageWorkerOutputView,
 };
 use golish_agent_kit::harness::{CanonicalFactKey, StageKind, StageSpec};
 use golish_sub_agents::StageTeamLeaderBinding;
@@ -24,6 +25,30 @@ const MAX_STAGE_TEAM_CONTROLLER_TURN_RESUMES: usize = 2;
 // Gate repair cannot be created and then become unclaimable merely because the
 // initial Controller/child WorkerRun allowance was exhausted.
 const MAX_REPAIR_WORKER_RUNS_PER_GENERATION: usize = 4;
+
+#[allow(dead_code)] // consumed by the Task 9 Candidate stage_run wiring
+pub(super) fn candidate_artifact_receipt_output(
+    work_item_id: uuid::Uuid,
+    worker_run_id: uuid::Uuid,
+    artifact_id: uuid::Uuid,
+    artifact_hash: &str,
+) -> Result<NewStageWorkerOutput, &'static str> {
+    let receipt = CandidateAnalysisArtifactOutputReceipt::new(artifact_id, artifact_hash.into())
+        .map_err(|_| "candidate_artifact_receipt_invalid")?;
+    let canonical_output = canonicalize_json(&receipt.canonical_output());
+    Ok(NewStageWorkerOutput {
+        work_item_id,
+        worker_run_id,
+        output_schema: "candidate_analysis_artifact_receipt.v1".into(),
+        disposition: StageWorkerOutputDisposition::ArtifactRecorded,
+        canonical_output: canonical_output.clone(),
+        fact_refs: Vec::new(),
+        evidence_ids: Vec::new(),
+        checked_empty_units: Vec::new(),
+        blocker_code: None,
+        output_sha256: sha256_json(&canonical_output),
+    })
+}
 
 fn canonicalize_json(value: &Value) -> Value {
     match value {
@@ -949,6 +974,34 @@ mod tests {
     use super::*;
     use golish_agent_kit::harness::{load_embedded_stage_spec, StageKind};
     use uuid::Uuid;
+
+    #[test]
+    fn candidate_artifact_receipt_uses_only_generic_non_epistemic_output_fields() {
+        let output = candidate_artifact_receipt_output(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            &format!("sha256:{}", "a".repeat(64)),
+        )
+        .expect("valid receipt");
+        assert_eq!(
+            output.disposition,
+            StageWorkerOutputDisposition::ArtifactRecorded
+        );
+        assert!(output.fact_refs.is_empty());
+        assert!(output.evidence_ids.is_empty());
+        assert!(output.checked_empty_units.is_empty());
+        assert_eq!(
+            output
+                .canonical_output
+                .as_object()
+                .expect("receipt object")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["artifact_hash", "artifact_id", "schema"]
+        );
+    }
 
     fn base_seed() -> SeedStageRuntime {
         SeedStageRuntime {
