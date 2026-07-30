@@ -201,7 +201,7 @@ cd backend && cargo nextest run -p golish-db repo
 
 ## Tool Truth Plan A repos（2026-07-30）
 
-- `capability_execution_receipts.rs` 公开 source-derived seal、fixed provider destination policy、atomic managed begin/claim、TargetIntel exact finalization/current projection与 response-loss exact replay；所有集合 hash/count在锁内重算。
-- `tool_truth_revalidation.rs` 公开 deterministic obligation record/dedup、lease+CAS claim/reclaim、bounded failure/exhaustion与 new-authority-only success。consumer path没有 executor port，读取陈旧 authority 时先落 obligation并 fail closed。
+- `capability_execution_receipts.rs` 公开 source-derived seal、fixed provider destination policy、atomic managed begin/claim、TargetIntel exact finalization/current projection与 response-loss exact replay；所有集合 hash/count在锁内重算。其 sealed `authority_host` 子模块公开 `CheckToolTruthAuthorityBundle`、`CheckedToolTruthAuthorityBundle<'guard>`、`AllFreshToolTruthAuthorityBundle<'guard>` 和两个 callback host，request 没有 root/member/hash/time/TTL 字段，guard constructor/private all-fresh conversion均不对caller开放。
+- `tool_truth_revalidation.rs` 公开 deterministic obligation record/dedup、lease+CAS claim/reclaim、bounded failure/exhaustion与 new-authority-only success；另提供仅 repo 内可见的 caller-owned transaction seam，使bundle检查能把 stale obligation 与 blocked consumer snapshot原子落库。consumer path没有 executor port，读取陈旧 authority 时先落 obligation并 fail closed。
 - `source_query_log.rs` 只在 canonical receipt finalize 后写 legacy compatibility projection，并绑定 receipt/stage/attempt；它不再是 `receipt_v1` coverage authority。
 - provider I/O、vault callback与慢操作都在 repo transaction 外；repo只提交短事务中的 canonical truth、event与typed outbox。

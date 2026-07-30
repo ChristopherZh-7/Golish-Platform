@@ -2,7 +2,7 @@ use golish_db::{
     repo::{capability_execution_receipts, stage_asset_waves},
     DbConfig, GolishDb,
 };
-use golish_pentest_domain::tool_truth::ToolTruthContract;
+use golish_pentest_domain::tool_truth::{ToolTruthContract, ToolTruthRootFamilyV1};
 use serial_test::serial;
 use sqlx::{Error as SqlxError, PgPool};
 use uuid::Uuid;
@@ -645,6 +645,119 @@ async fn target_intel_finalization(
         }),
         failure_reason_code: None,
     }
+}
+
+fn compile_bundle_root_denominator(
+    _stage: &str,
+    assets: &[capability_execution_receipts::LockedDenominatorAsset],
+) -> anyhow::Result<Vec<capability_execution_receipts::CompiledDenominatorItem>> {
+    Ok(assets
+        .iter()
+        .map(
+            |asset| capability_execution_receipts::CompiledDenominatorItem {
+                input_key: format!(
+                    "{}\u{1f}{}\u{1f}GOLISH-INTEL-DNS",
+                    asset.target_id, asset.exact_asset
+                ),
+                target_id: asset.target_id,
+                exact_asset: asset.exact_asset.clone(),
+                technique: "GOLISH-INTEL-DNS".to_string(),
+                expected_capability: "intel.dns".to_string(),
+            },
+        )
+        .collect())
+}
+
+#[derive(Debug)]
+struct MultiRootBundleFixture {
+    frozen: FrozenExecution,
+}
+
+async fn seed_multi_root_bundle_fixture(
+    pool: &PgPool,
+    label: &str,
+    families: &[ToolTruthRootFamilyV1],
+) -> MultiRootBundleFixture {
+    let frozen = seed_frozen_execution(pool, label).await;
+    sqlx::query(
+        "ALTER TABLE operation_state DISABLE TRIGGER operation_state_tool_truth_contract_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("disable contract immutability in isolated multi-root fixture");
+    sqlx::query(
+        "UPDATE operation_state SET tool_truth_contract='receipt_v1' WHERE operation_id=$1",
+    )
+    .bind(frozen.operation_id)
+    .execute(pool)
+    .await
+    .expect("freeze multi-root fixture to receipt_v1");
+    sqlx::query(
+        "ALTER TABLE operation_state ENABLE TRIGGER operation_state_tool_truth_contract_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("restore contract immutability");
+    sqlx::query(
+        r#"INSERT INTO targets(
+               id,name,target_type,value,scope,project_path,organization_id,source
+           ) VALUES($1,$2,'domain',$2,'in',$3,$4,'authority_bundle_fixture')"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(format!("{label}.example.test"))
+    .bind(&frozen.project_path)
+    .bind(frozen.organization_id)
+    .execute(pool)
+    .await
+    .expect("insert multi-root fixture target");
+
+    for family in families {
+        let stage_execution_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO stage_runs(id,operation_id,stage_kind,status) VALUES($1,$2,$3,'started')",
+        )
+        .bind(stage_execution_id)
+        .bind(frozen.operation_id)
+        .bind(family.stage_kind())
+        .execute(pool)
+        .await
+        .expect("insert multi-root stage execution");
+        let wave = stage_asset_waves::current_or_create_initial(
+            pool,
+            frozen.operation_id,
+            frozen.organization_id,
+            family.stage_kind(),
+            chrono::Utc::now() + chrono::Duration::seconds(1),
+            100,
+        )
+        .await
+        .expect("create server-owned root wave")
+        .expect("fixture target produces a root wave");
+        let denominator = capability_execution_receipts::seal_source_denominator(
+            pool,
+            &capability_execution_receipts::SealSourceDenominator {
+                stable_seal_request_id: Uuid::new_v5(
+                    &stage_execution_id,
+                    format!("bundle-root:{}", family.as_str()).as_bytes(),
+                ),
+                stage_execution_id,
+                source: capability_execution_receipts::DenominatorSourceRef::StageAssetWave(
+                    wave.wave.id,
+                ),
+            },
+            compile_bundle_root_denominator,
+        )
+        .await
+        .expect("seal server-derived bundle root denominator");
+        let receipt =
+            begin_managed_target_intel_receipt(pool, denominator.id, "intel.dns", 1).await;
+        let close =
+            target_intel_finalization(pool, &receipt, &[("GOLISH-INTEL-DNS", "found")]).await;
+        capability_execution_receipts::finalize_target_intel_receipt(pool, &close)
+            .await
+            .expect("finalize one fresh receipt for the root");
+    }
+    MultiRootBundleFixture { frozen }
 }
 
 #[tokio::test]
@@ -1551,6 +1664,445 @@ async fn task9_schema_has_dynamic_child_authority_set_and_gate_families() {
     .await
     .expect("read Task 9 schema catalog");
     assert_eq!(tables.len(), 6);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn authority_bundle_schema_has_multi_root_and_target_epoch_authorities() {
+    let (mut db, _data_dir) = fixture("authority_bundle_schema_catalog").await;
+    let tables: Vec<String> = sqlx::query_scalar(
+        r#"SELECT table_name FROM information_schema.tables
+            WHERE table_schema=current_schema() AND table_name = ANY($1)
+            ORDER BY table_name"#,
+    )
+    .bind(vec![
+        "tool_truth_authority_bundle_seals",
+        "tool_truth_authority_bundle_members",
+        "tool_truth_target_state_epoch_events",
+        "tool_truth_target_state_epoch_heads",
+    ])
+    .fetch_all(db.pool())
+    .await
+    .expect("read multi-root Tool Truth schema catalog");
+    assert_eq!(tables.len(), 4, "all Plan A bundle/epoch tables must exist");
+
+    let temporal_member_columns: Vec<String> = sqlx::query_scalar(
+        r#"SELECT column_name FROM information_schema.columns
+            WHERE table_schema=current_schema()
+              AND table_name='capability_execution_temporal_census_members'
+              AND column_name = ANY($1)
+            ORDER BY column_name"#,
+    )
+    .bind(vec![
+        "policy_member_id",
+        "policy_member_hash",
+        "target_scope_identity_hash",
+        "target_state_epoch_event_id",
+        "target_state_epoch",
+    ])
+    .fetch_all(db.pool())
+    .await
+    .expect("read temporal member authority columns");
+    assert_eq!(temporal_member_columns.len(), 5);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn authority_bundle_all_fresh_callback_replays_and_rolls_back_atomically() {
+    let (mut db, _data_dir) = fixture("authority_bundle_all_fresh").await;
+    let seeded = seed_multi_root_bundle_fixture(
+        db.pool(),
+        "authority-bundle-all-fresh",
+        &ToolTruthRootFamilyV1::ALL,
+    )
+    .await;
+    sqlx::query(
+        "CREATE TABLE authority_bundle_callback_probe(id UUID PRIMARY KEY,label TEXT NOT NULL)",
+    )
+    .execute(db.pool())
+    .await
+    .expect("create isolated callback transaction probe");
+    let stable_consumer_request_id = Uuid::new_v4();
+    let request = capability_execution_receipts::CheckToolTruthAuthorityBundle {
+        stable_consumer_request_id,
+        operation_id: seeded.frozen.operation_id,
+        organization_id: seeded.frozen.organization_id,
+        consumer_kind:
+            capability_execution_receipts::ToolTruthAuthorityBundleConsumerV1::CandidateAnalysis,
+    };
+    let probe_id = Uuid::new_v4();
+    let bundle_id = capability_execution_receipts::with_checked_tool_truth_authority_bundle(
+        db.pool(),
+        &request,
+        |tx, checked| {
+            Box::pin(async move {
+                assert_eq!(checked.roots().len(), 4);
+                assert!(checked.is_all_fresh());
+                assert_eq!(
+                    checked
+                        .roots()
+                        .iter()
+                        .map(|root| root.root_family)
+                        .collect::<Vec<_>>(),
+                    ToolTruthRootFamilyV1::ALL
+                );
+                sqlx::query(
+                    "INSERT INTO authority_bundle_callback_probe(id,label) VALUES($1,'commit')",
+                )
+                .bind(probe_id)
+                .execute(&mut **tx)
+                .await?;
+                Ok(checked.bundle_seal_id())
+            })
+        },
+    )
+    .await
+    .expect("checked callback seals all roots and commits consumer write");
+    let committed: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM authority_bundle_callback_probe WHERE id=$1",
+    )
+    .bind(probe_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read committed callback probe");
+    assert_eq!(committed, 1);
+
+    let replay_id = capability_execution_receipts::with_all_fresh_tool_truth_authority_bundle(
+        db.pool(),
+        &request,
+        |_tx, all_fresh| Box::pin(async move { Ok(all_fresh.bundle_seal_id()) }),
+    )
+    .await
+    .expect("same stable request exact-replays the all-fresh bundle");
+    assert_eq!(replay_id, bundle_id);
+
+    let late_member_error = sqlx::query(
+        r#"INSERT INTO tool_truth_authority_bundle_members(
+               id,bundle_seal_id,operation_id,organization_id,ordinal,root_family,
+               root_execution_authority_id,root_denominator_id,root_denominator_hash,
+               authority_set_seal_id,authority_set_semantic_hash,
+               authority_set_graph_hash,authority_set_freshness_hash,
+               temporal_validity_policy_set_hash,target_state_epoch_set_hash,
+               observation_window_started_at,observation_window_completed_at,
+               effective_valid_until,semantic_status,temporal_validity_status,
+               member_status,member_hash
+           ) SELECT $2,bundle_seal_id,operation_id,organization_id,ordinal+10,root_family,
+                    root_execution_authority_id,root_denominator_id,root_denominator_hash,
+                    authority_set_seal_id,authority_set_semantic_hash,
+                    authority_set_graph_hash,authority_set_freshness_hash,
+                    temporal_validity_policy_set_hash,target_state_epoch_set_hash,
+                    observation_window_started_at,observation_window_completed_at,
+                    effective_valid_until,semantic_status,temporal_validity_status,
+                    member_status,$3
+               FROM tool_truth_authority_bundle_members
+              WHERE bundle_seal_id=$1 ORDER BY ordinal LIMIT 1"#,
+    )
+    .bind(bundle_id)
+    .bind(Uuid::new_v4())
+    .bind(digest_v1('9'))
+    .execute(db.pool())
+    .await
+    .expect_err("sealed bundle rejects late root insertion");
+    assert_database_rejection(
+        &late_member_error,
+        "23514",
+        "tool_truth_sealed_parent_immutable",
+    );
+
+    let rollback_probe_id = Uuid::new_v4();
+    let rollback_request = capability_execution_receipts::CheckToolTruthAuthorityBundle {
+        stable_consumer_request_id: Uuid::new_v4(),
+        ..request
+    };
+    let rollback_error = capability_execution_receipts::with_checked_tool_truth_authority_bundle(
+        db.pool(),
+        &rollback_request,
+        |tx, _checked| {
+            Box::pin(async move {
+                sqlx::query(
+                    "INSERT INTO authority_bundle_callback_probe(id,label) VALUES($1,'rollback')",
+                )
+                .bind(rollback_probe_id)
+                .execute(&mut **tx)
+                .await?;
+                Err::<(), _>(golish_db::DbError::Other(anyhow::anyhow!(
+                    "INTENTIONAL_CALLBACK_ROLLBACK"
+                )))
+            })
+        },
+    )
+    .await
+    .expect_err("consumer failure rolls the bundle and consumer write back together");
+    assert!(rollback_error
+        .to_string()
+        .contains("INTENTIONAL_CALLBACK_ROLLBACK"));
+    let rolled_back: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM authority_bundle_callback_probe WHERE id=$1",
+    )
+    .bind(rollback_probe_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read rolled-back callback probe");
+    assert_eq!(rolled_back, 0);
+    let rolled_back_bundle: i64 = sqlx::query_scalar(
+        r#"SELECT count(*)::bigint FROM tool_truth_authority_bundle_seals
+            WHERE stable_consumer_request_id=$1"#,
+    )
+    .bind(rollback_request.stable_consumer_request_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read rolled-back bundle seal");
+    assert_eq!(rolled_back_bundle, 0);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn authority_bundle_mixed_epoch_preserves_roots_and_records_obligations() {
+    let (mut db, _data_dir) = fixture("authority_bundle_mixed_epoch").await;
+    let seeded = seed_multi_root_bundle_fixture(
+        db.pool(),
+        "authority-bundle-mixed-epoch",
+        &ToolTruthRootFamilyV1::ALL,
+    )
+    .await;
+    let head = sqlx::query_as::<_, (String, i64, Uuid, i64)>(
+        r#"SELECT target_scope_identity_hash,current_epoch,current_event_id,row_version
+             FROM tool_truth_target_state_epoch_heads
+            WHERE operation_id=$1 AND organization_id=$2 ORDER BY target_scope_identity_hash
+            LIMIT 1"#,
+    )
+    .bind(seeded.frozen.operation_id)
+    .bind(seeded.frozen.organization_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read current target epoch head");
+    let successor_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO tool_truth_target_state_epoch_events(
+               id,operation_id,project_scope_id,project_path_at_freeze,scope_snapshot_id,
+               organization_id,target_scope_identity_hash,epoch,predecessor_event_id,
+               reason_code,source_authority_hash,event_hash
+           ) SELECT $1,event.operation_id,event.project_scope_id,event.project_path_at_freeze,
+                    event.scope_snapshot_id,event.organization_id,event.target_scope_identity_hash,
+                    event.epoch+1,event.id,'coordinated_revalidation',event.source_authority_hash,$2
+               FROM tool_truth_target_state_epoch_events event WHERE event.id=$3"#,
+    )
+    .bind(successor_id)
+    .bind(digest_v1('8'))
+    .bind(head.2)
+    .execute(db.pool())
+    .await
+    .expect("append target epoch successor event");
+    sqlx::query(
+        r#"UPDATE tool_truth_target_state_epoch_heads
+              SET current_epoch=$4,current_event_id=$5,row_version=$6
+            WHERE operation_id=$1 AND organization_id=$2
+              AND target_scope_identity_hash=$3 AND row_version=$7"#,
+    )
+    .bind(seeded.frozen.operation_id)
+    .bind(seeded.frozen.organization_id)
+    .bind(&head.0)
+    .bind(head.1 + 1)
+    .bind(successor_id)
+    .bind(head.3 + 1)
+    .bind(head.3)
+    .execute(db.pool())
+    .await
+    .expect("CAS target epoch head to the successor");
+
+    let request = capability_execution_receipts::CheckToolTruthAuthorityBundle {
+        stable_consumer_request_id: Uuid::new_v4(),
+        operation_id: seeded.frozen.operation_id,
+        organization_id: seeded.frozen.organization_id,
+        consumer_kind:
+            capability_execution_receipts::ToolTruthAuthorityBundleConsumerV1::CandidateAnalysis,
+    };
+    let (root_count, stale_count, obligation_count) =
+        capability_execution_receipts::with_checked_tool_truth_authority_bundle(
+            db.pool(),
+            &request,
+            |_tx, checked| {
+                Box::pin(async move {
+                    Ok((
+                        checked.roots().len(),
+                        checked
+                            .roots()
+                            .iter()
+                            .filter(|root| {
+                                root.member_status
+                                    == capability_execution_receipts::ToolTruthAuthorityBundleMemberStatusV1::MixedEpoch
+                            })
+                            .count(),
+                        checked
+                            .roots()
+                            .iter()
+                            .map(|root| root.revalidation_obligation_ids.len())
+                            .sum::<usize>(),
+                    ))
+                })
+            },
+        )
+        .await
+        .expect("checked bundle keeps stale roots available to the blocked consumer");
+    assert_eq!(root_count, 4);
+    assert!(stale_count >= 1);
+    assert!(obligation_count >= 1);
+
+    let all_fresh_request = capability_execution_receipts::CheckToolTruthAuthorityBundle {
+        stable_consumer_request_id: Uuid::new_v4(),
+        ..request
+    };
+    let error = capability_execution_receipts::with_all_fresh_tool_truth_authority_bundle(
+        db.pool(),
+        &all_fresh_request,
+        |_tx,
+         _all_fresh|
+         -> capability_execution_receipts::ToolTruthAuthorityBundleFuture<'_, ()> {
+            panic!("all-fresh callback must not run for a mixed epoch bundle")
+        },
+    )
+    .await
+    .expect_err("mixed epoch cannot privately convert to all-fresh authority");
+    assert!(error
+        .to_string()
+        .contains("TOOL_TRUTH_AUTHORITY_BUNDLE_NOT_ALL_FRESH"));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn authority_bundle_semantic_orphan_cannot_be_filtered_into_all_fresh() {
+    let (mut db, _data_dir) = fixture("authority_bundle_semantic_orphan").await;
+    let seeded = seed_multi_root_bundle_fixture(
+        db.pool(),
+        "authority-bundle-semantic-orphan",
+        &ToolTruthRootFamilyV1::ALL,
+    )
+    .await;
+    let receipt = sqlx::query_as::<_, (Uuid, i64)>(
+        r#"SELECT receipt.id,receipt.row_version
+             FROM capability_execution_receipts receipt
+             JOIN coverage_denominators denominator ON denominator.id=receipt.denominator_id
+            WHERE denominator.operation_id=$1 AND denominator.organization_id=$2
+              AND denominator.stage_kind='vuln_triage'
+            ORDER BY receipt.id LIMIT 1"#,
+    )
+    .bind(seeded.frozen.operation_id)
+    .bind(seeded.frozen.organization_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read one finalized root receipt");
+    capability_execution_receipts::append_reconciliation_failure(
+        db.pool(),
+        &capability_execution_receipts::AppendReconciliationFailure {
+            id: Uuid::new_v4(),
+            receipt_id: receipt.0,
+            expected_row_version: receipt.1,
+            state: capability_execution_receipts::ReconciliationFailureState::Orphaned,
+            reason_code: "fixture_vault_tamper".to_string(),
+        },
+    )
+    .await
+    .expect("append immutable orphan reconciliation");
+    let request = capability_execution_receipts::CheckToolTruthAuthorityBundle {
+        stable_consumer_request_id: Uuid::new_v4(),
+        operation_id: seeded.frozen.operation_id,
+        organization_id: seeded.frozen.organization_id,
+        consumer_kind:
+            capability_execution_receipts::ToolTruthAuthorityBundleConsumerV1::CandidateAnalysis,
+    };
+    let (root_count, invalid_count, obligations) =
+        capability_execution_receipts::with_checked_tool_truth_authority_bundle(
+            db.pool(),
+            &request,
+            |_tx, checked| {
+                Box::pin(async move {
+                    Ok((
+                        checked.roots().len(),
+                        checked
+                            .roots()
+                            .iter()
+                            .filter(|root| {
+                                root.member_status
+                                    == capability_execution_receipts::ToolTruthAuthorityBundleMemberStatusV1::SemanticInvalid
+                            })
+                            .count(),
+                        checked
+                            .roots()
+                            .iter()
+                            .map(|root| root.revalidation_obligation_ids.len())
+                            .sum::<usize>(),
+                    ))
+                })
+            },
+        )
+        .await
+        .expect("checked callback receives the complete orphan-bearing root census");
+    assert_eq!(root_count, 4);
+    assert_eq!(invalid_count, 1);
+    assert!(obligations >= 1);
+
+    let all_fresh_request = capability_execution_receipts::CheckToolTruthAuthorityBundle {
+        stable_consumer_request_id: Uuid::new_v4(),
+        ..request
+    };
+    let error = capability_execution_receipts::with_all_fresh_tool_truth_authority_bundle(
+        db.pool(),
+        &all_fresh_request,
+        |_tx,
+         _all_fresh|
+         -> capability_execution_receipts::ToolTruthAuthorityBundleFuture<'_, ()> {
+            panic!("semantic-invalid root must not reach the all-fresh callback")
+        },
+    )
+    .await
+    .expect_err("semantic orphan cannot be filtered out before private conversion");
+    assert!(error
+        .to_string()
+        .contains("TOOL_TRUTH_AUTHORITY_BUNDLE_NOT_ALL_FRESH"));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn authority_bundle_missing_required_root_never_invokes_consumer() {
+    let (mut db, _data_dir) = fixture("authority_bundle_missing_root").await;
+    let seeded = seed_multi_root_bundle_fixture(
+        db.pool(),
+        "authority-bundle-missing-root",
+        &ToolTruthRootFamilyV1::ALL[..3],
+    )
+    .await;
+    let request = capability_execution_receipts::CheckToolTruthAuthorityBundle {
+        stable_consumer_request_id: Uuid::new_v4(),
+        operation_id: seeded.frozen.operation_id,
+        organization_id: seeded.frozen.organization_id,
+        consumer_kind:
+            capability_execution_receipts::ToolTruthAuthorityBundleConsumerV1::CandidateAnalysis,
+    };
+    let error = capability_execution_receipts::with_checked_tool_truth_authority_bundle(
+        db.pool(),
+        &request,
+        |_tx, _checked| -> capability_execution_receipts::ToolTruthAuthorityBundleFuture<'_, ()> {
+            panic!("missing-root census must fail before the callback")
+        },
+    )
+    .await
+    .expect_err("omitting a required root fails closed");
+    assert!(error
+        .to_string()
+        .contains("TOOL_TRUTH_AUTHORITY_BUNDLE_ROOT_CENSUS_INCOMPLETE"));
+    let seals: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM tool_truth_authority_bundle_seals WHERE operation_id=$1",
+    )
+    .bind(seeded.frozen.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read missing-root bundle seals");
+    assert_eq!(seals, 0);
     db.stop().await;
 }
 

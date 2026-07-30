@@ -186,6 +186,16 @@ pub async fn record_obligation(
     pool: &PgPool,
     command: &RecordRevalidationObligation,
 ) -> Result<RevalidationObligationRow> {
+    let mut tx = pool.begin().await?;
+    let row = record_obligation_on(&mut tx, command).await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
+pub(crate) async fn record_obligation_on(
+    tx: &mut Transaction<'_, Postgres>,
+    command: &RecordRevalidationObligation,
+) -> Result<RevalidationObligationRow> {
     if command.operation_id.is_nil()
         || command.organization_id.is_nil()
         || command.source_receipt_id.is_nil()
@@ -202,12 +212,11 @@ pub async fn record_obligation(
     {
         return Err(fail(CONTRACT_INVALID));
     }
-    let mut tx = pool.begin().await?;
     let deadline_seconds: i32 = sqlx::query_scalar(
         "SELECT deadline_seconds FROM tool_truth_revalidation_dispatch_policies WHERE operation_id=$1 FOR SHARE",
     )
     .bind(command.operation_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| fail(AUTHORITY_STALE))?;
     let source_exact: bool = sqlx::query_scalar(
@@ -228,7 +237,7 @@ pub async fn record_obligation(
     .bind(command.source_receipt_input_id)
     .bind(&command.source_input_key)
     .bind(command.temporal_policy_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
     if !source_exact {
         return Err(fail(AUTHORITY_STALE));
@@ -257,7 +266,7 @@ pub async fn record_obligation(
     .bind(&command.fact_class)
     .bind(command.temporal_policy_id)
     .bind(&command.reason_code)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     let row = if let Some(existing) = existing {
         if existing.id != obligation_id || existing.obligation_hash != obligation_hash {
@@ -287,9 +296,9 @@ pub async fn record_obligation(
         .bind(command.mandatory_axis)
         .bind(&obligation_hash)
         .bind(deadline_seconds)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
-        append_event(&mut tx, &row, "opened", None, None, None).await?;
+        append_event(tx, &row, "opened", None, None, None).await?;
         row
     };
     let consumer_hash = sha256_json(&serde_json::json!({
@@ -309,9 +318,8 @@ pub async fn record_obligation(
     .bind(&command.consumer_kind)
     .bind(&command.consumer_key)
     .bind(consumer_hash)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    tx.commit().await?;
     Ok(row)
 }
 

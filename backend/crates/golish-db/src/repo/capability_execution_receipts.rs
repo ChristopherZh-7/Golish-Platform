@@ -4,6 +4,16 @@
 //! never caller-computed manifests or authority hashes. Every hash written by
 //! this module is derived after locking the database-owned parent census.
 
+mod authority_host;
+
+pub use authority_host::{
+    with_all_fresh_tool_truth_authority_bundle, with_checked_tool_truth_authority_bundle,
+    AllFreshToolTruthAuthorityBundle, CheckToolTruthAuthorityBundle,
+    CheckedToolTruthAuthorityBundle, CheckedToolTruthAuthorityRoot,
+    ToolTruthAuthorityBundleConsumerV1, ToolTruthAuthorityBundleFuture,
+    ToolTruthAuthorityBundleMemberStatusV1,
+};
+
 use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
@@ -1471,7 +1481,7 @@ async fn begin_on(
     .await?;
 
     let temporal_member_hash = sha256_json(&serde_json::json!({
-        "fact_class": "default",
+        "fact_class": "target_state",
         "positive_ttl_ms": 300000,
         "negative_ttl_ms": 60000,
         "refutation_ttl_ms": 60000,
@@ -1511,7 +1521,7 @@ async fn begin_on(
                    id,policy_id,ordinal,fact_class,positive_ttl_ms,negative_ttl_ms,
                    refutation_ttl_ms,require_same_target_state_epoch,
                    required_recheck_source,member_hash
-               ) VALUES($1,$2,0,'default',300000,60000,60000,TRUE,'manual_only',$3)"#,
+               ) VALUES($1,$2,0,'target_state',300000,60000,60000,TRUE,'manual_only',$3)"#,
         )
         .bind(Uuid::new_v4())
         .bind(id)
@@ -2635,22 +2645,127 @@ pub async fn finalize_target_intel_receipt(
     }
 
     let temporal_census_id = Uuid::new_v5(&command.receipt_id, b"temporal-census:v1");
+    let policy_member = sqlx::query_as::<_, (Uuid, String, i64, i64)>(
+        r#"SELECT id,member_hash,positive_ttl_ms,negative_ttl_ms
+             FROM evidence_temporal_validity_policy_members
+            WHERE policy_id=$1 AND fact_class='target_state'"#,
+    )
+    .bind(receipt.6)
+    .fetch_one(&mut *tx)
+    .await?;
+    let mut epoch_bindings = Vec::with_capacity(items.len());
+    let mut selected_ttls = Vec::with_capacity(items.len());
+    for (item_id, input_key, technique) in &items {
+        let observation = observation_map
+            .get(&(input_key.clone(), technique.clone()))
+            .map(String::as_str)
+            .unwrap_or("indeterminate");
+        selected_ttls.push(if observation == "found" {
+            policy_member.2
+        } else {
+            policy_member.3
+        });
+        let (target_id, exact_asset) = sqlx::query_as::<_, (Option<Uuid>, String)>(
+            "SELECT target_id,exact_asset FROM coverage_denominator_items WHERE id=$1",
+        )
+        .bind(item_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let target_scope_identity_hash: String = sqlx::query_scalar(
+            r#"SELECT tool_truth_sha256(jsonb_build_object(
+                   'operation_id',$1::uuid,'organization_id',$2::uuid,
+                   'target_id',$3::uuid,'exact_asset',$4::text
+               )::TEXT)"#,
+        )
+        .bind(authority.0)
+        .bind(authority.4)
+        .bind(target_id)
+        .bind(&exact_asset)
+        .fetch_one(&mut *tx)
+        .await?;
+        let genesis_event_id = Uuid::new_v5(
+            &authority.0,
+            format!("target-state-epoch:{target_scope_identity_hash}:0").as_bytes(),
+        );
+        sqlx::query(
+            r#"INSERT INTO tool_truth_target_state_epoch_events(
+                   id,operation_id,project_scope_id,project_path_at_freeze,
+                   scope_snapshot_id,organization_id,target_scope_identity_hash,
+                   epoch,predecessor_event_id,reason_code,source_authority_hash,event_hash
+               ) VALUES($1,$2,$3,$4,$5,$6,$7,0,NULL,'initial_observation',$8,$9)
+               ON CONFLICT(operation_id,organization_id,target_scope_identity_hash,epoch)
+               DO NOTHING"#,
+        )
+        .bind(genesis_event_id)
+        .bind(authority.0)
+        .bind(authority.1)
+        .bind(&authority.2)
+        .bind(authority.3)
+        .bind(authority.4)
+        .bind(&target_scope_identity_hash)
+        .bind(&authority.7)
+        .bind(&target_scope_identity_hash)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO tool_truth_target_state_epoch_heads(
+                   operation_id,organization_id,target_scope_identity_hash,
+                   current_epoch,current_event_id
+               ) VALUES($1,$2,$3,0,$4)
+               ON CONFLICT(operation_id,organization_id,target_scope_identity_hash)
+               DO NOTHING"#,
+        )
+        .bind(authority.0)
+        .bind(authority.4)
+        .bind(&target_scope_identity_hash)
+        .bind(genesis_event_id)
+        .execute(&mut *tx)
+        .await?;
+        let (target_state_epoch, target_state_epoch_event_id) = sqlx::query_as::<_, (i64, Uuid)>(
+            r#"SELECT current_epoch,current_event_id
+                     FROM tool_truth_target_state_epoch_heads
+                    WHERE operation_id=$1 AND organization_id=$2
+                      AND target_scope_identity_hash=$3 FOR SHARE"#,
+        )
+        .bind(authority.0)
+        .bind(authority.4)
+        .bind(&target_scope_identity_hash)
+        .fetch_one(&mut *tx)
+        .await?;
+        epoch_bindings.push((
+            input_key.clone(),
+            target_scope_identity_hash,
+            target_state_epoch_event_id,
+            target_state_epoch,
+        ));
+    }
+    let target_state_epoch_set_hash = sha256_json(&serde_json::json!(epoch_bindings))?;
+    let effective_ttl_ms = selected_ttls
+        .iter()
+        .copied()
+        .min()
+        .ok_or_else(|| fail(MANIFEST_DRIFT))?;
     sqlx::query(
         r#"INSERT INTO capability_execution_temporal_censuses(
                id,receipt_id,execution_authority_id,receipt_authority_hash,
                temporal_validity_policy_id,temporal_validity_policy_hash,
-               observation_window_started_at,observation_window_completed_at,effective_valid_until
+               observation_window_started_at,observation_window_completed_at,
+               effective_valid_until,target_state_epoch_set_hash
            ) SELECT $1,r.id,r.execution_authority_id,r.receipt_authority_hash,
                     r.temporal_validity_policy_id,r.temporal_validity_policy_hash,
                     r.observation_started_at,statement_timestamp(),
-                    statement_timestamp()+INTERVAL '60 seconds'
+                    statement_timestamp()+$3*INTERVAL '1 millisecond',$4
                FROM capability_execution_receipts r WHERE r.id=$2"#,
     )
     .bind(temporal_census_id)
     .bind(command.receipt_id)
+    .bind(effective_ttl_ms)
+    .bind(&target_state_epoch_set_hash)
     .execute(&mut *tx)
     .await?;
-    for (ordinal, (_, input_key, technique)) in items.iter().enumerate() {
+    for (ordinal, ((_, input_key, technique), epoch_binding)) in
+        items.iter().zip(epoch_bindings.iter()).enumerate()
+    {
         let observation = observation_map
             .get(&(input_key.clone(), technique.clone()))
             .map(String::as_str)
@@ -2660,21 +2775,35 @@ pub async fn finalize_target_intel_receipt(
             "no_match" => "negative",
             _ => "inconclusive",
         };
+        let selected_ttl_ms = if polarity == "positive" {
+            policy_member.2
+        } else {
+            policy_member.3
+        };
         let member_hash = sha256_json(&serde_json::json!({
             "input_key": input_key,
             "technique": technique,
             "polarity": polarity,
-            "ttl_ms": 60000,
+            "policy_member_hash": policy_member.1,
+            "target_scope_identity_hash": epoch_binding.1,
+            "target_state_epoch_event_id": epoch_binding.2,
+            "target_state_epoch": epoch_binding.3,
+            "ttl_ms": selected_ttl_ms,
         }))?;
         sqlx::query(
             r#"INSERT INTO capability_execution_temporal_census_members(
                    id,census_id,receipt_id,execution_authority_id,ordinal,input_key,
-                   observation_identity_hash,temporal_fact_class,observation_polarity,
+                   observation_identity_hash,temporal_validity_policy_id,
+                   policy_member_id,policy_member_hash,target_state_operation_id,
+                   target_state_organization_id,target_scope_identity_hash,
+                   target_state_epoch_event_id,target_state_epoch,
+                   temporal_fact_class,observation_polarity,
                    mapping_rule_id,mapping_rule_version,mapping_rule_digest,selected_ttl_ms,
                    observed_at,effective_valid_until,member_hash
-               ) VALUES($1,$2,$3,$4,$5,$6,$7,'target_intel',$8,
-                        'target_intel.default_ttl','1',$9,60000,statement_timestamp(),
-                        statement_timestamp()+INTERVAL '60 seconds',$10)"#,
+               ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+                        'target_state',$16,'target_state.policy_v1','1',$17,$18,
+                        statement_timestamp(),
+                        statement_timestamp()+$18*INTERVAL '1 millisecond',$19)"#,
         )
         .bind(Uuid::new_v5(&temporal_census_id, input_key.as_bytes()))
         .bind(temporal_census_id)
@@ -2687,11 +2816,20 @@ pub async fn finalize_target_intel_receipt(
             "input_key": input_key,
             "observation": observation,
         }))?)
+        .bind(receipt.6)
+        .bind(policy_member.0)
+        .bind(&policy_member.1)
+        .bind(authority.0)
+        .bind(authority.4)
+        .bind(&epoch_binding.1)
+        .bind(epoch_binding.2)
+        .bind(epoch_binding.3)
         .bind(polarity)
         .bind(sha256_json(&serde_json::json!({
-            "rule": "target_intel.default_ttl",
+            "rule": "target_state.policy_v1",
             "version": 1,
         }))?)
+        .bind(selected_ttl_ms)
         .bind(member_hash)
         .execute(&mut *tx)
         .await?;
@@ -2798,7 +2936,9 @@ pub async fn finalize_target_intel_receipt(
                   current_semantic_reconciliation_hash=$17,
                   finalization_request_hash=$18,row_version=row_version+1,
                   observation_completed_at=statement_timestamp(),
-                  valid_until=statement_timestamp()+INTERVAL '60 seconds',
+                  valid_until=(SELECT effective_valid_until
+                                 FROM capability_execution_temporal_censuses
+                                WHERE id=$14),
                   finalized_at=COALESCE(finalized_at,statement_timestamp())
             WHERE id=$1 AND row_version=$2
             RETURNING {RECEIPT_COLUMNS}"#

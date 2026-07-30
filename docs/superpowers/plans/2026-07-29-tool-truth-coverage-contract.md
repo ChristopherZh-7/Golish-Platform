@@ -2,6 +2,8 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。
 
+> **2026-07-30 实现闭环更正：** 先前 Plan A final SHA `a451b8725ad18de78710d8a65d933c182f8f21d2` 过早标为 passing，遗漏了本文已经要求、且 Plan B 作为硬前置消费的 multi-root authority bundle seam。本次更正仍只修改唯一 `00005` migration：补齐 TI/EAS/Enum/Vuln closed root taxonomy、operation-scoped target-state epoch、exact temporal-policy binding、`tool_truth_authority_bundle_seals/members`，以及同一 `REPEATABLE READ` transaction 内的不可构造 checked/all-fresh callback guards；旧 SHA 不再是 Plan A 完成基线。
+
 **目标：** 为每次 capability 执行建立 operation-frozen、逐 input、可对账的 Tool Truth receipt，并在不改变旧 operation 或用户界面的前提下，消除当前 EAS、Enumeration、positive-partial 与 Nuclei no-match 的直接假阴性。
 
 **架构：** 在 golish-pentest-domain 中定义纯状态机，在 golish-db 中以唯一 additive migration 持久化 frozen contract、denominator、receipt、reconciliation 与 shadow assessment；producer 通过 pentest bridge 执行 begin → encrypted raw-vault seal → staged typed closeout → vault-authenticated stable snapshot → atomic reconciliation/finalize 协议。新建 operation 仍冻结为 legacy_v1，不提供 promotion；shadow_v1 只写审计，receipt_v1 才启用 fail-safe producer 投影，而 Gate 的 control_decision/coverage_grade 在本计划内始终 shadow-write。

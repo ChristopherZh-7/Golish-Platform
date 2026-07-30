@@ -950,6 +950,7 @@ CREATE TABLE evidence_temporal_validity_policy_members (
     member_hash TEXT NOT NULL,
     CONSTRAINT evidence_temporal_policy_member_sha256_v1_check CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
     UNIQUE(policy_id,ordinal),UNIQUE(policy_id,fact_class),UNIQUE(policy_id,member_hash),
+    UNIQUE(id,policy_id,member_hash),
     FOREIGN KEY(policy_id) REFERENCES evidence_temporal_validity_policies(id) ON DELETE RESTRICT,
     CHECK (negative_ttl_ms<positive_ttl_ms AND refutation_ttl_ms<positive_ttl_ms)
 );
@@ -961,6 +962,140 @@ CREATE TRIGGER evidence_temporal_policy_member_guard
 BEFORE INSERT OR UPDATE OR DELETE ON evidence_temporal_validity_policy_members
 FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_member(
     'evidence_temporal_validity_policies','id','policy_id');
+
+CREATE TABLE tool_truth_target_state_epoch_events (
+    id UUID PRIMARY KEY,
+    operation_id UUID NOT NULL,
+    project_scope_id UUID NOT NULL,
+    project_path_at_freeze TEXT NOT NULL,
+    scope_snapshot_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    target_scope_identity_hash TEXT NOT NULL,
+    epoch BIGINT NOT NULL CHECK (epoch>=0),
+    predecessor_event_id UUID,
+    reason_code TEXT NOT NULL CHECK (reason_code IN (
+        'initial_observation','scope_authority_changed','credential_authority_changed',
+        'application_model_authority_changed','canonical_target_changed','coordinated_revalidation'
+    )),
+    source_authority_hash TEXT NOT NULL,
+    event_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CONSTRAINT tool_truth_target_epoch_sha256_v1_check CHECK (
+        target_scope_identity_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND source_authority_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND event_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    CONSTRAINT tool_truth_target_epoch_shape_check CHECK (
+        (epoch=0 AND predecessor_event_id IS NULL AND reason_code='initial_observation')
+        OR (epoch>0 AND predecessor_event_id IS NOT NULL AND reason_code<>'initial_observation')
+    ),
+    UNIQUE(operation_id,organization_id,target_scope_identity_hash,epoch),
+    UNIQUE(predecessor_event_id),
+    UNIQUE(id,operation_id,organization_id,target_scope_identity_hash),
+    UNIQUE(id,operation_id,organization_id,target_scope_identity_hash,epoch),
+    FOREIGN KEY(operation_id,project_scope_id)
+        REFERENCES operation_state(operation_id,project_scope_id) ON DELETE RESTRICT,
+    FOREIGN KEY(scope_snapshot_id,operation_id,project_scope_id,project_path_at_freeze)
+        REFERENCES operation_org_scope_snapshots(
+            id,operation_id,project_scope_id,project_path_at_freeze
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(scope_snapshot_id,organization_id)
+        REFERENCES operation_org_scope_units(snapshot_id,organization_id) ON DELETE RESTRICT
+);
+ALTER TABLE tool_truth_target_state_epoch_events
+    ADD CONSTRAINT tool_truth_target_epoch_predecessor_fk
+    FOREIGN KEY(predecessor_event_id,operation_id,organization_id,target_scope_identity_hash)
+    REFERENCES tool_truth_target_state_epoch_events(
+        id,operation_id,organization_id,target_scope_identity_hash
+    ) ON DELETE RESTRICT;
+
+CREATE FUNCTION tool_truth_validate_target_state_epoch_event()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE predecessor_epoch BIGINT;
+BEGIN
+    IF NEW.epoch=0 THEN
+        IF NEW.predecessor_event_id IS NOT NULL THEN
+            RAISE EXCEPTION 'tool_truth_target_epoch_genesis_invalid' USING ERRCODE='23514';
+        END IF;
+    ELSE
+        SELECT epoch INTO predecessor_epoch
+          FROM tool_truth_target_state_epoch_events
+         WHERE id=NEW.predecessor_event_id
+           AND operation_id=NEW.operation_id
+           AND organization_id=NEW.organization_id
+           AND target_scope_identity_hash=NEW.target_scope_identity_hash
+         FOR SHARE;
+        IF predecessor_epoch IS NULL OR predecessor_epoch+1<>NEW.epoch THEN
+            RAISE EXCEPTION 'tool_truth_target_epoch_predecessor_invalid' USING ERRCODE='23514';
+        END IF;
+    END IF;
+    NEW.event_hash := tool_truth_sha256(jsonb_build_object(
+        'operation_id',NEW.operation_id,'organization_id',NEW.organization_id,
+        'target_scope_identity_hash',NEW.target_scope_identity_hash,'epoch',NEW.epoch,
+        'predecessor_event_id',NEW.predecessor_event_id,'reason_code',NEW.reason_code,
+        'source_authority_hash',NEW.source_authority_hash
+    )::TEXT);
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER tool_truth_target_epoch_event_validate
+BEFORE INSERT ON tool_truth_target_state_epoch_events
+FOR EACH ROW EXECUTE FUNCTION tool_truth_validate_target_state_epoch_event();
+CREATE TRIGGER tool_truth_target_epoch_event_append_only
+BEFORE UPDATE OR DELETE ON tool_truth_target_state_epoch_events
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();
+
+CREATE TABLE tool_truth_target_state_epoch_heads (
+    operation_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    target_scope_identity_hash TEXT NOT NULL,
+    current_epoch BIGINT NOT NULL CHECK (current_epoch>=0),
+    current_event_id UUID NOT NULL,
+    row_version BIGINT NOT NULL DEFAULT 0 CHECK (row_version>=0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    PRIMARY KEY(operation_id,organization_id,target_scope_identity_hash),
+    CONSTRAINT tool_truth_target_epoch_head_sha256_v1_check CHECK (
+        target_scope_identity_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    FOREIGN KEY(current_event_id,operation_id,organization_id,target_scope_identity_hash,current_epoch)
+        REFERENCES tool_truth_target_state_epoch_events(
+            id,operation_id,organization_id,target_scope_identity_hash,epoch
+        ) ON DELETE RESTRICT
+);
+CREATE FUNCTION tool_truth_guard_target_state_epoch_head()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE predecessor UUID;
+BEGIN
+    IF TG_OP='DELETE' THEN
+        RAISE EXCEPTION 'tool_truth_target_epoch_head_immutable' USING ERRCODE='23514';
+    END IF;
+    IF TG_OP='INSERT' THEN
+        IF NEW.current_epoch<>0 OR NEW.row_version<>0 THEN
+            RAISE EXCEPTION 'tool_truth_target_epoch_head_genesis_invalid' USING ERRCODE='23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NEW.operation_id<>OLD.operation_id OR NEW.organization_id<>OLD.organization_id
+       OR NEW.target_scope_identity_hash<>OLD.target_scope_identity_hash
+       OR NEW.current_epoch<>OLD.current_epoch+1 OR NEW.row_version<>OLD.row_version+1 THEN
+        RAISE EXCEPTION 'tool_truth_target_epoch_head_cas_required' USING ERRCODE='23514';
+    END IF;
+    SELECT predecessor_event_id INTO predecessor
+      FROM tool_truth_target_state_epoch_events
+     WHERE id=NEW.current_event_id AND operation_id=NEW.operation_id
+       AND organization_id=NEW.organization_id
+       AND target_scope_identity_hash=NEW.target_scope_identity_hash
+       AND epoch=NEW.current_epoch FOR SHARE;
+    IF predecessor IS DISTINCT FROM OLD.current_event_id THEN
+        RAISE EXCEPTION 'tool_truth_target_epoch_head_successor_invalid' USING ERRCODE='23514';
+    END IF;
+    NEW.updated_at := statement_timestamp();
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER tool_truth_target_epoch_head_guard
+BEFORE INSERT OR UPDATE OR DELETE ON tool_truth_target_state_epoch_heads
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_target_state_epoch_head();
 
 -- ---------------------------------------------------------------------------
 -- Receipt lifecycle and exact raw-witness binding.
@@ -1342,15 +1477,21 @@ CREATE TABLE capability_execution_temporal_censuses (
     observation_window_started_at TIMESTAMPTZ NOT NULL,
     observation_window_completed_at TIMESTAMPTZ NOT NULL,
     effective_valid_until TIMESTAMPTZ NOT NULL,
+    target_state_epoch_set_hash TEXT NOT NULL,
+    temporal_validity_status TEXT NOT NULL DEFAULT 'fresh' CHECK (
+        temporal_validity_status IN ('fresh','expired','mixed_epoch','skew_exceeded')
+    ),
     member_count BIGINT, member_set_hash TEXT, sealed_empty BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(), sealed_at TIMESTAMPTZ,
     CONSTRAINT capability_temporal_census_sha256_v1_check CHECK (
         receipt_authority_hash ~ '^sha256:[0-9a-f]{64}$'
         AND temporal_validity_policy_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND target_state_epoch_set_hash ~ '^sha256:[0-9a-f]{64}$'
         AND (member_set_hash IS NULL OR member_set_hash ~ '^sha256:[0-9a-f]{64}$')),
     CHECK (observation_window_completed_at>=observation_window_started_at
         AND effective_valid_until>observation_window_completed_at),
     UNIQUE(id,receipt_id,execution_authority_id),
+    UNIQUE(id,receipt_id,execution_authority_id,temporal_validity_policy_id),
     FOREIGN KEY(receipt_id,execution_authority_id,receipt_authority_hash)
         REFERENCES capability_execution_receipts(id,execution_authority_id,receipt_authority_hash) ON DELETE RESTRICT,
     FOREIGN KEY(temporal_validity_policy_id,execution_authority_id,temporal_validity_policy_hash)
@@ -1360,6 +1501,11 @@ CREATE TABLE capability_execution_temporal_census_members (
     id UUID PRIMARY KEY, census_id UUID NOT NULL, receipt_id UUID NOT NULL,
     execution_authority_id UUID NOT NULL, ordinal INTEGER NOT NULL CHECK (ordinal>=0),
     input_key TEXT NOT NULL, observation_identity_hash TEXT NOT NULL,
+    temporal_validity_policy_id UUID NOT NULL,
+    policy_member_id UUID NOT NULL, policy_member_hash TEXT NOT NULL,
+    target_state_operation_id UUID NOT NULL, target_state_organization_id UUID NOT NULL,
+    target_scope_identity_hash TEXT NOT NULL, target_state_epoch_event_id UUID NOT NULL,
+    target_state_epoch BIGINT NOT NULL CHECK (target_state_epoch>=0),
     temporal_fact_class TEXT NOT NULL CHECK (BTRIM(temporal_fact_class)<>''),
     observation_polarity TEXT NOT NULL CHECK (observation_polarity IN ('positive','negative','inconclusive')),
     mapping_rule_id TEXT NOT NULL CHECK (BTRIM(mapping_rule_id)<>''),
@@ -1369,13 +1515,100 @@ CREATE TABLE capability_execution_temporal_census_members (
     effective_valid_until TIMESTAMPTZ NOT NULL, member_hash TEXT NOT NULL,
     CONSTRAINT capability_temporal_member_sha256_v1_check CHECK (
         observation_identity_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND policy_member_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND target_scope_identity_hash ~ '^sha256:[0-9a-f]{64}$'
         AND mapping_rule_digest ~ '^sha256:[0-9a-f]{64}$' AND member_hash ~ '^sha256:[0-9a-f]{64}$'),
     CHECK (effective_valid_until>observed_at
         AND (source_valid_until IS NULL OR effective_valid_until<=source_valid_until)),
     UNIQUE(census_id,ordinal),UNIQUE(census_id,input_key,observation_identity_hash),
-    FOREIGN KEY(census_id,receipt_id,execution_authority_id)
-        REFERENCES capability_execution_temporal_censuses(id,receipt_id,execution_authority_id) ON DELETE RESTRICT
+    FOREIGN KEY(census_id,receipt_id,execution_authority_id,temporal_validity_policy_id)
+        REFERENCES capability_execution_temporal_censuses(
+            id,receipt_id,execution_authority_id,temporal_validity_policy_id
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(policy_member_id,temporal_validity_policy_id,policy_member_hash)
+        REFERENCES evidence_temporal_validity_policy_members(id,policy_id,member_hash)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(target_state_epoch_event_id,target_state_operation_id,
+                target_state_organization_id,target_scope_identity_hash,target_state_epoch)
+        REFERENCES tool_truth_target_state_epoch_events(
+            id,operation_id,organization_id,target_scope_identity_hash,epoch
+        ) ON DELETE RESTRICT
 );
+CREATE FUNCTION tool_truth_validate_temporal_census_member()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE policy_member evidence_temporal_validity_policy_members%ROWTYPE;
+DECLARE head tool_truth_target_state_epoch_heads%ROWTYPE;
+DECLARE expected_operation UUID;
+DECLARE expected_organization UUID;
+DECLARE expected_target_id UUID;
+DECLARE expected_asset TEXT;
+DECLARE expected_identity_hash TEXT;
+DECLARE expected_ttl BIGINT;
+DECLARE derived_valid_until TIMESTAMPTZ;
+BEGIN
+    SELECT * INTO policy_member FROM evidence_temporal_validity_policy_members
+     WHERE id=NEW.policy_member_id AND policy_id=NEW.temporal_validity_policy_id
+       AND member_hash=NEW.policy_member_hash FOR SHARE;
+    IF policy_member.id IS NULL OR policy_member.fact_class<>NEW.temporal_fact_class THEN
+        RAISE EXCEPTION 'tool_truth_temporal_policy_member_mismatch' USING ERRCODE='23514';
+    END IF;
+    expected_ttl := CASE NEW.observation_polarity
+        WHEN 'positive' THEN policy_member.positive_ttl_ms
+        WHEN 'negative' THEN policy_member.negative_ttl_ms
+        ELSE policy_member.negative_ttl_ms
+    END;
+    SELECT denominator.operation_id,denominator.organization_id,item.target_id,item.exact_asset
+      INTO expected_operation,expected_organization,expected_target_id,expected_asset
+      FROM capability_execution_receipt_inputs input
+      JOIN capability_execution_receipts receipt ON receipt.id=input.receipt_id
+      JOIN coverage_denominators denominator ON denominator.id=receipt.denominator_id
+      JOIN coverage_denominator_items item ON item.id=input.denominator_item_id
+     WHERE input.receipt_id=NEW.receipt_id AND input.input_key=NEW.input_key
+       AND input.sealed_at IS NOT NULL FOR SHARE;
+    expected_identity_hash := tool_truth_sha256(jsonb_build_object(
+        'operation_id',expected_operation,'organization_id',expected_organization,
+        'target_id',expected_target_id,'exact_asset',expected_asset
+    )::TEXT);
+    IF expected_operation IS NULL OR NEW.target_state_operation_id<>expected_operation
+       OR NEW.target_state_organization_id<>expected_organization
+       OR NEW.target_scope_identity_hash<>expected_identity_hash THEN
+        RAISE EXCEPTION 'tool_truth_temporal_target_identity_mismatch' USING ERRCODE='23514';
+    END IF;
+    SELECT * INTO head FROM tool_truth_target_state_epoch_heads
+     WHERE operation_id=NEW.target_state_operation_id
+       AND organization_id=NEW.target_state_organization_id
+       AND target_scope_identity_hash=NEW.target_scope_identity_hash FOR SHARE;
+    IF head.current_event_id IS NULL
+       OR (policy_member.require_same_target_state_epoch AND (
+           NEW.target_state_epoch_event_id<>head.current_event_id
+           OR NEW.target_state_epoch<>head.current_epoch)) THEN
+        RAISE EXCEPTION 'tool_truth_temporal_target_epoch_stale' USING ERRCODE='23514';
+    END IF;
+    NEW.selected_ttl_ms := expected_ttl;
+    NEW.observed_at := statement_timestamp();
+    derived_valid_until := NEW.observed_at+expected_ttl*INTERVAL '1 millisecond';
+    NEW.effective_valid_until := CASE
+        WHEN NEW.source_valid_until IS NULL THEN derived_valid_until
+        ELSE LEAST(NEW.source_valid_until,derived_valid_until)
+    END;
+    NEW.member_hash := tool_truth_sha256(jsonb_build_object(
+        'census_id',NEW.census_id,'receipt_id',NEW.receipt_id,'ordinal',NEW.ordinal,
+        'input_key',NEW.input_key,'observation_identity_hash',NEW.observation_identity_hash,
+        'policy_member_id',NEW.policy_member_id,'policy_member_hash',NEW.policy_member_hash,
+        'target_scope_identity_hash',NEW.target_scope_identity_hash,
+        'target_state_epoch_event_id',NEW.target_state_epoch_event_id,
+        'target_state_epoch',NEW.target_state_epoch,
+        'temporal_fact_class',NEW.temporal_fact_class,
+        'observation_polarity',NEW.observation_polarity,
+        'selected_ttl_ms',expected_ttl,'observed_at',NEW.observed_at,
+        'effective_valid_until',NEW.effective_valid_until
+    )::TEXT);
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER capability_temporal_census_member_validate
+BEFORE INSERT ON capability_execution_temporal_census_members
+FOR EACH ROW EXECUTE FUNCTION tool_truth_validate_temporal_census_member();
 CREATE TRIGGER capability_temporal_census_header_guard
 BEFORE INSERT OR UPDATE OR DELETE ON capability_execution_temporal_censuses
 FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_header(
@@ -1907,7 +2140,9 @@ CREATE TABLE tool_truth_authority_set_seals (
         AND (member_set_hash IS NULL OR member_set_hash ~ '^sha256:[0-9a-f]{64}$')
     ),
     UNIQUE(execution_authority_id,stable_consumer_request_id),
+    UNIQUE(id,execution_authority_id),
     UNIQUE(id,execution_authority_id,denominator_id),
+    UNIQUE(id,execution_authority_id,denominator_id,semantic_hash,graph_hash,freshness_hash),
     FOREIGN KEY(denominator_id,execution_authority_id,denominator_hash)
         REFERENCES coverage_denominators(id,execution_authority_id,denominator_hash)
         ON DELETE RESTRICT
@@ -1931,8 +2166,11 @@ CREATE TABLE tool_truth_authority_set_members (
     ),
     UNIQUE(authority_set_id,ordinal),
     UNIQUE(authority_set_id,receipt_id),
-    FOREIGN KEY(authority_set_id,execution_authority_id,denominator_id)
-        REFERENCES tool_truth_authority_set_seals(id,execution_authority_id,denominator_id)
+    FOREIGN KEY(authority_set_id,execution_authority_id)
+        REFERENCES tool_truth_authority_set_seals(id,execution_authority_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(receipt_id,denominator_id,execution_authority_id)
+        REFERENCES capability_execution_receipts(id,denominator_id,execution_authority_id)
         ON DELETE RESTRICT,
     FOREIGN KEY(receipt_id,reconciliation_id,semantic_authority_version,semantic_hash,execution_authority_id)
         REFERENCES capability_execution_reconciliations(
@@ -1949,6 +2187,322 @@ CREATE TRIGGER tool_truth_authority_set_member_guard
 BEFORE INSERT OR UPDATE OR DELETE ON tool_truth_authority_set_members
 FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_member(
     'tool_truth_authority_set_seals','id','authority_set_id');
+
+CREATE FUNCTION tool_truth_validate_authority_set_graph_member()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE root_denominator UUID;
+BEGIN
+    SELECT denominator_id INTO root_denominator
+      FROM tool_truth_authority_set_seals
+     WHERE id=NEW.authority_set_id AND execution_authority_id=NEW.execution_authority_id
+     FOR SHARE;
+    IF root_denominator IS NULL OR NOT EXISTS (
+        WITH RECURSIVE graph(id) AS (
+            SELECT root_denominator
+            UNION ALL
+            SELECT child.id FROM coverage_denominators child
+            JOIN graph parent ON child.parent_denominator_id=parent.id
+            WHERE child.execution_authority_id=NEW.execution_authority_id
+        )
+        SELECT 1 FROM graph WHERE id=NEW.denominator_id
+    ) THEN
+        RAISE EXCEPTION 'tool_truth_authority_set_member_outside_root_graph' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER tool_truth_authority_set_graph_member_guard
+BEFORE INSERT ON tool_truth_authority_set_members
+FOR EACH ROW EXECUTE FUNCTION tool_truth_validate_authority_set_graph_member();
+
+CREATE TABLE tool_truth_authority_bundle_seals (
+    id UUID PRIMARY KEY,
+    operation_id UUID NOT NULL,
+    project_scope_id UUID NOT NULL,
+    project_path_at_freeze TEXT NOT NULL,
+    scope_snapshot_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    consumer_kind TEXT NOT NULL CHECK (consumer_kind IN (
+        'candidate_analysis','verification_campaign','current_report','report_download','ui'
+    )),
+    stable_consumer_request_id UUID NOT NULL,
+    relevant_root_count BIGINT,
+    relevant_root_set_hash TEXT,
+    member_count BIGINT,
+    member_set_hash TEXT,
+    sealed_empty BOOLEAN NOT NULL DEFAULT FALSE,
+    semantic_authority_bundle_hash TEXT,
+    freshness_attestation_bundle_hash TEXT,
+    temporal_validity_bundle_hash TEXT,
+    temporal_validity_policy_set_hash TEXT,
+    target_state_epoch_set_hash TEXT,
+    observation_window_started_at TIMESTAMPTZ,
+    observation_window_completed_at TIMESTAMPTZ,
+    effective_valid_until TIMESTAMPTZ,
+    consistent_fresh_count BIGINT,
+    stale_or_invalid_count BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    sealed_at TIMESTAMPTZ,
+    CONSTRAINT tool_truth_authority_bundle_sha256_v1_check CHECK (
+        (relevant_root_set_hash IS NULL OR relevant_root_set_hash ~ '^sha256:[0-9a-f]{64}$')
+        AND (member_set_hash IS NULL OR member_set_hash ~ '^sha256:[0-9a-f]{64}$')
+        AND (semantic_authority_bundle_hash IS NULL OR semantic_authority_bundle_hash ~ '^sha256:[0-9a-f]{64}$')
+        AND (freshness_attestation_bundle_hash IS NULL OR freshness_attestation_bundle_hash ~ '^sha256:[0-9a-f]{64}$')
+        AND (temporal_validity_bundle_hash IS NULL OR temporal_validity_bundle_hash ~ '^sha256:[0-9a-f]{64}$')
+        AND (temporal_validity_policy_set_hash IS NULL OR temporal_validity_policy_set_hash ~ '^sha256:[0-9a-f]{64}$')
+        AND (target_state_epoch_set_hash IS NULL OR target_state_epoch_set_hash ~ '^sha256:[0-9a-f]{64}$')
+    ),
+    CONSTRAINT tool_truth_authority_bundle_seal_shape_check CHECK (
+        (sealed_at IS NULL AND relevant_root_count IS NULL AND relevant_root_set_hash IS NULL
+            AND member_count IS NULL AND member_set_hash IS NULL
+            AND semantic_authority_bundle_hash IS NULL
+            AND freshness_attestation_bundle_hash IS NULL
+            AND temporal_validity_bundle_hash IS NULL
+            AND temporal_validity_policy_set_hash IS NULL
+            AND target_state_epoch_set_hash IS NULL
+            AND observation_window_started_at IS NULL
+            AND observation_window_completed_at IS NULL
+            AND effective_valid_until IS NULL
+            AND consistent_fresh_count IS NULL AND stale_or_invalid_count IS NULL)
+        OR (sealed_at IS NOT NULL AND relevant_root_count=4 AND member_count=4
+            AND sealed_empty=FALSE AND relevant_root_set_hash IS NOT NULL
+            AND member_set_hash IS NOT NULL AND semantic_authority_bundle_hash IS NOT NULL
+            AND freshness_attestation_bundle_hash IS NOT NULL
+            AND temporal_validity_bundle_hash IS NOT NULL
+            AND temporal_validity_policy_set_hash IS NOT NULL
+            AND target_state_epoch_set_hash IS NOT NULL
+            AND (observation_window_started_at IS NULL
+                 OR observation_window_completed_at>=observation_window_started_at)
+            AND consistent_fresh_count+stale_or_invalid_count=member_count)
+    ),
+    UNIQUE(operation_id,organization_id,consumer_kind,stable_consumer_request_id),
+    UNIQUE(id,operation_id,organization_id),
+    FOREIGN KEY(operation_id,project_scope_id)
+        REFERENCES operation_state(operation_id,project_scope_id) ON DELETE RESTRICT,
+    FOREIGN KEY(scope_snapshot_id,operation_id,project_scope_id,project_path_at_freeze)
+        REFERENCES operation_org_scope_snapshots(
+            id,operation_id,project_scope_id,project_path_at_freeze
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(scope_snapshot_id,organization_id)
+        REFERENCES operation_org_scope_units(snapshot_id,organization_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE tool_truth_authority_bundle_members (
+    id UUID PRIMARY KEY,
+    bundle_seal_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal>=0),
+    root_family TEXT NOT NULL CHECK (root_family IN ('ti','eas','enum','vuln')),
+    root_execution_authority_id UUID NOT NULL,
+    root_denominator_id UUID NOT NULL,
+    root_denominator_hash TEXT NOT NULL,
+    authority_set_seal_id UUID NOT NULL,
+    authority_set_semantic_hash TEXT NOT NULL,
+    authority_set_graph_hash TEXT NOT NULL,
+    authority_set_freshness_hash TEXT NOT NULL,
+    temporal_validity_policy_set_hash TEXT NOT NULL,
+    target_state_epoch_set_hash TEXT NOT NULL,
+    observation_window_started_at TIMESTAMPTZ,
+    observation_window_completed_at TIMESTAMPTZ,
+    effective_valid_until TIMESTAMPTZ,
+    semantic_status TEXT NOT NULL CHECK (semantic_status IN (
+        'consistent','pending','orphaned','superseded'
+    )),
+    temporal_validity_status TEXT NOT NULL CHECK (
+        temporal_validity_status IN ('fresh','expired','mixed_epoch','skew_exceeded')
+    ),
+    member_status TEXT NOT NULL CHECK (member_status IN (
+        'consistent_fresh','semantic_invalid','expired','mixed_epoch','skew_exceeded'
+    )),
+    member_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CONSTRAINT tool_truth_authority_bundle_member_sha256_v1_check CHECK (
+        root_denominator_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND authority_set_semantic_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND authority_set_graph_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND authority_set_freshness_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND temporal_validity_policy_set_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND target_state_epoch_set_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND member_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    CHECK (
+        (observation_window_started_at IS NULL AND observation_window_completed_at IS NULL
+            AND effective_valid_until IS NULL)
+        OR (observation_window_started_at IS NOT NULL
+            AND observation_window_completed_at>=observation_window_started_at
+            AND effective_valid_until>observation_window_completed_at)
+    ),
+    CONSTRAINT tool_truth_authority_bundle_member_status_check CHECK (
+        (member_status='consistent_fresh' AND semantic_status='consistent'
+            AND temporal_validity_status='fresh' AND effective_valid_until IS NOT NULL)
+        OR (member_status='semantic_invalid' AND semantic_status<>'consistent')
+        OR (member_status='expired' AND semantic_status='consistent'
+            AND temporal_validity_status='expired')
+        OR (member_status='mixed_epoch' AND semantic_status='consistent'
+            AND temporal_validity_status='mixed_epoch')
+        OR (member_status='skew_exceeded' AND semantic_status='consistent'
+            AND temporal_validity_status='skew_exceeded')
+    ),
+    UNIQUE(bundle_seal_id,ordinal),
+    UNIQUE(bundle_seal_id,root_family),
+    UNIQUE(bundle_seal_id,root_denominator_id),
+    UNIQUE(bundle_seal_id,authority_set_seal_id),
+    FOREIGN KEY(bundle_seal_id,operation_id,organization_id)
+        REFERENCES tool_truth_authority_bundle_seals(id,operation_id,organization_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(root_denominator_id,root_execution_authority_id,root_denominator_hash)
+        REFERENCES coverage_denominators(id,execution_authority_id,denominator_hash)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(authority_set_seal_id,root_execution_authority_id,root_denominator_id,
+                authority_set_semantic_hash,authority_set_graph_hash,authority_set_freshness_hash)
+        REFERENCES tool_truth_authority_set_seals(
+            id,execution_authority_id,denominator_id,semantic_hash,graph_hash,freshness_hash
+        ) ON DELETE RESTRICT
+);
+
+CREATE FUNCTION tool_truth_validate_authority_bundle_member()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE parent_sealed TIMESTAMPTZ;
+DECLARE set_sealed TIMESTAMPTZ;
+DECLARE stage TEXT;
+DECLARE root_operation UUID;
+DECLARE root_organization UUID;
+BEGIN
+    IF TG_OP<>'INSERT' THEN
+        RAISE EXCEPTION 'tool_truth_member_append_only' USING ERRCODE='23514';
+    END IF;
+    SELECT sealed_at INTO parent_sealed FROM tool_truth_authority_bundle_seals
+     WHERE id=NEW.bundle_seal_id FOR SHARE;
+    IF parent_sealed IS NOT NULL THEN
+        RAISE EXCEPTION 'tool_truth_sealed_parent_immutable' USING ERRCODE='23514';
+    END IF;
+    SELECT s.sealed_at,a.stage_kind,a.operation_id,a.organization_id
+      INTO set_sealed,stage,root_operation,root_organization
+      FROM tool_truth_authority_set_seals s
+      JOIN tool_truth_execution_authorities a ON a.id=s.execution_authority_id
+     WHERE s.id=NEW.authority_set_seal_id
+       AND s.execution_authority_id=NEW.root_execution_authority_id
+       AND s.denominator_id=NEW.root_denominator_id FOR SHARE;
+    IF set_sealed IS NULL THEN
+        RAISE EXCEPTION 'tool_truth_unsealed_authority' USING ERRCODE='23514';
+    END IF;
+    IF root_operation<>NEW.operation_id OR root_organization<>NEW.organization_id THEN
+        RAISE EXCEPTION 'tool_truth_authority_bundle_scope_mismatch' USING ERRCODE='23514';
+    END IF;
+    IF (NEW.root_family='ti' AND stage<>'target_intel')
+       OR (NEW.root_family='eas' AND stage<>'external_attack_surface')
+       OR (NEW.root_family='enum' AND stage<>'enumeration')
+       OR (NEW.root_family='vuln' AND stage<>'vuln_triage') THEN
+        RAISE EXCEPTION 'tool_truth_authority_bundle_root_family_mismatch' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER tool_truth_authority_bundle_member_guard
+BEFORE INSERT OR UPDATE OR DELETE ON tool_truth_authority_bundle_members
+FOR EACH ROW EXECUTE FUNCTION tool_truth_validate_authority_bundle_member();
+
+CREATE FUNCTION tool_truth_guard_authority_bundle_header()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE actual_count BIGINT;
+DECLARE min_ordinal BIGINT;
+DECLARE max_ordinal BIGINT;
+DECLARE root_family_count BIGINT;
+DECLARE actual_member_hash TEXT;
+DECLARE root_hash TEXT;
+DECLARE semantic_hash TEXT;
+DECLARE freshness_hash TEXT;
+DECLARE temporal_hash TEXT;
+DECLARE policy_hash TEXT;
+DECLARE epoch_hash TEXT;
+DECLARE window_started TIMESTAMPTZ;
+DECLARE window_completed TIMESTAMPTZ;
+DECLARE valid_until TIMESTAMPTZ;
+DECLARE fresh_count BIGINT;
+BEGIN
+    IF TG_OP='INSERT' THEN
+        IF NEW.sealed_at IS NOT NULL OR NEW.member_count IS NOT NULL
+           OR NEW.relevant_root_count IS NOT NULL THEN
+            RAISE EXCEPTION 'tool_truth_unsealed_authority' USING ERRCODE='23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP='DELETE' OR OLD.sealed_at IS NOT NULL OR NEW.sealed_at IS NULL
+       OR (to_jsonb(NEW)-ARRAY[
+            'sealed_at','relevant_root_count','relevant_root_set_hash','member_count',
+            'member_set_hash','sealed_empty','semantic_authority_bundle_hash',
+            'freshness_attestation_bundle_hash','temporal_validity_bundle_hash',
+            'temporal_validity_policy_set_hash','target_state_epoch_set_hash',
+            'observation_window_started_at','observation_window_completed_at',
+            'effective_valid_until','consistent_fresh_count','stale_or_invalid_count'
+          ]) IS DISTINCT FROM
+          (to_jsonb(OLD)-ARRAY[
+            'sealed_at','relevant_root_count','relevant_root_set_hash','member_count',
+            'member_set_hash','sealed_empty','semantic_authority_bundle_hash',
+            'freshness_attestation_bundle_hash','temporal_validity_bundle_hash',
+            'temporal_validity_policy_set_hash','target_state_epoch_set_hash',
+            'observation_window_started_at','observation_window_completed_at',
+            'effective_valid_until','consistent_fresh_count','stale_or_invalid_count'
+          ]) THEN
+        RAISE EXCEPTION 'tool_truth_sealed_parent_immutable' USING ERRCODE='23514';
+    END IF;
+    SELECT count(*)::BIGINT,coalesce(min(ordinal),0)::BIGINT,
+           coalesce(max(ordinal),-1)::BIGINT,count(DISTINCT root_family)::BIGINT,
+           tool_truth_sha256(coalesce(jsonb_agg(member_hash ORDER BY ordinal),'[]'::JSONB)::TEXT),
+           tool_truth_sha256(coalesce(jsonb_agg(jsonb_build_object(
+               'root_family',root_family,'root_denominator_id',root_denominator_id,
+               'root_denominator_hash',root_denominator_hash
+           ) ORDER BY ordinal),'[]'::JSONB)::TEXT),
+           tool_truth_sha256(coalesce(jsonb_agg(jsonb_build_object(
+               'root_family',root_family,'semantic_status',semantic_status,
+               'authority_set_semantic_hash',authority_set_semantic_hash
+           ) ORDER BY ordinal),'[]'::JSONB)::TEXT),
+           tool_truth_sha256(coalesce(jsonb_agg(jsonb_build_object(
+               'root_family',root_family,'authority_set_freshness_hash',authority_set_freshness_hash
+           ) ORDER BY ordinal),'[]'::JSONB)::TEXT),
+           tool_truth_sha256(coalesce(jsonb_agg(jsonb_build_object(
+               'root_family',root_family,'status',temporal_validity_status,
+               'policy',temporal_validity_policy_set_hash,
+               'epochs',target_state_epoch_set_hash,
+               'window_started',observation_window_started_at,
+               'window_completed',observation_window_completed_at,
+               'valid_until',effective_valid_until
+           ) ORDER BY ordinal),'[]'::JSONB)::TEXT),
+           tool_truth_sha256(coalesce(jsonb_agg(temporal_validity_policy_set_hash ORDER BY ordinal),'[]'::JSONB)::TEXT),
+           tool_truth_sha256(coalesce(jsonb_agg(target_state_epoch_set_hash ORDER BY ordinal),'[]'::JSONB)::TEXT),
+           min(observation_window_started_at),max(observation_window_completed_at),
+           min(effective_valid_until),
+           count(*) FILTER (WHERE member_status='consistent_fresh')::BIGINT
+      INTO actual_count,min_ordinal,max_ordinal,root_family_count,actual_member_hash,
+           root_hash,semantic_hash,freshness_hash,temporal_hash,policy_hash,epoch_hash,
+           window_started,window_completed,valid_until,fresh_count
+      FROM tool_truth_authority_bundle_members WHERE bundle_seal_id=NEW.id;
+    IF actual_count<>4 OR root_family_count<>4 OR min_ordinal<>0 OR max_ordinal<>3 THEN
+        RAISE EXCEPTION 'tool_truth_authority_bundle_root_census_incomplete' USING ERRCODE='23514';
+    END IF;
+    NEW.relevant_root_count:=actual_count;
+    NEW.relevant_root_set_hash:=root_hash;
+    NEW.member_count:=actual_count;
+    NEW.member_set_hash:=actual_member_hash;
+    NEW.sealed_empty:=FALSE;
+    NEW.semantic_authority_bundle_hash:=semantic_hash;
+    NEW.freshness_attestation_bundle_hash:=freshness_hash;
+    NEW.temporal_validity_bundle_hash:=temporal_hash;
+    NEW.temporal_validity_policy_set_hash:=policy_hash;
+    NEW.target_state_epoch_set_hash:=epoch_hash;
+    NEW.observation_window_started_at:=window_started;
+    NEW.observation_window_completed_at:=window_completed;
+    NEW.effective_valid_until:=valid_until;
+    NEW.consistent_fresh_count:=fresh_count;
+    NEW.stale_or_invalid_count:=actual_count-fresh_count;
+    NEW.sealed_at:=statement_timestamp();
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER tool_truth_authority_bundle_header_guard
+BEFORE INSERT OR UPDATE OR DELETE ON tool_truth_authority_bundle_seals
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_authority_bundle_header();
 
 CREATE TABLE tool_truth_gate_assessments (
     id UUID PRIMARY KEY,
