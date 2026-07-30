@@ -7943,3 +7943,12 @@
 - **设计/计划**：新增 `docs/design/2026-07-21-candidate-tls-port-scan-coverage.md` 与 `docs/superpowers/plans/2026-07-21-candidate-tls-port-scan-coverage.md`；按用户澄清改为“AI 判断，Gate 校验闭环”。不改 schema/migration，不扩大主动扫描授权，不在实现期间请求真实目标。
 - **状态**：`feature_list.json` 新增唯一 `in_progress` 功能 `candidate-tls-port-scan-coverage-2026-07-21`。下一步按 TDD 先写 TLS decision closure RED，再实现；随后写端口 profile/outcome RED/GREEN。
 - **验证**：尚未运行。本记录不能作为完成证据；每次 Cargo 前先执行 `just space-guard`，只跑本功能定向测试。
+
+### 2026-07-30 · Plan B Hypothesis Registry / Candidate Analysis 开工
+
+- **本轮目标**：完整执行 `docs/superpowers/plans/2026-07-29-hypothesis-registry-candidate-analysis.md` Task 1→13；交付唯一 `20260729000006_hypothesis_registry.sql`、Plan B schema/repo、Candidate Analysis runtime/Gate、三个只读 IPC、ts-rs bindings、最小审计 UI，并以定向证据把功能闭环到 `passing`。
+- **隔离基线**：从 Plan A 新 final SHA `1ce1831d1eff797382498e6b99a32bbb9e129bac` 创建全新 worktree `/private/tmp/golish-plan-b-v2.h9tNiG` 与分支 `codex/hypothesis-registry-plan-b-20260730-v2`；开工时 HEAD 精确匹配、worktree 干净。旧 Plan B worktree 仍停在旧 SHA，未修改、未复用。
+- **前置门证据**：Plan A feature 为 `passing`；唯一 `20260729000005_capability_execution_receipts.sql` 已冻结 TI/EAS/Enum/Vuln 四 root bundle、target-state epoch 与 temporal policy；公开 repo 已提供 `CheckedToolTruthAuthorityBundle`、`AllFreshToolTruthAuthorityBundle` 及 `with_checked_tool_truth_authority_bundle` / `with_all_fresh_tool_truth_authority_bundle` 同事务 callback。Plan B 计划文件相对旧基线无变化，因此无需修订任务顺序。
+- **定向验证方案**：每个 Rust Task 前执行 `just space-guard`；按计划运行精确 nextest filter，受影响 crate scoped Clippy `-D warnings` 与 rustfmt；前端只跑列出的 focused Vitest、受影响文件 Biome 与 typecheck；不运行 `init.sh`、`precommit`、全 workspace/full repo 门禁。
+- **授权与边界**：用户已明确授权唯一 00006、Plan B `golish-db`、计划列出的 generated IPC、分步 commit 与小型 additive 裁决；禁止修改 00005/既有 migration、Plan C/D、rollout promotion、Test1/生产/现存数据库、真实扫描/外部 provider/API、push。
+- **当前状态**：Task 1 `in_progress`；尚未写实现，尚无完成证据。

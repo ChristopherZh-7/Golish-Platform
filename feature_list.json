@@ -2853,7 +2853,7 @@
       "area": "golish-core investigation contract + Hypothesis Registry persistence + Candidate Analysis Team + minimal audit UI",
       "title": "把 Candidate 队列重构为 Hypothesis Registry 与只读多 Agent 分析阶段",
       "user_visible_behavior": "Candidate 阶段不再以 FIFO 队列作为产品模型，而由一个 company-scoped Controller 协调 2–8 个只读 analyst/critic lane，生成可追溯、可修订、可合并和可审计的假设；旧 Candidate 只作为冻结 operation 的兼容权威或 Registry 投影。",
-      "status": "not_started",
+      "status": "in_progress",
       "design": "docs/design/2026-07-29-tool-truth-hypothesis-verification-loop.md",
       "plan": "docs/superpowers/plans/2026-07-29-hypothesis-registry-candidate-analysis.md",
       "verification": [
@@ -2867,7 +2867,7 @@
         "pnpm typecheck"
       ],
       "notes": "依赖 Plan A passing。唯一预留 migration 为 20260729000006_hypothesis_registry.sql；开始 schema/migration 与 generated IPC 前必须重新取得用户明确授权。五态 rollout 初始值保持 legacy_candidate_v1 + legacy_only，Plan B 不提供 promotion；两个新权威 mode 在 Plan C 未实现前只能记录 plan_c_verification_unavailable residual 并转 Reporting。",
-      "evidence": "PLANNED 2026-07-29. 设计已获用户确认；Plan B 已规划分布式input/checklist/chunk coverage census、server-checked Tool Truth snapshot、canonical claim components、唯一VerificationPlan/proof paths、feed snapshot与temporal cursor V2。尚未实现、未创建migration、未生成IPC、未运行产品测试。"
+      "evidence": "IN PROGRESS 2026-07-30. 从 Plan A 新 final SHA 1ce1831d1eff797382498e6b99a32bbb9e129bac 创建隔离 worktree /private/tmp/golish-plan-b-v2.h9tNiG 与分支 codex/hypothesis-registry-plan-b-20260730-v2。开工前已确认 Plan A 状态 passing、worktree 干净、唯一 00005 含完整四 root bundle/target epoch/temporal policy，以及 checked/all-fresh opaque same-transaction callback API；未访问现存数据库、未运行扫描/provider/API。后续证据按 Task 1→13 追加。"
     },
     {
       "id": "verification-campaign-prepared-action-oracle-2026-07-29",
