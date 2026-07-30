@@ -8,6 +8,17 @@ coverage; it does not expose raw request material, Nuclei arguments, manually
 select templates, exploit a result, or write a Candidate/Finding. Reasoning
 over observations belongs to `attack_candidate`.
 
+Nuclei is an observation scanner, not a negative oracle. Under the
+`receipt_v1` Tool Truth contract, exit zero with no match is recorded as an
+inconclusive scanner no-match with partial or template-only coverage; it is
+never `checked_empty`, refutation, or proof that the security predicate is
+false. A positive match is a signal/supporter, not proof. `NoTemplates` means
+the current adapter is unsupported for that attempt, not complete
+not-applicable coverage. Only a future Plan C exact, versioned,
+prerequisite-complete oracle may produce proof or refutation for an exact
+predicate. `legacy_v1` and `shadow_v1` retain their frozen compatibility
+projection until an operation is explicitly created under `receipt_v1`.
+
 The exact final-sealed `vuln_triage` handoff may enter the initial Wave only.
 Every follow-on Wave entry must come from an immutable, accepted FactDelta
 consolidation. Never reuse the initial handoff for a later Wave and never
