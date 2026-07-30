@@ -67,3 +67,45 @@ pub fn compile_verification_contract(
         policy_snapshot_hash: input.policy_snapshot_hash,
     })
 }
+
+/// Rechecks the host-compiled contract denominator before the Candidate Gate
+/// can copy it into a pass. Contract internals are immutable and compiled by
+/// `golish-core`; this closes the outer revision/objective/hash set.
+pub(crate) fn validate_compiled_contract_set(
+    contracts: &[VerificationContractV1],
+    expected_contract_hashes: &[String],
+) -> Result<(), VerificationContractError> {
+    if contracts.is_empty() {
+        return Err(VerificationContractError::InvalidField(
+            "verification_contract_set",
+        ));
+    }
+    let mut actual = contracts
+        .iter()
+        .map(|contract| contract.contract_hash().to_owned())
+        .collect::<Vec<_>>();
+    actual.sort();
+    if actual.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(VerificationContractError::DuplicateIdentity(
+            "contract_hash".to_owned(),
+        ));
+    }
+    let mut expected = expected_contract_hashes.to_vec();
+    expected.sort();
+    if actual != expected {
+        return Err(VerificationContractError::PersistedMismatch(
+            "verification_contract_set",
+        ));
+    }
+    let mut objectives = contracts
+        .iter()
+        .map(|contract| (contract.revision_id(), contract.objective_id()))
+        .collect::<Vec<_>>();
+    objectives.sort();
+    if objectives.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(VerificationContractError::DuplicateIdentity(
+            "revision_objective".to_owned(),
+        ));
+    }
+    Ok(())
+}

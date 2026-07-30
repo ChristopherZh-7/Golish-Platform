@@ -1,5 +1,6 @@
 //! Candidate/Hypothesis Registry host boundary.
 
+mod candidate_gate;
 mod reducer;
 mod rollout;
 mod semantic_key;
@@ -7,6 +8,17 @@ mod types;
 mod verification_contract_compiler;
 mod verification_plan_compiler;
 
+pub use candidate_gate::{
+    exact_set_hash, validate_candidate_gate, CandidateAttemptGateV1, CandidateAuthorityGateV1,
+    CandidateAuthorityRootGateV1, CandidateCompiledAuthorityV1, CandidateCoverageGateV1,
+    CandidateCoverageOutcomeV1, CandidateCoverageSynthesisNodeKindV1,
+    CandidateCoverageSynthesisNodeV1, CandidateExactSetSealV1, CandidateGateBlock,
+    CandidateGateBlockKind, CandidateGatePass, CandidateGateSnapshot, CandidateHypothesisMutation,
+    CandidateKnowledgeFeedGateV1, CandidateKnowledgeFeedMemberV1, CandidateReadGateV1,
+    FrozenCandidateGateMaterialV1, InputHypothesisRelationDecision, InputHypothesisRelationKindV1,
+    InputProcessingDispositionDecision, InputProcessingDispositionV1, PriorCandidateAttemptV1,
+    RevisionSourceRef,
+};
 pub use reducer::{
     reduce_proposals, ReducerCatalog, ReducerDecision, ReducerError, ReducerMutationSet,
     ReducerOperatorInputV1, ReducerProposal,
