@@ -35,6 +35,7 @@ pub mod reporting;
 pub(crate) mod reporting_gate;
 mod runtime_memory;
 mod tasks;
+mod tool_truth;
 mod wiki;
 
 pub struct GolishDbRepoProvider {
@@ -103,6 +104,20 @@ impl DbRepoProvider for GolishDbRepoProvider {
         golish_db::repo::operation_state::get_tool_truth_contract(&self.pool, operation_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_OPERATION_CONTRACT_MISSING"))
+    }
+
+    async fn tool_truth_seal_denominator(
+        &self,
+        request: SealToolTruthDenominatorRequest,
+    ) -> anyhow::Result<ToolTruthDenominatorView> {
+        self.tool_truth_seal_denominator_impl(request).await
+    }
+
+    async fn tool_truth_record_shadow_assessment(
+        &self,
+        request: RecordToolTruthShadowAssessment,
+    ) -> anyhow::Result<()> {
+        self.tool_truth_record_shadow_assessment_impl(request).await
     }
 
     // ── Wiki KB ──────────────────────────────────────────────
@@ -722,6 +737,7 @@ impl DbRepoProvider for GolishDbRepoProvider {
 
     async fn stage_asset_wave_current_or_create_initial(
         &self,
+        stage_execution_id: Uuid,
         operation_id: Uuid,
         organization_id: Uuid,
         stage_kind: &str,
@@ -729,6 +745,7 @@ impl DbRepoProvider for GolishDbRepoProvider {
         limit: i64,
     ) -> anyhow::Result<Option<StageAssetWaveView>> {
         self.stage_asset_wave_current_or_create_initial_impl(
+            stage_execution_id,
             operation_id,
             organization_id,
             stage_kind,
@@ -784,6 +801,22 @@ impl DbRepoProvider for GolishDbRepoProvider {
     ) -> anyhow::Result<Option<StageAssetWaveView>> {
         self.stage_asset_wave_current_running_impl(operation_id, organization_id, stage_kind)
             .await
+    }
+
+    async fn stage_asset_wave_current_running_for_dispatch(
+        &self,
+        stage_execution_id: Uuid,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        self.stage_asset_wave_current_running_for_dispatch_impl(
+            stage_execution_id,
+            operation_id,
+            organization_id,
+            stage_kind,
+        )
+        .await
     }
 
     async fn stage_asset_wave_complete(&self, wave_id: Uuid) -> anyhow::Result<()> {

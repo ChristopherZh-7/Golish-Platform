@@ -70,6 +70,7 @@ pub mod surface_mapping;
 pub mod technique_resolver;
 pub mod technique_taxonomy;
 pub mod tool_taxonomy;
+pub mod tool_truth;
 pub mod types;
 pub mod wstg_mapping;
 

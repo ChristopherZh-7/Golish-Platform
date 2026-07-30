@@ -264,6 +264,48 @@ pub struct StageAssetWaveView {
     pub asset_values: Vec<String>,
 }
 
+/// Narrow request for the server-owned Tool Truth denominator compound.
+/// Members, counts and hashes are deliberately absent: the bridge locks the
+/// durable source and derives all three inside the sealing transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealToolTruthDenominatorRequest {
+    pub stable_seal_request_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub source: ToolTruthDenominatorSourceRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolTruthDenominatorSourceRef {
+    StageAssetWave { stage_asset_wave_id: Uuid },
+    StageTeamUnit { stage_run_unit_id: Uuid },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolTruthDenominatorView {
+    pub id: Uuid,
+    pub execution_authority_id: Uuid,
+    pub input_manifest_hash: String,
+    pub member_count: i64,
+    pub denominator_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolTruthCoverageView {
+    pub denominator_id: Uuid,
+    pub expected: usize,
+    pub terminal: usize,
+    pub degraded: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordToolTruthShadowAssessment {
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_kind: String,
+    pub stage_asset_wave_id: Option<Uuid>,
+    pub legacy_allowed: bool,
+}
+
 /// Provenance-preserving projection of one materialized technique outcome.
 /// `source` must survive the DB/application boundary because security-sensitive
 /// terminal states (currently Enumeration `blocked`) trust one backend producer

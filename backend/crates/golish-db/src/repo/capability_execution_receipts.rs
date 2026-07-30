@@ -70,6 +70,39 @@ pub struct SealWaveDenominator {
     pub contract: ToolTruthContract,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DenominatorSourceRef {
+    StageAssetWave(Uuid),
+    StageTeamUnit(Uuid),
+}
+
+#[derive(Debug, Clone)]
+pub struct SealSourceDenominator {
+    pub stable_seal_request_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub source: DenominatorSourceRef,
+}
+
+/// Database-owned source member passed to the deterministic compiler while
+/// the source rows remain share-locked. This type is not part of DbRepoProvider
+/// and cannot be constructed by a model/tool request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockedDenominatorAsset {
+    pub target_id: Uuid,
+    pub exact_asset: String,
+    pub asset_type: String,
+    pub web_capable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledDenominatorItem {
+    pub input_key: String,
+    pub target_id: Uuid,
+    pub exact_asset: String,
+    pub technique: String,
+    pub expected_capability: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct BeginCapabilityReceipt {
     pub id: Uuid,
@@ -167,6 +200,21 @@ struct FrozenWaveAuthority {
     operation_contract: String,
 }
 
+#[derive(Debug)]
+struct FrozenSourceAuthority {
+    operation_id: Uuid,
+    project_scope_id: Uuid,
+    project_path_at_freeze: String,
+    scope_snapshot_id: Uuid,
+    organization_id: Uuid,
+    stage_kind: String,
+    operation_contract: String,
+    execution_source_kind: &'static str,
+    stage_wave_binding_id: Option<Uuid>,
+    stage_wave_binding_hash: Option<String>,
+    stage_run_unit_id: Option<Uuid>,
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct WaveItem {
     id: i64,
@@ -184,6 +232,434 @@ struct DerivedDenominatorItem {
     target_id: Uuid,
     exact_asset: String,
     member_hash: String,
+}
+
+/// Lock a durable source, compile its exact applicability set, and seal the
+/// denominator without ever exposing a caller-authored member/count/hash seam.
+pub async fn seal_source_denominator<F>(
+    pool: &PgPool,
+    command: &SealSourceDenominator,
+    compile: F,
+) -> Result<CoverageDenominatorRow>
+where
+    F: FnOnce(&str, &[LockedDenominatorAsset]) -> anyhow::Result<Vec<CompiledDenominatorItem>>,
+{
+    if command.stable_seal_request_id.is_nil() || command.stage_execution_id.is_nil() {
+        return Err(fail(CONTRACT_INVALID));
+    }
+    let mut tx = pool.begin().await?;
+
+    let (authority, locked_assets) = match command.source {
+        DenominatorSourceRef::StageAssetWave(stage_asset_wave_id) => {
+            let wave = sqlx::query_as::<_, FrozenWaveAuthority>(
+                r#"SELECT w.operation_id,s.project_scope_id,s.project_path_at_freeze,
+                          w.organization_id,w.stage_kind,w.status AS wave_status,w.asset_hash,
+                          o.tool_truth_contract AS operation_contract
+                     FROM stage_asset_waves w
+                     JOIN stage_runs r
+                       ON r.id=$2 AND r.operation_id=w.operation_id AND r.stage_kind=w.stage_kind
+                     JOIN operation_state o ON o.operation_id=w.operation_id
+                     JOIN operation_org_scope_snapshots s
+                       ON s.operation_id=w.operation_id AND s.sealed_at IS NOT NULL
+                     JOIN operation_org_scope_units u
+                       ON u.snapshot_id=s.id AND u.organization_id=w.organization_id
+                    WHERE w.id=$1
+                    FOR SHARE OF w,r,o,s,u"#,
+            )
+            .bind(stage_asset_wave_id)
+            .bind(command.stage_execution_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| fail(AUTHORITY_STALE))?;
+            if !matches!(wave.wave_status.as_str(), "running" | "completed") {
+                return Err(fail(AUTHORITY_STALE));
+            }
+            let wave_items = sqlx::query_as::<_, WaveItem>(
+                r#"SELECT id,target_id,asset_value,asset_type,source
+                     FROM stage_asset_wave_items
+                    WHERE wave_id=$1
+                    ORDER BY id
+                    FOR SHARE"#,
+            )
+            .bind(stage_asset_wave_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            if wave_items.is_empty() || legacy_wave_hash(&wave_items) != wave.asset_hash {
+                return Err(fail(MANIFEST_DRIFT));
+            }
+            let binding_hash = sha256_json(&serde_json::json!({
+                "stage_asset_wave_id": stage_asset_wave_id,
+                "operation_id": wave.operation_id,
+                "project_scope_id": wave.project_scope_id,
+                "project_path_at_freeze": wave.project_path_at_freeze,
+                "scope_snapshot_id": sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM operation_org_scope_snapshots WHERE operation_id=$1"
+                ).bind(wave.operation_id).fetch_one(&mut *tx).await?,
+                "organization_id": wave.organization_id,
+                "stage_execution_id": command.stage_execution_id,
+                "stage_kind": wave.stage_kind,
+            }))?;
+            let scope_snapshot_id = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM operation_org_scope_snapshots WHERE operation_id=$1 FOR SHARE",
+            )
+            .bind(wave.operation_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            let binding = sqlx::query_as::<_, (Uuid, String)>(
+                "SELECT id,binding_hash FROM tool_truth_stage_wave_execution_bindings WHERE stage_asset_wave_id=$1 FOR SHARE",
+            )
+            .bind(stage_asset_wave_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let (binding_id, persisted_binding_hash) = if let Some(binding) = binding {
+                binding
+            } else {
+                sqlx::query_as::<_, (Uuid, String)>(
+                    r#"INSERT INTO tool_truth_stage_wave_execution_bindings(
+                           id,stage_asset_wave_id,operation_id,project_scope_id,project_path_at_freeze,
+                           scope_snapshot_id,organization_id,stage_execution_id,stage_kind,binding_hash
+                       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                       RETURNING id,binding_hash"#,
+                )
+                .bind(Uuid::new_v4())
+                .bind(stage_asset_wave_id)
+                .bind(wave.operation_id)
+                .bind(wave.project_scope_id)
+                .bind(&wave.project_path_at_freeze)
+                .bind(scope_snapshot_id)
+                .bind(wave.organization_id)
+                .bind(command.stage_execution_id)
+                .bind(&wave.stage_kind)
+                .bind(&binding_hash)
+                .fetch_one(&mut *tx)
+                .await?
+            };
+            let assets = wave_items
+                .into_iter()
+                .map(|item| LockedDenominatorAsset {
+                    target_id: item.target_id,
+                    exact_asset: item.asset_value,
+                    asset_type: item.asset_type,
+                    web_capable: false,
+                })
+                .collect();
+            (
+                FrozenSourceAuthority {
+                    operation_id: wave.operation_id,
+                    project_scope_id: wave.project_scope_id,
+                    project_path_at_freeze: wave.project_path_at_freeze,
+                    scope_snapshot_id,
+                    organization_id: wave.organization_id,
+                    stage_kind: wave.stage_kind,
+                    operation_contract: wave.operation_contract,
+                    execution_source_kind: "stage_wave",
+                    stage_wave_binding_id: Some(binding_id),
+                    stage_wave_binding_hash: Some(persisted_binding_hash),
+                    stage_run_unit_id: None,
+                },
+                assets,
+            )
+        }
+        DenominatorSourceRef::StageTeamUnit(stage_run_unit_id) => {
+            let row = sqlx::query_as::<_, (Uuid, Uuid, String, Uuid, Uuid, String, String, String)>(
+                r#"SELECT u.operation_id,s.project_scope_id,s.project_path_at_freeze,
+                          u.scope_snapshot_id,u.organization_id,u.stage_kind,o.tool_truth_contract,u.status
+                     FROM stage_run_units u
+                     JOIN stage_runs r
+                       ON r.id=$2 AND r.id=u.stage_execution_id
+                      AND r.operation_id=u.operation_id AND r.stage_kind=u.stage_kind
+                     JOIN operation_org_scope_snapshots s
+                       ON s.id=u.scope_snapshot_id AND s.operation_id=u.operation_id
+                      AND s.sealed_at IS NOT NULL
+                     JOIN operation_org_scope_units ou
+                       ON ou.snapshot_id=s.id AND ou.organization_id=u.organization_id
+                     JOIN operation_state o ON o.operation_id=u.operation_id
+                    WHERE u.id=$1
+                    FOR SHARE OF u,r,s,ou,o"#,
+            )
+            .bind(stage_run_unit_id)
+            .bind(command.stage_execution_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| fail(AUTHORITY_STALE))?;
+            if matches!(row.7.as_str(), "passed" | "exhausted" | "superseded") {
+                return Err(fail(AUTHORITY_STALE));
+            }
+            let bound_wave = sqlx::query_as::<_, (Uuid, String)>(
+                r#"SELECT b.stage_asset_wave_id,w.asset_hash
+                     FROM tool_truth_stage_wave_execution_bindings b
+                     JOIN stage_asset_waves w ON w.id=b.stage_asset_wave_id
+                    WHERE b.operation_id=$1 AND b.scope_snapshot_id=$2
+                      AND b.organization_id=$3 AND b.stage_execution_id=$4
+                      AND b.stage_kind=$5 AND w.status IN ('running','completed')
+                    ORDER BY w.wave_index DESC LIMIT 1 FOR SHARE OF b,w"#,
+            )
+            .bind(row.0)
+            .bind(row.3)
+            .bind(row.4)
+            .bind(command.stage_execution_id)
+            .bind(&row.5)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let assets = if let Some((wave_id, asset_hash)) = bound_wave {
+                let wave_items = sqlx::query_as::<_, WaveItem>(
+                    r#"SELECT id,target_id,asset_value,asset_type,source
+                         FROM stage_asset_wave_items WHERE wave_id=$1 ORDER BY id FOR SHARE"#,
+                )
+                .bind(wave_id)
+                .fetch_all(&mut *tx)
+                .await?;
+                if wave_items.is_empty() || legacy_wave_hash(&wave_items) != asset_hash {
+                    return Err(fail(MANIFEST_DRIFT));
+                }
+                wave_items
+                    .into_iter()
+                    .map(|asset| LockedDenominatorAsset {
+                        target_id: asset.target_id,
+                        exact_asset: asset.asset_value,
+                        asset_type: asset.asset_type,
+                        web_capable: false,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                sqlx::query_as::<_, (Uuid, String, String, bool)>(
+                    r#"SELECT id,value,target_type::text,(http_status IS NOT NULL) AS web_capable
+                         FROM targets
+                        WHERE organization_id=$1
+                          AND project_path IS NOT DISTINCT FROM $2
+                          AND scope::text='in'
+                          AND created_at <= (
+                              SELECT started_at FROM stage_runs WHERE id=$3
+                          )
+                        ORDER BY created_at,id
+                        FOR SHARE"#,
+                )
+                .bind(row.4)
+                .bind(&row.2)
+                .bind(command.stage_execution_id)
+                .fetch_all(&mut *tx)
+                .await?
+                .into_iter()
+                .map(|asset| LockedDenominatorAsset {
+                    target_id: asset.0,
+                    exact_asset: asset.1,
+                    asset_type: asset.2,
+                    web_capable: asset.3,
+                })
+                .collect::<Vec<_>>()
+            };
+            (
+                FrozenSourceAuthority {
+                    operation_id: row.0,
+                    project_scope_id: row.1,
+                    project_path_at_freeze: row.2,
+                    scope_snapshot_id: row.3,
+                    organization_id: row.4,
+                    stage_kind: row.5,
+                    operation_contract: row.6,
+                    execution_source_kind: "stage_unit",
+                    stage_wave_binding_id: None,
+                    stage_wave_binding_hash: None,
+                    stage_run_unit_id: Some(stage_run_unit_id),
+                },
+                assets,
+            )
+        }
+    };
+
+    let contract = ToolTruthContract::try_from(authority.operation_contract.as_str())
+        .map_err(|_| fail(CONTRACT_INVALID))?;
+    if !contract.writes_receipts() || locked_assets.is_empty() {
+        return Err(fail(CONTRACT_INVALID));
+    }
+    let compiled = compile(&authority.stage_kind, &locked_assets)
+        .map_err(|error| DbError::Other(anyhow::anyhow!("{CONTRACT_INVALID}: {error}")))?;
+    if compiled.is_empty() {
+        return Err(fail(CONTRACT_INVALID));
+    }
+    let source_assets = locked_assets
+        .iter()
+        .map(|asset| (asset.target_id, asset.exact_asset.as_str()))
+        .collect::<std::collections::HashSet<_>>();
+    let mut input_keys = std::collections::HashSet::new();
+    for item in &compiled {
+        if item.input_key.trim().is_empty()
+            || item.technique.trim().is_empty()
+            || item.expected_capability.trim().is_empty()
+            || !source_assets.contains(&(item.target_id, item.exact_asset.as_str()))
+            || !input_keys.insert(item.input_key.as_str())
+        {
+            return Err(fail(MANIFEST_DRIFT));
+        }
+    }
+
+    let authority_hash = sha256_json(&serde_json::json!({
+        "stable_authority_request_id": command.stable_seal_request_id,
+        "operation_id": authority.operation_id,
+        "project_scope_id": authority.project_scope_id,
+        "project_path_at_freeze": authority.project_path_at_freeze,
+        "scope_snapshot_id": authority.scope_snapshot_id,
+        "organization_id": authority.organization_id,
+        "stage_execution_id": command.stage_execution_id,
+        "stage_kind": authority.stage_kind,
+        "execution_source_kind": authority.execution_source_kind,
+        "stage_wave_binding_hash": authority.stage_wave_binding_hash,
+        "stage_run_unit_id": authority.stage_run_unit_id,
+        "execution_owner_kind": "host_stage",
+        "worker_run_id": null,
+        "worker_attempt_epoch": null,
+        "lease_token": null,
+        "source_tool_call_id": null,
+    }))?;
+    let existing_authority = sqlx::query_as::<_, (Uuid, String, Option<Uuid>, Option<Uuid>)>(
+        r#"SELECT id,authority_hash,stage_wave_binding_id,stage_run_unit_id
+             FROM tool_truth_execution_authorities
+            WHERE operation_id=$1 AND stable_authority_request_id=$2
+            FOR SHARE"#,
+    )
+    .bind(authority.operation_id)
+    .bind(command.stable_seal_request_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (execution_authority_id, persisted_authority_hash) =
+        if let Some((id, hash, wave_binding_id, unit_id)) = existing_authority {
+            if wave_binding_id != authority.stage_wave_binding_id
+                || unit_id != authority.stage_run_unit_id
+            {
+                return Err(fail(MANIFEST_DRIFT));
+            }
+            (id, hash)
+        } else {
+            sqlx::query_as::<_, (Uuid, String)>(
+                r#"INSERT INTO tool_truth_execution_authorities(
+                       id,stable_authority_request_id,operation_id,project_scope_id,
+                       project_path_at_freeze,scope_snapshot_id,organization_id,
+                       stage_execution_id,stage_kind,execution_source_kind,
+                       stage_wave_binding_id,stage_wave_binding_hash,stage_run_unit_id,
+                       execution_owner_kind,authority_hash
+                   ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'host_stage',$14)
+                   RETURNING id,authority_hash"#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(command.stable_seal_request_id)
+            .bind(authority.operation_id)
+            .bind(authority.project_scope_id)
+            .bind(&authority.project_path_at_freeze)
+            .bind(authority.scope_snapshot_id)
+            .bind(authority.organization_id)
+            .bind(command.stage_execution_id)
+            .bind(&authority.stage_kind)
+            .bind(authority.execution_source_kind)
+            .bind(authority.stage_wave_binding_id)
+            .bind(&authority.stage_wave_binding_hash)
+            .bind(authority.stage_run_unit_id)
+            .bind(&authority_hash)
+            .fetch_one(&mut *tx)
+            .await?
+        };
+
+    let mut derived = Vec::with_capacity(compiled.len());
+    for (ordinal, item) in compiled.iter().enumerate() {
+        let member_hash = sha256_json(&serde_json::json!({
+            "ordinal": ordinal,
+            "input_key": item.input_key,
+            "target_id": item.target_id,
+            "exact_asset": item.exact_asset,
+            "technique": item.technique,
+            "expected_capability": item.expected_capability,
+        }))?;
+        derived.push(DerivedDenominatorItem {
+            id: Uuid::new_v4(),
+            ordinal: i32::try_from(ordinal).map_err(|_| fail(CONTRACT_INVALID))?,
+            input_key: item.input_key.clone(),
+            target_id: item.target_id,
+            exact_asset: item.exact_asset.clone(),
+            member_hash,
+        });
+    }
+    let input_manifest_hash = sha256_json(&serde_json::json!(derived
+        .iter()
+        .map(|item| &item.member_hash)
+        .collect::<Vec<_>>()))?;
+    let denominator_hash = sha256_json(&serde_json::json!({
+        "execution_authority_hash": persisted_authority_hash,
+        "input_manifest_hash": input_manifest_hash,
+        "contract": contract.as_str(),
+        "denominator_kind": "root",
+    }))?;
+    if let Some(existing) = get_denominator_on(
+        &mut tx,
+        execution_authority_id,
+        command.stable_seal_request_id,
+    )
+    .await?
+    {
+        validate_denominator_replay_on(
+            &mut tx,
+            &existing,
+            &input_manifest_hash,
+            &denominator_hash,
+            &derived,
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(existing);
+    }
+
+    let denominator_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO coverage_denominators(
+               id,stable_seal_request_id,execution_authority_id,operation_id,
+               project_scope_id,project_path_at_freeze,scope_snapshot_id,
+               organization_id,stage_execution_id,stage_kind,execution_authority_hash,
+               denominator_kind,contract,input_manifest_hash,denominator_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'root',$12,$13,$14)"#,
+    )
+    .bind(denominator_id)
+    .bind(command.stable_seal_request_id)
+    .bind(execution_authority_id)
+    .bind(authority.operation_id)
+    .bind(authority.project_scope_id)
+    .bind(&authority.project_path_at_freeze)
+    .bind(authority.scope_snapshot_id)
+    .bind(authority.organization_id)
+    .bind(command.stage_execution_id)
+    .bind(&authority.stage_kind)
+    .bind(&persisted_authority_hash)
+    .bind(contract.as_str())
+    .bind(&input_manifest_hash)
+    .bind(&denominator_hash)
+    .execute(&mut *tx)
+    .await?;
+    for (compiled, item) in compiled.iter().zip(&derived) {
+        sqlx::query(
+            r#"INSERT INTO coverage_denominator_items(
+                   id,denominator_id,execution_authority_id,denominator_hash,ordinal,
+                   input_key,target_id,exact_asset,technique,expected_capability,member_hash
+               ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"#,
+        )
+        .bind(item.id)
+        .bind(denominator_id)
+        .bind(execution_authority_id)
+        .bind(&denominator_hash)
+        .bind(item.ordinal)
+        .bind(&item.input_key)
+        .bind(item.target_id)
+        .bind(&item.exact_asset)
+        .bind(&compiled.technique)
+        .bind(&compiled.expected_capability)
+        .bind(&item.member_hash)
+        .execute(&mut *tx)
+        .await?;
+    }
+    let row = sqlx::query_as::<_, CoverageDenominatorRow>(&format!(
+        "UPDATE coverage_denominators SET sealed_at=statement_timestamp() WHERE id=$1 RETURNING {DENOMINATOR_COLUMNS}"
+    ))
+    .bind(denominator_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(row)
 }
 
 const DENOMINATOR_COLUMNS: &str = "id,stable_seal_request_id,execution_authority_id,contract,input_manifest_hash,member_count,member_set_hash,denominator_hash,sealed_at";
@@ -499,7 +975,7 @@ pub async fn begin(
         return Err(fail(DENOMINATOR_UNSEALED));
     }
     let exact_capability: bool = sqlx::query_scalar(
-        "SELECT count(*)>0 AND bool_and(expected_capability=$2) FROM coverage_denominator_items WHERE denominator_id=$1",
+        "SELECT EXISTS(SELECT 1 FROM coverage_denominator_items WHERE denominator_id=$1 AND expected_capability=$2)",
     )
     .bind(command.denominator_id)
     .bind(&command.capability)

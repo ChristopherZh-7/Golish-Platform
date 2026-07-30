@@ -35,12 +35,13 @@ use golish_agent_kit::db_traits::{
     RuntimeExpiredWorkerDisposition, RuntimeMemoryError, RuntimeMemoryRecordSource,
     RuntimeMemoryRepository, RuntimeStageHandoffView, RuntimeStageTeamPlanStatus,
     RuntimeStageUnitStatus, RuntimeStageUnitView, RuntimeStageWorkItemStatus, RuntimeWorkerFence,
-    RuntimeWorkerStatus, RuntimeWorkerView, SeedStageRuntime, SeedStageTeamRuntime,
-    SeededStageRuntime, SeededStageTeamRuntime, StageTeamBarrierView, StageTeamPlanView,
-    StageWorkItemView, StageWorkerOutputDisposition, StageWorkerOutputView,
+    RuntimeWorkerStatus, RuntimeWorkerView, SealToolTruthDenominatorRequest, SeedStageRuntime,
+    SeedStageTeamRuntime, SeededStageRuntime, SeededStageTeamRuntime, StageTeamBarrierView,
+    StageTeamPlanView, StageWorkItemView, StageWorkerOutputDisposition, StageWorkerOutputView,
     StageWorkerRequestDecision, StageWorkerRequestView, SubmitCandidateAttempt,
     SubmittedCandidateAttemptView, TaskView, TerminalizeCandidateAttempt,
-    TerminalizeCandidateIntent, TerminalizedCandidateAttemptView, WorkerToolMutation,
+    TerminalizeCandidateIntent, TerminalizedCandidateAttemptView, ToolTruthDenominatorSourceRef,
+    WorkerToolMutation,
 };
 use golish_agent_kit::harness::attack_execution::{
     select_attack_read, AttackDecisionSemantic, AttackDecisionSemanticKind, AttackReadSelection,
@@ -1509,6 +1510,8 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
         &self,
         input: SeedStageTeamRuntime,
     ) -> Result<Vec<SeededStageTeamRuntime>, RuntimeMemoryError> {
+        let operation_id = input.base.operation_id;
+        let stage_execution_id = input.base.stage_execution_id;
         let base = SeedStageRuntimeRow {
             operation_id: input.base.operation_id,
             stage_execution_id: input.base.stage_execution_id,
@@ -1563,6 +1566,29 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
         )
         .await
         .map_err(runtime_memory_error_from_db)?;
+        let contract =
+            golish_db::repo::operation_state::get_tool_truth_contract(&self.pool, operation_id)
+                .await
+                .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?
+                .ok_or_else(|| {
+                    RuntimeMemoryError::Storage("TOOL_TRUTH_OPERATION_CONTRACT_MISSING".to_string())
+                })?;
+        if contract.writes_receipts() {
+            for unit in &seeded {
+                self.tool_truth_seal_denominator_impl(SealToolTruthDenominatorRequest {
+                    stable_seal_request_id: super::tool_truth::stable_denominator_seal_request(
+                        stage_execution_id,
+                        unit.unit.id,
+                    ),
+                    stage_execution_id,
+                    source: ToolTruthDenominatorSourceRef::StageTeamUnit {
+                        stage_run_unit_id: unit.unit.id,
+                    },
+                })
+                .await
+                .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+            }
+        }
         seeded
             .into_iter()
             .map(|seeded| {
@@ -3110,6 +3136,25 @@ mod tests {
     use super::*;
     use golish_agent_kit::db_traits::TaskStatus;
     use golish_agent_kit::harness::attack_execution::{AttackReadSource, AttackShadowComparison};
+
+    #[test]
+    fn stage_team_seed_seals_each_unit_before_return() {
+        let source = include_str!("runtime_memory.rs");
+        let start = source
+            .find("async fn seed_stage_team_runtime(")
+            .expect("stage team bridge exists");
+        let body = &source[start..];
+        let durable_seed = body
+            .find("runtime_memory_tx::seed_stage_team_runtime")
+            .expect("durable team seed happens first");
+        let seal = body
+            .find("tool_truth_seal_denominator_impl")
+            .expect("every seeded unit is sealed");
+        let map_return = body
+            .find("seeded\n            .into_iter()")
+            .expect("bridge maps its return only after sealing");
+        assert!(durable_seed < seal && seal < map_return);
+    }
 
     #[test]
     fn technique_outcome_set_key_roundtrips_through_db_bridge() {

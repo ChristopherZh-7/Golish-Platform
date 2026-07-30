@@ -209,6 +209,28 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(golish_pentest_domain::tool_truth::ToolTruthContract::LegacyV1)
     }
 
+    /// Seal a server-derived denominator from an immutable source identity.
+    /// Implementations must reject legacy operations and must not accept
+    /// caller-authored members through another seam.
+    async fn tool_truth_seal_denominator(
+        &self,
+        _request: SealToolTruthDenominatorRequest,
+    ) -> anyhow::Result<ToolTruthDenominatorView> {
+        Err(anyhow::anyhow!(
+            "tool truth denominator sealer is unavailable"
+        ))
+    }
+
+    /// Persist a receipt-derived shadow assessment after the legacy Gate has
+    /// already decided. Failures are diagnostic and must never rewrite the
+    /// caller's frozen GateResult.
+    async fn tool_truth_record_shadow_assessment(
+        &self,
+        _request: RecordToolTruthShadowAssessment,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     // ── Wiki KB ─────────────────────────────────────────────────────────
 
     async fn wiki_upsert_page(&self, page: &NewWikiPage) -> anyhow::Result<()>;
@@ -1156,13 +1178,21 @@ pub trait DbRepoProvider: Send + Sync {
     /// default `None` keeps non-DB test/eval contexts on the legacy live axis.
     async fn stage_asset_wave_current_or_create_initial(
         &self,
+        stage_execution_id: Uuid,
         operation_id: Uuid,
         organization_id: Uuid,
         stage_kind: &str,
         started_at: chrono::DateTime<chrono::Utc>,
         limit: i64,
     ) -> anyhow::Result<Option<StageAssetWaveView>> {
-        let _ = (operation_id, organization_id, stage_kind, started_at, limit);
+        let _ = (
+            stage_execution_id,
+            operation_id,
+            organization_id,
+            stage_kind,
+            started_at,
+            limit,
+        );
         Ok(None)
     }
 
@@ -1177,6 +1207,20 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<Option<StageAssetWaveView>> {
         let _ = (operation_id, organization_id, stage_kind);
         Ok(None)
+    }
+
+    /// Dispatch-only current-wave read. Receipt-writing implementations seal
+    /// the exact wave before returning it; diagnostic/Gate reads keep using
+    /// `stage_asset_wave_current_running` and cannot cause writes.
+    async fn stage_asset_wave_current_running_for_dispatch(
+        &self,
+        _stage_execution_id: Uuid,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        self.stage_asset_wave_current_running(operation_id, organization_id, stage_kind)
+            .await
     }
 
     /// Promote unassigned in-scope targets into the next wave for the same

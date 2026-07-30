@@ -60,9 +60,12 @@ BEGIN
         RAISE EXCEPTION 'tool_truth_sealed_parent_immutable' USING ERRCODE = '23514';
     END IF;
 
-    IF (to_jsonb(NEW) - ARRAY['sealed_at','member_count','member_set_hash'])
+    IF NEW.sealed_empty IS DISTINCT FROM OLD.sealed_empty THEN
+        RAISE EXCEPTION 'tool_truth_sealed_empty_forged' USING ERRCODE = '23514';
+    END IF;
+    IF (to_jsonb(NEW) - ARRAY['sealed_at','member_count','member_set_hash','sealed_empty'])
         IS DISTINCT FROM
-       (to_jsonb(OLD) - ARRAY['sealed_at','member_count','member_set_hash'])
+       (to_jsonb(OLD) - ARRAY['sealed_at','member_count','member_set_hash','sealed_empty'])
     THEN
         RAISE EXCEPTION 'tool_truth_sealed_parent_immutable' USING ERRCODE = '23514';
     END IF;
@@ -81,9 +84,16 @@ BEGIN
     IF actual_count > 0 AND (min_ordinal <> 0 OR max_ordinal <> actual_count - 1) THEN
         RAISE EXCEPTION 'tool_truth_set_ordinal_invalid' USING ERRCODE = '23514';
     END IF;
+    IF NEW.member_count IS NOT NULL AND NEW.member_count IS DISTINCT FROM actual_count THEN
+        RAISE EXCEPTION 'tool_truth_member_count_forged' USING ERRCODE = '23514';
+    END IF;
+    IF NEW.member_set_hash IS NOT NULL AND NEW.member_set_hash IS DISTINCT FROM actual_hash THEN
+        RAISE EXCEPTION 'tool_truth_member_set_hash_forged' USING ERRCODE = '23514';
+    END IF;
 
     NEW.member_count := actual_count;
     NEW.member_set_hash := actual_hash;
+    NEW.sealed_empty := actual_count=0;
     NEW.sealed_at := statement_timestamp();
     RETURN NEW;
 END;
@@ -431,6 +441,7 @@ CREATE TABLE tool_truth_evidence_production_bindings (
         AND production_binding_hash ~ '^sha256:[0-9a-f]{64}$'
     ),
     UNIQUE(id,execution_authority_id),
+    CONSTRAINT tool_truth_evidence_production_authority_fk
     FOREIGN KEY(execution_authority_id,operation_id,project_scope_id,project_path_at_freeze,
                 scope_snapshot_id,organization_id,stage_execution_id,stage_kind,execution_authority_hash)
         REFERENCES tool_truth_execution_authorities(id,operation_id,project_scope_id,project_path_at_freeze,
@@ -1668,4 +1679,290 @@ CREATE TABLE capability_execution_freshness_attestations (
 );
 CREATE TRIGGER capability_freshness_append_only
 BEFORE UPDATE OR DELETE ON capability_execution_freshness_attestations
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();
+
+-- ---------------------------------------------------------------------------
+-- Task 9: source freeze, dynamic-child closure and shadow Gate authorities.
+-- ---------------------------------------------------------------------------
+
+CREATE UNIQUE INDEX stage_asset_waves_one_running_per_stage_org
+    ON stage_asset_waves(operation_id,organization_id,stage_kind)
+    WHERE status='running';
+
+CREATE FUNCTION tool_truth_guard_bound_wave_source()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE source_wave_id UUID;
+BEGIN
+    source_wave_id := COALESCE(
+        to_jsonb(NEW)->>'wave_id',to_jsonb(OLD)->>'wave_id',
+        to_jsonb(NEW)->>'id',to_jsonb(OLD)->>'id'
+    )::UUID;
+    IF NOT EXISTS (
+        SELECT 1 FROM tool_truth_stage_wave_execution_bindings
+         WHERE stage_asset_wave_id=source_wave_id
+    ) THEN
+        RETURN COALESCE(NEW,OLD);
+    END IF;
+    IF TG_TABLE_NAME='stage_asset_waves' AND TG_OP='UPDATE'
+       AND to_jsonb(OLD)->>'status'='running'
+       AND to_jsonb(NEW)->>'status'='completed'
+       AND (to_jsonb(NEW)-ARRAY['status','completed_at','updated_at'])
+           IS NOT DISTINCT FROM
+           (to_jsonb(OLD)-ARRAY['status','completed_at','updated_at']) THEN
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'tool_truth_bound_wave_source_immutable' USING ERRCODE='23514';
+END;
+$$;
+CREATE TRIGGER tool_truth_bound_wave_header_guard
+BEFORE UPDATE OR DELETE ON stage_asset_waves
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_bound_wave_source();
+CREATE TRIGGER tool_truth_bound_wave_member_guard
+BEFORE INSERT OR UPDATE OR DELETE ON stage_asset_wave_items
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_bound_wave_source();
+
+CREATE TABLE capability_discovered_child_manifests (
+    id UUID PRIMARY KEY,
+    execution_authority_id UUID NOT NULL,
+    parent_receipt_id UUID NOT NULL,
+    parent_receipt_authority_hash TEXT NOT NULL,
+    parent_denominator_id UUID NOT NULL,
+    parent_denominator_item_id UUID NOT NULL,
+    child_kind TEXT NOT NULL CHECK (BTRIM(child_kind)<>''),
+    capability_contract_version TEXT NOT NULL CHECK (BTRIM(capability_contract_version)<>''),
+    capability_contract_hash TEXT NOT NULL,
+    expected_downstream_technique TEXT NOT NULL CHECK (BTRIM(expected_downstream_technique)<>''),
+    expected_downstream_capability TEXT NOT NULL CHECK (BTRIM(expected_downstream_capability)<>''),
+    manifest_hash TEXT NOT NULL,
+    member_count BIGINT,
+    member_set_hash TEXT,
+    sealed_empty BOOLEAN NOT NULL DEFAULT FALSE,
+    sealed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CONSTRAINT capability_child_manifest_sha256_v1_check CHECK (
+        parent_receipt_authority_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND capability_contract_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND manifest_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND (member_set_hash IS NULL OR member_set_hash ~ '^sha256:[0-9a-f]{64}$')
+    ),
+    CONSTRAINT capability_child_manifest_seal_shape_check CHECK (
+        (sealed_at IS NULL AND member_count IS NULL AND member_set_hash IS NULL)
+        OR (sealed_at IS NOT NULL AND member_count IS NOT NULL AND member_count>=0
+            AND member_set_hash IS NOT NULL AND sealed_empty=(member_count=0))
+    ),
+    UNIQUE(parent_receipt_id,child_kind),
+    UNIQUE(id,execution_authority_id),
+    FOREIGN KEY(parent_receipt_id,execution_authority_id,parent_receipt_authority_hash)
+        REFERENCES capability_execution_receipts(id,execution_authority_id,receipt_authority_hash)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(parent_denominator_item_id,parent_denominator_id,execution_authority_id)
+        REFERENCES coverage_denominator_items(id,denominator_id,execution_authority_id)
+        ON DELETE RESTRICT
+);
+
+CREATE FUNCTION tool_truth_validate_child_manifest_parent()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM capability_execution_receipts r
+         WHERE r.id=NEW.parent_receipt_id
+           AND r.denominator_id=NEW.parent_denominator_id
+           AND r.execution_authority_id=NEW.execution_authority_id
+    ) THEN
+        RAISE EXCEPTION 'tool_truth_child_parent_splice' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER capability_child_manifest_parent_guard
+BEFORE INSERT ON capability_discovered_child_manifests
+FOR EACH ROW EXECUTE FUNCTION tool_truth_validate_child_manifest_parent();
+
+CREATE TABLE capability_discovered_child_members (
+    id UUID PRIMARY KEY,
+    manifest_id UUID NOT NULL,
+    execution_authority_id UUID NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal>=0),
+    child_key TEXT NOT NULL CHECK (BTRIM(child_key)<>''),
+    exact_child_asset TEXT NOT NULL CHECK (BTRIM(exact_child_asset)<>''),
+    canonical_child_identity_hash TEXT NOT NULL,
+    scope_classification TEXT NOT NULL CHECK (
+        scope_classification IN ('in_scope','out_of_scope','not_applicable','blocked')
+    ),
+    expected_downstream_technique TEXT NOT NULL CHECK (BTRIM(expected_downstream_technique)<>''),
+    expected_downstream_capability TEXT NOT NULL CHECK (BTRIM(expected_downstream_capability)<>''),
+    member_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CONSTRAINT capability_child_member_sha256_v1_check CHECK (
+        canonical_child_identity_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND member_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    UNIQUE(manifest_id,ordinal),
+    UNIQUE(manifest_id,child_key),
+    UNIQUE(id,manifest_id,execution_authority_id),
+    FOREIGN KEY(manifest_id,execution_authority_id)
+        REFERENCES capability_discovered_child_manifests(id,execution_authority_id)
+        ON DELETE RESTRICT
+);
+CREATE TRIGGER capability_child_manifest_header_guard
+BEFORE INSERT OR UPDATE OR DELETE ON capability_discovered_child_manifests
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_header(
+    'capability_discovered_child_members','manifest_id','member_hash','true');
+CREATE TRIGGER capability_child_manifest_member_guard
+BEFORE INSERT OR UPDATE OR DELETE ON capability_discovered_child_members
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_member(
+    'capability_discovered_child_manifests','id','manifest_id');
+
+CREATE TABLE capability_discovered_child_closures (
+    id UUID PRIMARY KEY,
+    child_member_id UUID NOT NULL UNIQUE,
+    manifest_id UUID NOT NULL,
+    execution_authority_id UUID NOT NULL,
+    closure_kind TEXT NOT NULL CHECK (
+        closure_kind IN ('derived_terminal','not_applicable','blocked','out_of_scope')
+    ),
+    derived_denominator_id UUID,
+    derived_denominator_item_id UUID,
+    residual JSONB,
+    closure_hash TEXT NOT NULL CHECK (closure_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CONSTRAINT capability_child_closure_shape_check CHECK (
+        (closure_kind='derived_terminal' AND derived_denominator_id IS NOT NULL
+            AND derived_denominator_item_id IS NOT NULL AND residual IS NULL)
+        OR (closure_kind<>'derived_terminal' AND derived_denominator_id IS NULL
+            AND derived_denominator_item_id IS NULL AND jsonb_typeof(residual)='object')
+    ),
+    FOREIGN KEY(child_member_id,manifest_id,execution_authority_id)
+        REFERENCES capability_discovered_child_members(id,manifest_id,execution_authority_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(derived_denominator_item_id,derived_denominator_id,execution_authority_id)
+        REFERENCES coverage_denominator_items(id,denominator_id,execution_authority_id)
+        ON DELETE RESTRICT
+);
+CREATE TRIGGER capability_child_closure_append_only
+BEFORE UPDATE OR DELETE ON capability_discovered_child_closures
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();
+
+CREATE TABLE tool_truth_authority_set_seals (
+    id UUID PRIMARY KEY,
+    stable_consumer_request_id UUID NOT NULL,
+    execution_authority_id UUID NOT NULL,
+    denominator_id UUID NOT NULL,
+    denominator_hash TEXT NOT NULL,
+    consumer_kind TEXT NOT NULL CHECK (BTRIM(consumer_kind)<>''),
+    graph_hash TEXT NOT NULL,
+    semantic_hash TEXT NOT NULL,
+    freshness_hash TEXT NOT NULL,
+    member_count BIGINT,
+    member_set_hash TEXT,
+    sealed_empty BOOLEAN NOT NULL DEFAULT FALSE,
+    sealed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CONSTRAINT tool_truth_authority_set_sha256_v1_check CHECK (
+        denominator_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND graph_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND semantic_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND freshness_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND (member_set_hash IS NULL OR member_set_hash ~ '^sha256:[0-9a-f]{64}$')
+    ),
+    UNIQUE(execution_authority_id,stable_consumer_request_id),
+    UNIQUE(id,execution_authority_id,denominator_id),
+    FOREIGN KEY(denominator_id,execution_authority_id,denominator_hash)
+        REFERENCES coverage_denominators(id,execution_authority_id,denominator_hash)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE tool_truth_authority_set_members (
+    id UUID PRIMARY KEY,
+    authority_set_id UUID NOT NULL,
+    execution_authority_id UUID NOT NULL,
+    denominator_id UUID NOT NULL,
+    receipt_id UUID NOT NULL,
+    reconciliation_id UUID NOT NULL,
+    semantic_authority_version BIGINT NOT NULL CHECK (semantic_authority_version>0),
+    semantic_hash TEXT NOT NULL,
+    freshness_attestation_id UUID,
+    ordinal INTEGER NOT NULL CHECK (ordinal>=0),
+    member_hash TEXT NOT NULL,
+    CONSTRAINT tool_truth_authority_set_member_sha256_v1_check CHECK (
+        semantic_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND member_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    UNIQUE(authority_set_id,ordinal),
+    UNIQUE(authority_set_id,receipt_id),
+    FOREIGN KEY(authority_set_id,execution_authority_id,denominator_id)
+        REFERENCES tool_truth_authority_set_seals(id,execution_authority_id,denominator_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(receipt_id,reconciliation_id,semantic_authority_version,semantic_hash,execution_authority_id)
+        REFERENCES capability_execution_reconciliations(
+            receipt_id,id,semantic_authority_version,semantic_reconciliation_hash,execution_authority_id
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(freshness_attestation_id,receipt_id)
+        REFERENCES capability_execution_freshness_attestations(id,receipt_id) ON DELETE RESTRICT
+);
+CREATE TRIGGER tool_truth_authority_set_header_guard
+BEFORE INSERT OR UPDATE OR DELETE ON tool_truth_authority_set_seals
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_header(
+    'tool_truth_authority_set_members','authority_set_id','member_hash','true');
+CREATE TRIGGER tool_truth_authority_set_member_guard
+BEFORE INSERT OR UPDATE OR DELETE ON tool_truth_authority_set_members
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_member(
+    'tool_truth_authority_set_seals','id','authority_set_id');
+
+CREATE TABLE tool_truth_gate_assessments (
+    id UUID PRIMARY KEY,
+    stable_gate_request_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    project_scope_id UUID NOT NULL,
+    project_path_at_freeze TEXT NOT NULL,
+    scope_snapshot_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    stage_execution_id UUID NOT NULL,
+    stage_kind TEXT NOT NULL,
+    execution_authority_id UUID NOT NULL,
+    execution_authority_hash TEXT NOT NULL CHECK (
+        execution_authority_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    assessment_basis_kind TEXT NOT NULL CHECK (
+        assessment_basis_kind IN ('authority_set','missing_denominator')
+    ),
+    denominator_id UUID,
+    authority_set_id UUID,
+    legacy_allowed BOOLEAN NOT NULL,
+    control_decision TEXT NOT NULL CHECK (control_decision IN ('allow','hold')),
+    coverage_grade TEXT NOT NULL CHECK (coverage_grade IN ('complete','degraded','incomplete')),
+    divergence BOOLEAN NOT NULL,
+    expected_item_count BIGINT NOT NULL CHECK (expected_item_count>=0),
+    terminal_item_count BIGINT NOT NULL CHECK (terminal_item_count>=0),
+    degraded_item_count BIGINT NOT NULL CHECK (degraded_item_count>=0),
+    residual JSONB NOT NULL CHECK (jsonb_typeof(residual)='object'),
+    assessment_hash TEXT NOT NULL CHECK (assessment_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CONSTRAINT tool_truth_gate_assessment_basis_shape_check CHECK (
+        (assessment_basis_kind='authority_set' AND denominator_id IS NOT NULL
+            AND authority_set_id IS NOT NULL)
+        OR (assessment_basis_kind='missing_denominator' AND denominator_id IS NULL
+            AND authority_set_id IS NULL AND control_decision='hold'
+            AND coverage_grade='incomplete')
+    ),
+    CONSTRAINT tool_truth_gate_assessment_decision_check CHECK (
+        divergence=(legacy_allowed<>(control_decision='allow'))
+        AND NOT (coverage_grade='incomplete' AND control_decision='allow')
+        AND NOT (coverage_grade='complete' AND control_decision='hold')
+    ),
+    UNIQUE(operation_id,stable_gate_request_id),
+    CONSTRAINT tool_truth_gate_assessment_authority_fk
+    FOREIGN KEY(execution_authority_id,operation_id,project_scope_id,project_path_at_freeze,
+                scope_snapshot_id,organization_id,stage_execution_id,stage_kind,
+                execution_authority_hash)
+        REFERENCES tool_truth_execution_authorities(
+            id,operation_id,project_scope_id,project_path_at_freeze,
+            scope_snapshot_id,organization_id,stage_execution_id,stage_kind,authority_hash
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(authority_set_id,execution_authority_id,denominator_id)
+        REFERENCES tool_truth_authority_set_seals(id,execution_authority_id,denominator_id)
+        ON DELETE RESTRICT
+);
+CREATE TRIGGER tool_truth_gate_assessment_append_only
+BEFORE UPDATE OR DELETE ON tool_truth_gate_assessments
 FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();

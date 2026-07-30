@@ -106,13 +106,14 @@ impl GolishDbRepoProvider {
 
     pub(super) async fn stage_asset_wave_current_or_create_initial_impl(
         &self,
+        stage_execution_id: Uuid,
         operation_id: Uuid,
         organization_id: Uuid,
         stage_kind: &str,
         started_at: chrono::DateTime<chrono::Utc>,
         limit: i64,
     ) -> anyhow::Result<Option<StageAssetWaveView>> {
-        golish_db::repo::stage_asset_waves::current_or_create_initial(
+        let wave = golish_db::repo::stage_asset_waves::current_or_create_initial(
             &self.pool,
             operation_id,
             organization_id,
@@ -120,9 +121,12 @@ impl GolishDbRepoProvider {
             started_at,
             limit,
         )
-        .await
-        .map(|maybe| maybe.map(stage_asset_wave_to_view))
-        .map_err(Into::into)
+        .await?;
+        if let Some(wave) = &wave {
+            self.seal_wave_before_dispatch(stage_execution_id, operation_id, wave.wave.id)
+                .await?;
+        }
+        Ok(wave.map(stage_asset_wave_to_view))
     }
 
     pub(super) async fn stage_asset_wave_current_running_impl(
@@ -140,6 +144,27 @@ impl GolishDbRepoProvider {
         .await
         .map(|maybe| maybe.map(stage_asset_wave_to_view))
         .map_err(Into::into)
+    }
+
+    pub(super) async fn stage_asset_wave_current_running_for_dispatch_impl(
+        &self,
+        stage_execution_id: Uuid,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_kind: &str,
+    ) -> anyhow::Result<Option<StageAssetWaveView>> {
+        let wave = golish_db::repo::stage_asset_waves::current_running(
+            &self.pool,
+            operation_id,
+            organization_id,
+            stage_kind,
+        )
+        .await?;
+        if let Some(wave) = &wave {
+            self.seal_wave_before_dispatch(stage_execution_id, operation_id, wave.wave.id)
+                .await?;
+        }
+        Ok(wave.map(stage_asset_wave_to_view))
     }
 
     pub(super) async fn stage_asset_wave_all_items_created_at_or_before_impl(
@@ -396,5 +421,27 @@ impl GolishDbRepoProvider {
                 started_at: r.started_at,
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn stage_asset_wave_seals_denominator_before_return() {
+        let source = include_str!("orchestration.rs");
+        for function in [
+            "stage_asset_wave_current_or_create_initial_impl",
+            "stage_asset_wave_current_running_for_dispatch_impl",
+        ] {
+            let start = source.find(function).expect("dispatch wave bridge exists");
+            let body = &source[start..];
+            let seal = body
+                .find("seal_wave_before_dispatch")
+                .expect("dispatch view is sealed");
+            let returned = body
+                .find("Ok(wave.map(stage_asset_wave_to_view))")
+                .expect("dispatch view is returned");
+            assert!(seal < returned, "{function} must seal before return");
+        }
     }
 }

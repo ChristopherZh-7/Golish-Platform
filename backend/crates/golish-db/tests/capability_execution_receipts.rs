@@ -393,6 +393,32 @@ fn seal_wave_command(
     }
 }
 
+fn compile_test_denominator(
+    _stage: &str,
+    assets: &[capability_execution_receipts::LockedDenominatorAsset],
+) -> anyhow::Result<Vec<capability_execution_receipts::CompiledDenominatorItem>> {
+    let mut items = Vec::new();
+    for asset in assets {
+        for (technique, capability) in [
+            ("GOLISH-ENUM-DIR", "enum.directory"),
+            ("GOLISH-ENUM-JS", "enum.javascript"),
+        ] {
+            items.push(capability_execution_receipts::CompiledDenominatorItem {
+                input_key: format!(
+                    "{}\u{1f}{}\u{1f}{technique}",
+                    asset.target_id, asset.exact_asset
+                ),
+                target_id: asset.target_id,
+                exact_asset: asset.exact_asset.clone(),
+                technique: technique.to_string(),
+                expected_capability: capability.to_string(),
+            });
+        }
+    }
+    items.sort_by(|left, right| left.input_key.cmp(&right.input_key));
+    Ok(items)
+}
+
 #[tokio::test]
 #[serial]
 async fn operation_insert_defaults_tool_truth_contract_to_legacy_v1() {
@@ -455,6 +481,109 @@ async fn rollout_rejects_direct_update_and_delete() {
         "tool_truth_rollout_direct_mutation_forbidden",
     );
 
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn task9_schema_has_dynamic_child_authority_set_and_gate_families() {
+    let (mut db, _data_dir) = fixture("task9_schema_catalog").await;
+    let tables: Vec<String> = sqlx::query_scalar(
+        r#"SELECT table_name FROM information_schema.tables
+            WHERE table_schema=current_schema() AND table_name = ANY($1)
+            ORDER BY table_name"#,
+    )
+    .bind(vec![
+        "capability_discovered_child_manifests",
+        "capability_discovered_child_members",
+        "capability_discovered_child_closures",
+        "tool_truth_authority_set_seals",
+        "tool_truth_authority_set_members",
+        "tool_truth_gate_assessments",
+    ])
+    .fetch_all(db.pool())
+    .await
+    .expect("read Task 9 schema catalog");
+    assert_eq!(tables.len(), 6);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn missing_denominator_gate_assessment_is_scoped_and_append_only() {
+    let (mut db, _data_dir) = fixture("gate_assessment_missing").await;
+    let frozen = seed_frozen_execution(db.pool(), "gate-assessment-missing").await;
+    let (authority_id, authority_hash) = insert_host_authority(db.pool(), &frozen).await;
+    let assessment_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO tool_truth_gate_assessments(
+               id,stable_gate_request_id,operation_id,project_scope_id,
+               project_path_at_freeze,scope_snapshot_id,organization_id,
+               stage_execution_id,stage_kind,execution_authority_id,
+               execution_authority_hash,assessment_basis_kind,denominator_id,
+               authority_set_id,legacy_allowed,control_decision,coverage_grade,
+               divergence,expected_item_count,terminal_item_count,degraded_item_count,
+               residual,assessment_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+                    'missing_denominator',NULL,NULL,TRUE,'hold','incomplete',TRUE,
+                    0,0,0,$12,$13)"#,
+    )
+    .bind(assessment_id)
+    .bind(Uuid::new_v4())
+    .bind(frozen.operation_id)
+    .bind(frozen.project_scope_id)
+    .bind(&frozen.project_path)
+    .bind(frozen.scope_snapshot_id)
+    .bind(frozen.organization_id)
+    .bind(frozen.stage_execution_id)
+    .bind(frozen.stage_kind)
+    .bind(authority_id)
+    .bind(&authority_hash)
+    .bind(serde_json::json!({"reason_code": "TOOL_TRUTH_DENOMINATOR_MISSING"}))
+    .bind(digest_v1('d'))
+    .execute(db.pool())
+    .await
+    .expect("persist explicit missing-denominator shadow assessment");
+
+    let update_error =
+        sqlx::query("UPDATE tool_truth_gate_assessments SET legacy_allowed=FALSE WHERE id=$1")
+            .bind(assessment_id)
+            .execute(db.pool())
+            .await
+            .expect_err("gate assessment is append-only");
+    assert_database_rejection(&update_error, "23514", "tool_truth_append_only");
+
+    let cross_org_error = sqlx::query(
+        r#"INSERT INTO tool_truth_gate_assessments(
+               id,stable_gate_request_id,operation_id,project_scope_id,
+               project_path_at_freeze,scope_snapshot_id,organization_id,
+               stage_execution_id,stage_kind,execution_authority_id,
+               execution_authority_hash,assessment_basis_kind,legacy_allowed,
+               control_decision,coverage_grade,divergence,expected_item_count,
+               terminal_item_count,degraded_item_count,residual,assessment_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+                    'missing_denominator',FALSE,'hold','incomplete',FALSE,0,0,0,'{}',$12)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(frozen.operation_id)
+    .bind(frozen.project_scope_id)
+    .bind(&frozen.project_path)
+    .bind(frozen.scope_snapshot_id)
+    .bind(frozen.outside_organization_id)
+    .bind(frozen.stage_execution_id)
+    .bind(frozen.stage_kind)
+    .bind(authority_id)
+    .bind(&authority_hash)
+    .bind(digest_v1('e'))
+    .execute(db.pool())
+    .await
+    .expect_err("assessment cannot splice another organization into the authority tuple");
+    assert_database_rejection(
+        &cross_org_error,
+        "23503",
+        "tool_truth_gate_assessment_authority_fk",
+    );
     db.stop().await;
 }
 
@@ -999,6 +1128,23 @@ async fn sealed_header_rejects_late_denominator_member_insert() {
     .execute(db.pool())
     .await
     .expect("insert denominator member before seal");
+    let forged_count = sqlx::query(
+        "UPDATE coverage_denominators SET sealed_at=statement_timestamp(),member_count=99 WHERE id=$1",
+    )
+    .bind(denominator_id)
+    .execute(db.pool())
+    .await
+    .expect_err("caller-forged member count must be rejected, not overwritten");
+    assert_database_rejection(&forged_count, "23514", "tool_truth_member_count_forged");
+    let forged_hash = sqlx::query(
+        "UPDATE coverage_denominators SET sealed_at=statement_timestamp(),member_set_hash=$2 WHERE id=$1",
+    )
+    .bind(denominator_id)
+    .bind(digest_v1('a'))
+    .execute(db.pool())
+    .await
+    .expect_err("caller-forged member hash must be rejected, not overwritten");
+    assert_database_rejection(&forged_hash, "23514", "tool_truth_member_set_hash_forged");
     sqlx::query("UPDATE coverage_denominators SET sealed_at=statement_timestamp() WHERE id=$1")
         .bind(denominator_id)
         .execute(db.pool())
@@ -1116,6 +1262,289 @@ async fn seal_wave_denominator_rejects_stable_request_source_drift() {
     .expect_err("stable request cannot be rebound to another wave");
     assert!(error.to_string().contains("TOOL_TRUTH_MANIFEST_DRIFT"));
 
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn denominator_source_compound_derives_exact_members_and_replays() {
+    let (mut db, _data_dir) = fixture("source_compound_replay").await;
+    let wave = seed_wave_denominator_fixture(
+        db.pool(),
+        "source-compound-replay",
+        &["a.example", "b.example"],
+    )
+    .await;
+    let command = capability_execution_receipts::SealSourceDenominator {
+        stable_seal_request_id: Uuid::new_v4(),
+        stage_execution_id: wave.frozen.stage_execution_id,
+        source: capability_execution_receipts::DenominatorSourceRef::StageAssetWave(wave.wave_id),
+    };
+    let first = capability_execution_receipts::seal_source_denominator(
+        db.pool(),
+        &command,
+        compile_test_denominator,
+    )
+    .await
+    .expect("seal exact asset-times-technique denominator");
+    assert_eq!(first.member_count, Some(4));
+
+    let members: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT exact_asset,technique,expected_capability FROM coverage_denominator_items WHERE denominator_id=$1 ORDER BY ordinal",
+    )
+    .bind(first.id)
+    .fetch_all(db.pool())
+    .await
+    .expect("read compiled denominator members");
+    assert_eq!(members.len(), 4);
+    let mut assets = members
+        .iter()
+        .map(|member| member.0.as_str())
+        .collect::<Vec<_>>();
+    assets.sort_unstable();
+    assert_eq!(
+        assets,
+        vec!["a.example", "a.example", "b.example", "b.example"]
+    );
+
+    let replay = capability_execution_receipts::seal_source_denominator(
+        db.pool(),
+        &command,
+        compile_test_denominator,
+    )
+    .await
+    .expect("same source request replays exactly");
+    assert_eq!(replay, first);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn denominator_stable_request_cannot_rebind_wave_to_unit() {
+    let (mut db, _data_dir) = fixture("source_compound_rebind").await;
+    let wave =
+        seed_wave_denominator_fixture(db.pool(), "source-compound-rebind", &["a.example"]).await;
+    sqlx::query(
+        "UPDATE stage_runs SET started_at=statement_timestamp()+INTERVAL '1 second' WHERE id=$1",
+    )
+    .bind(wave.frozen.stage_execution_id)
+    .execute(db.pool())
+    .await
+    .expect("make fixture target part of the frozen unit cutoff");
+    let stable = Uuid::new_v4();
+    capability_execution_receipts::seal_source_denominator(
+        db.pool(),
+        &capability_execution_receipts::SealSourceDenominator {
+            stable_seal_request_id: stable,
+            stage_execution_id: wave.frozen.stage_execution_id,
+            source: capability_execution_receipts::DenominatorSourceRef::StageAssetWave(
+                wave.wave_id,
+            ),
+        },
+        compile_test_denominator,
+    )
+    .await
+    .expect("seal wave source first");
+    let error = capability_execution_receipts::seal_source_denominator(
+        db.pool(),
+        &capability_execution_receipts::SealSourceDenominator {
+            stable_seal_request_id: stable,
+            stage_execution_id: wave.frozen.stage_execution_id,
+            source: capability_execution_receipts::DenominatorSourceRef::StageTeamUnit(
+                wave.frozen.stage_run_unit_id,
+            ),
+        },
+        compile_test_denominator,
+    )
+    .await
+    .expect_err("stable request cannot rebind from wave to unit");
+    assert!(error.to_string().contains("TOOL_TRUTH_MANIFEST_DRIFT"));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn bound_wave_rejects_late_source_members() {
+    let (mut db, _data_dir) = fixture("bound_wave_immutable").await;
+    let wave = seed_wave_denominator_fixture(db.pool(), "bound-wave", &["a.example"]).await;
+    capability_execution_receipts::seal_source_denominator(
+        db.pool(),
+        &capability_execution_receipts::SealSourceDenominator {
+            stable_seal_request_id: Uuid::new_v4(),
+            stage_execution_id: wave.frozen.stage_execution_id,
+            source: capability_execution_receipts::DenominatorSourceRef::StageAssetWave(
+                wave.wave_id,
+            ),
+        },
+        compile_test_denominator,
+    )
+    .await
+    .expect("bind and seal wave source");
+    let late_target_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO targets(
+               id,name,target_type,value,scope,project_path,organization_id,source
+           ) VALUES($1,'late.example','domain','late.example','in',$2,$3,'tool_truth_fixture')"#,
+    )
+    .bind(late_target_id)
+    .bind(&wave.frozen.project_path)
+    .bind(wave.frozen.organization_id)
+    .execute(db.pool())
+    .await
+    .expect("insert later business target outside frozen wave");
+    let error = sqlx::query(
+        r#"INSERT INTO stage_asset_wave_items(
+               wave_id,target_id,asset_value,asset_type,source
+           ) VALUES($1,$2,'late.example','domain','forged')"#,
+    )
+    .bind(wave.wave_id)
+    .bind(late_target_id)
+    .execute(db.pool())
+    .await
+    .expect_err("bound wave source cannot accept late members");
+    assert_database_rejection(&error, "23514", "tool_truth_bound_wave_source_immutable");
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stage_team_unit_denominator_excludes_targets_created_after_stage_start() {
+    let (mut db, _data_dir) = fixture("unit_cutoff").await;
+    let wave = seed_wave_denominator_fixture(db.pool(), "unit-cutoff", &["before.example"]).await;
+    sqlx::query(
+        "UPDATE stage_runs SET started_at=statement_timestamp()+INTERVAL '1 second' WHERE id=$1",
+    )
+    .bind(wave.frozen.stage_execution_id)
+    .execute(db.pool())
+    .await
+    .expect("move fixture stage start after the first target");
+    sqlx::query(
+        r#"INSERT INTO targets(
+               id,name,target_type,value,scope,project_path,organization_id,source,created_at
+           ) VALUES($1,'late.example','domain','late.example','in',$2,$3,'tool_truth_fixture',
+                    (SELECT started_at+INTERVAL '1 second' FROM stage_runs WHERE id=$4))"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(&wave.frozen.project_path)
+    .bind(wave.frozen.organization_id)
+    .bind(wave.frozen.stage_execution_id)
+    .execute(db.pool())
+    .await
+    .expect("insert target after stage cutoff");
+    let denominator = capability_execution_receipts::seal_source_denominator(
+        db.pool(),
+        &capability_execution_receipts::SealSourceDenominator {
+            stable_seal_request_id: Uuid::new_v4(),
+            stage_execution_id: wave.frozen.stage_execution_id,
+            source: capability_execution_receipts::DenominatorSourceRef::StageTeamUnit(
+                wave.frozen.stage_run_unit_id,
+            ),
+        },
+        compile_test_denominator,
+    )
+    .await
+    .expect("seal unit denominator from stage-start census");
+    let assets: Vec<String> = sqlx::query_scalar(
+        "SELECT exact_asset FROM coverage_denominator_items WHERE denominator_id=$1 ORDER BY ordinal",
+    )
+    .bind(denominator.id)
+    .fetch_all(db.pool())
+    .await
+    .expect("read unit denominator assets");
+    assert_eq!(assets, vec!["before.example", "before.example"]);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn dynamic_child_manifest_distinguishes_sealed_empty_from_missing_and_rejects_late_members() {
+    let (mut db, _data_dir) = fixture("child_manifest_empty").await;
+    let wave = seed_wave_denominator_fixture(db.pool(), "child-manifest", &["a.example"]).await;
+    let denominator = capability_execution_receipts::seal_source_denominator(
+        db.pool(),
+        &capability_execution_receipts::SealSourceDenominator {
+            stable_seal_request_id: Uuid::new_v4(),
+            stage_execution_id: wave.frozen.stage_execution_id,
+            source: capability_execution_receipts::DenominatorSourceRef::StageAssetWave(
+                wave.wave_id,
+            ),
+        },
+        compile_test_denominator,
+    )
+    .await
+    .expect("seal root denominator");
+    let receipt = capability_execution_receipts::begin(
+        db.pool(),
+        &capability_execution_receipts::BeginCapabilityReceipt {
+            id: Uuid::new_v4(),
+            denominator_id: denominator.id,
+            capability: "enum.directory".to_string(),
+            attempt_ordinal: 1,
+        },
+    )
+    .await
+    .expect("begin parent receipt for one capability subset");
+    let parent_item_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM coverage_denominator_items WHERE denominator_id=$1 AND expected_capability='enum.directory'",
+    )
+    .bind(denominator.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read exact parent denominator item");
+    let manifest_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO capability_discovered_child_manifests(
+               id,execution_authority_id,parent_receipt_id,parent_receipt_authority_hash,
+               parent_denominator_id,parent_denominator_item_id,child_kind,
+               capability_contract_version,capability_contract_hash,
+               expected_downstream_technique,expected_downstream_capability,manifest_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,'script','enumeration.directory.v1',$7,
+                    'GOLISH-ENUM-JS','enum.javascript',$8)"#,
+    )
+    .bind(manifest_id)
+    .bind(denominator.execution_authority_id)
+    .bind(receipt.id)
+    .bind(&receipt.receipt_authority_hash)
+    .bind(denominator.id)
+    .bind(parent_item_id)
+    .bind(digest_v1('4'))
+    .bind(digest_v1('5'))
+    .execute(db.pool())
+    .await
+    .expect("open explicit child manifest");
+    sqlx::query(
+        "UPDATE capability_discovered_child_manifests SET sealed_at=statement_timestamp() WHERE id=$1",
+    )
+    .bind(manifest_id)
+    .execute(db.pool())
+    .await
+    .expect("server seals explicit empty child manifest");
+    let sealed: (i64, bool) = sqlx::query_as(
+        "SELECT member_count,sealed_empty FROM capability_discovered_child_manifests WHERE id=$1",
+    )
+    .bind(manifest_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read sealed-empty distinction");
+    assert_eq!(sealed, (0, true));
+
+    let error = sqlx::query(
+        r#"INSERT INTO capability_discovered_child_members(
+               id,manifest_id,execution_authority_id,ordinal,child_key,exact_child_asset,
+               canonical_child_identity_hash,scope_classification,
+               expected_downstream_technique,expected_downstream_capability,member_hash
+           ) VALUES($1,$2,$3,0,'script:late','https://a.example/late.js',$4,'in_scope',
+                    'GOLISH-ENUM-JS','enum.javascript',$5)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(manifest_id)
+    .bind(denominator.execution_authority_id)
+    .bind(digest_v1('6'))
+    .bind(digest_v1('7'))
+    .execute(db.pool())
+    .await
+    .expect_err("sealed empty is immutable and cannot gain a late child");
+    assert_database_rejection(&error, "23514", "tool_truth_sealed_parent_immutable");
     db.stop().await;
 }
 

@@ -22,7 +22,9 @@ use super::stage_spec::StageSpec;
 use super::technique_resolver::AssetClass;
 use super::types::{HarnessRecoveryActions, StageDeliverable};
 use super::{load_embedded_stage_spec, StageKind};
-use crate::db_traits::{DbRepoProvider, StageAssetWaveView, TechniqueOutcomeFact};
+use crate::db_traits::{
+    DbRepoProvider, RecordToolTruthShadowAssessment, StageAssetWaveView, TechniqueOutcomeFact,
+};
 
 const TECH_INTEL_DNS: &str = "GOLISH-INTEL-DNS";
 const TECH_INTEL_CT: &str = "GOLISH-INTEL-CT";
@@ -1311,13 +1313,36 @@ pub async fn evaluate_org_stage_gate(
             )
         },
     );
-    validate_stage_gate_with_context(
+    let legacy_result = validate_stage_gate_with_context(
         normalized_deliverable.as_ref().unwrap_or(deliverable),
         &spec,
         None,
         None,
         &ctx,
-    )
+    );
+    if tool_truth_contract.writes_receipts() {
+        if let (Some(operation_id), Some(organization_id)) = (operation_id, org_id) {
+            if let Err(error) = repo
+                .tool_truth_record_shadow_assessment(RecordToolTruthShadowAssessment {
+                    operation_id,
+                    organization_id,
+                    stage_kind: stage.as_str().to_string(),
+                    stage_asset_wave_id: current_wave.map(|wave| wave.id),
+                    legacy_allowed: legacy_result.allowed,
+                })
+                .await
+            {
+                tracing::error!(
+                    operation_id = %operation_id,
+                    organization_id = %organization_id,
+                    stage = stage.as_str(),
+                    error = %error,
+                    "tool-truth shadow assessment failed after legacy Gate decision"
+                );
+            }
+        }
+    }
+    legacy_result
 }
 
 #[cfg(test)]

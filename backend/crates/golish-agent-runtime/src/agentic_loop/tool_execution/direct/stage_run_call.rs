@@ -4320,6 +4320,7 @@ async fn prepare_stage_asset_wave(
         .map_err(|error| format!("invalid organization id for asset wave: {error}"))?;
     match repo
         .stage_asset_wave_current_or_create_initial(
+            ctx.stage_execution_id.unwrap_or_else(uuid::Uuid::nil),
             operation_id,
             organization_id,
             stage.as_str(),
@@ -4364,7 +4365,12 @@ async fn current_running_stage_asset_wave(
     let organization_id = uuid::Uuid::parse_str(&unit.id)
         .map_err(|error| format!("invalid organization id for asset wave: {error}"))?;
     match repo
-        .stage_asset_wave_current_running(operation_id, organization_id, stage.as_str())
+        .stage_asset_wave_current_running_for_dispatch(
+            ctx.stage_execution_id.unwrap_or_else(uuid::Uuid::nil),
+            operation_id,
+            organization_id,
+            stage.as_str(),
+        )
         .await
     {
         Ok(Some(wave)) => {
@@ -8033,6 +8039,32 @@ where
                         Box::pin(completed_company_controller_replay(ctx, stage)).await
                     {
                         return Ok(result);
+                    }
+                    if spec.asset_wave_barrier {
+                        let Some(started_at) = active_stage_skip_floor(ctx, stage).await else {
+                            return Ok(ToolExecutionResult {
+                                value: json!({
+                                    "error": "wave-aware Stage Team requires an authoritative stage-start watermark",
+                                    "passed": false,
+                                    "provider_dispatched": false,
+                                }),
+                                success: false,
+                            });
+                        };
+                        for unit in &units {
+                            if let Err(error) =
+                                prepare_stage_asset_wave(ctx, stage, unit, started_at).await
+                            {
+                                return Ok(ToolExecutionResult {
+                                    value: json!({
+                                        "error": format!("Stage Team wave seal failed before durable seed: {error}"),
+                                        "passed": false,
+                                        "provider_dispatched": false,
+                                    }),
+                                    success: false,
+                                });
+                            }
+                        }
                     }
                     let teams = match runtime_memory.seed_stage_team_runtime(team_seed).await {
                         Ok(teams) if !teams.is_empty() => teams,
