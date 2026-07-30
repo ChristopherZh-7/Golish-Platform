@@ -385,6 +385,119 @@ pub fn evaluate_shadow_tool_truth(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetIntelExpectedInput {
+    pub input_key: String,
+    pub exact_asset: String,
+    pub technique: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetIntelReceiptProjectionRow {
+    pub denominator_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub attempt_epoch: i64,
+    pub input_key: String,
+    pub technique: String,
+    pub reconciliation_state: String,
+    pub landing_state: String,
+    pub observation_state: String,
+    pub coverage_extent: String,
+    pub authority_current: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetIntelReceiptAssessment {
+    pub control_decision: &'static str,
+    pub coverage_grade: &'static str,
+    pub current_terminal_receipt_count: usize,
+    pub missing_techniques: Vec<String>,
+    pub receipt_manifest_hash: String,
+}
+
+pub const fn target_intel_reconciliation_for_attempt(
+    receipt_attempt_epoch: i64,
+    current_attempt_epoch: i64,
+) -> &'static str {
+    if receipt_attempt_epoch == current_attempt_epoch {
+        "current"
+    } else {
+        "superseded"
+    }
+}
+
+pub const fn target_intel_projection_authority(
+    contract: golish_pentest_domain::tool_truth::ToolTruthContract,
+) -> &'static str {
+    match contract {
+        golish_pentest_domain::tool_truth::ToolTruthContract::LegacyV1 => {
+            "legacy_source_projection"
+        }
+        golish_pentest_domain::tool_truth::ToolTruthContract::ShadowV1
+        | golish_pentest_domain::tool_truth::ToolTruthContract::ReceiptV1 => {
+            "current_exact_receipts"
+        }
+    }
+}
+
+pub fn evaluate_current_target_intel_receipts(
+    current_stage_execution_id: Uuid,
+    current_attempt_epoch: i64,
+    current_denominator_id: Uuid,
+    denominator_manifest_hash: &str,
+    expected: &[TargetIntelExpectedInput],
+    receipts: &[TargetIntelReceiptProjectionRow],
+) -> TargetIntelReceiptAssessment {
+    let expected_by_key = expected
+        .iter()
+        .map(|item| (item.input_key.as_str(), item.technique.as_str()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let terminal_keys = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.denominator_id == current_denominator_id
+                && receipt.stage_execution_id == current_stage_execution_id
+                && receipt.attempt_epoch == current_attempt_epoch
+                && receipt.authority_current
+                && receipt.reconciliation_state == "consistent"
+                && receipt.landing_state == "committed"
+                && receipt.coverage_extent == "complete"
+                && expected_by_key
+                    .get(receipt.input_key.as_str())
+                    .is_some_and(|technique| *technique == receipt.technique)
+        })
+        .map(|receipt| receipt.input_key.as_str())
+        .collect::<BTreeSet<_>>();
+    let missing_techniques = expected_by_key
+        .iter()
+        .filter(|(input_key, _)| !terminal_keys.contains(**input_key))
+        .map(|(_, technique)| (*technique).to_string())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let complete = !expected_by_key.is_empty()
+        && terminal_keys.len() == expected_by_key.len()
+        && missing_techniques.is_empty();
+    let receipt_manifest_hash = if complete {
+        denominator_manifest_hash.to_string()
+    } else {
+        sha256_prefixed(
+            terminal_keys
+                .iter()
+                .flat_map(|key| key.as_bytes().iter().copied().chain([0x1f]))
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
+    };
+    TargetIntelReceiptAssessment {
+        control_decision: if complete { "allow" } else { "hold" },
+        coverage_grade: if complete { "complete" } else { "incomplete" },
+        current_terminal_receipt_count: terminal_keys.len(),
+        missing_techniques,
+        receipt_manifest_hash,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

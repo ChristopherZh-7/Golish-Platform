@@ -62,6 +62,8 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
+ring = { workspace = true }
+url = { workspace = true }
 regex = "1"
 tracing = { workspace = true }
 rig-core = { workspace = true }

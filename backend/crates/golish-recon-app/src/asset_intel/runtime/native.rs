@@ -186,6 +186,42 @@ pub(crate) async fn run_native_provider(
         AssetIntelProviderRuntimeKind::HttpJson,
     );
 
+    let receipt_v1 =
+        match golish_core::current_agent_tool_context().and_then(|context| context.operation_id) {
+            Some(operation_id) => {
+                golish_db::repo::operation_state::get_tool_truth_contract(pool, operation_id)
+                    .await?
+                    .ok_or_else(|| {
+                        GolishError::Internal("TOOL_TRUTH_OPERATION_CONTRACT_MISSING".into())
+                    })?
+                    == golish_pentest_domain::tool_truth::ToolTruthContract::ReceiptV1
+            }
+            None => false,
+        };
+    if receipt_v1 {
+        let status = AssetIntelProviderRunStatus {
+            provider_id: provider_id.clone(),
+            status: AssetIntelProviderRunState::Unavailable,
+            message: format!(
+                "{provider_id} is blocked until its native transport emits a pinned receipt"
+            ),
+        };
+        return finish_provider_run(
+            sink,
+            run_id,
+            status,
+            0,
+            OrganizationCandidates::default(),
+            serde_json::json!({
+                "provider": provider_id,
+                "runId": run_id,
+                "state": "unavailable",
+                "reason": "tool_truth_native_transport_uninstrumented",
+            }),
+            Vec::new(),
+        );
+    }
+
     // Credential: same vault path as http_json. `read_vault_secret` checks
     // `{tool_id}.{group_id}.api_key` then falls back to the legacy
     // `name=tool_id, entry_type='api_key'` row for single-field default groups.

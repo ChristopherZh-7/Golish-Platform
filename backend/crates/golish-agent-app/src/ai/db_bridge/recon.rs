@@ -2,13 +2,855 @@
 //! (inherent `_impl` layer). Bodies moved verbatim from the original
 //! `db_bridge.rs` trait impl; the trait methods in `mod.rs` delegate here.
 
-use serde_json::json;
+use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+use ring::rand::{SecureRandom, SystemRandom};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use golish_agent_kit::db_traits::OrgScopeUnit;
 use golish_app_core::domain::targets::{Target, TargetType};
 
 use super::GolishDbRepoProvider;
+
+const MAX_TARGET_INTEL_RAW_WITNESS_BYTES: usize = 1_048_576;
+
+#[derive(Clone)]
+struct TargetIntelReceiptHostState {
+    operation_id: Uuid,
+    organization_id: Uuid,
+    stage_execution_id: Uuid,
+    attempt_epoch: i64,
+    attempt_fence: Option<golish_db::repo::capability_execution_receipts::TargetIntelAttemptFence>,
+    request_id: String,
+    tool_name: String,
+    project_root: PathBuf,
+    receipt: golish_db::repo::capability_execution_receipts::CapabilityExecutionReceiptRow,
+}
+
+/// Production implementation injected by the composition root into the
+/// TargetIntel tools. It is the only layer that sees both the pure provider
+/// observation DTO and the canonical receipt repository.
+pub struct TargetIntelReceiptHost {
+    pool: Arc<sqlx::PgPool>,
+    sessions: tokio::sync::Mutex<HashMap<Uuid, TargetIntelReceiptHostState>>,
+}
+
+impl TargetIntelReceiptHost {
+    pub fn new(pool: Arc<sqlx::PgPool>) -> Self {
+        Self {
+            pool,
+            sessions: tokio::sync::Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+async fn repair_target_intel_source_projection(
+    pool: &sqlx::PgPool,
+    receipt: &golish_db::repo::capability_execution_receipts::CapabilityExecutionReceiptRow,
+    organization_id: Uuid,
+    request_id: &str,
+    tool_name: &str,
+    stage_execution_id: Uuid,
+    attempt_epoch: i64,
+) -> anyhow::Result<()> {
+    let observations = sqlx::query_as::<_, (String, String)>(
+        r#"SELECT d.technique,i.observation_state
+             FROM capability_execution_receipt_inputs i
+             JOIN coverage_denominator_items d ON d.id=i.denominator_item_id
+            WHERE i.receipt_id=$1 AND i.sealed_at IS NOT NULL
+            ORDER BY d.technique,i.input_key"#,
+    )
+    .bind(receipt.id)
+    .fetch_all(pool)
+    .await?;
+    for (technique, observation_state) in observations {
+        let status = match observation_state.as_str() {
+            "found" => "found",
+            "no_match" => "empty",
+            _ => "error",
+        };
+        golish_db::repo::source_query_log::upsert(
+            pool,
+            &golish_db::repo::source_query_log::SourceQueryLogWrite {
+                organization_id,
+                run_id: request_id.to_string(),
+                source: "tool-truth-receipt".to_string(),
+                query: format!("{tool_name}:{technique}"),
+                target: String::new(),
+                technique: Some(technique),
+                status: status.to_string(),
+                result_count: None,
+                evidence_ids: Vec::new(),
+                detail: Some(
+                    json!({
+                        "receipt_id": receipt.id,
+                        "reconciliation_state": receipt.reconciliation_state,
+                    })
+                    .to_string(),
+                ),
+                started_at: None,
+                finished_at: Some(chrono::Utc::now()),
+                receipt_binding: Some(
+                    golish_db::repo::source_query_log::SourceQueryReceiptBinding {
+                        receipt_id: receipt.id,
+                        stage_execution_id,
+                        attempt_epoch,
+                    },
+                ),
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn sha256_prefixed(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{digest}")
+}
+
+fn collect_provider_execution_artifacts(value: &Value, output: &mut Vec<(PathBuf, Value)>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_provider_execution_artifacts(value, output);
+            }
+        }
+        Value::Object(object) => {
+            let envelope = object
+                .get("toolTruthExecution")
+                .or_else(|| object.get("tool_truth_execution"));
+            if let (Some(path), Some(envelope)) =
+                (object.get("artifact").and_then(Value::as_str), envelope)
+            {
+                if !envelope.is_null() {
+                    output.push((PathBuf::from(path), envelope.clone()));
+                }
+            }
+            for value in object.values() {
+                collect_provider_execution_artifacts(value, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn provider_evidence_has_execution(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(provider_evidence_has_execution),
+        Value::Object(object) => {
+            object
+                .get("toolTruthExecution")
+                .or_else(|| object.get("tool_truth_execution"))
+                .is_some_and(|value| !value.is_null())
+                || object.values().any(provider_evidence_has_execution)
+        }
+        _ => false,
+    }
+}
+
+fn execution_envelope_complete(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let Some(budget) = object.get("actual_budget").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(required) = budget.get("required_axes").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(observed) = budget.get("observed_axes").and_then(Value::as_object) else {
+        return false;
+    };
+    object
+        .get("destination_policy_sealed")
+        .and_then(Value::as_bool)
+        == Some(true)
+        && object.get("coverage_extent").and_then(Value::as_str) == Some("complete")
+        && object.get("residual_code").is_none_or(Value::is_null)
+        && object
+            .get("network_hops")
+            .and_then(Value::as_array)
+            .is_some_and(|hops| !hops.is_empty())
+        && required
+            .iter()
+            .filter_map(Value::as_str)
+            .all(|axis| observed.get(axis).is_some_and(Value::is_number))
+}
+
+fn provider_evidence_executions_complete(value: &Value) -> bool {
+    fn visit(value: &Value, seen: &mut bool, complete: &mut bool) {
+        match value {
+            Value::Array(values) => {
+                for value in values {
+                    visit(value, seen, complete);
+                }
+            }
+            Value::Object(object) => {
+                if let Some(envelope) = object
+                    .get("toolTruthExecution")
+                    .or_else(|| object.get("tool_truth_execution"))
+                {
+                    *seen = true;
+                    *complete &= execution_envelope_complete(envelope);
+                } else {
+                    for value in object.values() {
+                        visit(value, seen, complete);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut seen = false;
+    let mut complete = true;
+    visit(value, &mut seen, &mut complete);
+    seen && complete
+}
+
+fn collect_provider_input_observations(
+    value: &Value,
+    output: &mut std::collections::BTreeMap<String, String>,
+) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_provider_input_observations(value, output);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(envelope) = object
+                .get("toolTruthExecution")
+                .or_else(|| object.get("tool_truth_execution"))
+                .and_then(Value::as_object)
+            {
+                if let (Some(input_key), Some(observation_state)) = (
+                    envelope.get("input_key").and_then(Value::as_str),
+                    envelope.get("observation_state").and_then(Value::as_str),
+                ) {
+                    output
+                        .entry(input_key.to_string())
+                        .and_modify(|current| {
+                            if current != "found" && observation_state == "found" {
+                                *current = observation_state.to_string();
+                            }
+                        })
+                        .or_insert_with(|| observation_state.to_string());
+                }
+            }
+            for value in object.values() {
+                collect_provider_input_observations(value, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn bounded_provider_witness(
+    artifacts: &[(PathBuf, Value)],
+) -> anyhow::Result<(Vec<u8>, i64, bool, Vec<String>)> {
+    let mut output = b"target_intel_provider_witness.v1\n".to_vec();
+    let mut original = output.len();
+    let mut truncated = false;
+    let mut tokens = Vec::new();
+    for (ordinal, (_, envelope)) in artifacts.iter().enumerate() {
+        let token = envelope
+            .get("raw_witness_token")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_RAW_WITNESS_TOKEN_MISSING"))?;
+        let bytes = golish_recon_app::intel_providers::load_observed_raw_witness(token)
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_RAW_WITNESS_STAGING_MISSING"))?;
+        let expected_sha256 = envelope
+            .get("raw_witness_sha256")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_RAW_WITNESS_DIGEST_MISSING"))?;
+        anyhow::ensure!(
+            sha256_prefixed(&bytes) == expected_sha256,
+            "TOOL_TRUTH_RAW_WITNESS_DIGEST_MISMATCH"
+        );
+        tokens.push(token.to_string());
+        let header = format!(
+            "--- provider artifact {ordinal} bytes={} ---\n",
+            bytes.len()
+        );
+        original = original
+            .saturating_add(header.len())
+            .saturating_add(bytes.len());
+        let remaining = MAX_TARGET_INTEL_RAW_WITNESS_BYTES.saturating_sub(output.len());
+        if remaining == 0 {
+            truncated = true;
+            continue;
+        }
+        let header_bytes = header.as_bytes();
+        let header_len = header_bytes.len().min(remaining);
+        output.extend_from_slice(&header_bytes[..header_len]);
+        let remaining = MAX_TARGET_INTEL_RAW_WITNESS_BYTES.saturating_sub(output.len());
+        let body_len = bytes.len().min(remaining);
+        output.extend_from_slice(&bytes[..body_len]);
+        truncated |= header_len != header_bytes.len() || body_len != bytes.len();
+    }
+    Ok((
+        output,
+        i64::try_from(original).unwrap_or(i64::MAX),
+        truncated,
+        tokens,
+    ))
+}
+
+fn read_or_create_operation_key(key_path: &Path) -> anyhow::Result<[u8; 32]> {
+    if let Ok(bytes) = std::fs::read(key_path) {
+        return bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("TOOL_TRUTH_OPERATION_KEY_INVALID"));
+    }
+    let mut key = [0_u8; 32];
+    SystemRandom::new()
+        .fill(&mut key)
+        .map_err(|_| anyhow::anyhow!("TOOL_TRUTH_OPERATION_KEY_RANDOM_FAILED"))?;
+    if let Some(parent) = key_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(key_path)
+    };
+    #[cfg(not(unix))]
+    let file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(key_path);
+    match file {
+        Ok(mut file) => {
+            file.write_all(&key)?;
+            file.sync_all()?;
+            Ok(key)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let bytes = std::fs::read(key_path)?;
+            bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("TOOL_TRUTH_OPERATION_KEY_INVALID"))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn seal_provider_witness(
+    state: &TargetIntelReceiptHostState,
+    bytes: &[u8],
+    original_byte_count: i64,
+    truncated: bool,
+) -> anyhow::Result<golish_db::repo::capability_execution_receipts::RawWitnessArtifactInput> {
+    let vault_root = state.project_root.join(".golish").join("tool-truth-vault");
+    let key_root = dirs::data_local_dir()
+        .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_KEY_ROOT_UNAVAILABLE"))?
+        .join("golish")
+        .join("tool-truth-keys");
+    let key_path = key_root.join(format!("{}.key", state.operation_id));
+    let key = read_or_create_operation_key(&key_path)?;
+    let plaintext_sha256 = sha256_prefixed(bytes);
+    let artifact_id = Uuid::new_v5(&state.receipt.id, plaintext_sha256.as_bytes());
+    let mut nonce_material = Vec::with_capacity(key.len() + 32);
+    nonce_material.extend_from_slice(&key);
+    nonce_material.extend_from_slice(artifact_id.as_bytes());
+    nonce_material.extend_from_slice(b"nonce:v1");
+    let nonce_digest = Sha256::digest(&nonce_material);
+    let mut nonce_bytes = [0_u8; 12];
+    nonce_bytes.copy_from_slice(&nonce_digest[..12]);
+    let unbound = UnboundKey::new(&AES_256_GCM, &key)
+        .map_err(|_| anyhow::anyhow!("TOOL_TRUTH_RAW_WITNESS_KEY_INVALID"))?;
+    let sealing_key = LessSafeKey::new(unbound);
+    let aad = format!(
+        "{}:{}:{}",
+        state.operation_id, state.receipt.id, artifact_id
+    );
+    let mut ciphertext = bytes.to_vec();
+    sealing_key
+        .seal_in_place_append_tag(
+            Nonce::assume_unique_for_key(nonce_bytes),
+            Aad::from(aad.as_bytes()),
+            &mut ciphertext,
+        )
+        .map_err(|_| anyhow::anyhow!("TOOL_TRUTH_RAW_WITNESS_ENCRYPT_FAILED"))?;
+    let mut object = nonce_bytes.to_vec();
+    object.extend_from_slice(&ciphertext);
+    let object_path = vault_root
+        .join("objects")
+        .join(format!("{artifact_id}.aead"));
+    if let Some(parent) = object_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&object_path)
+    {
+        Ok(mut file) => {
+            file.write_all(&object)?;
+            file.sync_all()?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::ensure!(
+                std::fs::read(&object_path)? == object,
+                "TOOL_TRUTH_RAW_WITNESS_REPLAY_DRIFT"
+            );
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let mut token_material = Vec::with_capacity(key.len() + 32);
+    token_material.extend_from_slice(&key);
+    token_material.extend_from_slice(artifact_id.as_bytes());
+    token_material.extend_from_slice(b"object-token:v1");
+    let token = Sha256::digest(&token_material).to_vec();
+    let operation_key_ref_hash = sha256_prefixed(&key);
+    let retention_policy_id = Uuid::new_v5(&state.operation_id, b"tool-truth-retention:v1");
+    let retention_policy_hash = sha256_prefixed(b"tool-truth-retention:v1:operation-lifetime");
+    let lowercase = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    let sensitivity_disposition = if [
+        "authorization:",
+        "set-cookie:",
+        "api_key",
+        "private key",
+        "client_secret",
+    ]
+    .iter()
+    .any(|marker| lowercase.contains(marker))
+    {
+        "secret_or_pii_quarantined"
+    } else if bytes.is_empty() {
+        "raw_only_restricted"
+    } else {
+        "typed_derivative_ready"
+    };
+    Ok(
+        golish_db::repo::capability_execution_receipts::RawWitnessArtifactInput {
+            artifact_id,
+            content_key: plaintext_sha256.clone(),
+            vault_object_ref_token_hash: sha256_prefixed(&token),
+            vault_object_ref_token: token,
+            sha256: plaintext_sha256,
+            ciphertext_sha256: sha256_prefixed(&object),
+            operation_key_ref_hash,
+            key_generation: 1,
+            retention_policy_id,
+            retention_policy_hash,
+            sensitivity_disposition: sensitivity_disposition.to_string(),
+            original_byte_count,
+            stored_byte_count: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            truncated,
+        },
+    )
+}
+
+fn observed_execution_metrics(
+    artifacts: &[(PathBuf, Value)],
+) -> anyhow::Result<(
+    Vec<golish_db::repo::capability_execution_receipts::ObservedNetworkHopInput>,
+    i64,
+    i64,
+    i64,
+)> {
+    let mut hops = Vec::new();
+    let mut request_count = 0_i64;
+    let mut retry_count = 0_i64;
+    let mut wall_clock_ms = 0_i64;
+    for (_, envelope) in artifacts {
+        let observed = envelope
+            .get("actual_budget")
+            .and_then(|value| value.get("observed_axes"));
+        let requests = observed
+            .and_then(|value| value.get("requests"))
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
+        request_count = request_count.saturating_add(i64::try_from(requests).unwrap_or(i64::MAX));
+        retry_count = retry_count
+            .saturating_add(i64::try_from(requests.saturating_sub(1)).unwrap_or(i64::MAX));
+        wall_clock_ms = wall_clock_ms.saturating_add(
+            observed
+                .and_then(|value| value.get("wall_clock_ms"))
+                .and_then(Value::as_u64)
+                .and_then(|value| i64::try_from(value).ok())
+                .unwrap_or(0),
+        );
+        let Some(network_hops) = envelope.get("network_hops").and_then(Value::as_array) else {
+            continue;
+        };
+        for network_hop in network_hops {
+            let Some(url) = network_hop
+                .get("url")
+                .and_then(Value::as_str)
+                .and_then(|value| url::Url::parse(value).ok())
+            else {
+                continue;
+            };
+            let addresses = network_hop
+                .get("pinned_addresses")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter_map(|value| value.parse::<IpAddr>().ok())
+                .collect::<Vec<_>>();
+            let Some(selected_address) = network_hop
+                .get("selected_address")
+                .and_then(Value::as_str)
+                .and_then(|value| value.parse::<IpAddr>().ok())
+            else {
+                continue;
+            };
+            let Some(send_ordinal) = network_hop
+                .get("send_ordinal")
+                .and_then(Value::as_u64)
+                .and_then(|value| i64::try_from(value).ok())
+            else {
+                continue;
+            };
+            let hop_kind = network_hop
+                .get("hop_kind")
+                .and_then(Value::as_str)
+                .unwrap_or("initial");
+            hops.push(
+                golish_db::repo::capability_execution_receipts::ObservedNetworkHopInput {
+                    hop_kind: hop_kind.to_string(),
+                    scheme: url.scheme().to_string(),
+                    normalized_host: url.host_str().unwrap_or_default().to_string(),
+                    port: i32::from(url.port_or_known_default().unwrap_or(443)),
+                    path_and_query: match url.query() {
+                        Some(query) => format!("{}?{query}", url.path()),
+                        None => url.path().to_string(),
+                    },
+                    addresses: addresses.clone(),
+                    selected_address,
+                    send_ordinal: i64::try_from(hops.len() + 1).unwrap_or(send_ordinal),
+                },
+            );
+        }
+    }
+    Ok((hops, request_count, retry_count, wall_clock_ms))
+}
+
+#[async_trait::async_trait]
+impl golish_recon_app::intel_providers::TargetIntelReceiptObserver for TargetIntelReceiptHost {
+    async fn begin(
+        &self,
+        request: golish_recon_app::intel_providers::TargetIntelReceiptBegin,
+    ) -> anyhow::Result<Option<golish_recon_app::intel_providers::TargetIntelReceiptSession>> {
+        let Some(tool_context) = golish_core::current_agent_tool_context() else {
+            return Ok(None);
+        };
+        let operation_id = tool_context
+            .operation_id
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_TRUSTED_OPERATION_ID_MISSING"))?;
+        let contract = golish_db::repo::operation_state::get_tool_truth_contract(
+            self.pool.as_ref(),
+            operation_id,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_OPERATION_CONTRACT_MISSING"))?;
+        if !contract.writes_receipts() {
+            return Ok(None);
+        }
+        let expected_capability = match tool_context.tool_name.as_str() {
+            "recon_map_assets" => "intel.collect_passive_assets",
+            "recon_lookup_whois" => "intel.collect_whois",
+            _ => anyhow::bail!("TOOL_TRUTH_TARGET_INTEL_TOOL_UNSUPPORTED"),
+        };
+        anyhow::ensure!(
+            request.capability == expected_capability,
+            "TOOL_TRUTH_CAPABILITY_MISMATCH"
+        );
+        let organization_id = tool_context
+            .organization_id
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_TRUSTED_ORGANIZATION_ID_MISSING"))?;
+        let stage_execution_id = tool_context
+            .stage_execution_id
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_STAGE_EXECUTION_MISSING"))?;
+        let attempt_fence = match (
+            tool_context.worker_lease.as_ref(),
+            tool_context.tool_call_record_id,
+        ) {
+            (Some(worker), Some(source_tool_call_id)) => Some(
+                golish_db::repo::capability_execution_receipts::TargetIntelAttemptFence {
+                    worker_run_id: worker.worker_run_id,
+                    stage_run_unit_id: worker.stage_run_unit_id,
+                    lease_token: worker.lease_token,
+                    worker_attempt_epoch: worker.attempt_epoch,
+                    source_tool_call_id,
+                },
+            ),
+            (None, None) => None,
+            _ => anyhow::bail!("TOOL_TRUTH_TARGET_INTEL_WORKER_FENCE_INCOMPLETE"),
+        };
+        let receipt_context =
+            golish_db::repo::capability_execution_receipts::current_target_intel_receipt_context(
+                self.pool.as_ref(),
+                operation_id,
+                organization_id,
+                stage_execution_id,
+                &request.capability,
+                attempt_fence.as_ref(),
+            )
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_TARGET_INTEL_DENOMINATOR_MISSING"))?;
+        let endpoints = request
+            .endpoints
+            .into_iter()
+            .map(
+                |endpoint| golish_db::repo::capability_execution_receipts::FixedProviderEndpoint {
+                    scheme: endpoint.scheme,
+                    normalized_host: endpoint.normalized_host,
+                    port: i32::from(endpoint.port),
+                    path_prefix: endpoint.path_prefix,
+                },
+            )
+            .collect();
+        let policy = golish_db::repo::capability_execution_receipts::seal_fixed_provider_destination_policy(
+            self.pool.as_ref(),
+            &golish_db::repo::capability_execution_receipts::SealFixedProviderDestinationPolicy {
+                denominator_id: receipt_context.denominator_id,
+                capability: request.capability.clone(),
+                endpoints,
+            },
+        )
+        .await?;
+        let attempt_ordinal = i32::try_from(receipt_context.attempt_epoch)
+            .map_err(|_| anyhow::anyhow!("TOOL_TRUTH_ATTEMPT_EPOCH_INVALID"))?;
+        let receipt_id = Uuid::new_v5(
+            &receipt_context.denominator_id,
+            format!("{}:{attempt_ordinal}", request.capability).as_bytes(),
+        );
+        let begin = golish_db::repo::capability_execution_receipts::begin_managed_claim(
+            self.pool.as_ref(),
+            &golish_db::repo::capability_execution_receipts::BeginManagedCapabilityReceipt {
+                id: receipt_id,
+                denominator_id: receipt_context.denominator_id,
+                capability: request.capability,
+                attempt_ordinal,
+                destination_policy_id: policy.id,
+            },
+        )
+        .await?;
+        let receipt = match begin {
+            golish_db::repo::capability_execution_receipts::ManagedReceiptBeginOutcome::Created(
+                receipt,
+            ) => receipt,
+            golish_db::repo::capability_execution_receipts::ManagedReceiptBeginOutcome::TerminalReplay(
+                receipt,
+            ) => {
+                repair_target_intel_source_projection(
+                    self.pool.as_ref(),
+                    &receipt,
+                    organization_id,
+                    &tool_context.request_id,
+                    &tool_context.tool_name,
+                    stage_execution_id,
+                    receipt_context.attempt_epoch,
+                )
+                .await?;
+                return Ok(Some(
+                    golish_recon_app::intel_providers::TargetIntelReceiptSession {
+                        id: receipt.id,
+                        replay_result: Some(receipt.typed_landing),
+                    },
+                ));
+            }
+            golish_db::repo::capability_execution_receipts::ManagedReceiptBeginOutcome::InFlight(
+                _,
+            ) => anyhow::bail!("TOOL_TRUTH_TARGET_INTEL_RECOVERY_REQUIRED"),
+        };
+        let project_path: String = sqlx::query_scalar(
+            "SELECT project_path_at_freeze FROM coverage_denominators WHERE id=$1",
+        )
+        .bind(receipt_context.denominator_id)
+        .fetch_one(self.pool.as_ref())
+        .await?;
+        let project_root = std::fs::canonicalize(project_path)?;
+        self.sessions.lock().await.insert(
+            receipt.id,
+            TargetIntelReceiptHostState {
+                operation_id,
+                organization_id,
+                stage_execution_id,
+                attempt_epoch: receipt_context.attempt_epoch,
+                attempt_fence,
+                request_id: tool_context.request_id,
+                tool_name: tool_context.tool_name,
+                project_root,
+                receipt: receipt.clone(),
+            },
+        );
+        Ok(Some(
+            golish_recon_app::intel_providers::TargetIntelReceiptSession {
+                id: receipt.id,
+                replay_result: None,
+            },
+        ))
+    }
+
+    async fn finalize(
+        &self,
+        session: golish_recon_app::intel_providers::TargetIntelReceiptSession,
+        result: golish_recon_app::intel_providers::TargetIntelReceiptFinalization,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            session.replay_result.is_none(),
+            "TOOL_TRUTH_REPLAY_FINALIZE_INVALID"
+        );
+        let state = self
+            .sessions
+            .lock()
+            .await
+            .get(&session.id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_TARGET_INTEL_SESSION_MISSING"))?;
+        let mut artifacts = Vec::new();
+        for evidence in &result.provider_evidence {
+            collect_provider_execution_artifacts(evidence, &mut artifacts);
+        }
+        let provider_execution_observed = !artifacts.is_empty()
+            && result
+                .provider_evidence
+                .iter()
+                .filter(|evidence| provider_evidence_has_execution(evidence))
+                .all(provider_evidence_executions_complete);
+        let (raw_witness, original_byte_count, truncated, raw_witness_tokens) =
+            bounded_provider_witness(&artifacts)?;
+        let raw_witness =
+            seal_provider_witness(&state, &raw_witness, original_byte_count, truncated)?;
+        let (network_hops, request_count, retry_count, wall_clock_ms) =
+            observed_execution_metrics(&artifacts)?;
+        let response_byte_count = raw_witness.stored_byte_count;
+        let normalized_record_count = result
+            .typed_landing
+            .get("observedTargets")
+            .or_else(|| result.typed_landing.get("targets"))
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                result
+                    .typed_landing
+                    .get("whois_landed")
+                    .and_then(Value::as_bool)
+                    .map(u64::from)
+            })
+            .and_then(|value| i64::try_from(value).ok())
+            .unwrap_or(0);
+        let failure_reason_code = result.failure_reason_code.clone().or_else(|| {
+            (!provider_execution_observed)
+                .then(|| "target_intel_provider_execution_uninstrumented".to_string())
+        });
+        let exact_inputs = sqlx::query_as::<_, (String, String, String, String)>(
+            r#"SELECT i.input_key,i.exact_asset,i.technique,t.target_type::text
+                 FROM coverage_denominator_items i
+                 JOIN targets t ON t.id=i.target_id
+                WHERE i.denominator_id=$1 AND i.expected_capability=$2
+                ORDER BY i.ordinal"#,
+        )
+        .bind(state.receipt.denominator_id)
+        .bind(&state.receipt.capability)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+        let stage_started_at: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT started_at FROM stage_runs WHERE id=$1")
+                .bind(state.stage_execution_id)
+                .fetch_one(self.pool.as_ref())
+                .await?;
+        let assets = exact_inputs
+            .iter()
+            .map(|(_, asset, _, _)| asset.clone())
+            .collect::<Vec<_>>();
+        let types = exact_inputs
+            .iter()
+            .map(|(_, _, _, target_type)| target_type.clone())
+            .collect::<Vec<_>>();
+        let found = golish_db::repo::coverage_truth::coverage_truth_facts(
+            self.pool.as_ref(),
+            Some(state.organization_id),
+            &assets,
+            &types,
+            Some(stage_started_at),
+        )
+        .await?
+        .into_iter()
+        .map(|(asset, technique)| (asset, technique.to_string()))
+        .collect::<std::collections::BTreeSet<_>>();
+        let mut provider_observations = std::collections::BTreeMap::new();
+        for evidence in &result.provider_evidence {
+            collect_provider_input_observations(evidence, &mut provider_observations);
+        }
+        let input_observations = exact_inputs
+            .into_iter()
+            .map(|(input_key, exact_asset, technique, _)| {
+                let observation_state = if found.contains(&(exact_asset.clone(), technique.clone()))
+                {
+                    "found"
+                } else if provider_observations.get(&exact_asset).map(String::as_str)
+                    == Some("no_match")
+                {
+                    "no_match"
+                } else {
+                    "indeterminate"
+                };
+                golish_db::repo::capability_execution_receipts::TargetIntelInputObservation {
+                    input_key,
+                    technique,
+                    observation_state: observation_state.to_string(),
+                }
+            })
+            .collect();
+        let finalized =
+            golish_db::repo::capability_execution_receipts::finalize_target_intel_receipt(
+                self.pool.as_ref(),
+                &golish_db::repo::capability_execution_receipts::FinalizeTargetIntelReceipt {
+                    receipt_id: state.receipt.id,
+                    expected_row_version: state.receipt.row_version,
+                    attempt_fence: state.attempt_fence.clone(),
+                    raw_witness,
+                    network_hops,
+                    request_count,
+                    response_byte_count,
+                    wall_clock_ms,
+                    retry_count,
+                    parser_complete: provider_execution_observed,
+                    normalized_record_count,
+                    input_observations,
+                    typed_landing: result.typed_landing,
+                    failure_reason_code,
+                },
+            )
+            .await?;
+        for token in raw_witness_tokens {
+            golish_recon_app::intel_providers::release_observed_raw_witness(&token);
+        }
+        self.sessions.lock().await.remove(&session.id);
+        repair_target_intel_source_projection(
+            self.pool.as_ref(),
+            &finalized,
+            state.organization_id,
+            &state.request_id,
+            &state.tool_name,
+            state.stage_execution_id,
+            state.attempt_epoch,
+        )
+        .await?;
+        Ok(())
+    }
+}
 
 fn section_requested(include_all: bool, sections: &[String], section: &str) -> bool {
     include_all || sections.iter().any(|s| s == section)

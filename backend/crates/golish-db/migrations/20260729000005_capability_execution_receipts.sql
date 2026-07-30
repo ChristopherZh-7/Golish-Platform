@@ -991,6 +991,7 @@ CREATE TABLE capability_execution_receipts (
         CHECK (typed_landing_contract_version='capability_landing.v1'),
     typed_landing JSONB NOT NULL CHECK (jsonb_typeof(typed_landing)='object'),
     residual JSONB,
+    finalization_request_hash TEXT,
     raw_witness_artifact_id UUID UNIQUE,
     parser_census_id UUID UNIQUE,
     temporal_census_id UUID UNIQUE,
@@ -1007,6 +1008,7 @@ CREATE TABLE capability_execution_receipts (
         AND input_manifest_hash ~ '^sha256:[0-9a-f]{64}$'
         AND destination_policy_hash ~ '^sha256:[0-9a-f]{64}$'
         AND temporal_validity_policy_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND (finalization_request_hash IS NULL OR finalization_request_hash ~ '^sha256:[0-9a-f]{64}$')
         AND (current_semantic_reconciliation_hash IS NULL OR current_semantic_reconciliation_hash ~ '^sha256:[0-9a-f]{64}$')),
     CONSTRAINT capability_execution_receipt_semantic_shape_check CHECK (
         (current_semantic_authority_version=0 AND current_semantic_reconciliation_id IS NULL
@@ -1047,7 +1049,8 @@ BEGIN
         IF (to_jsonb(NEW) - ARRAY[
                 'attempt_state','landing_state','observation_state','coverage_extent',
                 'coverage_gap_reason','reconciliation_state','security_interpretation',
-                'typed_landing','residual','raw_witness_artifact_id','parser_census_id',
+                'typed_landing','residual','finalization_request_hash',
+                'raw_witness_artifact_id','parser_census_id',
                 'temporal_census_id','current_semantic_authority_version',
                 'current_semantic_reconciliation_id','current_semantic_reconciliation_hash',
                 'row_version','observation_completed_at','valid_until','finalized_at'
@@ -1055,7 +1058,8 @@ BEGIN
            (to_jsonb(OLD) - ARRAY[
                 'attempt_state','landing_state','observation_state','coverage_extent',
                 'coverage_gap_reason','reconciliation_state','security_interpretation',
-                'typed_landing','residual','raw_witness_artifact_id','parser_census_id',
+                'typed_landing','residual','finalization_request_hash',
+                'raw_witness_artifact_id','parser_census_id',
                 'temporal_census_id','current_semantic_authority_version',
                 'current_semantic_reconciliation_id','current_semantic_reconciliation_hash',
                 'row_version','observation_completed_at','valid_until','finalized_at'
@@ -1079,6 +1083,40 @@ BEGIN
                 OLD.current_semantic_authority_version+1
             ) THEN
             RAISE EXCEPTION 'tool_truth_receipt_semantic_version_invalid' USING ERRCODE='23514';
+        END IF;
+        IF NEW.coverage_extent='complete' AND (
+            NEW.finalization_request_hash IS NULL
+            OR NOT EXISTS (
+                SELECT 1 FROM capability_execution_network_hops h
+                 WHERE h.receipt_id=NEW.id AND h.sealed_at IS NOT NULL
+            )
+            OR EXISTS (
+                SELECT 1 FROM capability_execution_receipt_inputs i
+                 WHERE i.receipt_id=NEW.id
+                   AND (i.sealed_at IS NULL OR i.coverage_extent<>'complete'
+                        OR COALESCE(i.member_count,0)=0)
+            )
+            OR (SELECT count(*) FROM capability_execution_receipt_inputs i
+                 WHERE i.receipt_id=NEW.id)
+               <> (SELECT count(*) FROM coverage_denominator_items d
+                    WHERE d.denominator_id=NEW.denominator_id
+                      AND d.expected_capability=NEW.capability)
+            OR EXISTS (
+                SELECT 1 FROM capability_execution_budget_contract_axes c
+                LEFT JOIN capability_execution_budget_observations o
+                  ON o.receipt_id=c.receipt_id AND o.axis=c.axis
+                 AND o.execution_authority_id=c.execution_authority_id
+                WHERE c.receipt_id=NEW.id AND c.required_for_complete
+                  AND (o.receipt_id IS NULL OR NOT o.observed)
+            )
+            OR NOT EXISTS (
+                SELECT 1 FROM capability_execution_reconciliations r
+                 WHERE r.id=NEW.current_semantic_reconciliation_id
+                   AND r.receipt_id=NEW.id AND r.reconciliation_state='consistent'
+                   AND r.sealed_at IS NOT NULL AND COALESCE(r.member_count,0)>0
+            )
+        ) THEN
+            RAISE EXCEPTION 'tool_truth_receipt_complete_authority_missing' USING ERRCODE='23514';
         END IF;
         RETURN NEW;
     END IF;
@@ -1622,6 +1660,9 @@ BEGIN
     IF actual_count>0 AND (min_ordinal<>0 OR max_ordinal<>actual_count-1) THEN
         RAISE EXCEPTION 'tool_truth_set_ordinal_invalid' USING ERRCODE='23514';
     END IF;
+    IF NEW.reconciliation_state='consistent' AND actual_count=0 THEN
+        RAISE EXCEPTION 'tool_truth_consistent_reconciliation_requires_lineage' USING ERRCODE='23514';
+    END IF;
 
     NEW.member_count := actual_count;
     NEW.member_set_hash := actual_member_hash;
@@ -1966,3 +2007,372 @@ CREATE TABLE tool_truth_gate_assessments (
 CREATE TRIGGER tool_truth_gate_assessment_append_only
 BEFORE UPDATE OR DELETE ON tool_truth_gate_assessments
 FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();
+
+-- ---------------------------------------------------------------------------
+-- TargetIntel compatibility projection and exact pinned-network hop census.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE source_query_log
+    ADD COLUMN tool_truth_receipt_id UUID,
+    ADD COLUMN tool_truth_stage_execution_id UUID,
+    ADD COLUMN tool_truth_attempt_epoch BIGINT,
+    ADD CONSTRAINT source_query_log_tool_truth_projection_shape_check CHECK (
+        (tool_truth_receipt_id IS NULL AND tool_truth_stage_execution_id IS NULL
+            AND tool_truth_attempt_epoch IS NULL)
+        OR (tool_truth_receipt_id IS NOT NULL AND tool_truth_stage_execution_id IS NOT NULL
+            AND tool_truth_attempt_epoch IS NOT NULL AND tool_truth_attempt_epoch>0)
+    ),
+    ADD CONSTRAINT source_query_log_tool_truth_receipt_fk
+        FOREIGN KEY(tool_truth_receipt_id)
+        REFERENCES capability_execution_receipts(id) ON DELETE RESTRICT,
+    ADD CONSTRAINT source_query_log_tool_truth_stage_execution_fk
+        FOREIGN KEY(tool_truth_stage_execution_id)
+        REFERENCES stage_runs(id) ON DELETE RESTRICT;
+
+CREATE FUNCTION tool_truth_validate_source_query_projection()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    expected_stage_execution_id UUID;
+    expected_attempt_epoch BIGINT;
+    expected_organization_id UUID;
+BEGIN
+    IF NEW.tool_truth_receipt_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    SELECT a.stage_execution_id,r.attempt_ordinal::BIGINT,a.organization_id
+      INTO expected_stage_execution_id,expected_attempt_epoch,expected_organization_id
+      FROM capability_execution_receipts r
+      JOIN tool_truth_execution_authorities a ON a.id=r.execution_authority_id
+     WHERE r.id=NEW.tool_truth_receipt_id FOR SHARE;
+    IF NOT FOUND
+       OR NEW.tool_truth_stage_execution_id IS DISTINCT FROM expected_stage_execution_id
+       OR NEW.tool_truth_attempt_epoch IS DISTINCT FROM expected_attempt_epoch
+       OR NEW.organization_id IS DISTINCT FROM expected_organization_id THEN
+        RAISE EXCEPTION 'tool_truth_source_projection_authority_mismatch'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER source_query_log_tool_truth_projection_guard
+BEFORE INSERT OR UPDATE OF tool_truth_receipt_id,tool_truth_stage_execution_id,
+    tool_truth_attempt_epoch,organization_id ON source_query_log
+FOR EACH ROW EXECUTE FUNCTION tool_truth_validate_source_query_projection();
+
+CREATE TABLE capability_execution_network_hops (
+    id UUID PRIMARY KEY,
+    receipt_id UUID NOT NULL,
+    execution_authority_id UUID NOT NULL,
+    receipt_authority_hash TEXT NOT NULL,
+    hop_ordinal INTEGER NOT NULL CHECK (hop_ordinal>=0),
+    hop_kind TEXT NOT NULL CHECK (hop_kind IN ('initial','redirect','retry')),
+    scheme TEXT NOT NULL CHECK (scheme IN ('https')),
+    normalized_host TEXT NOT NULL CHECK (BTRIM(normalized_host)<>''),
+    port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+    path_and_query_hash TEXT NOT NULL,
+    destination_policy_id UUID NOT NULL,
+    destination_policy_hash TEXT NOT NULL,
+    transport_decision TEXT NOT NULL CHECK (
+        transport_decision IN ('authorized_and_sent','blocked_before_send')),
+    send_ordinal BIGINT CHECK (send_ordinal IS NULL OR send_ordinal>0),
+    member_count BIGINT,
+    member_set_hash TEXT,
+    sealed_empty BOOLEAN NOT NULL DEFAULT FALSE,
+    hop_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    sealed_at TIMESTAMPTZ,
+    CONSTRAINT capability_network_hop_sha256_v1_check CHECK (
+        receipt_authority_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND path_and_query_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND destination_policy_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND hop_hash ~ '^sha256:[0-9a-f]{64}$'
+        AND (member_set_hash IS NULL OR member_set_hash ~ '^sha256:[0-9a-f]{64}$')
+    ),
+    CHECK ((transport_decision='authorized_and_sent' AND send_ordinal IS NOT NULL)
+        OR (transport_decision='blocked_before_send' AND send_ordinal IS NULL)),
+    UNIQUE(receipt_id,hop_ordinal),
+    UNIQUE(id,receipt_id,execution_authority_id),
+    FOREIGN KEY(receipt_id,execution_authority_id,receipt_authority_hash)
+        REFERENCES capability_execution_receipts(id,execution_authority_id,receipt_authority_hash)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(destination_policy_id,execution_authority_id,destination_policy_hash)
+        REFERENCES capability_execution_destination_policies(id,execution_authority_id,policy_hash)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE capability_execution_network_hop_addresses (
+    id UUID PRIMARY KEY,
+    network_hop_id UUID NOT NULL,
+    receipt_id UUID NOT NULL,
+    execution_authority_id UUID NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal>=0),
+    address INET NOT NULL,
+    address_class TEXT NOT NULL CHECK (address_class='public'),
+    selected_for_pin BOOLEAN NOT NULL,
+    member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
+    UNIQUE(network_hop_id,ordinal),
+    UNIQUE(network_hop_id,address),
+    FOREIGN KEY(network_hop_id,receipt_id,execution_authority_id)
+        REFERENCES capability_execution_network_hops(id,receipt_id,execution_authority_id)
+        ON DELETE RESTRICT
+);
+CREATE TRIGGER capability_network_hop_header_guard
+BEFORE INSERT OR UPDATE OR DELETE ON capability_execution_network_hops
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_header(
+    'capability_execution_network_hop_addresses','network_hop_id','member_hash','false');
+CREATE TRIGGER capability_network_hop_address_guard
+BEFORE INSERT OR UPDATE OR DELETE ON capability_execution_network_hop_addresses
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_set_member(
+    'capability_execution_network_hops','id','network_hop_id');
+
+-- ---------------------------------------------------------------------------
+-- Bounded Tool Truth revalidation obligations. Consumers may only append a
+-- deterministic obligation; the background orchestrator is the sole claimant.
+-- Deployment and historical defaults remain manual-only with a held head.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE tool_truth_revalidation_dispatch_policies (
+    operation_id UUID PRIMARY KEY REFERENCES operation_state(operation_id) ON DELETE RESTRICT,
+    dispatch_mode TEXT NOT NULL CHECK (dispatch_mode IN ('manual_only','auto_passive_t0_t1')),
+    max_risk_tier TEXT NOT NULL CHECK (max_risk_tier IN ('T0','T1')),
+    max_attempts INTEGER NOT NULL CHECK (max_attempts BETWEEN 1 AND 100),
+    max_retries INTEGER NOT NULL CHECK (max_retries BETWEEN 0 AND 100),
+    max_no_progress INTEGER NOT NULL CHECK (max_no_progress BETWEEN 1 AND 100),
+    lease_seconds INTEGER NOT NULL CHECK (lease_seconds BETWEEN 1 AND 3600),
+    deadline_seconds INTEGER NOT NULL CHECK (deadline_seconds BETWEEN 1 AND 604800),
+    policy_hash TEXT NOT NULL CHECK (policy_hash ~ '^sha256:[0-9a-f]{64}$'),
+    sealed_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
+);
+CREATE TRIGGER tool_truth_revalidation_policy_immutable
+BEFORE UPDATE OR DELETE ON tool_truth_revalidation_dispatch_policies
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_immutable(
+    'tool_truth_revalidation_policy_immutable');
+
+CREATE TABLE tool_truth_revalidation_dispatch_heads (
+    operation_id UUID PRIMARY KEY REFERENCES operation_state(operation_id) ON DELETE RESTRICT,
+    dispatch_state TEXT NOT NULL CHECK (dispatch_state IN ('held','released')) DEFAULT 'held',
+    generation BIGINT NOT NULL DEFAULT 0 CHECK (generation>=0),
+    row_version BIGINT NOT NULL DEFAULT 0 CHECK (row_version>=0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
+);
+CREATE TRIGGER tool_truth_revalidation_dispatch_head_immutable
+BEFORE UPDATE OR DELETE ON tool_truth_revalidation_dispatch_heads
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_immutable(
+    'tool_truth_revalidation_dispatch_head_production_setter_absent');
+
+CREATE TABLE tool_truth_revalidation_dispatch_events (
+    id UUID PRIMARY KEY,
+    operation_id UUID NOT NULL REFERENCES operation_state(operation_id) ON DELETE RESTRICT,
+    generation BIGINT NOT NULL CHECK (generation>=0),
+    event_type TEXT NOT NULL CHECK (event_type IN ('initialized','released','held')),
+    dispatch_state TEXT NOT NULL CHECK (dispatch_state IN ('held','released')),
+    event_hash TEXT NOT NULL CHECK (event_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(operation_id,generation)
+);
+CREATE TRIGGER tool_truth_revalidation_dispatch_event_append_only
+BEFORE UPDATE OR DELETE ON tool_truth_revalidation_dispatch_events
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();
+
+CREATE TABLE tool_truth_revalidation_obligations (
+    id UUID PRIMARY KEY,
+    operation_id UUID NOT NULL REFERENCES operation_state(operation_id) ON DELETE RESTRICT,
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    source_receipt_id UUID NOT NULL REFERENCES capability_execution_receipts(id) ON DELETE RESTRICT,
+    source_receipt_input_id UUID NOT NULL REFERENCES capability_execution_receipt_inputs(id) ON DELETE RESTRICT,
+    source_input_key TEXT NOT NULL CHECK (BTRIM(source_input_key)<>''),
+    fact_class TEXT NOT NULL CHECK (BTRIM(fact_class)<>''),
+    temporal_policy_id UUID NOT NULL REFERENCES evidence_temporal_validity_policies(id) ON DELETE RESTRICT,
+    reason_code TEXT NOT NULL CHECK (BTRIM(reason_code)<>''),
+    risk_tier TEXT NOT NULL CHECK (risk_tier IN ('T0','T1','T2','T3')),
+    mandatory_axis BOOLEAN NOT NULL,
+    obligation_hash TEXT NOT NULL CHECK (obligation_hash ~ '^sha256:[0-9a-f]{64}$'),
+    status TEXT NOT NULL CHECK (status IN ('open','claimed','succeeded','exhausted','risk_accepted')) DEFAULT 'open',
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count>=0),
+    retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count>=0),
+    no_progress_count INTEGER NOT NULL DEFAULT 0 CHECK (no_progress_count>=0),
+    last_progress_fingerprint TEXT,
+    claim_owner TEXT,
+    claim_token UUID,
+    claim_expires_at TIMESTAMPTZ,
+    claimed_dispatch_generation BIGINT,
+    deadline_at TIMESTAMPTZ NOT NULL,
+    replacement_denominator_id UUID REFERENCES coverage_denominators(id) ON DELETE RESTRICT,
+    replacement_receipt_id UUID REFERENCES capability_execution_receipts(id) ON DELETE RESTRICT,
+    residual JSONB,
+    row_version BIGINT NOT NULL DEFAULT 0 CHECK (row_version>=0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CONSTRAINT tool_truth_revalidation_claim_shape CHECK (
+        (status='claimed' AND claim_owner IS NOT NULL AND BTRIM(claim_owner)<>''
+            AND claim_token IS NOT NULL AND claim_expires_at IS NOT NULL
+            AND claimed_dispatch_generation IS NOT NULL)
+        OR (status<>'claimed' AND claim_owner IS NULL AND claim_token IS NULL
+            AND claim_expires_at IS NULL AND claimed_dispatch_generation IS NULL)),
+    CONSTRAINT tool_truth_revalidation_success_shape CHECK (
+        status<>'succeeded' OR (replacement_denominator_id IS NOT NULL
+            AND replacement_receipt_id IS NOT NULL AND residual IS NULL)),
+    CONSTRAINT tool_truth_revalidation_exhaustion_shape CHECK (
+        status<>'exhausted' OR (residual IS NOT NULL AND jsonb_typeof(residual)='object')),
+    UNIQUE(operation_id,organization_id,source_receipt_id,source_receipt_input_id,
+        source_input_key,fact_class,temporal_policy_id,reason_code),
+    UNIQUE(id,operation_id),
+    UNIQUE(id,operation_id,obligation_hash)
+);
+CREATE INDEX tool_truth_revalidation_open_idx
+    ON tool_truth_revalidation_obligations(operation_id,created_at,id)
+    WHERE status IN ('open','claimed');
+
+CREATE FUNCTION tool_truth_guard_revalidation_obligation()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP='INSERT' THEN
+        IF NEW.status<>'open' OR NEW.row_version<>0 OR NEW.attempt_count<>0
+           OR NEW.retry_count<>0 OR NEW.no_progress_count<>0
+           OR NEW.claim_owner IS NOT NULL OR NEW.claim_token IS NOT NULL
+           OR NEW.replacement_receipt_id IS NOT NULL THEN
+            RAISE EXCEPTION 'tool_truth_revalidation_initial_shape_invalid' USING ERRCODE='23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP='DELETE' THEN
+        RAISE EXCEPTION 'tool_truth_revalidation_obligation_append_only' USING ERRCODE='23514';
+    END IF;
+    IF (to_jsonb(NEW)-ARRAY[
+            'status','attempt_count','retry_count','no_progress_count','last_progress_fingerprint',
+            'claim_owner','claim_token','claim_expires_at','claimed_dispatch_generation',
+            'replacement_denominator_id','replacement_receipt_id','residual','row_version','updated_at'
+        ]) IS DISTINCT FROM
+       (to_jsonb(OLD)-ARRAY[
+            'status','attempt_count','retry_count','no_progress_count','last_progress_fingerprint',
+            'claim_owner','claim_token','claim_expires_at','claimed_dispatch_generation',
+            'replacement_denominator_id','replacement_receipt_id','residual','row_version','updated_at'
+        ]) THEN
+        RAISE EXCEPTION 'tool_truth_revalidation_obligation_identity_immutable' USING ERRCODE='23514';
+    END IF;
+    IF NEW.row_version<>OLD.row_version+1 THEN
+        RAISE EXCEPTION 'tool_truth_revalidation_obligation_cas_required' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER tool_truth_revalidation_obligation_guard
+BEFORE INSERT OR UPDATE OR DELETE ON tool_truth_revalidation_obligations
+FOR EACH ROW EXECUTE FUNCTION tool_truth_guard_revalidation_obligation();
+
+CREATE TABLE tool_truth_revalidation_consumers (
+    id UUID PRIMARY KEY,
+    obligation_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    consumer_kind TEXT NOT NULL CHECK (consumer_kind IN (
+        'candidate','campaign','reporting','ui','report_download')),
+    consumer_key TEXT NOT NULL CHECK (BTRIM(consumer_key)<>''),
+    consumer_hash TEXT NOT NULL CHECK (consumer_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(obligation_id,consumer_kind,consumer_key),
+    FOREIGN KEY(obligation_id,operation_id)
+        REFERENCES tool_truth_revalidation_obligations(id,operation_id) ON DELETE RESTRICT
+);
+CREATE TRIGGER tool_truth_revalidation_consumer_append_only
+BEFORE UPDATE OR DELETE ON tool_truth_revalidation_consumers
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();
+
+CREATE TABLE tool_truth_revalidation_events (
+    id UUID PRIMARY KEY,
+    obligation_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    event_ordinal INTEGER NOT NULL CHECK (event_ordinal>=0),
+    event_type TEXT NOT NULL CHECK (event_type IN (
+        'opened','claimed','reclaimed','failed','exhausted','succeeded','risk_accepted')),
+    claim_token UUID,
+    progress_fingerprint TEXT,
+    replacement_denominator_id UUID,
+    replacement_receipt_id UUID,
+    residual JSONB,
+    event_hash TEXT NOT NULL CHECK (event_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(obligation_id,event_ordinal),
+    FOREIGN KEY(obligation_id,operation_id)
+        REFERENCES tool_truth_revalidation_obligations(id,operation_id) ON DELETE RESTRICT,
+    FOREIGN KEY(replacement_denominator_id) REFERENCES coverage_denominators(id) ON DELETE RESTRICT,
+    FOREIGN KEY(replacement_receipt_id) REFERENCES capability_execution_receipts(id) ON DELETE RESTRICT
+);
+CREATE TRIGGER tool_truth_revalidation_event_append_only
+BEFORE UPDATE OR DELETE ON tool_truth_revalidation_events
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();
+
+CREATE TABLE tool_truth_revalidation_outbox (
+    id UUID PRIMARY KEY,
+    obligation_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    event_ordinal INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload)='object'),
+    payload_hash TEXT NOT NULL CHECK (payload_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(obligation_id,event_ordinal),
+    FOREIGN KEY(obligation_id,event_ordinal)
+        REFERENCES tool_truth_revalidation_events(obligation_id,event_ordinal) ON DELETE RESTRICT,
+    FOREIGN KEY(obligation_id,operation_id)
+        REFERENCES tool_truth_revalidation_obligations(id,operation_id) ON DELETE RESTRICT
+);
+CREATE TRIGGER tool_truth_revalidation_outbox_append_only
+BEFORE UPDATE OR DELETE ON tool_truth_revalidation_outbox
+FOR EACH ROW EXECUTE FUNCTION tool_truth_reject_append_only();
+
+CREATE FUNCTION tool_truth_initialize_revalidation_control()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE policy_hash TEXT;
+BEGIN
+    policy_hash := tool_truth_sha256(jsonb_build_object(
+        'operation_id',NEW.operation_id,'dispatch_mode','manual_only','max_risk_tier','T1',
+        'max_attempts',3,'max_retries',2,'max_no_progress',2,
+        'lease_seconds',60,'deadline_seconds',3600
+    )::TEXT);
+    INSERT INTO tool_truth_revalidation_dispatch_policies(
+        operation_id,dispatch_mode,max_risk_tier,max_attempts,max_retries,
+        max_no_progress,lease_seconds,deadline_seconds,policy_hash
+    ) VALUES(NEW.operation_id,'manual_only','T1',3,2,2,60,3600,policy_hash)
+    ON CONFLICT(operation_id) DO NOTHING;
+    INSERT INTO tool_truth_revalidation_dispatch_heads(operation_id)
+    VALUES(NEW.operation_id) ON CONFLICT(operation_id) DO NOTHING;
+    INSERT INTO tool_truth_revalidation_dispatch_events(
+        id,operation_id,generation,event_type,dispatch_state,event_hash
+    ) VALUES(
+        gen_random_uuid(),NEW.operation_id,0,'initialized','held',
+        tool_truth_sha256(jsonb_build_object(
+            'operation_id',NEW.operation_id,'generation',0,'event_type','initialized',
+            'dispatch_state','held'
+        )::TEXT)
+    ) ON CONFLICT(operation_id,generation) DO NOTHING;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER operation_state_tool_truth_revalidation_initialize
+AFTER INSERT ON operation_state
+FOR EACH ROW EXECUTE FUNCTION tool_truth_initialize_revalidation_control();
+
+INSERT INTO tool_truth_revalidation_dispatch_policies(
+    operation_id,dispatch_mode,max_risk_tier,max_attempts,max_retries,
+    max_no_progress,lease_seconds,deadline_seconds,policy_hash
+)
+SELECT operation_id,'manual_only','T1',3,2,2,60,3600,
+       tool_truth_sha256(jsonb_build_object(
+           'operation_id',operation_id,'dispatch_mode','manual_only','max_risk_tier','T1',
+           'max_attempts',3,'max_retries',2,'max_no_progress',2,
+           'lease_seconds',60,'deadline_seconds',3600
+       )::TEXT)
+FROM operation_state ON CONFLICT(operation_id) DO NOTHING;
+INSERT INTO tool_truth_revalidation_dispatch_heads(operation_id)
+SELECT operation_id FROM operation_state ON CONFLICT(operation_id) DO NOTHING;
+INSERT INTO tool_truth_revalidation_dispatch_events(
+    id,operation_id,generation,event_type,dispatch_state,event_hash
+)
+SELECT gen_random_uuid(),operation_id,0,'initialized','held',
+       tool_truth_sha256(jsonb_build_object(
+           'operation_id',operation_id,'generation',0,'event_type','initialized',
+           'dispatch_state','held'
+       )::TEXT)
+FROM operation_state ON CONFLICT(operation_id,generation) DO NOTHING;

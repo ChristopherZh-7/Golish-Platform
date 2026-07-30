@@ -2631,6 +2631,7 @@ dependencies = [
  "parking_lot",
  "regex",
  "rig-core",
+ "ring",
  "serde",
  "serde_json",
  "serial_test",
@@ -2641,6 +2642,7 @@ dependencies = [
  "tokio",
  "tracing",
  "ts-rs",
+ "url",
  "uuid",
 ]
 
@@ -3388,6 +3390,7 @@ dependencies = [
  "reqwest 0.13.3",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sqlx",
  "tauri",
  "tempfile",

@@ -169,6 +169,10 @@ pub struct PassiveIntelSummary {
     /// second pass; they are never serialized or recursively fed forward.
     #[serde(skip)]
     current_run_domain_roots: Vec<String>,
+    /// Host-only provider artifacts/envelopes used by the Tool Truth observer.
+    /// Never serialized into the model-visible tool result.
+    #[serde(skip)]
+    pub(crate) tool_truth_provider_evidence: Vec<Value>,
 }
 
 fn append_summary_error(error: &mut Option<String>, message: impl Into<String>) {
@@ -272,6 +276,8 @@ pub async fn run_passive_intel(
                             format!("domain-keyed landing was incomplete for {domain}"),
                         );
                     }
+                    let expansion_provider_evidence =
+                        expansion.tool_truth_provider_evidence.clone();
                     summary.domain_expansions.push(DomainExpansionSummary {
                         domain,
                         run_id: expansion.run_id,
@@ -283,6 +289,9 @@ pub async fn run_passive_intel(
                         technique_status: expansion.technique_status,
                         error: expansion.error,
                     });
+                    summary
+                        .tool_truth_provider_evidence
+                        .extend(expansion_provider_evidence);
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -722,6 +731,7 @@ async fn run_passive_intel_once(
         .iter()
         .map(|status| status.provider_id.clone())
         .collect();
+    let tool_truth_provider_evidence = run.evidence.clone();
     Ok(PassiveIntelSummary {
         run_id: run.run_id,
         company: org.name,
@@ -747,6 +757,7 @@ async fn run_passive_intel_once(
         domain_expansions: vec![],
         error: landing_error,
         current_run_domain_roots,
+        tool_truth_provider_evidence,
     })
 }
 
@@ -1283,6 +1294,7 @@ mod tests {
             domain_expansions: vec![],
             error: None,
             current_run_domain_roots: vec!["private.example".into()],
+            tool_truth_provider_evidence: vec![],
         };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["company"], "Acme");

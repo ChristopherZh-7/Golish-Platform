@@ -40,6 +40,7 @@ enum RequestOutcome {
         http_status_code: u16,
         candidates: OrganizationCandidates,
         profile: Vec<ProfileFieldEntry>,
+        tool_truth_envelope: Option<Box<crate::intel_providers::ObservedProviderExecutionEnvelope>>,
     },
     Failed {
         reason: String,
@@ -105,6 +106,18 @@ pub(crate) async fn run_http_json_provider(
     };
     let request_delay = Duration::from_millis(request_delay_ms.unwrap_or(0));
     let max_retries = max_retries.unwrap_or(DEFAULT_HTTP_MAX_RETRIES);
+    let enforce_pinned_transport =
+        match golish_core::current_agent_tool_context().and_then(|context| context.operation_id) {
+            Some(operation_id) => {
+                golish_db::repo::operation_state::get_tool_truth_contract(pool, operation_id)
+                    .await?
+                    .ok_or_else(|| {
+                        GolishError::Internal("TOOL_TRUTH_OPERATION_CONTRACT_MISSING".into())
+                    })?
+                    .writes_receipts()
+            }
+            None => false,
+        };
 
     // Sequential per-request loop; accumulator stays here so every early
     // return path can hand whatever has already been hydrated up to the
@@ -239,6 +252,7 @@ pub(crate) async fn run_http_json_provider(
             run_id,
             &out_dir,
             max_retries,
+            enforce_pinned_transport,
         )
         .await?;
         let response_path = artifact.as_ref().map(|item| item.path.clone());
@@ -251,6 +265,7 @@ pub(crate) async fn run_http_json_provider(
                 http_status_code,
                 candidates: delta,
                 profile,
+                tool_truth_envelope,
             } => {
                 succeeded_requests += 1;
                 let profile_count = profile.len();
@@ -285,6 +300,7 @@ pub(crate) async fn run_http_json_provider(
                     "records": normalized_record_count,
                     "httpStatus": http_status_code,
                     "artifact": response_path,
+                    "toolTruthExecution": tool_truth_envelope,
                 }));
             }
             RequestOutcome::Failed {
@@ -416,6 +432,7 @@ async fn run_one_http_request(
     run_id: &str,
     out_dir: &Path,
     max_retries: u32,
+    enforce_pinned_transport: bool,
 ) -> Result<(Option<ReconArtifactRef>, RequestOutcome), GolishError> {
     let method = match reqwest::Method::from_bytes(request.method.as_bytes()) {
         Ok(method) => method,
@@ -431,6 +448,18 @@ async fn run_one_http_request(
         }
     };
     let url = render_http_template(&request.url, company_name, config, secrets);
+    let pinned_endpoint = if enforce_pinned_transport {
+        Some(
+            crate::intel_providers::validate_fixed_provider_destination(
+                provider_id,
+                &request.url,
+                &url,
+            )
+            .map_err(|error| GolishError::Validation(error.code().to_string()))?,
+        )
+    } else {
+        None
+    };
     let timeout_secs = request.timeout_secs.clamp(1, 120);
     tracing::info!(
         provider = %provider_id,
@@ -481,42 +510,40 @@ async fn run_one_http_request(
     // Send + read the body, retrying transient transport failures (timeout /
     // connection reset / "error decoding response body") and backing off on an
     // HTTP 429 (rate limited) instead of dropping the request.
+    let request_template = builder.build().map_err(|error| {
+        GolishError::Validation(format!("asset_intel request build failed: {error}"))
+    })?;
+    let started = std::time::Instant::now();
     let mut attempt: u32 = 0;
     let mut rate_limit_attempt: u32 = 0;
+    let mut pinned_addresses: Option<Vec<std::net::IpAddr>> = None;
+    let mut selected_address: Option<std::net::IpAddr> = None;
     let (http_status, body_bytes) = loop {
-        let Some(attempt_builder) = builder.try_clone() else {
-            // In-memory bodies always clone; this only trips for streaming
-            // bodies we never build. Degrade to a single best-effort attempt.
-            match builder.send().await {
-                Ok(response) => {
-                    let status = response.status();
-                    match response.bytes().await {
-                        Ok(bytes) => break (status, bytes),
-                        Err(err) => {
-                            return Ok((
-                                None,
-                                RequestOutcome::Failed {
-                                    reason: classify_transport_error(&err).into(),
-                                    message: err.to_string(),
-                                    fatal: false,
-                                },
-                            ));
-                        }
-                    }
-                }
-                Err(err) => {
-                    return Ok((
-                        None,
-                        RequestOutcome::Failed {
-                            reason: classify_transport_error(&err).into(),
-                            message: err.to_string(),
-                            fatal: false,
-                        },
-                    ));
-                }
-            }
+        let Some(attempt_request) = request_template.try_clone() else {
+            return Ok((
+                None,
+                RequestOutcome::Failed {
+                    reason: "request_replay_unavailable".into(),
+                    message: "provider request body cannot be replayed safely".into(),
+                    fatal: false,
+                },
+            ));
         };
-        match attempt_builder.send().await {
+        let send_client = if let Some(endpoint) = pinned_endpoint.as_ref() {
+            let (pinned_client, observed_addresses, observed_selected_address) =
+                crate::intel_providers::build_pinned_provider_client(
+                    endpoint,
+                    pinned_addresses.as_deref(),
+                )
+                .await
+                .map_err(|error| GolishError::Validation(error.code().to_string()))?;
+            pinned_addresses = Some(observed_addresses);
+            selected_address = Some(observed_selected_address);
+            pinned_client
+        } else {
+            client.clone()
+        };
+        match send_client.execute(attempt_request).await {
             Ok(response) => {
                 let status = response.status();
                 // Capture Retry-After before the body read consumes the response.
@@ -602,7 +629,6 @@ async fn run_one_http_request(
             }
         }
     };
-
     // Persist the raw body as evidence before parsing — even failures keep it.
     let response_artifact = write_raw_bytes(
         out_dir,
@@ -658,12 +684,41 @@ async fn run_one_http_request(
             },
         ));
     };
+    let normalized_record_count = next
+        .organizations
+        .len()
+        .saturating_add(next.targets.len())
+        .saturating_add(profile.len());
+    let tool_truth_envelope = pinned_endpoint.as_ref().map(|endpoint| {
+        Box::new(
+            crate::intel_providers::observed_provider_execution_envelope(
+                crate::intel_providers::ObservedProviderEnvelopeInput {
+                    provider_id: provider_id.to_string(),
+                    provider_version: "asset-intel-http-json.v1".to_string(),
+                    input_key: request.id.clone(),
+                    raw_witness_bytes: body_bytes.to_vec(),
+                    normalized_record_count: u64::try_from(normalized_record_count)
+                        .unwrap_or(u64::MAX),
+                    request_count: 1_u64
+                        .saturating_add(u64::from(attempt))
+                        .saturating_add(u64::from(rate_limit_attempt)),
+                    wall_clock_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    endpoint,
+                    pinned_addresses: pinned_addresses.clone().unwrap_or_default(),
+                    selected_address: selected_address
+                        .expect("pinned endpoint always selects one public address"),
+                    exhaustive_empty_contract: false,
+                },
+            ),
+        )
+    });
     Ok((
         Some(response_artifact),
         RequestOutcome::Success {
             http_status_code: http_status.as_u16(),
             candidates: next,
             profile,
+            tool_truth_envelope,
         },
     ))
 }

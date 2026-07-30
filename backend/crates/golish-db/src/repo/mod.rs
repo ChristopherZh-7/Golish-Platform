@@ -108,6 +108,7 @@ pub mod tasks;
 pub mod technique_outcomes;
 pub mod terminal_logs;
 pub mod tool_calls;
+pub mod tool_truth_revalidation;
 pub mod tool_truth_rollout;
 pub mod vault;
 pub mod vector_store_logs;

@@ -445,6 +445,16 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         .filter(|asset| is_organization_coverage_row(asset))
         .map(|asset| asset.value.clone())
         .collect();
+    let tool_truth_contract = match operation_id {
+        Some(operation_id) => {
+            golish_db::repo::operation_state::get_tool_truth_contract(pool, operation_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_OPERATION_CONTRACT_MISSING"))?
+        }
+        None => golish_pentest_domain::tool_truth::ToolTruthContract::LegacyV1,
+    };
+    let receipt_authoritative_target_intel = stage_kind == StageKind::TargetIntel
+        && tool_truth_contract == golish_pentest_domain::tool_truth::ToolTruthContract::ReceiptV1;
 
     let business_found: BTreeSet<(String, String)> =
         golish_db::repo::coverage_truth::coverage_truth_facts(
@@ -466,11 +476,12 @@ pub(crate) async fn stage_asset_coverage_snapshot(
     // EAS business truth corroborates a strict guarded found outcome but cannot
     // terminalise a cell by itself. Enumeration and Vuln Triage likewise use
     // exact-origin outcomes only. Other stages retain direct DB-found rendering.
-    let found = if business_truth_closes_stage_cells(stage_kind) {
-        business_found.clone()
-    } else {
-        BTreeSet::new()
-    };
+    let found =
+        if business_truth_closes_stage_cells(stage_kind) && !receipt_authoritative_target_intel {
+            business_found.clone()
+        } else {
+            BTreeSet::new()
+        };
     // EAS SERVICE is strict per confirmed-open port: once a port exists, it must
     // have a port-level fingerprint attempt/result or an explicit terminal
     // outcome. The DNS/53-only helper remains for Enumeration content axes, but
@@ -497,6 +508,8 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         &organization_asset_values,
         &business_found,
         allow_latest_outcome_fallback,
+        operation_id,
+        tool_truth_contract,
     )
     .await?;
     let vuln_attempt_details = if stage_kind == StageKind::VulnTriage {
@@ -1129,7 +1142,16 @@ async fn stage_outcomes(
     organization_asset_values: &[String],
     business_found: &BTreeSet<(String, String)>,
     allow_latest_fallback: bool,
+    operation_id: Option<Uuid>,
+    tool_truth_contract: golish_pentest_domain::tool_truth::ToolTruthContract,
 ) -> anyhow::Result<BTreeMap<(String, String), OutcomeProjection>> {
+    if stage == StageKind::TargetIntel
+        && tool_truth_contract == golish_pentest_domain::tool_truth::ToolTruthContract::ReceiptV1
+    {
+        let operation_id = operation_id
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_TARGET_INTEL_OPERATION_MISSING"))?;
+        return target_intel_receipt_outcomes(pool, operation_id, organization_id).await;
+    }
     let mut out = BTreeMap::new();
     if !stage_accepts_outcome_projection(stage, run_start.is_some()) {
         return Ok(out);
@@ -1290,6 +1312,75 @@ async fn stage_outcomes(
     }
 
     Ok(out)
+}
+
+async fn target_intel_receipt_outcomes(
+    pool: &sqlx::PgPool,
+    operation_id: Uuid,
+    organization_id: Uuid,
+) -> anyhow::Result<BTreeMap<(String, String), OutcomeProjection>> {
+    golish_db::repo::tool_truth_revalidation::record_expired_target_intel_obligations(
+        pool,
+        operation_id,
+        organization_id,
+        "candidate",
+        &format!("target-intel-gate:{operation_id}:{organization_id}"),
+    )
+    .await?;
+    let Some(projection) =
+        golish_db::repo::capability_execution_receipts::current_target_intel_projection(
+            pool,
+            operation_id,
+            organization_id,
+        )
+        .await?
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let expected = projection
+        .expected
+        .iter()
+        .map(|item| {
+            (
+                item.input_key.as_str(),
+                (item.exact_asset.as_str(), item.technique.as_str()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut outcomes = BTreeMap::new();
+    for receipt in projection.receipts.iter().filter(|receipt| {
+        receipt.denominator_id == projection.denominator_id
+            && receipt.stage_execution_id == projection.stage_execution_id
+            && receipt.attempt_epoch == projection.attempt_epoch
+            && receipt.authority_current
+            && receipt.reconciliation_state == "consistent"
+            && receipt.landing_state == "committed"
+            && receipt.coverage_extent == "complete"
+    }) {
+        let Some((exact_asset, technique)) = expected.get(receipt.input_key.as_str()) else {
+            continue;
+        };
+        if *technique != receipt.technique {
+            continue;
+        }
+        let state = match receipt.observation_state.as_str() {
+            "found" => "found",
+            "no_match" => "checked_empty",
+            _ => continue,
+        };
+        outcomes.insert(
+            (
+                coverage_lookup_asset(exact_asset, technique),
+                (*technique).to_string(),
+            ),
+            OutcomeProjection {
+                state: state.to_string(),
+                source: Some("tool_truth_receipt_v1".to_string()),
+                evidence_refs: Vec::new(),
+            },
+        );
+    }
+    Ok(outcomes)
 }
 
 async fn latest_technique_outcomes(
@@ -5347,5 +5438,153 @@ mod tests {
         assert_eq!(merged.state, "blocked");
         assert_eq!(merged.source.as_deref(), Some("whois"));
         assert_eq!(merged.evidence_refs, vec![1, 2, 3]);
+    }
+
+    fn target_intel_item(
+        denominator_id: Uuid,
+        stage_execution_id: Uuid,
+        attempt_epoch: i64,
+        technique: &str,
+        terminal: bool,
+    ) -> golish_agent_kit::harness::tool_truth::TargetIntelReceiptProjectionRow {
+        golish_agent_kit::harness::tool_truth::TargetIntelReceiptProjectionRow {
+            denominator_id,
+            stage_execution_id,
+            attempt_epoch,
+            input_key: format!("asset\u{1f}{technique}"),
+            technique: technique.to_string(),
+            reconciliation_state: if terminal { "consistent" } else { "pending" }.to_string(),
+            landing_state: if terminal {
+                "committed"
+            } else {
+                "not_attempted"
+            }
+            .to_string(),
+            observation_state: if terminal { "found" } else { "indeterminate" }.to_string(),
+            coverage_extent: if terminal { "complete" } else { "none" }.to_string(),
+            authority_current: terminal,
+        }
+    }
+
+    #[test]
+    fn prior_attempt_source_terminal_rows_cannot_close_current_target_intel() {
+        use golish_agent_kit::harness::tool_truth::{
+            evaluate_current_target_intel_receipts, TargetIntelExpectedInput,
+        };
+        let denominator_id = Uuid::new_v4();
+        let stage_execution_id = Uuid::new_v4();
+        let expected = vec![TargetIntelExpectedInput {
+            input_key: "asset\u{1f}GOLISH-INTEL-DNS".to_string(),
+            exact_asset: "asset".to_string(),
+            technique: "GOLISH-INTEL-DNS".to_string(),
+        }];
+        let old = target_intel_item(
+            denominator_id,
+            stage_execution_id,
+            1,
+            "GOLISH-INTEL-DNS",
+            true,
+        );
+        let assessment = evaluate_current_target_intel_receipts(
+            stage_execution_id,
+            2,
+            denominator_id,
+            "sha256:current",
+            &expected,
+            &[old],
+        );
+        assert_eq!(assessment.control_decision, "hold");
+        assert_eq!(assessment.coverage_grade, "incomplete");
+        assert_eq!(assessment.current_terminal_receipt_count, 0);
+    }
+
+    #[test]
+    fn late_attempt_n_receipt_is_superseded_not_current() {
+        use golish_agent_kit::harness::tool_truth::target_intel_reconciliation_for_attempt;
+        assert_eq!(target_intel_reconciliation_for_attempt(1, 2), "superseded");
+        assert_eq!(target_intel_reconciliation_for_attempt(2, 2), "current");
+    }
+
+    #[test]
+    fn only_exact_current_target_intel_receipt_set_can_complete() {
+        use golish_agent_kit::harness::tool_truth::{
+            evaluate_current_target_intel_receipts, TargetIntelExpectedInput,
+        };
+        let denominator_id = Uuid::new_v4();
+        let stage_execution_id = Uuid::new_v4();
+        let techniques = ["GOLISH-INTEL-DNS", "GOLISH-INTEL-WHOIS"];
+        let expected = techniques
+            .iter()
+            .map(|technique| TargetIntelExpectedInput {
+                input_key: format!("asset\u{1f}{technique}"),
+                exact_asset: "asset".to_string(),
+                technique: (*technique).to_string(),
+            })
+            .collect::<Vec<_>>();
+        let rows = techniques
+            .iter()
+            .map(|technique| {
+                target_intel_item(denominator_id, stage_execution_id, 2, technique, true)
+            })
+            .collect::<Vec<_>>();
+        let assessment = evaluate_current_target_intel_receipts(
+            stage_execution_id,
+            2,
+            denominator_id,
+            "sha256:current",
+            &expected,
+            &rows,
+        );
+        assert_eq!(assessment.control_decision, "allow");
+        assert_eq!(assessment.coverage_grade, "complete");
+        assert_eq!(assessment.receipt_manifest_hash, "sha256:current");
+    }
+
+    #[test]
+    fn current_attempt_missing_one_target_intel_axis_stays_incomplete() {
+        use golish_agent_kit::harness::tool_truth::{
+            evaluate_current_target_intel_receipts, TargetIntelExpectedInput,
+        };
+        let denominator_id = Uuid::new_v4();
+        let stage_execution_id = Uuid::new_v4();
+        let expected = ["GOLISH-INTEL-DNS", "GOLISH-INTEL-WHOIS"]
+            .into_iter()
+            .map(|technique| TargetIntelExpectedInput {
+                input_key: format!("asset\u{1f}{technique}"),
+                exact_asset: "asset".to_string(),
+                technique: technique.to_string(),
+            })
+            .collect::<Vec<_>>();
+        let rows = vec![target_intel_item(
+            denominator_id,
+            stage_execution_id,
+            2,
+            "GOLISH-INTEL-DNS",
+            true,
+        )];
+        let assessment = evaluate_current_target_intel_receipts(
+            stage_execution_id,
+            2,
+            denominator_id,
+            "sha256:current",
+            &expected,
+            &rows,
+        );
+        assert_eq!(assessment.control_decision, "hold");
+        assert_eq!(assessment.missing_techniques, vec!["GOLISH-INTEL-WHOIS"]);
+    }
+
+    #[test]
+    fn target_intel_receipt_projection_keeps_legacy_mode_unchanged() {
+        use golish_agent_kit::harness::tool_truth::target_intel_projection_authority;
+        use golish_pentest_domain::tool_truth::ToolTruthContract;
+        assert_eq!(
+            target_intel_projection_authority(ToolTruthContract::LegacyV1),
+            "legacy_source_projection"
+        );
+        assert_eq!(
+            target_intel_projection_authority(ToolTruthContract::ReceiptV1),
+            "current_exact_receipts"
+        );
     }
 }

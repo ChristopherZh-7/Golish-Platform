@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
+use std::path::PathBuf;
 
 use golish_app_core::GolishError;
 use hickory_resolver::config::{NameServerConfig, ResolverConfig};
@@ -1009,6 +1010,7 @@ pub(crate) struct WhoisLandingOutcome {
     pub(crate) attempted: usize,
     pub(crate) succeeded: usize,
     pub(crate) reason: Option<String>,
+    pub(crate) tool_truth_provider_evidence: Vec<Value>,
 }
 
 fn classify_whois_landing(attempted: usize, succeeded: usize, found: bool) -> WhoisLandingState {
@@ -1044,50 +1046,108 @@ pub(crate) async fn land_whois(
             attempted: 0,
             succeeded: 0,
             reason: Some("no registrable domain".to_string()),
+            tool_truth_provider_evidence: Vec::new(),
         });
     }
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .user_agent("golish-recon/1.0")
-        .build()
-    else {
-        return Ok(WhoisLandingOutcome {
-            state: WhoisLandingState::Error,
-            attempted: domains.len(),
-            succeeded: 0,
-            reason: Some("failed to construct RDAP client".to_string()),
-        });
-    };
 
     let mut whois_value: Option<Value> = None;
     let attempted = domains.len();
     let mut succeeded = 0usize;
     let mut last_error = None;
+    let mut tool_truth_provider_evidence = Vec::new();
+    let evidence_dir = PathBuf::from(&organization.project_path)
+        .join(".golish")
+        .join("tool-truth-provider-evidence")
+        .join(Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&evidence_dir)?;
     for domain in &domains {
         let url = format!("https://rdap.org/domain/{domain}");
-        let resp = match client.get(&url).send().await {
+        let endpoint = match crate::intel_providers::validate_fixed_provider_destination(
+            "rdap",
+            "https://rdap.org/domain/",
+            &url,
+        ) {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                last_error = Some(error.code().to_string());
+                continue;
+            }
+        };
+        let (client, pinned_addresses, selected_address) =
+            match crate::intel_providers::build_pinned_provider_client(&endpoint, None).await {
+                Ok(value) => value,
+                Err(error) => {
+                    last_error = Some(error.code().to_string());
+                    continue;
+                }
+            };
+        let started = std::time::Instant::now();
+        let resp = match client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+        {
             Ok(resp) => resp,
             Err(error) => {
                 last_error = Some(error.to_string());
                 continue;
             }
         };
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        let status = resp.status();
+        let bytes = match resp.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                last_error = Some(error.to_string());
+                continue;
+            }
+        };
+        let artifact = crate::organization_recon::artifacts::write_raw_bytes(
+            &evidence_dir,
+            format!("rdap-{domain}.json"),
+            &bytes,
+            "rdap_response",
+        )?;
+        let envelope = serde_json::to_value(
+            crate::intel_providers::observed_provider_execution_envelope(
+                crate::intel_providers::ObservedProviderEnvelopeInput {
+                    provider_id: "rdap".to_string(),
+                    provider_version: "rdap-json.v1".to_string(),
+                    input_key: domain.clone(),
+                    raw_witness_bytes: bytes.to_vec(),
+                    normalized_record_count: u64::from(status.is_success()),
+                    request_count: 1,
+                    wall_clock_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    endpoint: &endpoint,
+                    pinned_addresses,
+                    selected_address,
+                    exhaustive_empty_contract: status == reqwest::StatusCode::NOT_FOUND,
+                },
+            ),
+        )
+        .unwrap_or_else(|_| json!({}));
+        tool_truth_provider_evidence.push(json!({
+            "requestId": domain,
+            "artifact": artifact.path,
+            "httpStatus": status.as_u16(),
+            "toolTruthExecution": envelope,
+        }));
+        if status == reqwest::StatusCode::NOT_FOUND {
             succeeded += 1;
             continue;
         }
-        if !resp.status().is_success() {
-            last_error = Some(format!("RDAP HTTP {}", resp.status()));
+        if !status.is_success() {
+            last_error = Some(format!("RDAP HTTP {status}"));
             continue;
         }
-        let text = match resp.text().await {
+        let text = match std::str::from_utf8(&bytes) {
             Ok(text) => text,
             Err(error) => {
                 last_error = Some(error.to_string());
                 continue;
             }
         };
-        let value = match serde_json::from_str::<Value>(&text) {
+        let value = match serde_json::from_str::<Value>(text) {
             Ok(value) if value.is_object() => value,
             Ok(_) => {
                 last_error = Some("RDAP response was not an object".to_string());
@@ -1124,6 +1184,7 @@ pub(crate) async fn land_whois(
         succeeded,
         reason: matches!(state, WhoisLandingState::Error)
             .then(|| last_error.unwrap_or_else(|| "all RDAP requests failed".to_string())),
+        tool_truth_provider_evidence,
     })
 }
 

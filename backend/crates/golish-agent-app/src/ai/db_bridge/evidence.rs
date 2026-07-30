@@ -1449,6 +1449,7 @@ impl GolishDbRepoProvider {
             detail: None,
             started_at: None,
             finished_at: Some(chrono::Utc::now()),
+            receipt_binding: None,
         };
         golish_db::repo::source_query_log::upsert(&self.pool, &write).await
     }

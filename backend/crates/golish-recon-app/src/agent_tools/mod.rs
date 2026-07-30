@@ -27,6 +27,10 @@ use crate::asset_intel::{
     list_provider_availability, lookup_company_matches, run_passive_intel, AssetIntelHydrateConfig,
     PassiveIntelPhase,
 };
+use crate::intel_providers::{
+    target_intel_fixed_provider_endpoints, TargetIntelReceiptBegin, TargetIntelReceiptFinalization,
+    TargetIntelReceiptObserver, TargetIntelTechniqueObservation,
+};
 
 /// JSON schema shared by both passive recon tools (free function so it is unit
 /// testable without a live `PgPool`).
@@ -138,6 +142,58 @@ fn candidate_queue_enabled_for_phase(phase: PassiveIntelPhase) -> bool {
     matches!(phase, PassiveIntelPhase::Subsidiaries)
 }
 
+fn execution_envelope_complete(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let Some(budget) = object.get("actual_budget").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(required) = budget.get("required_axes").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(observed) = budget.get("observed_axes").and_then(Value::as_object) else {
+        return false;
+    };
+    object
+        .get("destination_policy_sealed")
+        .and_then(Value::as_bool)
+        == Some(true)
+        && object.get("coverage_extent").and_then(Value::as_str) == Some("complete")
+        && object.get("residual_code").is_none_or(Value::is_null)
+        && object
+            .get("network_hops")
+            .and_then(Value::as_array)
+            .is_some_and(|hops| !hops.is_empty())
+        && required
+            .iter()
+            .filter_map(Value::as_str)
+            .all(|axis| observed.get(axis).is_some_and(Value::is_number))
+}
+
+fn evidence_contains_complete_execution(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(evidence_contains_complete_execution),
+        Value::Object(object) => {
+            object
+                .get("toolTruthExecution")
+                .or_else(|| object.get("tool_truth_execution"))
+                .is_some_and(execution_envelope_complete)
+                || object.values().any(evidence_contains_complete_execution)
+        }
+        _ => false,
+    }
+}
+
+fn instrumented_provider_ids(evidence: &[Value]) -> std::collections::BTreeSet<String> {
+    evidence
+        .iter()
+        .filter(|value| evidence_contains_complete_execution(value))
+        .filter_map(|value| value.get("provider").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
 async fn run_phase(
     pool: &Arc<PgPool>,
     tools: &ToolsConfigState,
@@ -145,6 +201,7 @@ async fn run_phase(
     workspace: &Path,
     phase: PassiveIntelPhase,
     action: &str,
+    receipt_observer: Option<&Arc<dyn TargetIntelReceiptObserver>>,
 ) -> Result<Value> {
     let id = match args.get("organization_id").and_then(|v| v.as_str()) {
         Some(s) if !s.trim().is_empty() => s.trim(),
@@ -210,15 +267,97 @@ async fn run_phase(
         domain,
     };
 
+    let receipt_session = if let Some(observer) = receipt_observer {
+        observer
+            .begin(TargetIntelReceiptBegin {
+                capability: "intel.collect_passive_assets".to_string(),
+                endpoints: target_intel_fixed_provider_endpoints(),
+            })
+            .await?
+    } else {
+        None
+    };
+    if let Some(replay) = receipt_session
+        .as_ref()
+        .and_then(|session| session.replay_result.clone())
+    {
+        let mut replay = replay;
+        if let Some(object) = replay.as_object_mut() {
+            object.insert("action".to_string(), json!(action));
+            object.insert("tool_truth_replayed".to_string(), Value::Bool(true));
+        }
+        return Ok(replay);
+    }
+
     match run_passive_intel(Arc::clone(pool), tools.clone(), uid, phase, config).await {
         Ok(summary) => {
+            if let (Some(observer), Some(session)) = (receipt_observer, receipt_session) {
+                let instrumented = instrumented_provider_ids(&summary.tool_truth_provider_evidence);
+                let mut by_technique =
+                    std::collections::BTreeMap::<String, Vec<(&str, &str)>>::new();
+                for status in &summary.technique_status {
+                    by_technique
+                        .entry(status.technique.clone())
+                        .or_default()
+                        .push((status.source.as_str(), status.status.as_str()));
+                }
+                let technique_observations = by_technique
+                    .into_iter()
+                    .map(|(technique, statuses)| {
+                        let observed = statuses
+                            .iter()
+                            .filter(|(source, _)| instrumented.contains(*source))
+                            .map(|(_, status)| *status)
+                            .collect::<Vec<_>>();
+                        let observation_state = if observed.contains(&"found") {
+                            "found"
+                        } else if observed.contains(&"empty") {
+                            "no_match"
+                        } else {
+                            "indeterminate"
+                        };
+                        TargetIntelTechniqueObservation {
+                            technique,
+                            observation_state: observation_state.to_string(),
+                        }
+                    })
+                    .collect();
+                let typed_landing = serde_json::to_value(&summary).unwrap_or_else(|_| json!({}));
+                observer
+                    .finalize(
+                        session,
+                        TargetIntelReceiptFinalization {
+                            provider_evidence: summary.tool_truth_provider_evidence.clone(),
+                            technique_observations,
+                            typed_landing,
+                            failure_reason_code: summary.error.clone(),
+                        },
+                    )
+                    .await?;
+            }
             let mut value = serde_json::to_value(&summary).unwrap_or_else(|_| json!({}));
             if let Some(map) = value.as_object_mut() {
                 map.insert("action".to_string(), json!(action));
             }
             Ok(value)
         }
-        Err(e) => Ok(json!({"error": e.to_string()})),
+        Err(error) => {
+            let value = json!({"error": error.to_string()});
+            if let (Some(observer), Some(session)) = (receipt_observer, receipt_session) {
+                observer
+                    .finalize(
+                        session,
+                        TargetIntelReceiptFinalization {
+                            provider_evidence: Vec::new(),
+                            technique_observations: Vec::new(),
+                            typed_landing: value.clone(),
+                            failure_reason_code: Some("target_intel_provider_failed".to_string()),
+                        },
+                    )
+                    .await?;
+            }
+            Ok(value)
+        }
     }
 }
 
@@ -257,6 +396,7 @@ impl Tool for ReconDiscoverSubsidiariesTool {
             workspace,
             PassiveIntelPhase::Subsidiaries,
             "discover_subsidiaries",
+            None,
         )
         .await
     }
@@ -270,11 +410,28 @@ impl Tool for ReconDiscoverSubsidiariesTool {
 pub struct ReconMapAssetsTool {
     pool: Arc<PgPool>,
     tools: ToolsConfigState,
+    receipt_observer: Option<Arc<dyn TargetIntelReceiptObserver>>,
 }
 
 impl ReconMapAssetsTool {
     pub fn new(pool: Arc<PgPool>, tools: ToolsConfigState) -> Self {
-        Self { pool, tools }
+        Self {
+            pool,
+            tools,
+            receipt_observer: None,
+        }
+    }
+
+    pub fn with_receipt_observer(
+        pool: Arc<PgPool>,
+        tools: ToolsConfigState,
+        receipt_observer: Arc<dyn TargetIntelReceiptObserver>,
+    ) -> Self {
+        Self {
+            pool,
+            tools,
+            receipt_observer: Some(receipt_observer),
+        }
     }
 }
 
@@ -300,6 +457,7 @@ impl Tool for ReconMapAssetsTool {
             workspace,
             PassiveIntelPhase::Enrich,
             "map_assets",
+            self.receipt_observer.as_ref(),
         )
         .await
     }
@@ -311,11 +469,25 @@ impl Tool for ReconMapAssetsTool {
 /// all-in-one enrich tool. (plan 2026-06-18-slim-enrich)
 pub struct ReconLookupWhoisTool {
     pool: Arc<PgPool>,
+    receipt_observer: Option<Arc<dyn TargetIntelReceiptObserver>>,
 }
 
 impl ReconLookupWhoisTool {
     pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            receipt_observer: None,
+        }
+    }
+
+    pub fn with_receipt_observer(
+        pool: Arc<PgPool>,
+        receipt_observer: Arc<dyn TargetIntelReceiptObserver>,
+    ) -> Self {
+        Self {
+            pool,
+            receipt_observer: Some(receipt_observer),
+        }
     }
 }
 
@@ -361,19 +533,87 @@ impl Tool for ReconLookupWhoisTool {
                 Ok(hosts) => hosts,
                 Err(error) => return Ok(json!({"error": error.to_string()})),
             };
+        let receipt_session = if let Some(observer) = self.receipt_observer.as_ref() {
+            observer
+                .begin(TargetIntelReceiptBegin {
+                    capability: "intel.collect_whois".to_string(),
+                    endpoints: target_intel_fixed_provider_endpoints()
+                        .into_iter()
+                        .filter(|endpoint| endpoint.normalized_host == "rdap.org")
+                        .collect(),
+                })
+                .await?
+        } else {
+            None
+        };
+        if let Some(replay) = receipt_session
+            .as_ref()
+            .and_then(|session| session.replay_result.clone())
+        {
+            return Ok(replay);
+        }
         match crate::organization_recon::land_whois(self.pool.as_ref(), &org, &authorized_hosts)
             .await
         {
-            Ok(outcome) => Ok(json!({
-                "action": "lookup_whois",
-                "organization_id": org_id.to_string(),
-                "whois_landed": matches!(outcome.state, crate::organization_recon::WhoisLandingState::Found),
-                "whois_status": outcome.state.as_str(),
-                "attempted": outcome.attempted,
-                "succeeded": outcome.succeeded,
-                "reason": outcome.reason,
-            })),
-            Err(e) => Ok(json!({"error": e.to_string()})),
+            Ok(outcome) => {
+                let value = json!({
+                    "action": "lookup_whois",
+                    "organization_id": org_id.to_string(),
+                    "whois_landed": matches!(outcome.state, crate::organization_recon::WhoisLandingState::Found),
+                    "whois_status": outcome.state.as_str(),
+                    "attempted": outcome.attempted,
+                    "succeeded": outcome.succeeded,
+                    "reason": outcome.reason,
+                });
+                if let (Some(observer), Some(session)) =
+                    (self.receipt_observer.as_ref(), receipt_session)
+                {
+                    let observation_state = match outcome.state {
+                        crate::organization_recon::WhoisLandingState::Found => "found",
+                        crate::organization_recon::WhoisLandingState::Empty => "no_match",
+                        crate::organization_recon::WhoisLandingState::Error
+                        | crate::organization_recon::WhoisLandingState::Blocked => "indeterminate",
+                    };
+                    observer
+                        .finalize(
+                            session,
+                            TargetIntelReceiptFinalization {
+                                provider_evidence: outcome.tool_truth_provider_evidence,
+                                technique_observations: vec![TargetIntelTechniqueObservation {
+                                    technique: "GOLISH-INTEL-WHOIS".to_string(),
+                                    observation_state: observation_state.to_string(),
+                                }],
+                                typed_landing: value.clone(),
+                                failure_reason_code: (observation_state == "indeterminate")
+                                    .then(|| "whois_incomplete".to_string()),
+                            },
+                        )
+                        .await?;
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                let value = json!({"error": error.to_string()});
+                if let (Some(observer), Some(session)) =
+                    (self.receipt_observer.as_ref(), receipt_session)
+                {
+                    observer
+                        .finalize(
+                            session,
+                            TargetIntelReceiptFinalization {
+                                provider_evidence: Vec::new(),
+                                technique_observations: vec![TargetIntelTechniqueObservation {
+                                    technique: "GOLISH-INTEL-WHOIS".to_string(),
+                                    observation_state: "indeterminate".to_string(),
+                                }],
+                                typed_landing: value.clone(),
+                                failure_reason_code: Some("whois_provider_failed".to_string()),
+                            },
+                        )
+                        .await?;
+                }
+                Ok(value)
+            }
         }
     }
 }

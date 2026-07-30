@@ -419,6 +419,1052 @@ fn compile_test_denominator(
     Ok(items)
 }
 
+fn compile_target_intel_denominator(
+    _stage: &str,
+    assets: &[capability_execution_receipts::LockedDenominatorAsset],
+) -> anyhow::Result<Vec<capability_execution_receipts::CompiledDenominatorItem>> {
+    let mut items = Vec::new();
+    for asset in assets {
+        for (technique, capability) in [
+            ("GOLISH-INTEL-DNS", "intel.dns"),
+            ("GOLISH-INTEL-WHOIS", "intel.whois"),
+        ] {
+            items.push(capability_execution_receipts::CompiledDenominatorItem {
+                input_key: format!(
+                    "{}\u{1f}{}\u{1f}{technique}",
+                    asset.target_id, asset.exact_asset
+                ),
+                target_id: asset.target_id,
+                exact_asset: asset.exact_asset.clone(),
+                technique: technique.to_string(),
+                expected_capability: capability.to_string(),
+            });
+        }
+    }
+    items.sort_by(|left, right| left.input_key.cmp(&right.input_key));
+    Ok(items)
+}
+
+async fn seed_target_intel_denominator(
+    pool: &PgPool,
+    label: &str,
+) -> (
+    FrozenExecution,
+    capability_execution_receipts::CoverageDenominatorRow,
+) {
+    seed_target_intel_denominator_assets(pool, label, &["receipt.example.test"]).await
+}
+
+async fn seed_target_intel_denominator_assets(
+    pool: &PgPool,
+    label: &str,
+    assets: &[&str],
+) -> (
+    FrozenExecution,
+    capability_execution_receipts::CoverageDenominatorRow,
+) {
+    let mut frozen = seed_frozen_execution(pool, label).await;
+    frozen.stage_execution_id = Uuid::new_v4();
+    frozen.stage_kind = "target_intel";
+    sqlx::query(
+        "ALTER TABLE operation_state DISABLE TRIGGER operation_state_tool_truth_contract_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("disable contract immutability inside isolated target_intel fixture");
+    sqlx::query(
+        "UPDATE operation_state SET tool_truth_contract='receipt_v1' WHERE operation_id=$1",
+    )
+    .bind(frozen.operation_id)
+    .execute(pool)
+    .await
+    .expect("freeze target_intel fixture to receipt_v1");
+    sqlx::query(
+        "ALTER TABLE operation_state ENABLE TRIGGER operation_state_tool_truth_contract_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("restore target_intel contract immutability trigger");
+    sqlx::query("UPDATE operation_state SET current_stage='target_intel' WHERE operation_id=$1")
+        .bind(frozen.operation_id)
+        .execute(pool)
+        .await
+        .expect("move isolated fixture operation to target_intel");
+    sqlx::query(
+        "INSERT INTO stage_runs(id,operation_id,stage_kind,status) VALUES($1,$2,'target_intel','started')",
+    )
+    .bind(frozen.stage_execution_id)
+    .bind(frozen.operation_id)
+    .execute(pool)
+    .await
+    .expect("insert target_intel execution");
+    for asset in assets {
+        sqlx::query(
+            r#"INSERT INTO targets(
+                   id,name,target_type,value,scope,project_path,organization_id,source
+               ) VALUES($1,$2,'domain',$2,'in',$3,$4,'tool_truth_fixture')"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(asset)
+        .bind(&frozen.project_path)
+        .bind(frozen.organization_id)
+        .execute(pool)
+        .await
+        .expect("insert target_intel denominator target");
+    }
+    let wave = stage_asset_waves::current_or_create_initial(
+        pool,
+        frozen.operation_id,
+        frozen.organization_id,
+        frozen.stage_kind,
+        chrono::Utc::now() + chrono::Duration::seconds(1),
+        100,
+    )
+    .await
+    .expect("create target_intel wave")
+    .expect("target_intel wave has targets");
+    let denominator = capability_execution_receipts::seal_source_denominator(
+        pool,
+        &capability_execution_receipts::SealSourceDenominator {
+            stable_seal_request_id: Uuid::new_v4(),
+            stage_execution_id: frozen.stage_execution_id,
+            source: capability_execution_receipts::DenominatorSourceRef::StageAssetWave(
+                wave.wave.id,
+            ),
+        },
+        compile_target_intel_denominator,
+    )
+    .await
+    .expect("seal target_intel denominator");
+    (frozen, denominator)
+}
+
+async fn begin_managed_target_intel_receipt(
+    pool: &PgPool,
+    denominator_id: Uuid,
+    capability: &str,
+    attempt_ordinal: i32,
+) -> capability_execution_receipts::CapabilityExecutionReceiptRow {
+    let policy = capability_execution_receipts::seal_fixed_provider_destination_policy(
+        pool,
+        &capability_execution_receipts::SealFixedProviderDestinationPolicy {
+            denominator_id,
+            capability: capability.to_string(),
+            endpoints: vec![capability_execution_receipts::FixedProviderEndpoint {
+                scheme: "https".to_string(),
+                normalized_host: "fixed.provider.example.test".to_string(),
+                port: 443,
+                path_prefix: "/v1/query".to_string(),
+            }],
+        },
+    )
+    .await
+    .expect("seal fixed provider destination policy before send");
+    capability_execution_receipts::begin_managed(
+        pool,
+        &capability_execution_receipts::BeginManagedCapabilityReceipt {
+            id: Uuid::new_v4(),
+            denominator_id,
+            capability: capability.to_string(),
+            attempt_ordinal,
+            destination_policy_id: policy.id,
+        },
+    )
+    .await
+    .expect("begin receipt with exact sealed destination policy")
+}
+
+async fn target_intel_finalization(
+    pool: &PgPool,
+    receipt: &capability_execution_receipts::CapabilityExecutionReceiptRow,
+    observations: &[(&str, &str)],
+) -> capability_execution_receipts::FinalizeTargetIntelReceipt {
+    let input_keys = sqlx::query_as::<_, (String, String)>(
+        r#"SELECT input_key,technique FROM coverage_denominator_items
+            WHERE denominator_id=$1 AND expected_capability=$2"#,
+    )
+    .bind(receipt.denominator_id)
+    .bind(&receipt.capability)
+    .fetch_all(pool)
+    .await
+    .expect("load exact TargetIntel receipt input keys");
+    capability_execution_receipts::FinalizeTargetIntelReceipt {
+        receipt_id: receipt.id,
+        expected_row_version: receipt.row_version,
+        attempt_fence: None,
+        raw_witness: capability_execution_receipts::RawWitnessArtifactInput {
+            artifact_id: Uuid::new_v5(&receipt.id, b"target-intel-test-witness"),
+            content_key: digest_v1('1'),
+            vault_object_ref_token: vec![7_u8; 32],
+            vault_object_ref_token_hash: digest_v1('2'),
+            sha256: digest_v1('1'),
+            ciphertext_sha256: digest_v1('3'),
+            operation_key_ref_hash: digest_v1('4'),
+            key_generation: 1,
+            retention_policy_id: Uuid::new_v5(&receipt.id, b"target-intel-test-retention"),
+            retention_policy_hash: digest_v1('5'),
+            sensitivity_disposition: "typed_derivative_ready".to_string(),
+            original_byte_count: 2,
+            stored_byte_count: 2,
+            truncated: false,
+        },
+        network_hops: vec![capability_execution_receipts::ObservedNetworkHopInput {
+            hop_kind: "initial".to_string(),
+            scheme: "https".to_string(),
+            normalized_host: "fixed.provider.example.test".to_string(),
+            port: 443,
+            path_and_query: "/v1/query?input=receipt.example.test".to_string(),
+            addresses: vec!["1.1.1.1".parse().expect("public fixture IP")],
+            selected_address: "1.1.1.1".parse().expect("public fixture IP"),
+            send_ordinal: 1,
+        }],
+        request_count: 1,
+        response_byte_count: 2,
+        wall_clock_ms: 4,
+        retry_count: 0,
+        parser_complete: true,
+        normalized_record_count: 1,
+        input_observations: observations
+            .iter()
+            .flat_map(|(technique, observation_state)| {
+                input_keys
+                    .iter()
+                    .filter(move |(_, candidate)| candidate == technique)
+                    .map(move |(input_key, _)| {
+                        capability_execution_receipts::TargetIntelInputObservation {
+                            input_key: input_key.clone(),
+                            technique: (*technique).to_string(),
+                            observation_state: (*observation_state).to_string(),
+                        }
+                    })
+            })
+            .collect(),
+        typed_landing: serde_json::json!({
+            "kind": "target_intel_test",
+            "version": 1,
+        }),
+        failure_reason_code: None,
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_managed_begin_requires_exact_sealed_destination_policy() {
+    let (mut db, _data_dir) = fixture("target_intel_managed_policy").await;
+    let (_frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "target-intel-managed-policy").await;
+    let error = capability_execution_receipts::begin_managed(
+        db.pool(),
+        &capability_execution_receipts::BeginManagedCapabilityReceipt {
+            id: Uuid::new_v4(),
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+            attempt_ordinal: 1,
+            destination_policy_id: Uuid::new_v4(),
+        },
+    )
+    .await
+    .expect_err("managed provider I/O cannot begin without an exact sealed policy");
+    assert!(error.to_string().contains("TOOL_TRUTH_AUTHORITY_STALE"));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_managed_claim_is_single_sender_and_policy_exact() {
+    let (mut db, _data_dir) = fixture("target_intel_managed_claim").await;
+    let (_frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "target-intel-managed-claim").await;
+    let first_policy = capability_execution_receipts::seal_fixed_provider_destination_policy(
+        db.pool(),
+        &capability_execution_receipts::SealFixedProviderDestinationPolicy {
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+            endpoints: vec![capability_execution_receipts::FixedProviderEndpoint {
+                scheme: "https".to_string(),
+                normalized_host: "fixed.provider.example.test".to_string(),
+                port: 443,
+                path_prefix: "/v1/query".to_string(),
+            }],
+        },
+    )
+    .await
+    .expect("seal first managed policy");
+    let command = capability_execution_receipts::BeginManagedCapabilityReceipt {
+        id: Uuid::new_v4(),
+        denominator_id: denominator.id,
+        capability: "intel.dns".to_string(),
+        attempt_ordinal: 1,
+        destination_policy_id: first_policy.id,
+    };
+    let first = capability_execution_receipts::begin_managed_claim(db.pool(), &command)
+        .await
+        .expect("first claimant owns the provider send");
+    assert!(matches!(
+        first,
+        capability_execution_receipts::ManagedReceiptBeginOutcome::Created(_)
+    ));
+    let replay = capability_execution_receipts::begin_managed_claim(db.pool(), &command)
+        .await
+        .expect("same execution key returns an in-flight claim");
+    assert!(matches!(
+        replay,
+        capability_execution_receipts::ManagedReceiptBeginOutcome::InFlight(_)
+    ));
+
+    let drifted_policy = capability_execution_receipts::seal_fixed_provider_destination_policy(
+        db.pool(),
+        &capability_execution_receipts::SealFixedProviderDestinationPolicy {
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+            endpoints: vec![capability_execution_receipts::FixedProviderEndpoint {
+                scheme: "https".to_string(),
+                normalized_host: "fixed.provider.example.test".to_string(),
+                port: 443,
+                path_prefix: "/v2/query".to_string(),
+            }],
+        },
+    )
+    .await
+    .expect("seal a distinct policy for drift test");
+    let error = capability_execution_receipts::begin_managed(
+        db.pool(),
+        &capability_execution_receipts::BeginManagedCapabilityReceipt {
+            destination_policy_id: drifted_policy.id,
+            ..command
+        },
+    )
+    .await
+    .expect_err("an existing claim cannot be replayed under a different policy");
+    assert!(error.to_string().contains("TOOL_TRUTH_MANIFEST_DRIFT"));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_current_context_derives_host_attempt_without_stage_run_column() {
+    let (mut db, _data_dir) = fixture("target_intel_current_context").await;
+    let (frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "target-intel-current-context").await;
+    let context = capability_execution_receipts::current_target_intel_receipt_context(
+        db.pool(),
+        frozen.operation_id,
+        frozen.organization_id,
+        frozen.stage_execution_id,
+        "intel.dns",
+        None,
+    )
+    .await
+    .expect("load current host-owned TargetIntel context")
+    .expect("sealed denominator is current");
+    assert_eq!(context.denominator_id, denominator.id);
+    assert_eq!(context.attempt_epoch, 1);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_full_lifecycle_finalizes_exact_current_receipts_and_replays() {
+    let (mut db, _data_dir) = fixture("target_intel_full_lifecycle").await;
+    let (frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "target-intel-full-lifecycle").await;
+    let dns = begin_managed_target_intel_receipt(db.pool(), denominator.id, "intel.dns", 1).await;
+    let dns_close =
+        target_intel_finalization(db.pool(), &dns, &[("GOLISH-INTEL-DNS", "found")]).await;
+    let dns_final =
+        capability_execution_receipts::finalize_target_intel_receipt(db.pool(), &dns_close)
+            .await
+            .expect("atomically finalize DNS receipt lifecycle");
+    assert_eq!(dns_final.reconciliation_state, "consistent");
+    assert_eq!(dns_final.coverage_extent, "complete");
+    let replay =
+        capability_execution_receipts::finalize_target_intel_receipt(db.pool(), &dns_close)
+            .await
+            .expect("response-loss replay returns the exact finalized receipt");
+    assert_eq!(replay.id, dns_final.id);
+    assert_eq!(replay.row_version, dns_final.row_version);
+    let mut drifted_replay = dns_close.clone();
+    drifted_replay.wall_clock_ms += 1;
+    let error =
+        capability_execution_receipts::finalize_target_intel_receipt(db.pool(), &drifted_replay)
+            .await
+            .expect_err("terminal replay must match the complete canonical request");
+    assert!(error.to_string().contains("TOOL_TRUTH_MANIFEST_DRIFT"));
+
+    let whois =
+        begin_managed_target_intel_receipt(db.pool(), denominator.id, "intel.whois", 1).await;
+    let whois_close =
+        target_intel_finalization(db.pool(), &whois, &[("GOLISH-INTEL-WHOIS", "no_match")]).await;
+    capability_execution_receipts::finalize_target_intel_receipt(db.pool(), &whois_close)
+        .await
+        .expect("atomically finalize WHOIS receipt lifecycle");
+
+    let projection = capability_execution_receipts::current_target_intel_projection(
+        db.pool(),
+        frozen.operation_id,
+        frozen.organization_id,
+    )
+    .await
+    .expect("read current receipt projection")
+    .expect("current denominator exists");
+    assert_eq!(projection.attempt_epoch, 1);
+    assert_eq!(projection.receipts.len(), 2);
+    assert!(projection
+        .receipts
+        .iter()
+        .all(|receipt| receipt.authority_current));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_missing_current_technique_stays_orphaned_and_partial() {
+    let (mut db, _data_dir) = fixture("target_intel_missing_technique").await;
+    let (_frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "target-intel-missing-technique").await;
+    let receipt =
+        begin_managed_target_intel_receipt(db.pool(), denominator.id, "intel.dns", 1).await;
+    let close = target_intel_finalization(db.pool(), &receipt, &[]).await;
+    let final_receipt =
+        capability_execution_receipts::finalize_target_intel_receipt(db.pool(), &close)
+            .await
+            .expect("incomplete observations are durably finalized, not promoted");
+    assert_eq!(final_receipt.reconciliation_state, "orphaned");
+    assert_eq!(final_receipt.coverage_extent, "partial");
+    assert_eq!(final_receipt.observation_state, "indeterminate");
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_one_found_input_cannot_close_sibling_same_technique() {
+    let (mut db, _data_dir) = fixture("target_intel_exact_input_observation").await;
+    let (_frozen, denominator) = seed_target_intel_denominator_assets(
+        db.pool(),
+        "target-intel-exact-input-observation",
+        &["a.example.test", "b.example.test"],
+    )
+    .await;
+    let receipt =
+        begin_managed_target_intel_receipt(db.pool(), denominator.id, "intel.dns", 1).await;
+    let mut close =
+        target_intel_finalization(db.pool(), &receipt, &[("GOLISH-INTEL-DNS", "found")]).await;
+    close.input_observations.truncate(1);
+    let finalized = capability_execution_receipts::finalize_target_intel_receipt(db.pool(), &close)
+        .await
+        .expect("seal partial exact-input receipt");
+    assert_eq!(finalized.coverage_extent, "partial");
+    assert_eq!(finalized.reconciliation_state, "orphaned");
+    let inputs = sqlx::query_as::<_, (String, String, String)>(
+        r#"SELECT observation_state,coverage_extent,input_key
+             FROM capability_execution_receipt_inputs
+            WHERE receipt_id=$1 ORDER BY input_key"#,
+    )
+    .bind(finalized.id)
+    .fetch_all(db.pool())
+    .await
+    .expect("read exact sibling input closeouts");
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(
+        inputs
+            .iter()
+            .filter(|(observation, coverage, _)| observation == "found" && coverage == "complete")
+            .count(),
+        1
+    );
+    assert_eq!(
+        inputs
+            .iter()
+            .filter(|(observation, coverage, _)| {
+                observation == "indeterminate" && coverage == "partial"
+            })
+            .count(),
+        1
+    );
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_rejects_ipv4_mapped_private_provider_address() {
+    let (mut db, _data_dir) = fixture("target_intel_ipv4_mapped_private").await;
+    let (_frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "target-intel-ipv4-mapped-private").await;
+    let receipt =
+        begin_managed_target_intel_receipt(db.pool(), denominator.id, "intel.dns", 1).await;
+    let mut close =
+        target_intel_finalization(db.pool(), &receipt, &[("GOLISH-INTEL-DNS", "found")]).await;
+    let mapped = "::ffff:127.0.0.1"
+        .parse()
+        .expect("IPv4-mapped loopback fixture");
+    close.network_hops[0].addresses = vec![mapped];
+    close.network_hops[0].selected_address = mapped;
+    let error = capability_execution_receipts::finalize_target_intel_receipt(db.pool(), &close)
+        .await
+        .expect_err("IPv4-mapped private destinations are never public provider hops");
+    assert!(error.to_string().contains("TOOL_TRUTH_CONTRACT_INVALID"));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_late_prior_managed_closeout_cannot_restore_superseded_authority() {
+    let (mut db, _data_dir) = fixture("target_intel_late_managed_closeout").await;
+    let (_frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "target-intel-late-managed-closeout").await;
+    let prior = begin_managed_target_intel_receipt(db.pool(), denominator.id, "intel.dns", 1).await;
+    let late_close =
+        target_intel_finalization(db.pool(), &prior, &[("GOLISH-INTEL-DNS", "found")]).await;
+    begin_managed_target_intel_receipt(db.pool(), denominator.id, "intel.dns", 2).await;
+
+    let late = capability_execution_receipts::finalize_target_intel_receipt(db.pool(), &late_close)
+        .await
+        .expect("late closeout is retained as superseded instead of becoming current");
+    assert_eq!(late.attempt_state, "superseded");
+    assert_eq!(late.reconciliation_state, "superseded");
+    assert_ne!(late.coverage_extent, "complete");
+    assert!(late.finalization_request_hash.is_some());
+    let raw_closeout_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM capability_raw_witness_artifacts WHERE receipt_id=$1",
+    )
+    .bind(late.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read superseded raw closeout evidence");
+    assert_eq!(raw_closeout_count, 1);
+    db.stop().await;
+}
+
+async fn seed_revalidation_source(
+    pool: &PgPool,
+    label: &str,
+) -> (
+    FrozenExecution,
+    capability_execution_receipts::CapabilityExecutionReceiptRow,
+    Uuid,
+    String,
+    Uuid,
+) {
+    let (frozen, denominator) = seed_target_intel_denominator(pool, label).await;
+    let receipt = begin_managed_target_intel_receipt(pool, denominator.id, "intel.dns", 1).await;
+    let close = target_intel_finalization(pool, &receipt, &[("GOLISH-INTEL-DNS", "found")]).await;
+    let receipt = capability_execution_receipts::finalize_target_intel_receipt(pool, &close)
+        .await
+        .expect("finalize revalidation source receipt");
+    let (input_id, input_key): (Uuid, String) = sqlx::query_as(
+        "SELECT id,input_key FROM capability_execution_receipt_inputs WHERE receipt_id=$1",
+    )
+    .bind(receipt.id)
+    .fetch_one(pool)
+    .await
+    .expect("read exact revalidation source input");
+    let temporal_policy_id: Uuid = sqlx::query_scalar(
+        "SELECT temporal_validity_policy_id FROM capability_execution_receipts WHERE id=$1",
+    )
+    .bind(receipt.id)
+    .fetch_one(pool)
+    .await
+    .expect("read frozen temporal policy");
+    (frozen, receipt, input_id, input_key, temporal_policy_id)
+}
+
+async fn release_revalidation_dispatch_for_test(pool: &PgPool, operation_id: Uuid) {
+    sqlx::query(
+        "ALTER TABLE tool_truth_revalidation_dispatch_policies DISABLE TRIGGER tool_truth_revalidation_policy_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("enable isolated auto-policy fixture");
+    sqlx::query(
+        "UPDATE tool_truth_revalidation_dispatch_policies SET dispatch_mode='auto_passive_t0_t1' WHERE operation_id=$1",
+    )
+    .bind(operation_id)
+    .execute(pool)
+    .await
+    .expect("select explicit auto passive fixture policy");
+    sqlx::query(
+        "ALTER TABLE tool_truth_revalidation_dispatch_policies ENABLE TRIGGER tool_truth_revalidation_policy_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("restore policy immutability");
+    sqlx::query(
+        "ALTER TABLE tool_truth_revalidation_dispatch_heads DISABLE TRIGGER tool_truth_revalidation_dispatch_head_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("enable isolated released-head fixture");
+    sqlx::query(
+        "UPDATE tool_truth_revalidation_dispatch_heads SET dispatch_state='released',generation=1,row_version=1 WHERE operation_id=$1",
+    )
+    .bind(operation_id)
+    .execute(pool)
+    .await
+    .expect("release isolated dispatch head");
+    sqlx::query(
+        "ALTER TABLE tool_truth_revalidation_dispatch_heads ENABLE TRIGGER tool_truth_revalidation_dispatch_head_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("restore dispatch-head immutability");
+}
+
+#[tokio::test]
+#[serial]
+async fn tool_truth_revalidation_deduplicates_consumers_and_default_head_holds_dispatch() {
+    let (mut db, _data_dir) = fixture("tool_truth_revalidation_dedupe").await;
+    let (frozen, receipt, input_id, input_key, temporal_policy_id) =
+        seed_revalidation_source(db.pool(), "tool-truth-revalidation-dedupe").await;
+    let base = golish_db::repo::tool_truth_revalidation::RecordRevalidationObligation {
+        operation_id: frozen.operation_id,
+        organization_id: frozen.organization_id,
+        source_receipt_id: receipt.id,
+        source_receipt_input_id: input_id,
+        source_input_key: input_key,
+        fact_class: "target_intel_dns".to_string(),
+        temporal_policy_id,
+        reason_code: "expired".to_string(),
+        risk_tier: "T1".to_string(),
+        mandatory_axis: true,
+        consumer_kind: "candidate".to_string(),
+        consumer_key: "candidate:one".to_string(),
+    };
+    let first = golish_db::repo::tool_truth_revalidation::record_obligation(db.pool(), &base)
+        .await
+        .expect("record first stale authority obligation");
+    let replay = golish_db::repo::tool_truth_revalidation::record_obligation(
+        db.pool(),
+        &golish_db::repo::tool_truth_revalidation::RecordRevalidationObligation {
+            consumer_kind: "report_download".to_string(),
+            consumer_key: "report:one".to_string(),
+            ..base
+        },
+    )
+    .await
+    .expect("a second consumer joins the exact open obligation");
+    assert_eq!(replay.id, first.id);
+    let consumers: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM tool_truth_revalidation_consumers WHERE obligation_id=$1",
+    )
+    .bind(first.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count deduplicated consumers");
+    assert_eq!(consumers, 2);
+    let policy: (String, String) = sqlx::query_as(
+        "SELECT dispatch_mode,max_risk_tier FROM tool_truth_revalidation_dispatch_policies WHERE operation_id=$1",
+    )
+    .bind(frozen.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read operation-frozen default policy");
+    assert_eq!(policy, ("manual_only".to_string(), "T1".to_string()));
+    let error = golish_db::repo::tool_truth_revalidation::claim_next(
+        db.pool(),
+        &golish_db::repo::tool_truth_revalidation::ClaimRevalidationObligation {
+            operation_id: frozen.operation_id,
+            owner: "background-one".to_string(),
+            expected_dispatch_generation: 0,
+            expected_head_row_version: 0,
+        },
+    )
+    .await
+    .expect_err("deployment-default held head performs zero dispatch");
+    assert!(error
+        .to_string()
+        .contains("TOOL_TRUTH_REVALIDATION_DISPATCH_HELD"));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn tool_truth_revalidation_expired_receipt_is_not_current_and_records_stable_obligation() {
+    let (mut db, _data_dir) = fixture("tool_truth_revalidation_expired_projection").await;
+    let (frozen, receipt, _input_id, _input_key, _temporal_policy_id) =
+        seed_revalidation_source(db.pool(), "tool-truth-revalidation-expired-projection").await;
+    sqlx::query(
+        r#"UPDATE capability_execution_receipts
+              SET valid_until=observation_completed_at+INTERVAL '1 millisecond',
+                  row_version=row_version+1
+            WHERE id=$1"#,
+    )
+    .bind(receipt.id)
+    .execute(db.pool())
+    .await
+    .expect("expire the isolated source receipt");
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let first = golish_db::repo::tool_truth_revalidation::record_expired_target_intel_obligations(
+        db.pool(),
+        frozen.operation_id,
+        frozen.organization_id,
+        "candidate",
+        "candidate:expired",
+    )
+    .await
+    .expect("record exact expired inputs");
+    assert_eq!(first.len(), 1);
+    let replay = golish_db::repo::tool_truth_revalidation::record_expired_target_intel_obligations(
+        db.pool(),
+        frozen.operation_id,
+        frozen.organization_id,
+        "reporting",
+        "reporting:expired",
+    )
+    .await
+    .expect("a second consumer reuses the same obligation");
+    assert_eq!(replay.len(), 1);
+    assert_eq!(first[0].id, replay[0].id);
+    let projection = capability_execution_receipts::current_target_intel_projection(
+        db.pool(),
+        frozen.operation_id,
+        frozen.organization_id,
+    )
+    .await
+    .expect("read current projection")
+    .expect("projection exists");
+    assert!(projection.receipts.iter().all(|row| !row.authority_current));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn tool_truth_revalidation_claims_with_lease_and_exhausts_same_no_progress() {
+    let (mut db, _data_dir) = fixture("tool_truth_revalidation_bounded").await;
+    let (frozen, receipt, input_id, input_key, temporal_policy_id) =
+        seed_revalidation_source(db.pool(), "tool-truth-revalidation-bounded").await;
+    let obligation = golish_db::repo::tool_truth_revalidation::record_obligation(
+        db.pool(),
+        &golish_db::repo::tool_truth_revalidation::RecordRevalidationObligation {
+            operation_id: frozen.operation_id,
+            organization_id: frozen.organization_id,
+            source_receipt_id: receipt.id,
+            source_receipt_input_id: input_id,
+            source_input_key: input_key,
+            fact_class: "target_intel_dns".to_string(),
+            temporal_policy_id,
+            reason_code: "expired".to_string(),
+            risk_tier: "T1".to_string(),
+            mandatory_axis: true,
+            consumer_kind: "candidate".to_string(),
+            consumer_key: "candidate:bounded".to_string(),
+        },
+    )
+    .await
+    .expect("record bounded obligation");
+    release_revalidation_dispatch_for_test(db.pool(), frozen.operation_id).await;
+
+    let claim_command = golish_db::repo::tool_truth_revalidation::ClaimRevalidationObligation {
+        operation_id: frozen.operation_id,
+        owner: "background-bounded".to_string(),
+        expected_dispatch_generation: 1,
+        expected_head_row_version: 1,
+    };
+    let mut current = obligation;
+    for ordinal in 0..3 {
+        let claim = golish_db::repo::tool_truth_revalidation::claim_next(db.pool(), &claim_command)
+            .await
+            .expect("claim bounded obligation")
+            .expect("one obligation remains claimable");
+        assert_eq!(claim.claim_owner.as_deref(), Some("background-bounded"));
+        assert!(claim.claim_token.is_some());
+        current = golish_db::repo::tool_truth_revalidation::record_failure(
+            db.pool(),
+            &golish_db::repo::tool_truth_revalidation::FailRevalidationObligation {
+                obligation_id: claim.id,
+                owner: "background-bounded".to_string(),
+                claim_token: claim.claim_token.expect("claim token"),
+                expected_row_version: claim.row_version,
+                progress_fingerprint: "same-empty-result".to_string(),
+                reason_code: format!("fixture_failure_{ordinal}"),
+            },
+        )
+        .await
+        .expect("record bounded failed attempt");
+    }
+    assert_eq!(current.status, "exhausted");
+    assert!(current.residual.is_some());
+    assert!(current.mandatory_axis);
+    let event_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM tool_truth_revalidation_events WHERE obligation_id=$1",
+    )
+    .bind(current.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count append-only lifecycle events");
+    let outbox_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM tool_truth_revalidation_outbox WHERE obligation_id=$1",
+    )
+    .bind(current.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count typed outbox events");
+    assert_eq!(event_count, outbox_count);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn tool_truth_revalidation_success_requires_new_immutable_authority() {
+    let (mut db, _data_dir) = fixture("tool_truth_revalidation_success").await;
+    let (frozen, source, input_id, input_key, temporal_policy_id) =
+        seed_revalidation_source(db.pool(), "tool-truth-revalidation-success").await;
+    let obligation = golish_db::repo::tool_truth_revalidation::record_obligation(
+        db.pool(),
+        &golish_db::repo::tool_truth_revalidation::RecordRevalidationObligation {
+            operation_id: frozen.operation_id,
+            organization_id: frozen.organization_id,
+            source_receipt_id: source.id,
+            source_receipt_input_id: input_id,
+            source_input_key: input_key,
+            fact_class: "target_intel_dns".to_string(),
+            temporal_policy_id,
+            reason_code: "expired".to_string(),
+            risk_tier: "T1".to_string(),
+            mandatory_axis: true,
+            consumer_kind: "candidate".to_string(),
+            consumer_key: "candidate:success".to_string(),
+        },
+    )
+    .await
+    .expect("record successful replacement obligation");
+    release_revalidation_dispatch_for_test(db.pool(), frozen.operation_id).await;
+    let claim = golish_db::repo::tool_truth_revalidation::claim_next(
+        db.pool(),
+        &golish_db::repo::tool_truth_revalidation::ClaimRevalidationObligation {
+            operation_id: frozen.operation_id,
+            owner: "background-success".to_string(),
+            expected_dispatch_generation: 1,
+            expected_head_row_version: 1,
+        },
+    )
+    .await
+    .expect("claim successful replacement obligation")
+    .expect("replacement obligation is claimable");
+    assert_eq!(claim.id, obligation.id);
+
+    let wave_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM stage_asset_waves WHERE operation_id=$1 AND organization_id=$2 AND stage_kind='target_intel'",
+    )
+    .bind(frozen.operation_id)
+    .bind(frozen.organization_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read frozen TargetIntel source wave");
+    let replacement_denominator = capability_execution_receipts::seal_source_denominator(
+        db.pool(),
+        &capability_execution_receipts::SealSourceDenominator {
+            stable_seal_request_id: Uuid::new_v4(),
+            stage_execution_id: frozen.stage_execution_id,
+            source: capability_execution_receipts::DenominatorSourceRef::StageAssetWave(wave_id),
+        },
+        compile_target_intel_denominator,
+    )
+    .await
+    .expect("seal a new immutable denominator for revalidation");
+    assert_ne!(replacement_denominator.id, source.denominator_id);
+    let replacement =
+        begin_managed_target_intel_receipt(db.pool(), replacement_denominator.id, "intel.dns", 2)
+            .await;
+    let close =
+        target_intel_finalization(db.pool(), &replacement, &[("GOLISH-INTEL-DNS", "found")]).await;
+    let replacement =
+        capability_execution_receipts::finalize_target_intel_receipt(db.pool(), &close)
+            .await
+            .expect("finalize replacement receipt");
+    let completed = golish_db::repo::tool_truth_revalidation::complete_success(
+        db.pool(),
+        &golish_db::repo::tool_truth_revalidation::CompleteRevalidationObligation {
+            obligation_id: claim.id,
+            owner: "background-success".to_string(),
+            claim_token: claim.claim_token.expect("claim token"),
+            expected_row_version: claim.row_version,
+            replacement_denominator_id: replacement_denominator.id,
+            replacement_receipt_id: replacement.id,
+        },
+    )
+    .await
+    .expect("complete with new immutable authority");
+    assert_eq!(completed.status, "succeeded");
+    assert_eq!(completed.source_receipt_id, source.id);
+    assert_eq!(
+        completed.replacement_denominator_id,
+        Some(replacement_denominator.id)
+    );
+    assert_eq!(completed.replacement_receipt_id, Some(replacement.id));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn late_prior_attempt_is_superseded_when_target_intel_attempt_advances() {
+    let (mut db, _data_dir) = fixture("late_prior_attempt").await;
+    let (_frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "late-prior-attempt").await;
+    let prior = capability_execution_receipts::begin(
+        db.pool(),
+        &capability_execution_receipts::BeginCapabilityReceipt {
+            id: Uuid::new_v4(),
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+            attempt_ordinal: 1,
+        },
+    )
+    .await
+    .expect("begin target_intel attempt N");
+    capability_execution_receipts::begin(
+        db.pool(),
+        &capability_execution_receipts::BeginCapabilityReceipt {
+            id: Uuid::new_v4(),
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+            attempt_ordinal: 2,
+        },
+    )
+    .await
+    .expect("begin target_intel attempt N+1");
+    let prior = capability_execution_receipts::get(db.pool(), prior.id)
+        .await
+        .expect("read prior receipt")
+        .expect("prior receipt exists");
+    assert_eq!(prior.attempt_state, "superseded");
+    assert_eq!(prior.reconciliation_state, "superseded");
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_current_projection_uses_only_latest_attempt() {
+    let (mut db, _data_dir) = fixture("target_intel_projection").await;
+    let (frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "target-intel-projection").await;
+    capability_execution_receipts::begin(
+        db.pool(),
+        &capability_execution_receipts::BeginCapabilityReceipt {
+            id: Uuid::new_v4(),
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+            attempt_ordinal: 1,
+        },
+    )
+    .await
+    .expect("begin old target_intel attempt");
+    capability_execution_receipts::begin(
+        db.pool(),
+        &capability_execution_receipts::BeginCapabilityReceipt {
+            id: Uuid::new_v4(),
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+            attempt_ordinal: 2,
+        },
+    )
+    .await
+    .expect("begin current target_intel attempt");
+    let projection = capability_execution_receipts::current_target_intel_projection(
+        db.pool(),
+        frozen.operation_id,
+        frozen.organization_id,
+    )
+    .await
+    .expect("read exact target_intel projection")
+    .expect("sealed denominator is current");
+    assert_eq!(projection.stage_execution_id, frozen.stage_execution_id);
+    assert_eq!(projection.denominator_id, denominator.id);
+    assert_eq!(projection.attempt_epoch, 2);
+    assert_eq!(projection.expected.len(), 2);
+    assert!(projection.receipts.is_empty());
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_network_hop_census_rejects_forged_count_and_late_address() {
+    let (mut db, _data_dir) = fixture("target_intel_network_hop").await;
+    let (_frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "target-intel-network-hop").await;
+    let receipt = capability_execution_receipts::begin(
+        db.pool(),
+        &capability_execution_receipts::BeginCapabilityReceipt {
+            id: Uuid::new_v4(),
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+            attempt_ordinal: 1,
+        },
+    )
+    .await
+    .expect("begin receipt for network-hop census");
+    let (destination_policy_id, destination_policy_hash): (Uuid, String) = sqlx::query_as(
+        "SELECT destination_policy_id,destination_policy_hash FROM capability_execution_receipts WHERE id=$1",
+    )
+    .bind(receipt.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load exact destination policy");
+    let hop_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO capability_execution_network_hops(
+               id,receipt_id,execution_authority_id,receipt_authority_hash,
+               hop_ordinal,hop_kind,scheme,normalized_host,port,path_and_query_hash,
+               destination_policy_id,destination_policy_hash,transport_decision,
+               send_ordinal,hop_hash
+           ) VALUES($1,$2,$3,$4,0,'initial','https','fixed.provider.example.test',443,$5,
+                    $6,$7,'authorized_and_sent',1,$8)"#,
+    )
+    .bind(hop_id)
+    .bind(receipt.id)
+    .bind(receipt.execution_authority_id)
+    .bind(&receipt.receipt_authority_hash)
+    .bind(digest_v1('1'))
+    .bind(destination_policy_id)
+    .bind(destination_policy_hash)
+    .bind(digest_v1('2'))
+    .execute(db.pool())
+    .await
+    .expect("insert open network-hop census");
+    sqlx::query(
+        r#"INSERT INTO capability_execution_network_hop_addresses(
+               id,network_hop_id,receipt_id,execution_authority_id,ordinal,
+               address,address_class,selected_for_pin,member_hash
+           ) VALUES($1,$2,$3,$4,0,'203.0.113.10','public',TRUE,$5)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(hop_id)
+    .bind(receipt.id)
+    .bind(receipt.execution_authority_id)
+    .bind(digest_v1('3'))
+    .execute(db.pool())
+    .await
+    .expect("insert exact resolved address");
+    let forged = sqlx::query(
+        "UPDATE capability_execution_network_hops SET member_count=99,sealed_at=NOW() WHERE id=$1",
+    )
+    .bind(hop_id)
+    .execute(db.pool())
+    .await
+    .expect_err("caller-authored DNS member count must be rejected");
+    assert_database_rejection(&forged, "23514", "tool_truth_member_count_forged");
+    sqlx::query("UPDATE capability_execution_network_hops SET sealed_at=NOW() WHERE id=$1")
+        .bind(hop_id)
+        .execute(db.pool())
+        .await
+        .expect("seal exact network-hop census");
+    let late = sqlx::query(
+        r#"INSERT INTO capability_execution_network_hop_addresses(
+               id,network_hop_id,receipt_id,execution_authority_id,ordinal,
+               address,address_class,selected_for_pin,member_hash
+           ) VALUES($1,$2,$3,$4,1,'203.0.113.11','public',FALSE,$5)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(hop_id)
+    .bind(receipt.id)
+    .bind(receipt.execution_authority_id)
+    .bind(digest_v1('4'))
+    .execute(db.pool())
+    .await
+    .expect_err("sealed network-hop census rejects late DNS members");
+    assert_database_rejection(&late, "23514", "tool_truth_sealed_parent_immutable");
+    db.stop().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn operation_insert_defaults_tool_truth_contract_to_legacy_v1() {
@@ -1705,6 +2751,63 @@ async fn reconciliation_failure_seals_append_only_truth_and_replays() {
     .expect_err("sealed reconciliation is append-only");
     assert_database_rejection(&error, "23514", "tool_truth_sealed_parent_immutable");
 
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn consistent_reconciliation_requires_canonical_lineage_member() {
+    let (mut db, _data_dir) = fixture("consistent_reconciliation_lineage").await;
+    let wave = seed_wave_denominator_fixture(
+        db.pool(),
+        "consistent-reconciliation-lineage",
+        &["a.example"],
+    )
+    .await;
+    let denominator = capability_execution_receipts::seal_wave_denominator(
+        db.pool(),
+        &seal_wave_command(&wave, Uuid::new_v4()),
+    )
+    .await
+    .expect("seal denominator");
+    let receipt = capability_execution_receipts::begin(
+        db.pool(),
+        &capability_execution_receipts::BeginCapabilityReceipt {
+            id: Uuid::new_v4(),
+            denominator_id: denominator.id,
+            capability: "dns_enumeration".to_string(),
+            attempt_ordinal: 1,
+        },
+    )
+    .await
+    .expect("begin receipt");
+    let reconciliation_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO capability_execution_reconciliations(
+               id,receipt_id,execution_authority_id,semantic_authority_version,
+               reconciliation_state
+           ) VALUES($1,$2,$3,1,'pending')"#,
+    )
+    .bind(reconciliation_id)
+    .bind(receipt.id)
+    .bind(receipt.execution_authority_id)
+    .execute(db.pool())
+    .await
+    .expect("open reconciliation");
+    let error = sqlx::query(
+        r#"UPDATE capability_execution_reconciliations
+              SET reconciliation_state='consistent',sealed_at=statement_timestamp()
+            WHERE id=$1"#,
+    )
+    .bind(reconciliation_id)
+    .execute(db.pool())
+    .await
+    .expect_err("consistent state without canonical lineage must be rejected");
+    assert_database_rejection(
+        &error,
+        "23514",
+        "tool_truth_consistent_reconciliation_requires_lineage",
+    );
     db.stop().await;
 }
 

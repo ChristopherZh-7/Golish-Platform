@@ -39,6 +39,16 @@ pub struct SourceQueryLogWrite {
     pub detail: Option<String>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// Canonical receipt binding for compatibility projection rows. `None`
+    /// keeps the row advisory-only and is the only shape legacy_v1 writes.
+    pub receipt_binding: Option<SourceQueryReceiptBinding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceQueryReceiptBinding {
+    pub receipt_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub attempt_epoch: i64,
 }
 
 /// 一条 source_query_log 的只读投影。Gate 只消费 source/query/technique/status/evidence，
@@ -60,9 +70,10 @@ pub struct SourceQueryLogRow {
 const UPSERT_SQL: &str = "\
 INSERT INTO source_query_log \
   (organization_id, run_id, source, query, target, technique, status, \
-   result_count, evidence_ids, detail, started_at, finished_at) \
+   result_count, evidence_ids, detail, started_at, finished_at, \
+   tool_truth_receipt_id, tool_truth_stage_execution_id, tool_truth_attempt_epoch) \
 VALUES \
-  ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+  ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
 ON CONFLICT (organization_id, run_id, source, query, target) DO UPDATE SET \
   technique = EXCLUDED.technique, \
   status = EXCLUDED.status, \
@@ -71,6 +82,9 @@ ON CONFLICT (organization_id, run_id, source, query, target) DO UPDATE SET \
   detail = EXCLUDED.detail, \
   started_at = EXCLUDED.started_at, \
   finished_at = EXCLUDED.finished_at, \
+  tool_truth_receipt_id = EXCLUDED.tool_truth_receipt_id, \
+  tool_truth_stage_execution_id = EXCLUDED.tool_truth_stage_execution_id, \
+  tool_truth_attempt_epoch = EXCLUDED.tool_truth_attempt_epoch, \
   updated_at = NOW()";
 
 const LIST_FOR_RUN_SQL: &str = "\
@@ -81,6 +95,9 @@ ORDER BY created_at ASC, id ASC";
 
 /// upsert 一条 source_query_log（#5 写路径，gray-switch；调用方 warn-only、非致命）。
 pub async fn upsert(pool: &PgPool, w: &SourceQueryLogWrite) -> Result<()> {
+    let receipt_id = w.receipt_binding.map(|binding| binding.receipt_id);
+    let stage_execution_id = w.receipt_binding.map(|binding| binding.stage_execution_id);
+    let attempt_epoch = w.receipt_binding.map(|binding| binding.attempt_epoch);
     sqlx::query(UPSERT_SQL)
         .bind(w.organization_id)
         .bind(&w.run_id)
@@ -94,6 +111,9 @@ pub async fn upsert(pool: &PgPool, w: &SourceQueryLogWrite) -> Result<()> {
         .bind(w.detail.as_deref())
         .bind(w.started_at)
         .bind(w.finished_at)
+        .bind(receipt_id)
+        .bind(stage_execution_id)
+        .bind(attempt_epoch)
         .execute(pool)
         .await?;
     Ok(())
@@ -134,6 +154,9 @@ mod tests {
             "detail",
             "started_at",
             "finished_at",
+            "tool_truth_receipt_id",
+            "tool_truth_stage_execution_id",
+            "tool_truth_attempt_epoch",
         ] {
             assert!(
                 UPSERT_SQL.contains(&format!("{col} = EXCLUDED.{col}")),
@@ -161,11 +184,11 @@ mod tests {
     }
 
     #[test]
-    fn upsert_sql_binds_exactly_twelve_columns() {
-        for n in 1..=12 {
+    fn upsert_sql_binds_exactly_fifteen_columns() {
+        for n in 1..=15 {
             assert!(UPSERT_SQL.contains(&format!("${n}")), "missing bind ${n}");
         }
-        assert!(!UPSERT_SQL.contains("$13"), "must not bind a 13th column");
+        assert!(!UPSERT_SQL.contains("$16"), "must not bind a 16th column");
     }
 
     #[test]
