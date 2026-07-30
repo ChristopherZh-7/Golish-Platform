@@ -7952,3 +7952,23 @@
 - **定向验证方案**：每个 Rust Task 前执行 `just space-guard`；按计划运行精确 nextest filter，受影响 crate scoped Clippy `-D warnings` 与 rustfmt；前端只跑列出的 focused Vitest、受影响文件 Biome 与 typecheck；不运行 `init.sh`、`precommit`、全 workspace/full repo 门禁。
 - **授权与边界**：用户已明确授权唯一 00006、Plan B `golish-db`、计划列出的 generated IPC、分步 commit 与小型 additive 裁决；禁止修改 00005/既有 migration、Plan C/D、rollout promotion、Test1/生产/现存数据库、真实扫描/外部 provider/API、push。
 - **当前状态**：Task 1 `in_progress`；尚未写实现，尚无完成证据。
+
+### 2026-07-30 · Plan B Task 1–4 contract/schema/identity closure
+
+- **已完成**：
+  - Task 1 冻结设计/计划/feature tracking；Task 2 创建唯一 additive `20260729000006_hypothesis_registry.sql`；Task 3 冻结 operation-local Tool Truth+Investigation joint pair、resume/fork/adoption repo contract。
+  - Task 4 新增 core-owned semantic key/UUIDv5、四态 Candidate mutation、host-owned VerificationContract、四类 claim component + verification plan/proof-path reducer、无环 future adjudication DTO、五类 projection catalogs/typed payload；agent-kit 只保留scope-bound reducer、host compiler和 Plan A opaque Checked-bundle adapter。
+  - Task 4 审计后主动收紧：revision使用独立current-head CAS；Candidate Gate header/member成为creating event authority；plan objective直接绑定sealed `VerificationContractV1`；projection payload不再接受caller content hash或generic type tag；Plan C exact-five要求same revision+unique source hash；共享PL/pgSQL trigger用`to_jsonb(NEW)`避免跨表record字段解析。
+- **TDD RED 证据**（每条 Cargo 前均执行`just space-guard`）：
+  - agent-kit Task 4 exact filter：exit 101，缺`harness::hypothesis_registry`、core semantic/contract/verification modules。
+  - core Task 4 exact filter：exit 101，缺`verification_contract.rs`、`hypothesis_verification.rs`、`investigation_projection.rs`。
+  - 加强head/plan/Gate约束后旧DB夹具先被`HYPOTHESIS_ROOT_HEAD_EXACT_ONE_REQUIRED`拦截；升级真实四-root fixture后又暴露共享trigger错误`record "new" has no field "contract_id"`，修正动态record访问后转绿。
+  - 首次完整DB suite run `c734a1af-9711-41df-b155-8f52fb9aa54f`：23/24，唯一失败为测试随机取到shape CHECK而非combinator CHECK；改用`string_agg`审阅同表全部matching constraints后转绿。
+- **GREEN / 已记录证据**：
+  - `cargo nextest run -p golish-core -E 'test(verification_contract_) | test(hypothesis_claim_component_) | test(hypothesis_verification_plan_) | test(hypothesis_revision_adjudication_) | test(investigation_projection_catalog_) | test(projection_plan_b_verification_plan_route_) | test(projection_plan_c_route_catalog_) | test(projection_ts_decl_golden_) | test(projection_source_snapshot_)'` → 21/21 passed，run `12cf9571-7e5b-4ecf-9c5d-b08648e940e5`。
+  - `cargo nextest run -p golish-agent-kit --test hypothesis_registry_gate -E 'test(semantic_) | test(root_) | test(reducer_) | test(provider_completion_) | test(verification_contract_) | test(hypothesis_claim_component_) | test(hypothesis_verification_plan_) | test(hypothesis_revision_adjudication_) | test(candidate_terminal_state_)'` → 14/14 passed，run `86c59bbc-e0f2-4bf5-bf27-b204c4da14f4`。
+  - `cargo nextest run -p golish-db --test hypothesis_registry --no-fail-fast` → 24/24 passed，run `92ba3fb5-1dd7-4122-933b-b6c8b87954ea`；合法proposed Candidate compound提交，Candidate terminal与未安装Plan C authority稳定拒绝。
+  - `cargo clippy -p golish-core --all-targets -- -D warnings`、`cargo clippy -p golish-agent-kit --all-targets -- -D warnings`、`cargo clippy -p golish-db --test hypothesis_registry -- -D warnings` → exit 0；`cargo fmt -p golish-core -p golish-agent-kit -p golish-db`、`git diff --check` → exit 0。
+  - 00005 baseline diff为空；未修改任何既有migration，未运行真实扫描/provider/API、未访问Test1/生产/现存数据库。
+- **提交记录**：`1ddc7432`（Task 1）、`1ed13b38`（Task 2 contract）、`502b4855`（Task 2 schema）、`4f555250`（Task 3 operation rollout）；Task 4 待本轮精确提交。
+- **当前状态**：Task 1–3 committed，Task 4定向门禁已绿；feature仍为`in_progress`，下一步开始Task 5 repo/projector，不宣称Plan B完成。

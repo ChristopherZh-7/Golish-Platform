@@ -2867,7 +2867,7 @@
         "pnpm typecheck"
       ],
       "notes": "依赖 Plan A passing。唯一预留 migration 为 20260729000006_hypothesis_registry.sql；开始 schema/migration 与 generated IPC 前必须重新取得用户明确授权。五态 rollout 初始值保持 legacy_candidate_v1 + legacy_only，Plan B 不提供 promotion；两个新权威 mode 在 Plan C 未实现前只能记录 plan_c_verification_unavailable residual 并转 Reporting。",
-      "evidence": "IN PROGRESS 2026-07-30. 从 Plan A 新 final SHA 1ce1831d1eff797382498e6b99a32bbb9e129bac 创建隔离 worktree /private/tmp/golish-plan-b-v2.h9tNiG 与分支 codex/hypothesis-registry-plan-b-20260730-v2。开工前已确认 Plan A 状态 passing、worktree 干净、唯一 00005 含完整四 root bundle/target epoch/temporal policy，以及 checked/all-fresh opaque same-transaction callback API；未访问现存数据库、未运行扫描/provider/API。后续证据按 Task 1→13 追加。"
+      "evidence": "IN PROGRESS 2026-07-30. 从 Plan A final SHA 1ce1831d1eff797382498e6b99a32bbb9e129bac 创建隔离 worktree /private/tmp/golish-plan-b-v2.h9tNiG 与分支 codex/hypothesis-registry-plan-b-20260730-v2；前置 Plan A/00005/opaque checked+all-fresh callback 均已确认稳定。Task 1-3 commits：1ddc7432、1ed13b38、502b4855、4f555250。Task 4 fresh evidence：core semantic/contract/plan/projection 21/21 run 12cf9571-7e5b-4ecf-9c5d-b08648e940e5；agent-kit reducer/host adapter 14/14 run 86c59bbc-e0f2-4bf5-bf27-b204c4da14f4；golish-db hypothesis_registry 24/24 run 92ba3fb5-1dd7-4122-933b-b6c8b87954ea；golish-core、golish-agent-kit all-target与golish-db hypothesis test Clippy -D warnings均exit 0。唯一00006已冻结append-only revision+head CAS、Candidate Gate creating authority、VerificationContract/Plan exact sets和projection catalogs；00005 baseline diff为空。未访问Test1/生产/现存数据库，未运行真实扫描/provider/API；按AGENTS §0.1未运行未授权全仓门禁。Task 5-13仍待执行。"
     },
     {
       "id": "verification-campaign-prepared-action-oracle-2026-07-29",

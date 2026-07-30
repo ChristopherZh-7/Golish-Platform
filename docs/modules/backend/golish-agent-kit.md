@@ -17,7 +17,7 @@
 
 ## 职责
 
-提供 agent runtime 的下层基础设施层（从 `golish-agent-loop` 在 A2 改名）。高层流式 loop 在兄弟 crate `golish-agent-runtime`（L4b），分家是为了不让改 loop 逻辑重编这层更大的基础设施。harness gate 复用 `golish-pentest` 的 evidence ledger 类型。
+提供 agent runtime 的下层基础设施层（从 `golish-agent-loop` 在 A2 改名）。高层流式 loop 在兄弟 crate `golish-agent-runtime`（L4b），分家是为了不让改 loop 逻辑重编这层更大的基础设施。harness gate 复用 `golish-pentest` 的 evidence ledger 类型。Plan B 的 `harness::hypothesis_registry` 只做host adapter；canonical identity、VerificationContract、verification plan/path 与 projection catalog 仍由 `golish-core` 单一拥有。
 
 ## 公开接口 / 关键类型
 
@@ -31,6 +31,7 @@
 | `harness`（`gate` / `graph_engine` / `handoff_catalog` / `knowledge_context`） | stage harness gate + canonical handoff keys + prompt-safe ContextPack renderer；Candidate classifier 将冻结 observation/hash 映射为 exact replay capability；`StageSpec.runtime_memory` 声明 Unit owner/final-seal，`StageSpec.team_scheduler` 以 closed policy声明 V2 sibling roles、K、dynamic request 与 risk lane；Vuln final seal 用一个可重算的 `TechniqueOutcomeSet` 证明完整 outcome 集合，独立 Finding 仍单独引用 |
 | `db_traits` / `db_tracking` / `db_shim` / `memory_*` | repo/tracking 抽象 + 长期记忆；runtime-aware tool start 固定 exact operation task owner；org-bound evidence append显式携带 trusted organization witness；RuntimeMemory trait暴露 Stage Team plan/claim/output/barrier/repair/operator recovery、Candidate TerminalIntent/barrier/recovery，以及 immutable `StageForkCreate` exact-lineage contract |
 | `OperationStateView` / `OperationContractForkAdoption` | SQLx-free冻结合同视图保留runtime、Tool Truth与Investigation三轴；stage-fork adoption携带typed相邻target和expected hashes，rank/receipt仍由DB host裁决 |
+| `harness::hypothesis_registry::*` | Candidate四态artifact、semantic/root adapter、scope-bound全operator reducer、四类claim component与sealed-contract plan compiler，以及private-field Plan A opaque Checked bundle fail-closed adapter |
 
 `RuntimeMemoryRepository::park_stage_team_finalizer_after_failure` 是 closed Company Controller 的 closeout retry seam：只携带 exact Worker fence、plan/item、durable submission、barrier manifest 与 server checkpoint；生产 bridge 必须原子清租约并排回同一 WorkerRun/message chain，不能把 final-seal failure 当 producer retry。
 

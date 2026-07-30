@@ -6,7 +6,7 @@ use golish_pentest_domain::tool_truth::ToolTruthContract;
 use serial_test::serial;
 use sqlx::{
     migrate::Migrator,
-    postgres::{PgPool, PgPoolOptions},
+    postgres::{PgConnection, PgPool, PgPoolOptions},
     Error as SqlxError,
 };
 use uuid::Uuid;
@@ -80,6 +80,764 @@ async fn insert_operation(pool: &PgPool, operation_id: Uuid) {
 
 fn digest(nibble: char) -> String {
     format!("sha256:{}", nibble.to_string().repeat(64))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CandidateAuthorityFixture {
+    operation_id: Uuid,
+    organization_id: Uuid,
+    snapshot_id: Uuid,
+    analysis_attempt_id: Uuid,
+}
+
+async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> CandidateAuthorityFixture {
+    let operation_id = Uuid::new_v4();
+    let organization_id = Uuid::new_v4();
+    let project_scope_id = Uuid::new_v4();
+    let scope_decision_id = Uuid::new_v4();
+    let scope_snapshot_id = Uuid::new_v4();
+    let project_path = format!("/tmp/{label}-{}", Uuid::new_v4().simple());
+    let stages = [
+        ("ti", "target_intel"),
+        ("eas", "external_attack_surface"),
+        ("enum", "enumeration"),
+        ("vuln", "vuln_triage"),
+    ];
+    let stage_runs = stages.map(|_| Uuid::new_v4());
+
+    sqlx::query(
+        "INSERT INTO project_scopes(project_scope_id,canonical_project_path,path_sha256) \
+         VALUES($1,$2,$3)",
+    )
+    .bind(project_scope_id)
+    .bind(&project_path)
+    .bind(digest('1'))
+    .execute(pool)
+    .await
+    .expect("insert Candidate authority project scope");
+    sqlx::query(
+        r#"INSERT INTO operation_state(
+               operation_id,profile,current_stage,runtime_memory_contract,
+               attack_execution_contract,tool_truth_contract,project_scope_id
+           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','legacy_v1',$2)"#,
+    )
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .execute(pool)
+    .await
+    .expect("insert Candidate authority operation");
+    sqlx::query("INSERT INTO organizations(id,project_path,name) VALUES($1,$2,'Authority Org')")
+        .bind(organization_id)
+        .bind(&project_path)
+        .execute(pool)
+        .await
+        .expect("insert Candidate authority organization");
+    for ((_, stage_kind), stage_run_id) in stages.iter().zip(stage_runs) {
+        sqlx::query(
+            "INSERT INTO stage_runs(id,operation_id,stage_kind,status) VALUES($1,$2,$3,'started')",
+        )
+        .bind(stage_run_id)
+        .bind(operation_id)
+        .bind(*stage_kind)
+        .execute(pool)
+        .await
+        .expect("insert Candidate authority stage run");
+    }
+    sqlx::query(
+        r#"INSERT INTO operation_scope_decisions(
+               id,operation_id,project_scope_id,stage_execution_id,
+               root_organization_id,mode,decision_rows,decision_hash
+           ) VALUES($1,$2,$3,$4,$5,'cli_flags',$6,$7)"#,
+    )
+    .bind(scope_decision_id)
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .bind(stage_runs[0])
+    .bind(organization_id)
+    .bind(serde_json::json!([{"organization_id": organization_id}]))
+    .bind(digest('2'))
+    .execute(pool)
+    .await
+    .expect("insert Candidate authority scope decision");
+
+    let mut scope_tx = pool.begin().await.expect("begin Candidate scope seal");
+    sqlx::query(
+        r#"INSERT INTO operation_org_scope_snapshots(
+               id,operation_id,project_scope_id,scope_decision_id,
+               project_path_at_freeze,root_organization_id,mode,scope_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,'cli_flags',$7)"#,
+    )
+    .bind(scope_snapshot_id)
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .bind(scope_decision_id)
+    .bind(&project_path)
+    .bind(organization_id)
+    .bind(digest('3'))
+    .execute(&mut *scope_tx)
+    .await
+    .expect("insert Candidate scope snapshot");
+    sqlx::query(
+        r#"INSERT INTO operation_org_scope_units(
+               snapshot_id,organization_id,organization_name_at_freeze,
+               role,depth,ordinal,decision_row_id,approval_source
+           ) VALUES($1,$2,'Authority Org','root',0,0,'root',$3)"#,
+    )
+    .bind(scope_snapshot_id)
+    .bind(organization_id)
+    .bind(serde_json::json!({"source": "fixture"}))
+    .execute(&mut *scope_tx)
+    .await
+    .expect("insert Candidate scope member");
+    sqlx::query("UPDATE operation_org_scope_snapshots SET sealed_at=NOW() WHERE id=$1")
+        .bind(scope_snapshot_id)
+        .execute(&mut *scope_tx)
+        .await
+        .expect("seal Candidate scope snapshot");
+    scope_tx
+        .commit()
+        .await
+        .expect("commit Candidate scope seal");
+
+    let bundle_id = Uuid::new_v4();
+    let stable_consumer_request_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO tool_truth_authority_bundle_seals(
+               id,operation_id,project_scope_id,project_path_at_freeze,
+               scope_snapshot_id,organization_id,consumer_kind,stable_consumer_request_id
+           ) VALUES($1,$2,$3,$4,$5,$6,'candidate_analysis',$7)"#,
+    )
+    .bind(bundle_id)
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .bind(&project_path)
+    .bind(scope_snapshot_id)
+    .bind(organization_id)
+    .bind(stable_consumer_request_id)
+    .execute(pool)
+    .await
+    .expect("insert unsealed four-root authority bundle");
+
+    for (ordinal, (((root_family, stage_kind), stage_run_id), hash_nibble)) in stages
+        .iter()
+        .zip(stage_runs)
+        .zip(['4', '5', '6', '7'])
+        .enumerate()
+    {
+        let execution_authority_id = Uuid::new_v4();
+        let authority_hash: String = sqlx::query_scalar(
+            r#"INSERT INTO tool_truth_execution_authorities(
+                   id,stable_authority_request_id,operation_id,project_scope_id,
+                   project_path_at_freeze,scope_snapshot_id,organization_id,
+                   stage_execution_id,stage_kind,execution_source_kind,
+                   execution_owner_kind,authority_hash
+               ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'stage_execution','host_stage',$10)
+               RETURNING authority_hash"#,
+        )
+        .bind(execution_authority_id)
+        .bind(Uuid::new_v4())
+        .bind(operation_id)
+        .bind(project_scope_id)
+        .bind(&project_path)
+        .bind(scope_snapshot_id)
+        .bind(organization_id)
+        .bind(stage_run_id)
+        .bind(*stage_kind)
+        .bind(digest(hash_nibble))
+        .fetch_one(pool)
+        .await
+        .expect("insert root execution authority");
+
+        let denominator_id = Uuid::new_v4();
+        let denominator_hash = digest(hash_nibble);
+        sqlx::query(
+            r#"INSERT INTO coverage_denominators(
+                   id,stable_seal_request_id,execution_authority_id,operation_id,
+                   project_scope_id,project_path_at_freeze,scope_snapshot_id,
+                   organization_id,stage_execution_id,stage_kind,execution_authority_hash,
+                   contract,input_manifest_hash,denominator_hash
+               ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'receipt_v1',$12,$13)"#,
+        )
+        .bind(denominator_id)
+        .bind(Uuid::new_v4())
+        .bind(execution_authority_id)
+        .bind(operation_id)
+        .bind(project_scope_id)
+        .bind(&project_path)
+        .bind(scope_snapshot_id)
+        .bind(organization_id)
+        .bind(stage_run_id)
+        .bind(*stage_kind)
+        .bind(&authority_hash)
+        .bind(digest('8'))
+        .bind(&denominator_hash)
+        .execute(pool)
+        .await
+        .expect("insert empty root denominator");
+        sqlx::query("UPDATE coverage_denominators SET sealed_at=NOW() WHERE id=$1")
+            .bind(denominator_id)
+            .execute(pool)
+            .await
+            .expect("seal empty root denominator");
+
+        let authority_set_id = Uuid::new_v4();
+        let semantic_hash = digest(hash_nibble);
+        let graph_hash = digest('9');
+        let freshness_hash = digest('a');
+        sqlx::query(
+            r#"INSERT INTO tool_truth_authority_set_seals(
+                   id,stable_consumer_request_id,execution_authority_id,denominator_id,
+                   denominator_hash,consumer_kind,graph_hash,semantic_hash,freshness_hash
+               ) VALUES($1,$2,$3,$4,$5,'candidate_analysis',$6,$7,$8)"#,
+        )
+        .bind(authority_set_id)
+        .bind(Uuid::new_v4())
+        .bind(execution_authority_id)
+        .bind(denominator_id)
+        .bind(&denominator_hash)
+        .bind(&graph_hash)
+        .bind(&semantic_hash)
+        .bind(&freshness_hash)
+        .execute(pool)
+        .await
+        .expect("insert empty authority set");
+        sqlx::query("UPDATE tool_truth_authority_set_seals SET sealed_at=NOW() WHERE id=$1")
+            .bind(authority_set_id)
+            .execute(pool)
+            .await
+            .expect("seal empty authority set");
+
+        sqlx::query(
+            r#"INSERT INTO tool_truth_authority_bundle_members(
+                   id,bundle_seal_id,operation_id,organization_id,ordinal,root_family,
+                   root_execution_authority_id,root_denominator_id,root_denominator_hash,
+                   authority_set_seal_id,authority_set_semantic_hash,
+                   authority_set_graph_hash,authority_set_freshness_hash,
+                   temporal_validity_policy_set_hash,target_state_epoch_set_hash,
+                   observation_window_started_at,observation_window_completed_at,
+                   effective_valid_until,semantic_status,temporal_validity_status,
+                   member_status,member_hash
+               ) VALUES(
+                   $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+                   NOW()-INTERVAL '2 minutes',NOW()-INTERVAL '1 minute',
+                   NOW()+INTERVAL '10 minutes','consistent','fresh','consistent_fresh',$16
+               )"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(bundle_id)
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(ordinal as i32)
+        .bind(*root_family)
+        .bind(execution_authority_id)
+        .bind(denominator_id)
+        .bind(&denominator_hash)
+        .bind(authority_set_id)
+        .bind(&semantic_hash)
+        .bind(&graph_hash)
+        .bind(&freshness_hash)
+        .bind(digest('b'))
+        .bind(digest('c'))
+        .bind(digest(hash_nibble))
+        .execute(pool)
+        .await
+        .expect("insert fresh authority bundle member");
+    }
+    sqlx::query("UPDATE tool_truth_authority_bundle_seals SET sealed_at=NOW() WHERE id=$1")
+        .bind(bundle_id)
+        .execute(pool)
+        .await
+        .expect("seal four-root authority bundle");
+
+    let snapshot_id = Uuid::new_v4();
+    let analysis_attempt_id = Uuid::new_v4();
+    let mut candidate_tx = pool
+        .begin()
+        .await
+        .expect("begin Candidate snapshot fixture");
+    sqlx::query(
+        r#"INSERT INTO candidate_analysis_snapshots(
+               snapshot_id,operation_id,organization_id,wave_ordinal,scope_snapshot_id,
+               genesis,source_set_hash,capability_revision_hash,policy_revision_hash,
+               credential_revision_hash,snapshot_status,tool_truth_authority_bundle_seal_id,
+               stable_consumer_request_id,relevant_root_count,relevant_root_set_hash,
+               bundle_member_count,bundle_member_set_hash,semantic_authority_bundle_hash,
+               freshness_attestation_bundle_hash,temporal_validity_bundle_hash,
+               temporal_validity_policy_set_hash,target_state_epoch_set_hash,
+               observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash
+           ) SELECT $1,operation_id,organization_id,0,scope_snapshot_id,TRUE,$2,$3,$4,$5,
+                    'sealed_ready',id,stable_consumer_request_id,relevant_root_count,
+                    relevant_root_set_hash,member_count,member_set_hash,
+                    semantic_authority_bundle_hash,freshness_attestation_bundle_hash,
+                    temporal_validity_bundle_hash,temporal_validity_policy_set_hash,
+                    target_state_epoch_set_hash,$6,sealed_at,$7
+               FROM tool_truth_authority_bundle_seals WHERE id=$8"#,
+    )
+    .bind(snapshot_id)
+    .bind(digest('d'))
+    .bind(digest('e'))
+    .bind(digest('f'))
+    .bind(digest('0'))
+    .bind(digest('1'))
+    .bind(digest('2'))
+    .bind(bundle_id)
+    .execute(&mut *candidate_tx)
+    .await
+    .expect("insert ready Candidate snapshot");
+    sqlx::query(
+        r#"INSERT INTO candidate_analysis_snapshot_authority_bundle_members(
+               snapshot_member_id,snapshot_id,operation_id,organization_id,bundle_seal_id,
+               tool_truth_authority_bundle_member_id,ordinal,root_family,
+               root_execution_authority_id,root_denominator_id,root_denominator_hash,
+               authority_set_seal_id,authority_set_semantic_hash,authority_set_graph_hash,
+               authority_set_freshness_hash,temporal_validity_policy_set_hash,
+               target_state_epoch_set_hash,semantic_status,temporal_validity_status,
+               member_status,member_hash
+           ) SELECT gen_random_uuid(),$1,operation_id,organization_id,bundle_seal_id,id,
+                    ordinal,root_family,root_execution_authority_id,root_denominator_id,
+                    root_denominator_hash,authority_set_seal_id,authority_set_semantic_hash,
+                    authority_set_graph_hash,authority_set_freshness_hash,
+                    temporal_validity_policy_set_hash,target_state_epoch_set_hash,
+                    semantic_status,temporal_validity_status,member_status,member_hash
+               FROM tool_truth_authority_bundle_members WHERE bundle_seal_id=$2"#,
+    )
+    .bind(snapshot_id)
+    .bind(bundle_id)
+    .execute(&mut *candidate_tx)
+    .await
+    .expect("copy exact four-root Candidate snapshot members");
+    sqlx::query(
+        r#"INSERT INTO candidate_analysis_attempts(
+               analysis_attempt_id,snapshot_id,operation_id,organization_id,attempt_ordinal,
+               attempt_input_hash,attack_class_checklist_version,
+               attack_class_checklist_digest,trust_boundary_checklist_version,
+               trust_boundary_checklist_digest,coverage_sampling_contract_version,
+               coverage_sampling_contract_digest,retry_limit
+           ) VALUES($1,$2,$3,$4,0,$5,'1',$6,'1',$7,'1',$8,1)"#,
+    )
+    .bind(analysis_attempt_id)
+    .bind(snapshot_id)
+    .bind(operation_id)
+    .bind(organization_id)
+    .bind(digest('3'))
+    .bind(digest('4'))
+    .bind(digest('5'))
+    .bind(digest('6'))
+    .execute(&mut *candidate_tx)
+    .await
+    .expect("insert Candidate analysis attempt");
+    sqlx::query(
+        r#"INSERT INTO candidate_analysis_attempt_state_events(
+               attempt_event_id,analysis_attempt_id,event_ordinal,event_kind,event_hash
+           ) VALUES($1,$2,0,'opened',$3)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(analysis_attempt_id)
+    .bind(digest('7'))
+    .execute(&mut *candidate_tx)
+    .await
+    .expect("open Candidate analysis attempt");
+    candidate_tx
+        .commit()
+        .await
+        .expect("commit legal Candidate snapshot and attempt");
+
+    CandidateAuthorityFixture {
+        operation_id,
+        organization_id,
+        snapshot_id,
+        analysis_attempt_id,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HypothesisCompoundInput<'a> {
+    identity_nibble: char,
+    semantic_nibble: char,
+    revision_nibble: char,
+    epistemic_state: &'a str,
+    lifecycle_state: &'a str,
+    planning_readiness: &'a str,
+    event_kind: &'a str,
+    origin_authority: &'a str,
+    authority_receipt_kind: &'a str,
+}
+
+async fn insert_hypothesis_compound(
+    connection: &mut PgConnection,
+    authority: CandidateAuthorityFixture,
+    input: HypothesisCompoundInput<'_>,
+) -> (Uuid, Uuid) {
+    let root_id = Uuid::new_v4();
+    let revision_id = Uuid::new_v4();
+    let semantic_key_hash = digest(input.semantic_nibble);
+    let revision_hash = digest(input.revision_nibble);
+    let revision_ingredients_hash = digest('d');
+    let origin_decision_hash = digest('e');
+    let component_id = Uuid::new_v4();
+    let component_member_hash = digest('1');
+    let objective_id = Uuid::new_v4();
+    let objective_hash = digest('2');
+    let stopping_criteria_hash = digest('3');
+    let contract_id = Uuid::new_v4();
+    let contract_hash = digest('4');
+    let predicate_component_id = Uuid::new_v4();
+    let predicate_member_hash = digest('5');
+    let plan_id = Uuid::new_v4();
+    let plan_objective_id = Uuid::new_v4();
+    let plan_objective_member_hash = digest('6');
+    let path_id = Uuid::new_v4();
+    let path_hash = digest('7');
+    let path_member_hash = digest('8');
+    let gate_decision_id = Uuid::new_v4();
+    let mutation_id = Uuid::new_v4();
+    let gate_member_hash = digest('9');
+
+    let (predicate_set_hash, control_set_hash, pair_set_hash, ordered_set_hash): (
+        String,
+        String,
+        String,
+        String,
+    ) = sqlx::query_as(
+        r#"SELECT
+               verification_contract_exact_member_set_hash(
+                   'verification_predicate_set.v1',ARRAY[$1]::TEXT[]),
+               verification_contract_exact_member_set_hash(
+                   'verification_control_set.v1',ARRAY[]::TEXT[]),
+               verification_contract_exact_member_set_hash(
+                   'verification_paired_differential_set.v1',ARRAY[]::TEXT[]),
+               verification_contract_exact_member_set_hash(
+                   'verification_ordered_step_set.v1',ARRAY[]::TEXT[])"#,
+    )
+    .bind(&predicate_member_hash)
+    .fetch_one(&mut *connection)
+    .await
+    .expect("derive VerificationContract exact-set hashes");
+    let (
+        required_component_set_hash,
+        objective_component_set_hash,
+        objective_set_hash,
+        falsifier_set_hash,
+        path_member_set_hash,
+        proof_path_set_hash,
+        gate_mutation_set_hash,
+    ): (String, String, String, String, String, String, String) = sqlx::query_as(
+        r#"SELECT
+               investigation_exact_member_set_hash(
+                   'hypothesis_verification_plan_required_components.v1',ARRAY[$1]::TEXT[]),
+               investigation_exact_member_set_hash(
+                   'hypothesis_verification_plan_objective_components.v1',ARRAY[$1]::TEXT[]),
+               investigation_exact_member_set_hash(
+                   'hypothesis_verification_plan_objectives.v1',ARRAY[$2]::TEXT[]),
+               investigation_exact_member_set_hash(
+                   'hypothesis_verification_plan_path_falsifiers.v1',ARRAY[$1]::TEXT[]),
+               investigation_exact_member_set_hash(
+                   'hypothesis_verification_plan_path_members.v1',ARRAY[$3]::TEXT[]),
+               investigation_exact_member_set_hash(
+                   'hypothesis_verification_plan_paths.v1',ARRAY[$4]::TEXT[]),
+               investigation_exact_member_set_hash(
+                   'hypothesis_candidate_gate_mutation_set.v1',ARRAY[$5]::TEXT[])"#,
+    )
+    .bind(&component_member_hash)
+    .bind(&plan_objective_member_hash)
+    .bind(&path_member_hash)
+    .bind(&path_hash)
+    .bind(&gate_member_hash)
+    .fetch_one(&mut *connection)
+    .await
+    .expect("derive HypothesisPlan and Gate exact-set hashes");
+
+    sqlx::query(
+        r#"INSERT INTO attack_hypotheses(
+               root_id,operation_id,organization_id,root_kind,
+               identity_ingredients,identity_ingredients_hash
+           ) VALUES($1,$2,$3,'initial','{}'::JSONB,$4)"#,
+    )
+    .bind(root_id)
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(digest(input.identity_nibble))
+    .execute(&mut *connection)
+    .await
+    .expect("insert hypothesis root in canonical transaction");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_revisions(
+               revision_id,root_id,operation_id,organization_id,revision_ordinal,
+               semantic_key,semantic_key_hash,subject_kind,subject_identity_hash,
+               target_type_at_time,target_value_at_time,predicate_schema,predicate_version,
+               normalized_arguments,trust_boundary,polarity,epistemic_state,lifecycle_state,
+               planning_readiness,structured_claim,priority,risk_impact,origin_decision_hash,
+               revision_ingredients_hash,revision_hash
+           ) VALUES(
+               $1,$2,$3,$4,0,'{}'::JSONB,$5,'origin',$6,'domain','example.test',
+               'predicate.v1',1,'{}'::JSONB,'internet','positive',$7,$8,$9,
+               '{}'::JSONB,1,'{}'::JSONB,$10,$11,$12
+           )"#,
+    )
+    .bind(revision_id)
+    .bind(root_id)
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(&semantic_key_hash)
+    .bind(digest('a'))
+    .bind(input.epistemic_state)
+    .bind(input.lifecycle_state)
+    .bind(input.planning_readiness)
+    .bind(&origin_decision_hash)
+    .bind(&revision_ingredients_hash)
+    .bind(&revision_hash)
+    .execute(&mut *connection)
+    .await
+    .expect("insert hypothesis revision in canonical transaction");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_claim_components(
+               component_id,revision_id,revision_hash,component_ordinal,component_key,kind,
+               canonical_fragment_hash,canonical_condition_hash,required,
+               derivation_contract_version,derivation_contract_digest,member_hash
+           ) VALUES($1,$2,$3,0,'claim','claim_clause',$4,$5,TRUE,1,$6,$7)"#,
+    )
+    .bind(component_id)
+    .bind(revision_id)
+    .bind(&revision_hash)
+    .bind(digest('b'))
+    .bind(digest('c'))
+    .bind(digest('d'))
+    .bind(&component_member_hash)
+    .execute(&mut *connection)
+    .await
+    .expect("insert required claim component");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_verification_objectives(
+               objective_id,revision_id,objective_ordinal,objective_intent,
+               stopping_criteria,stopping_criteria_hash,objective_hash
+           ) VALUES($1,$2,0,'{}'::JSONB,'{}'::JSONB,$3,$4)"#,
+    )
+    .bind(objective_id)
+    .bind(revision_id)
+    .bind(&stopping_criteria_hash)
+    .bind(&objective_hash)
+    .execute(&mut *connection)
+    .await
+    .expect("insert verification objective");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_verification_contracts(
+               contract_id,revision_id,revision_hash,objective_id,combinator,
+               predicate_count,predicate_set_hash,required_control_count,
+               required_control_set_hash,explicit_no_required_control,
+               paired_differential_count,paired_differential_set_hash,
+               ordered_step_count,ordered_step_set_hash,stopping_criteria_hash,
+               compiler_digest,rule_digest,policy_snapshot_hash,contract_hash
+           ) VALUES(
+               $1,$2,$3,$4,'all_of',1,$5,0,$6,TRUE,0,$7,0,$8,$9,$10,$11,$12,$13
+           )"#,
+    )
+    .bind(contract_id)
+    .bind(revision_id)
+    .bind(&revision_hash)
+    .bind(objective_id)
+    .bind(&predicate_set_hash)
+    .bind(&control_set_hash)
+    .bind(&pair_set_hash)
+    .bind(&ordered_set_hash)
+    .bind(&stopping_criteria_hash)
+    .bind(digest('e'))
+    .bind(digest('f'))
+    .bind(digest('0'))
+    .bind(&contract_hash)
+    .execute(&mut *connection)
+    .await
+    .expect("insert host-owned VerificationContract header");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_verification_predicate_components(
+               predicate_component_id,contract_id,ordinal,semantic_key,predicate_schema,
+               predicate_version,normalized_arguments,normalized_arguments_hash,
+               expected_polarity,prerequisite_hash,member_hash
+           ) VALUES($1,$2,0,'claim','predicate.v1',1,'{}'::JSONB,$3,'positive',$4,$5)"#,
+    )
+    .bind(predicate_component_id)
+    .bind(contract_id)
+    .bind(digest('1'))
+    .bind(digest('2'))
+    .bind(&predicate_member_hash)
+    .execute(&mut *connection)
+    .await
+    .expect("insert VerificationContract predicate component");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_verification_objective_claim_components(
+               binding_id,contract_id,revision_id,objective_id,claim_component_id,
+               ordinal,component_member_hash,binding_member_hash
+           ) VALUES($1,$2,$3,$4,$5,0,$6,$7)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(contract_id)
+    .bind(revision_id)
+    .bind(objective_id)
+    .bind(component_id)
+    .bind(&component_member_hash)
+    .bind(digest('3'))
+    .execute(&mut *connection)
+    .await
+    .expect("bind objective to required claim component");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_verification_plans(
+               plan_id,revision_id,revision_hash,revision_ingredients_hash,
+               required_claim_component_count,required_claim_component_set_hash,
+               objective_count,objective_set_hash,proof_path_count,proof_path_set_hash,
+               outer_aggregation_policy_version,outer_aggregation_policy_digest,
+               plan_hash,sealed_at
+           ) VALUES($1,$2,$3,$4,1,$5,1,$6,1,$7,1,$8,$9,NOW())"#,
+    )
+    .bind(plan_id)
+    .bind(revision_id)
+    .bind(&revision_hash)
+    .bind(&revision_ingredients_hash)
+    .bind(&required_component_set_hash)
+    .bind(&objective_set_hash)
+    .bind(&proof_path_set_hash)
+    .bind(digest('4'))
+    .bind(digest('5'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert immutable verification plan header");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_verification_plan_objectives(
+               plan_objective_id,plan_id,revision_id,objective_id,
+               verification_contract_id,ordinal,objective_hash,
+               verification_contract_version,verification_contract_hash,
+               claim_component_count,claim_component_set_hash,stopping_criteria_hash,
+               outcome_requirement,member_hash
+           ) VALUES($1,$2,$3,$4,$5,0,$6,1,$7,1,$8,$9,
+                    'satisfy_or_falsify_bound_required_components',$10)"#,
+    )
+    .bind(plan_objective_id)
+    .bind(plan_id)
+    .bind(revision_id)
+    .bind(objective_id)
+    .bind(contract_id)
+    .bind(&objective_hash)
+    .bind(&contract_hash)
+    .bind(&objective_component_set_hash)
+    .bind(&stopping_criteria_hash)
+    .bind(&plan_objective_member_hash)
+    .execute(&mut *connection)
+    .await
+    .expect("insert verification plan objective");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_verification_plan_paths(
+               path_id,plan_id,path_ordinal,path_key,member_count,member_set_hash,path_hash
+           ) VALUES($1,$2,0,'primary',1,$3,$4)"#,
+    )
+    .bind(path_id)
+    .bind(plan_id)
+    .bind(&path_member_set_hash)
+    .bind(&path_hash)
+    .execute(&mut *connection)
+    .await
+    .expect("insert verification plan proof path");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_verification_plan_path_members(
+               path_member_id,path_id,plan_id,plan_objective_id,
+               plan_objective_member_hash,revision_id,member_ordinal,
+               verification_contract_hash,claim_component_set_hash,role,
+               falsifier_claim_component_member_hashes,falsifier_claim_component_count,
+               falsifier_claim_component_set_hash,member_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,0,$7,$8,
+                    'required_proof_and_path_falsifier',ARRAY[$9]::TEXT[],1,$10,$11)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(path_id)
+    .bind(plan_id)
+    .bind(plan_objective_id)
+    .bind(&plan_objective_member_hash)
+    .bind(revision_id)
+    .bind(&contract_hash)
+    .bind(&objective_component_set_hash)
+    .bind(&component_member_hash)
+    .bind(&falsifier_set_hash)
+    .bind(&path_member_hash)
+    .execute(&mut *connection)
+    .await
+    .expect("insert verification plan path member");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_heads(
+               root_id,operation_id,organization_id,head_revision_id,head_revision_hash,
+               head_semantic_key_hash,head_epistemic_state,head_lifecycle_state
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)"#,
+    )
+    .bind(root_id)
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(revision_id)
+    .bind(&revision_hash)
+    .bind(&semantic_key_hash)
+    .bind(input.epistemic_state)
+    .bind(input.lifecycle_state)
+    .execute(&mut *connection)
+    .await
+    .expect("insert current hypothesis head");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_candidate_gate_decisions(
+               decision_id,stable_request_id,operation_id,organization_id,
+               candidate_snapshot_id,analysis_attempt_id,mutation_count,
+               mutation_set_hash,gate_authority_hash,decision_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,1,$7,$8,$9)"#,
+    )
+    .bind(gate_decision_id)
+    .bind(Uuid::new_v4())
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(authority.snapshot_id)
+    .bind(authority.analysis_attempt_id)
+    .bind(&gate_mutation_set_hash)
+    .bind(digest('a'))
+    .bind(digest('b'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert Candidate Gate decision header");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_candidate_gate_decision_members(
+               mutation_id,decision_id,operation_id,organization_id,ordinal,route_kind,
+               root_id,successor_revision_id,semantic_key_hash,successor_epistemic_state,
+               origin_decision_hash,member_hash
+           ) VALUES($1,$2,$3,$4,0,'create_initial',$5,$6,$7,'proposed',$8,$9)"#,
+    )
+    .bind(mutation_id)
+    .bind(gate_decision_id)
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(root_id)
+    .bind(revision_id)
+    .bind(&semantic_key_hash)
+    .bind(&origin_decision_hash)
+    .bind(&gate_member_hash)
+    .execute(&mut *connection)
+    .await
+    .expect("insert Candidate Gate decision member");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_state_events(
+               event_id,operation_id,organization_id,root_id,successor_revision_id,
+               event_kind,origin_authority,successor_epistemic_state,
+               authority_receipt_kind,authority_receipt_id,authority_receipt_hash,
+               event_hash,server_decision_id,server_decision_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$10,$11)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(root_id)
+    .bind(revision_id)
+    .bind(input.event_kind)
+    .bind(input.origin_authority)
+    .bind(input.epistemic_state)
+    .bind(input.authority_receipt_kind)
+    .bind(mutation_id)
+    .bind(&origin_decision_hash)
+    .bind(digest('c'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert exact creating state event");
+
+    (root_id, revision_id)
 }
 
 #[test]
@@ -689,64 +1447,37 @@ async fn candidate_snapshot_tool_truth_authority_schema_has_compound_plan_a_bind
 #[serial]
 async fn hypothesis_state_authority_schema_rejects_terminal_forgery() {
     let (mut db, _data_dir) = fixture("terminal_authority").await;
-    let operation_id = Uuid::new_v4();
-    insert_operation(db.pool(), operation_id).await;
-    let organization_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO organizations(id,project_path,name) VALUES($1,$2,'Registry Org')")
-        .bind(organization_id)
-        .bind(format!("/tmp/hypothesis-org-{}", Uuid::new_v4().simple()))
-        .execute(db.pool())
-        .await
-        .expect("insert registry organization");
-    let root_id = Uuid::new_v4();
-    sqlx::query(
-        r#"INSERT INTO attack_hypotheses(
-               root_id,operation_id,organization_id,root_kind,
-               identity_ingredients,identity_ingredients_hash
-           ) VALUES($1,$2,$3,'initial','{}'::jsonb,$4)"#,
-    )
-    .bind(root_id)
-    .bind(operation_id)
-    .bind(organization_id)
-    .bind(format!("sha256:{}", "1".repeat(64)))
-    .execute(db.pool())
-    .await
-    .expect("insert hypothesis root");
+    let authority = seed_candidate_authority_fixture(db.pool(), "terminal-authority").await;
 
     let mut tx = db
         .pool()
         .begin()
         .await
         .expect("begin forged terminal transaction");
-    let revision_id = Uuid::new_v4();
-    sqlx::query(
-        r#"INSERT INTO attack_hypothesis_revisions(
-               revision_id,root_id,operation_id,organization_id,revision_ordinal,
-               semantic_key,semantic_key_hash,subject_kind,subject_identity_hash,
-               target_type_at_time,target_value_at_time,predicate_schema,predicate_version,
-               normalized_arguments,trust_boundary,polarity,epistemic_state,lifecycle_state,
-               planning_readiness,structured_claim,priority,risk_impact,revision_hash
-           ) VALUES(
-               $1,$2,$3,$4,0,'{}'::jsonb,$5,'origin',$6,
-               'domain','example.test','predicate.v1',1,'{}'::jsonb,'internet','positive',
-               'verified','closed','deferred','{}'::jsonb,0,'{}'::jsonb,$7
-           )"#,
+    let (_, revision_id) = insert_hypothesis_compound(
+        &mut tx,
+        authority,
+        HypothesisCompoundInput {
+            identity_nibble: '1',
+            semantic_nibble: '2',
+            revision_nibble: '4',
+            epistemic_state: "verified",
+            lifecycle_state: "closed",
+            planning_readiness: "deferred",
+            event_kind: "verified",
+            origin_authority: "hypothesis_revision_adjudication",
+            authority_receipt_kind: "revision_transition_decision",
+        },
     )
-    .bind(revision_id)
-    .bind(root_id)
-    .bind(operation_id)
-    .bind(organization_id)
-    .bind(format!("sha256:{}", "2".repeat(64)))
-    .bind(format!("sha256:{}", "3".repeat(64)))
-    .bind(format!("sha256:{}", "4".repeat(64)))
-    .execute(&mut *tx)
-    .await
-    .expect("deferred creating-event authority allows statement execution");
+    .await;
     let commit_error = tx
         .commit()
         .await
         .expect_err("verified revision without Plan C authority must fail at commit");
-    assert_database_rejection(&commit_error, "HYPOTHESIS_CREATING_EVENT_REQUIRED");
+    assert_database_rejection(
+        &commit_error,
+        "PLAN_C_REVISION_ADJUDICATION_AUTHORITY_NOT_INSTALLED",
+    );
 
     let retained: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM attack_hypothesis_revisions WHERE revision_id=$1")
@@ -762,131 +1493,57 @@ async fn hypothesis_state_authority_schema_rejects_terminal_forgery() {
 #[serial]
 async fn hypothesis_state_authority_schema_accepts_nonterminal_and_rejects_candidate_terminal() {
     let (mut db, _data_dir) = fixture("state_events").await;
-    let operation_id = Uuid::new_v4();
-    insert_operation(db.pool(), operation_id).await;
-    let organization_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO organizations(id,project_path,name) VALUES($1,$2,'State Org')")
-        .bind(organization_id)
-        .bind(format!("/tmp/state-org-{}", Uuid::new_v4().simple()))
-        .execute(db.pool())
-        .await
-        .expect("insert state-event organization");
-
-    let root_id = Uuid::new_v4();
-    sqlx::query(
-        r#"INSERT INTO attack_hypotheses(
-               root_id,operation_id,organization_id,root_kind,
-               identity_ingredients,identity_ingredients_hash
-           ) VALUES($1,$2,$3,'initial','{}'::jsonb,$4)"#,
-    )
-    .bind(root_id)
-    .bind(operation_id)
-    .bind(organization_id)
-    .bind(digest('1'))
-    .execute(db.pool())
-    .await
-    .expect("insert nonterminal root");
-    let revision_id = Uuid::new_v4();
+    let authority = seed_candidate_authority_fixture(db.pool(), "state-events").await;
     let mut legal = db.pool().begin().await.expect("begin legal creating event");
-    sqlx::query(
-        r#"INSERT INTO attack_hypothesis_revisions(
-               revision_id,root_id,operation_id,organization_id,revision_ordinal,
-               semantic_key,semantic_key_hash,subject_kind,subject_identity_hash,
-               target_type_at_time,target_value_at_time,predicate_schema,predicate_version,
-               normalized_arguments,trust_boundary,polarity,epistemic_state,lifecycle_state,
-               planning_readiness,structured_claim,priority,risk_impact,revision_hash
-           ) VALUES($1,$2,$3,$4,0,'{}'::jsonb,$5,'origin',$6,'domain','example.test',
-                    'predicate.v1',1,'{}'::jsonb,'internet','positive','proposed','current',
-                    'ready_for_strategy','{}'::jsonb,1,'{}'::jsonb,$7)"#,
+    let (_, revision_id) = insert_hypothesis_compound(
+        &mut legal,
+        authority,
+        HypothesisCompoundInput {
+            identity_nibble: '1',
+            semantic_nibble: '2',
+            revision_nibble: '4',
+            epistemic_state: "proposed",
+            lifecycle_state: "current",
+            planning_readiness: "ready_for_strategy",
+            event_kind: "created",
+            origin_authority: "candidate_analysis",
+            authority_receipt_kind: "candidate_gate_decision",
+        },
     )
-    .bind(revision_id)
-    .bind(root_id)
-    .bind(operation_id)
-    .bind(organization_id)
-    .bind(digest('2'))
-    .bind(digest('3'))
-    .bind(digest('4'))
-    .execute(&mut *legal)
-    .await
-    .expect("insert proposed revision");
-    sqlx::query(
-        r#"INSERT INTO attack_hypothesis_state_events(
-               event_id,operation_id,organization_id,root_id,successor_revision_id,
-               event_kind,origin_authority,successor_epistemic_state,event_hash,server_decision_id
-           ) VALUES($1,$2,$3,$4,$5,'created','candidate_analysis','proposed',$6,$7)"#,
-    )
-    .bind(Uuid::new_v4())
-    .bind(operation_id)
-    .bind(organization_id)
-    .bind(root_id)
-    .bind(revision_id)
-    .bind(digest('5'))
-    .bind(Uuid::new_v4())
-    .execute(&mut *legal)
-    .await
-    .expect("insert exact creating event");
+    .await;
     legal
         .commit()
         .await
         .expect("commit legal nonterminal authority");
+    let retained: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM attack_hypothesis_revisions WHERE revision_id=$1")
+            .bind(revision_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("confirm legal nonterminal revision committed");
+    assert_eq!(retained, 1);
 
-    let terminal_root_id = Uuid::new_v4();
-    sqlx::query(
-        r#"INSERT INTO attack_hypotheses(
-               root_id,operation_id,organization_id,root_kind,
-               identity_ingredients,identity_ingredients_hash
-           ) VALUES($1,$2,$3,'initial','{}'::jsonb,$4)"#,
-    )
-    .bind(terminal_root_id)
-    .bind(operation_id)
-    .bind(organization_id)
-    .bind(digest('6'))
-    .execute(db.pool())
-    .await
-    .expect("insert forged terminal root");
-    let terminal_revision_id = Uuid::new_v4();
     let mut forged = db
         .pool()
         .begin()
         .await
         .expect("begin forged terminal event");
-    sqlx::query(
-        r#"INSERT INTO attack_hypothesis_revisions(
-               revision_id,root_id,operation_id,organization_id,revision_ordinal,
-               semantic_key,semantic_key_hash,subject_kind,subject_identity_hash,
-               target_type_at_time,target_value_at_time,predicate_schema,predicate_version,
-               normalized_arguments,trust_boundary,polarity,epistemic_state,lifecycle_state,
-               planning_readiness,structured_claim,priority,risk_impact,revision_hash
-           ) VALUES($1,$2,$3,$4,0,'{}'::jsonb,$5,'origin',$6,'domain','terminal.test',
-                    'predicate.v1',1,'{}'::jsonb,'internet','positive','verified','closed',
-                    'deferred','{}'::jsonb,1,'{}'::jsonb,$7)"#,
+    insert_hypothesis_compound(
+        &mut forged,
+        authority,
+        HypothesisCompoundInput {
+            identity_nibble: '6',
+            semantic_nibble: '7',
+            revision_nibble: '9',
+            epistemic_state: "verified",
+            lifecycle_state: "closed",
+            planning_readiness: "deferred",
+            event_kind: "verified",
+            origin_authority: "candidate_analysis",
+            authority_receipt_kind: "candidate_gate_decision",
+        },
     )
-    .bind(terminal_revision_id)
-    .bind(terminal_root_id)
-    .bind(operation_id)
-    .bind(organization_id)
-    .bind(digest('7'))
-    .bind(digest('8'))
-    .bind(digest('9'))
-    .execute(&mut *forged)
-    .await
-    .expect("insert terminal revision before deferred authority check");
-    sqlx::query(
-        r#"INSERT INTO attack_hypothesis_state_events(
-               event_id,operation_id,organization_id,root_id,successor_revision_id,
-               event_kind,origin_authority,successor_epistemic_state,event_hash,server_decision_id
-           ) VALUES($1,$2,$3,$4,$5,'verified','candidate_analysis','verified',$6,$7)"#,
-    )
-    .bind(Uuid::new_v4())
-    .bind(operation_id)
-    .bind(organization_id)
-    .bind(terminal_root_id)
-    .bind(terminal_revision_id)
-    .bind(digest('a'))
-    .bind(Uuid::new_v4())
-    .execute(&mut *forged)
-    .await
-    .expect("insert forged Candidate terminal event before deferred authority check");
+    .await;
     let error = forged
         .commit()
         .await
@@ -1067,7 +1724,7 @@ async fn verification_contract_schema_has_closed_component_control_shapes() {
     )
     .await;
     let combinator_check: String = sqlx::query_scalar(
-        r#"SELECT pg_get_constraintdef(c.oid)
+        r#"SELECT string_agg(pg_get_constraintdef(c.oid),' ' ORDER BY c.oid)
              FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
             WHERE t.relname='attack_hypothesis_verification_contracts'
               AND pg_get_constraintdef(c.oid) LIKE '%paired_differential%'"#,

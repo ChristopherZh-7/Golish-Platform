@@ -43,6 +43,7 @@ pub mod gate;
 pub mod graph_engine;
 pub mod guardrail;
 pub mod handoff_catalog;
+pub mod hypothesis_registry;
 pub mod intent_classifier;
 pub mod knowledge_context;
 pub mod nl_slice;

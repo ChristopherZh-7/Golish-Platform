@@ -16,6 +16,62 @@ BEGIN
 END;
 $$;
 
+-- HypothesisVerificationPlanV1 hashes a canonical, lexically sorted JSON
+-- array with the same domain/NUL/u64-length envelope as golish-core.
+CREATE FUNCTION investigation_exact_member_set_hash(
+    domain_tag TEXT,
+    member_hashes TEXT[]
+) RETURNS TEXT
+LANGUAGE SQL
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+AS $$
+    WITH canonical AS (
+        SELECT '[' || COALESCE(string_agg(
+            '"' || member_hash || '"', ',' ORDER BY member_hash
+        ), '') || ']' AS json_text
+        FROM unnest(member_hashes) AS member(member_hash)
+    )
+    SELECT 'sha256:' || encode(digest(
+        convert_to(domain_tag,'UTF8')
+        || decode('00','hex')
+        || int8send(octet_length(json_text)::BIGINT)
+        || convert_to(json_text,'UTF8'),
+        'sha256'
+    ),'hex')
+    FROM canonical
+$$;
+
+-- VerificationContractV1 uses its dedicated binary DomainHashWriter: a
+-- u32 count field followed by each already-canonical member hash field.
+CREATE FUNCTION verification_contract_exact_member_set_hash(
+    domain_tag TEXT,
+    ordered_member_hashes TEXT[]
+) RETURNS TEXT
+LANGUAGE SQL
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+AS $$
+    SELECT 'sha256:' || encode(digest(
+        convert_to(domain_tag,'UTF8')
+        || decode('00','hex')
+        || int8send(4::BIGINT)
+        || int4send(cardinality(ordered_member_hashes))
+        || COALESCE((
+            SELECT string_agg(
+                int8send(octet_length(member_hash)::BIGINT)
+                || convert_to(member_hash,'UTF8'),
+                ''::BYTEA ORDER BY ordinal
+            )
+            FROM unnest(ordered_member_hashes) WITH ORDINALITY
+                AS member(member_hash,ordinal)
+        ),''::BYTEA),
+        'sha256'
+    ),'hex')
+$$;
+
 -- Plan A deliberately exposes opaque guards rather than every SQL identity.
 -- These additive candidate keys let Plan B prove that copied authority fields
 -- identify one immutable, sealed Plan A bundle/member without a mirror reducer.
@@ -314,14 +370,25 @@ CREATE TABLE attack_hypothesis_revisions (
     missing_facts JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(missing_facts)='array'),
     priority INTEGER NOT NULL,
     risk_impact JSONB NOT NULL CHECK (jsonb_typeof(risk_impact)='object'),
+    origin_decision_hash TEXT NOT NULL CHECK (origin_decision_hash ~ '^sha256:[0-9a-f]{64}$'),
+    revision_ingredients_hash TEXT NOT NULL CHECK (revision_ingredients_hash ~ '^sha256:[0-9a-f]{64}$'),
     revision_hash TEXT NOT NULL CHECK (revision_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(revision_id,root_id,operation_id,organization_id,epistemic_state),
+    UNIQUE(revision_id,root_id,operation_id,organization_id),
+    UNIQUE(revision_id,root_id,operation_id,organization_id,semantic_key_hash,revision_hash),
+    UNIQUE(revision_id,root_id,operation_id,organization_id,revision_ingredients_hash),
+    UNIQUE(revision_id,root_id,operation_id,organization_id,revision_hash),
+    UNIQUE(revision_id,operation_id,organization_id),
+    UNIQUE(revision_id,revision_hash),
+    UNIQUE(revision_id,revision_hash,revision_ingredients_hash),
     UNIQUE(root_id,revision_ordinal),
     FOREIGN KEY(root_id,operation_id,organization_id)
         REFERENCES attack_hypotheses(root_id,operation_id,organization_id) ON DELETE RESTRICT,
-    FOREIGN KEY(predecessor_revision_id)
-        REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
+    FOREIGN KEY(predecessor_revision_id,root_id,operation_id,organization_id)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,root_id,operation_id,organization_id
+        ) ON DELETE RESTRICT,
     CHECK (
         (epistemic_state IN ('verified','refuted','invalid') AND lifecycle_state='closed')
         OR epistemic_state NOT IN ('verified','refuted','invalid')
@@ -329,13 +396,131 @@ CREATE TABLE attack_hypothesis_revisions (
     CHECK (lifecycle_state<>'superseded' OR planning_readiness<>'ready_for_strategy')
 );
 
-CREATE UNIQUE INDEX attack_hypothesis_one_current_revision
-ON attack_hypothesis_revisions(root_id)
-WHERE lifecycle_state='current';
+-- Revisions remain immutable.  Current/superseded/closed authority therefore
+-- lives in one narrow mutable CAS row per root instead of rewriting history.
+CREATE TABLE attack_hypothesis_heads (
+    root_id UUID PRIMARY KEY,
+    operation_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    head_revision_id UUID NOT NULL,
+    head_revision_hash TEXT NOT NULL CHECK (head_revision_hash ~ '^sha256:[0-9a-f]{64}$'),
+    head_semantic_key_hash TEXT NOT NULL CHECK (head_semantic_key_hash ~ '^sha256:[0-9a-f]{64}$'),
+    head_epistemic_state TEXT NOT NULL CHECK (head_epistemic_state IN (
+        'proposed','supported','contested','verified','refuted','inconclusive','invalid'
+    )),
+    head_lifecycle_state TEXT NOT NULL CHECK (
+        head_lifecycle_state IN ('current','superseded','closed')
+    ),
+    head_version BIGINT NOT NULL DEFAULT 0 CHECK (head_version>=0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(root_id,operation_id,organization_id),
+    FOREIGN KEY(root_id,operation_id,organization_id)
+        REFERENCES attack_hypotheses(root_id,operation_id,organization_id) ON DELETE RESTRICT,
+    FOREIGN KEY(
+        head_revision_id,root_id,operation_id,organization_id,
+        head_semantic_key_hash,head_revision_hash
+    ) REFERENCES attack_hypothesis_revisions(
+        revision_id,root_id,operation_id,organization_id,
+        semantic_key_hash,revision_hash
+    ) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    CHECK (
+        (head_epistemic_state IN ('verified','refuted','invalid')
+            AND head_lifecycle_state='closed')
+        OR head_epistemic_state NOT IN ('verified','refuted','invalid')
+    )
+);
 
 CREATE UNIQUE INDEX attack_hypothesis_one_current_semantic_key
-ON attack_hypothesis_revisions(operation_id,organization_id,semantic_key_hash)
-WHERE lifecycle_state='current';
+ON attack_hypothesis_heads(operation_id,organization_id,head_semantic_key_hash)
+WHERE head_lifecycle_state='current';
+
+CREATE FUNCTION enforce_attack_hypothesis_head_cas()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    successor attack_hypothesis_revisions%ROWTYPE;
+    predecessor attack_hypothesis_revisions%ROWTYPE;
+BEGIN
+    IF TG_OP='DELETE' THEN
+        RAISE EXCEPTION 'HYPOTHESIS_HEAD_DELETE_FORBIDDEN' USING ERRCODE='23514';
+    END IF;
+    SELECT * INTO STRICT successor
+      FROM attack_hypothesis_revisions
+     WHERE revision_id=NEW.head_revision_id
+       AND root_id=NEW.root_id
+       AND operation_id=NEW.operation_id
+       AND organization_id=NEW.organization_id
+     FOR SHARE;
+    IF ROW(successor.revision_hash,successor.semantic_key_hash,successor.epistemic_state)
+       IS DISTINCT FROM
+       ROW(NEW.head_revision_hash,NEW.head_semantic_key_hash,NEW.head_epistemic_state)
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_HEAD_REVISION_IDENTITY_MISMATCH' USING ERRCODE='23514';
+    END IF;
+    IF TG_OP='INSERT' THEN
+        IF NEW.head_version<>0 OR successor.lifecycle_state<>NEW.head_lifecycle_state THEN
+            RAISE EXCEPTION 'HYPOTHESIS_HEAD_INITIAL_STATE_INVALID' USING ERRCODE='23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF ROW(NEW.root_id,NEW.operation_id,NEW.organization_id)
+       IS DISTINCT FROM ROW(OLD.root_id,OLD.operation_id,OLD.organization_id)
+       OR NEW.head_version<>OLD.head_version+1
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_HEAD_CAS_INVALID' USING ERRCODE='23514';
+    END IF;
+    IF NEW.head_revision_id=OLD.head_revision_id THEN
+        IF ROW(NEW.head_revision_hash,NEW.head_semantic_key_hash,NEW.head_epistemic_state)
+           IS DISTINCT FROM
+           ROW(OLD.head_revision_hash,OLD.head_semantic_key_hash,OLD.head_epistemic_state)
+           OR OLD.head_lifecycle_state<>'current'
+           OR NEW.head_lifecycle_state<>'superseded'
+        THEN
+            RAISE EXCEPTION 'HYPOTHESIS_HEAD_LIFECYCLE_TRANSITION_INVALID' USING ERRCODE='23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    SELECT * INTO STRICT predecessor
+      FROM attack_hypothesis_revisions
+     WHERE revision_id=OLD.head_revision_id
+       AND root_id=OLD.root_id
+       AND operation_id=OLD.operation_id
+       AND organization_id=OLD.organization_id
+     FOR SHARE;
+    IF successor.predecessor_revision_id IS DISTINCT FROM OLD.head_revision_id
+       OR successor.revision_ordinal<>predecessor.revision_ordinal+1
+       OR OLD.head_lifecycle_state<>'current'
+       OR successor.lifecycle_state<>NEW.head_lifecycle_state
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_HEAD_SUCCESSOR_INVALID' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER attack_hypothesis_heads_cas_guard
+BEFORE INSERT OR UPDATE OR DELETE ON attack_hypothesis_heads
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_head_cas();
+
+CREATE FUNCTION enforce_attack_hypothesis_root_head_required()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF (SELECT COUNT(*) FROM attack_hypothesis_heads head
+         WHERE head.root_id=NEW.root_id)<>1
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_ROOT_HEAD_EXACT_ONE_REQUIRED' USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_root_head_required
+AFTER INSERT ON attack_hypotheses
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_root_head_required();
 
 CREATE TABLE attack_hypothesis_revision_sources (
     source_id UUID PRIMARY KEY,
@@ -359,59 +544,99 @@ CREATE TABLE attack_hypothesis_verification_objectives (
     objective_ordinal INTEGER NOT NULL CHECK (objective_ordinal>=0),
     objective_intent JSONB NOT NULL CHECK (jsonb_typeof(objective_intent)='object'),
     stopping_criteria JSONB NOT NULL CHECK (jsonb_typeof(stopping_criteria)='object'),
+    stopping_criteria_hash TEXT NOT NULL CHECK (stopping_criteria_hash ~ '^sha256:[0-9a-f]{64}$'),
     objective_hash TEXT NOT NULL CHECK (objective_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(revision_id,objective_ordinal),
-    UNIQUE(revision_id,objective_hash)
+    UNIQUE(revision_id,objective_hash),
+    UNIQUE(objective_id,revision_id),
+    UNIQUE(objective_id,revision_id,objective_hash),
+    UNIQUE(objective_id,revision_id,stopping_criteria_hash)
 );
 
 CREATE TABLE attack_hypothesis_claim_components (
     component_id UUID PRIMARY KEY,
-    revision_id UUID NOT NULL REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
-    ordinal INTEGER NOT NULL CHECK (ordinal>=0),
-    component_kind TEXT NOT NULL CHECK (component_kind IN (
+    revision_id UUID NOT NULL,
+    revision_hash TEXT NOT NULL CHECK (revision_hash ~ '^sha256:[0-9a-f]{64}$'),
+    component_ordinal INTEGER NOT NULL CHECK (component_ordinal>=0),
+    component_key TEXT NOT NULL CHECK (btrim(component_key)<>''),
+    kind TEXT NOT NULL CHECK (kind IN (
         'claim_clause','impact_qualifier','trust_boundary_condition','identity_condition'
     )),
-    canonical_fragment JSONB NOT NULL CHECK (jsonb_typeof(canonical_fragment)='object'),
-    condition_hash TEXT NOT NULL CHECK (condition_hash ~ '^sha256:[0-9a-f]{64}$'),
+    canonical_fragment_hash TEXT NOT NULL CHECK (canonical_fragment_hash ~ '^sha256:[0-9a-f]{64}$'),
+    canonical_condition_hash TEXT NOT NULL CHECK (canonical_condition_hash ~ '^sha256:[0-9a-f]{64}$'),
     required BOOLEAN NOT NULL,
-    derivation_contract_version TEXT NOT NULL CHECK (btrim(derivation_contract_version)<>''),
+    derivation_contract_version INTEGER NOT NULL CHECK (derivation_contract_version>0),
     derivation_contract_digest TEXT NOT NULL CHECK (derivation_contract_digest ~ '^sha256:[0-9a-f]{64}$'),
     member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-    UNIQUE(revision_id,ordinal),
-    UNIQUE(revision_id,member_hash)
+    UNIQUE(revision_id,component_ordinal),
+    UNIQUE(revision_id,component_key),
+    UNIQUE(revision_id,member_hash),
+    UNIQUE(component_id,revision_id,member_hash),
+    FOREIGN KEY(revision_id,revision_hash)
+        REFERENCES attack_hypothesis_revisions(revision_id,revision_hash)
+        ON DELETE RESTRICT
 );
 
 CREATE TABLE attack_hypothesis_verification_contracts (
     contract_id UUID PRIMARY KEY,
-    revision_id UUID NOT NULL REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
+    revision_id UUID NOT NULL,
+    revision_hash TEXT NOT NULL CHECK (revision_hash ~ '^sha256:[0-9a-f]{64}$'),
     objective_id UUID NOT NULL REFERENCES attack_hypothesis_verification_objectives(objective_id) ON DELETE RESTRICT,
     contract_schema TEXT NOT NULL DEFAULT 'verification_contract.v1'
         CHECK (contract_schema='verification_contract.v1'),
     contract_version INTEGER NOT NULL DEFAULT 1 CHECK (contract_version=1),
     combinator TEXT NOT NULL CHECK (combinator IN (
-        'all_of','any_of','threshold','paired_differential','ordered_sequence'
+        'all_of','any_of','paired_differential','ordered_sequence'
     )),
-    predicate_member_count BIGINT NOT NULL CHECK (predicate_member_count>0),
-    predicate_member_set_hash TEXT NOT NULL CHECK (predicate_member_set_hash ~ '^sha256:[0-9a-f]{64}$'),
-    required_control_member_count BIGINT NOT NULL CHECK (required_control_member_count>=0),
-    required_control_member_set_hash TEXT NOT NULL CHECK (required_control_member_set_hash ~ '^sha256:[0-9a-f]{64}$'),
-    no_required_control BOOLEAN NOT NULL,
+    predicate_count BIGINT NOT NULL CHECK (predicate_count>0),
+    predicate_set_hash TEXT NOT NULL CHECK (predicate_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    required_control_count BIGINT NOT NULL CHECK (required_control_count>=0),
+    required_control_set_hash TEXT NOT NULL CHECK (required_control_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    explicit_no_required_control BOOLEAN NOT NULL,
+    paired_differential_count BIGINT NOT NULL CHECK (paired_differential_count>=0),
+    paired_differential_set_hash TEXT NOT NULL CHECK (paired_differential_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    ordered_step_count BIGINT NOT NULL CHECK (ordered_step_count>=0),
+    ordered_step_set_hash TEXT NOT NULL CHECK (ordered_step_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    stopping_criteria_hash TEXT NOT NULL CHECK (stopping_criteria_hash ~ '^sha256:[0-9a-f]{64}$'),
     compiler_digest TEXT NOT NULL CHECK (compiler_digest ~ '^sha256:[0-9a-f]{64}$'),
     rule_digest TEXT NOT NULL CHECK (rule_digest ~ '^sha256:[0-9a-f]{64}$'),
-    policy_snapshot_digest TEXT NOT NULL CHECK (policy_snapshot_digest ~ '^sha256:[0-9a-f]{64}$'),
+    policy_snapshot_hash TEXT NOT NULL CHECK (policy_snapshot_hash ~ '^sha256:[0-9a-f]{64}$'),
     contract_hash TEXT NOT NULL CHECK (contract_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-    CHECK ((required_control_member_count=0)=no_required_control),
-    UNIQUE(revision_id,objective_id,contract_version,policy_snapshot_digest),
+    CHECK ((required_control_count=0)=explicit_no_required_control),
+    CHECK (
+        (combinator IN ('all_of','any_of')
+            AND paired_differential_count=0 AND ordered_step_count=0)
+        OR (combinator='paired_differential'
+            AND paired_differential_count>0 AND ordered_step_count=0)
+        OR (combinator='ordered_sequence'
+            AND paired_differential_count=0 AND ordered_step_count>=2)
+    ),
+    UNIQUE(revision_id,objective_id,contract_version,policy_snapshot_hash),
     UNIQUE(contract_id,revision_id,objective_id),
-    UNIQUE(contract_id,revision_id,objective_id,contract_hash)
+    UNIQUE(contract_id,revision_id,objective_id,contract_hash),
+    UNIQUE(
+        contract_id,revision_id,objective_id,contract_version,contract_hash
+    ),
+    FOREIGN KEY(revision_id,revision_hash)
+        REFERENCES attack_hypothesis_revisions(revision_id,revision_hash)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(objective_id,revision_id)
+        REFERENCES attack_hypothesis_verification_objectives(objective_id,revision_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY(objective_id,revision_id,stopping_criteria_hash)
+        REFERENCES attack_hypothesis_verification_objectives(
+            objective_id,revision_id,stopping_criteria_hash
+        )
+        ON DELETE RESTRICT
 );
 
 CREATE TABLE attack_hypothesis_verification_plans (
     plan_id UUID PRIMARY KEY,
-    revision_id UUID NOT NULL UNIQUE REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
+    revision_id UUID NOT NULL UNIQUE,
+    revision_hash TEXT NOT NULL CHECK (revision_hash ~ '^sha256:[0-9a-f]{64}$'),
     plan_schema TEXT NOT NULL DEFAULT 'hypothesis_verification_plan.v1'
         CHECK (plan_schema='hypothesis_verification_plan.v1'),
     plan_version INTEGER NOT NULL DEFAULT 1 CHECK (plan_version=1),
@@ -422,34 +647,177 @@ CREATE TABLE attack_hypothesis_verification_plans (
     objective_set_hash TEXT NOT NULL CHECK (objective_set_hash ~ '^sha256:[0-9a-f]{64}$'),
     proof_path_count BIGINT NOT NULL CHECK (proof_path_count>0),
     proof_path_set_hash TEXT NOT NULL CHECK (proof_path_set_hash ~ '^sha256:[0-9a-f]{64}$'),
-    outer_aggregation_policy_version TEXT NOT NULL CHECK (btrim(outer_aggregation_policy_version)<>''),
+    outer_aggregation_policy_version INTEGER NOT NULL CHECK (outer_aggregation_policy_version>0),
     outer_aggregation_policy_digest TEXT NOT NULL CHECK (outer_aggregation_policy_digest ~ '^sha256:[0-9a-f]{64}$'),
     plan_hash TEXT NOT NULL CHECK (plan_hash ~ '^sha256:[0-9a-f]{64}$'),
     sealed_at TIMESTAMPTZ NOT NULL,
     UNIQUE(plan_id,revision_id),
-    UNIQUE(plan_id,revision_id,plan_hash)
+    UNIQUE(plan_id,revision_id,plan_hash),
+    FOREIGN KEY(revision_id,revision_hash,revision_ingredients_hash)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,revision_hash,revision_ingredients_hash
+        )
+        ON DELETE RESTRICT
 );
 
 CREATE TABLE hypothesis_server_validation_receipts (
     receipt_id UUID PRIMARY KEY,
+    stable_request_id UUID NOT NULL UNIQUE,
     operation_id UUID NOT NULL REFERENCES operation_state(operation_id) ON DELETE RESTRICT,
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
-    root_id UUID NOT NULL REFERENCES attack_hypotheses(root_id) ON DELETE RESTRICT,
+    root_id UUID NOT NULL,
+    predecessor_revision_id UUID,
+    predecessor_revision_hash TEXT CHECK (
+        predecessor_revision_hash IS NULL OR predecessor_revision_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    validated_revision_id UUID NOT NULL,
     validated_revision_ingredients_hash TEXT NOT NULL CHECK (validated_revision_ingredients_hash ~ '^sha256:[0-9a-f]{64}$'),
-    validator_contract_version TEXT NOT NULL CHECK (btrim(validator_contract_version)<>''),
+    validator_contract_version INTEGER NOT NULL CHECK (validator_contract_version>0),
     validator_contract_digest TEXT NOT NULL CHECK (validator_contract_digest ~ '^sha256:[0-9a-f]{64}$'),
-    invalid_reason TEXT NOT NULL CHECK (btrim(invalid_reason)<>''),
+    invalid_reason_code TEXT NOT NULL CHECK (btrim(invalid_reason_code)<>''),
     receipt_hash TEXT NOT NULL CHECK (receipt_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-    UNIQUE(receipt_id,operation_id,organization_id,root_id,receipt_hash)
+    CHECK ((predecessor_revision_id IS NULL)=(predecessor_revision_hash IS NULL)),
+    UNIQUE(receipt_id,operation_id,organization_id,root_id,receipt_hash),
+    UNIQUE(
+        receipt_id,operation_id,organization_id,root_id,validated_revision_id,
+        validated_revision_ingredients_hash,receipt_hash
+    ),
+    FOREIGN KEY(root_id,operation_id,organization_id)
+        REFERENCES attack_hypotheses(root_id,operation_id,organization_id) ON DELETE RESTRICT,
+    FOREIGN KEY(predecessor_revision_id,root_id,operation_id,organization_id,predecessor_revision_hash)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,root_id,operation_id,organization_id,revision_hash
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(
+        validated_revision_id,root_id,operation_id,organization_id,
+        validated_revision_ingredients_hash
+    ) REFERENCES attack_hypothesis_revisions(
+        revision_id,root_id,operation_id,organization_id,revision_ingredients_hash
+    ) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
 );
+
+-- Candidate state events are authorized by a host-reduced, append-only Gate
+-- decision exact set.  The per-mutation origin hash deliberately excludes the
+-- successor revision/event ids, so revision identity remains acyclic.
+CREATE TABLE hypothesis_candidate_gate_decisions (
+    decision_id UUID PRIMARY KEY,
+    stable_request_id UUID NOT NULL UNIQUE,
+    operation_id UUID NOT NULL REFERENCES operation_state(operation_id) ON DELETE RESTRICT,
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    candidate_snapshot_id UUID NOT NULL,
+    analysis_attempt_id UUID NOT NULL,
+    mutation_count BIGINT NOT NULL CHECK (mutation_count>0),
+    mutation_set_hash TEXT NOT NULL CHECK (mutation_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    gate_authority_hash TEXT NOT NULL CHECK (gate_authority_hash ~ '^sha256:[0-9a-f]{64}$'),
+    decision_hash TEXT NOT NULL CHECK (decision_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(decision_id,operation_id,organization_id),
+    UNIQUE(decision_id,operation_id,organization_id,decision_hash)
+);
+
+CREATE TABLE hypothesis_candidate_gate_decision_members (
+    mutation_id UUID PRIMARY KEY,
+    decision_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal>=0),
+    route_kind TEXT NOT NULL CHECK (route_kind IN (
+        'create_initial','reopen_historical','split','merge','derive','narrow_successor'
+    )),
+    root_id UUID NOT NULL,
+    predecessor_revision_id UUID,
+    successor_revision_id UUID NOT NULL,
+    semantic_key_hash TEXT NOT NULL CHECK (semantic_key_hash ~ '^sha256:[0-9a-f]{64}$'),
+    successor_epistemic_state TEXT NOT NULL CHECK (successor_epistemic_state IN (
+        'proposed','supported','contested','inconclusive'
+    )),
+    origin_decision_hash TEXT NOT NULL CHECK (origin_decision_hash ~ '^sha256:[0-9a-f]{64}$'),
+    member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CHECK (
+        (route_kind IN ('create_initial','split','merge','derive')
+            AND predecessor_revision_id IS NULL)
+        OR (route_kind IN ('reopen_historical','narrow_successor')
+            AND predecessor_revision_id IS NOT NULL)
+    ),
+    UNIQUE(decision_id,ordinal),
+    UNIQUE(decision_id,mutation_id),
+    UNIQUE(decision_id,root_id),
+    UNIQUE(successor_revision_id),
+    UNIQUE(
+        mutation_id,operation_id,organization_id,root_id,predecessor_revision_id,
+        successor_revision_id,semantic_key_hash,successor_epistemic_state,
+        origin_decision_hash
+    ),
+    FOREIGN KEY(decision_id,operation_id,organization_id)
+        REFERENCES hypothesis_candidate_gate_decisions(
+            decision_id,operation_id,organization_id
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(root_id,operation_id,organization_id)
+        REFERENCES attack_hypotheses(root_id,operation_id,organization_id) ON DELETE RESTRICT,
+    FOREIGN KEY(predecessor_revision_id,root_id,operation_id,organization_id)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,root_id,operation_id,organization_id
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(successor_revision_id,root_id,operation_id,organization_id)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,root_id,operation_id,organization_id
+        ) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+);
+
+CREATE FUNCTION enforce_hypothesis_candidate_gate_decision_exact_set()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    decision hypothesis_candidate_gate_decisions%ROWTYPE;
+    actual_count BIGINT;
+    ordinal_count BIGINT;
+    minimum_ordinal INTEGER;
+    maximum_ordinal INTEGER;
+    actual_set_hash TEXT;
+BEGIN
+    SELECT * INTO STRICT decision
+      FROM hypothesis_candidate_gate_decisions
+     WHERE decision_id=NEW.decision_id;
+    SELECT COUNT(*),COUNT(DISTINCT ordinal),MIN(ordinal),MAX(ordinal),
+           investigation_exact_member_set_hash(
+               'hypothesis_candidate_gate_mutation_set.v1',
+               COALESCE(array_agg(member_hash ORDER BY ordinal),ARRAY[]::TEXT[])
+           )
+      INTO actual_count,ordinal_count,minimum_ordinal,maximum_ordinal,actual_set_hash
+      FROM hypothesis_candidate_gate_decision_members
+     WHERE decision_id=decision.decision_id;
+    IF actual_count<>decision.mutation_count
+       OR ordinal_count<>actual_count
+       OR minimum_ordinal<>0
+       OR maximum_ordinal<>actual_count-1
+       OR actual_set_hash<>decision.mutation_set_hash
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_CANDIDATE_GATE_MUTATION_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER hypothesis_candidate_gate_decision_exact_set
+AFTER INSERT ON hypothesis_candidate_gate_decisions
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_hypothesis_candidate_gate_decision_exact_set();
+
+CREATE CONSTRAINT TRIGGER hypothesis_candidate_gate_decision_member_exact_set
+AFTER INSERT ON hypothesis_candidate_gate_decision_members
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_hypothesis_candidate_gate_decision_exact_set();
 
 CREATE TABLE attack_hypothesis_state_events (
     event_id UUID PRIMARY KEY,
     operation_id UUID NOT NULL REFERENCES operation_state(operation_id) ON DELETE RESTRICT,
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
     root_id UUID NOT NULL REFERENCES attack_hypotheses(root_id) ON DELETE RESTRICT,
-    predecessor_revision_id UUID REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
+    predecessor_revision_id UUID,
     successor_revision_id UUID NOT NULL,
     event_kind TEXT NOT NULL CHECK (event_kind IN (
         'created','supported','contested','inconclusive','invalidated','verified','refuted'
@@ -460,15 +828,24 @@ CREATE TABLE attack_hypothesis_state_events (
     successor_epistemic_state TEXT NOT NULL CHECK (successor_epistemic_state IN (
         'proposed','supported','contested','verified','refuted','inconclusive','invalid'
     )),
-    authority_receipt_kind TEXT,
-    authority_receipt_id UUID,
-    authority_receipt_hash TEXT CHECK (
-        authority_receipt_hash IS NULL OR authority_receipt_hash ~ '^sha256:[0-9a-f]{64}$'
-    ),
+    authority_receipt_kind TEXT NOT NULL CHECK (authority_receipt_kind IN (
+        'candidate_gate_decision','server_validation','revision_transition_decision'
+    )),
+    authority_receipt_id UUID NOT NULL,
+    authority_receipt_hash TEXT NOT NULL CHECK (authority_receipt_hash ~ '^sha256:[0-9a-f]{64}$'),
     event_hash TEXT NOT NULL CHECK (event_hash ~ '^sha256:[0-9a-f]{64}$'),
     server_decision_id UUID NOT NULL,
+    server_decision_hash TEXT NOT NULL CHECK (server_decision_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CHECK (server_decision_id=authority_receipt_id),
+    CHECK (server_decision_hash=authority_receipt_hash),
     UNIQUE(successor_revision_id),
+    FOREIGN KEY(root_id,operation_id,organization_id)
+        REFERENCES attack_hypotheses(root_id,operation_id,organization_id) ON DELETE RESTRICT,
+    FOREIGN KEY(predecessor_revision_id,root_id,operation_id,organization_id)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,root_id,operation_id,organization_id
+        ) ON DELETE RESTRICT,
     FOREIGN KEY(successor_revision_id,root_id,operation_id,organization_id,successor_epistemic_state)
         REFERENCES attack_hypothesis_revisions(
             revision_id,root_id,operation_id,organization_id,epistemic_state
@@ -499,6 +876,9 @@ BEGIN
     IF creating.predecessor_revision_id IS DISTINCT FROM NEW.predecessor_revision_id THEN
         RAISE EXCEPTION 'HYPOTHESIS_CREATING_EVENT_PREDECESSOR_MISMATCH' USING ERRCODE='23514';
     END IF;
+    IF creating.server_decision_hash<>NEW.origin_decision_hash THEN
+        RAISE EXCEPTION 'HYPOTHESIS_CREATING_EVENT_DECISION_HASH_MISMATCH' USING ERRCODE='23514';
+    END IF;
     IF (NEW.revision_ordinal=0) IS DISTINCT FROM (NEW.predecessor_revision_id IS NULL)
        OR (
            NEW.predecessor_revision_id IS NOT NULL
@@ -525,6 +905,39 @@ BEGIN
     THEN
         RAISE EXCEPTION 'HYPOTHESIS_CANDIDATE_TERMINAL_FORBIDDEN' USING ERRCODE='23514';
     END IF;
+    IF creating.origin_authority='candidate_analysis'
+       AND (
+           creating.authority_receipt_kind<>'candidate_gate_decision'
+           OR NOT EXISTS (
+               SELECT 1
+                 FROM hypothesis_candidate_gate_decision_members mutation
+                WHERE mutation.mutation_id=creating.server_decision_id
+                  AND mutation.operation_id=NEW.operation_id
+                  AND mutation.organization_id=NEW.organization_id
+                  AND mutation.root_id=NEW.root_id
+                  AND mutation.predecessor_revision_id IS NOT DISTINCT FROM NEW.predecessor_revision_id
+                  AND mutation.successor_revision_id=NEW.revision_id
+                  AND mutation.semantic_key_hash=NEW.semantic_key_hash
+                  AND mutation.successor_epistemic_state=NEW.epistemic_state
+                  AND mutation.origin_decision_hash=creating.server_decision_hash
+                  AND (
+                      mutation.route_kind IN ('reopen_historical','narrow_successor')
+                      OR EXISTS (
+                          SELECT 1 FROM attack_hypotheses routed_root
+                           WHERE routed_root.root_id=mutation.root_id
+                             AND routed_root.root_kind=CASE mutation.route_kind
+                                 WHEN 'create_initial' THEN 'initial'
+                                 WHEN 'split' THEN 'split'
+                                 WHEN 'merge' THEN 'merge'
+                                 WHEN 'derive' THEN 'derive'
+                             END
+                      )
+                  )
+           )
+       )
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_CANDIDATE_GATE_DECISION_REQUIRED' USING ERRCODE='23514';
+    END IF;
     IF creating.origin_authority='server_validator'
        AND (
            NEW.epistemic_state<>'invalid'
@@ -538,6 +951,9 @@ BEGIN
                   AND receipt.operation_id=NEW.operation_id
                   AND receipt.organization_id=NEW.organization_id
                   AND receipt.root_id=NEW.root_id
+                  AND receipt.predecessor_revision_id IS NOT DISTINCT FROM NEW.predecessor_revision_id
+                  AND receipt.validated_revision_id=NEW.revision_id
+                  AND receipt.validated_revision_ingredients_hash=NEW.revision_ingredients_hash
                   AND receipt.receipt_hash=creating.authority_receipt_hash
            )
        )
@@ -546,6 +962,27 @@ BEGIN
     END IF;
     IF creating.origin_authority='hypothesis_revision_adjudication' THEN
         RAISE EXCEPTION 'PLAN_C_REVISION_ADJUDICATION_AUTHORITY_NOT_INSTALLED' USING ERRCODE='23514';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1
+          FROM attack_hypothesis_heads head
+         WHERE head.root_id=NEW.root_id
+           AND head.operation_id=NEW.operation_id
+           AND head.organization_id=NEW.organization_id
+           AND head.head_revision_id=NEW.revision_id
+           AND head.head_revision_hash=NEW.revision_hash
+           AND head.head_semantic_key_hash=NEW.semantic_key_hash
+           AND head.head_epistemic_state=NEW.epistemic_state
+           AND head.head_lifecycle_state=NEW.lifecycle_state
+    ) THEN
+        RAISE EXCEPTION 'HYPOTHESIS_REVISION_HEAD_CAS_REQUIRED' USING ERRCODE='23514';
+    END IF;
+    IF (SELECT COUNT(*)
+          FROM attack_hypothesis_verification_plans plan
+         WHERE plan.revision_id=NEW.revision_id)<>1
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_REVISION_VERIFICATION_PLAN_EXACT_ONE_REQUIRED'
+            USING ERRCODE='23514';
     END IF;
     RETURN NULL;
 END;
@@ -579,6 +1016,12 @@ BEFORE UPDATE OR DELETE ON attack_hypothesis_verification_plans
 FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER hypothesis_server_validation_receipts_append_only
 BEFORE UPDATE OR DELETE ON hypothesis_server_validation_receipts
+FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER hypothesis_candidate_gate_decisions_append_only
+BEFORE UPDATE OR DELETE ON hypothesis_candidate_gate_decisions
+FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER hypothesis_candidate_gate_decision_members_append_only
+BEFORE UPDATE OR DELETE ON hypothesis_candidate_gate_decision_members
 FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER attack_hypothesis_state_events_append_only
 BEFORE UPDATE OR DELETE ON attack_hypothesis_state_events
@@ -734,6 +1177,7 @@ CREATE TABLE candidate_analysis_attempts (
     retry_limit INTEGER NOT NULL CHECK (retry_limit BETWEEN 0 AND 8),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(snapshot_id,attempt_ordinal),
+    UNIQUE(analysis_attempt_id,snapshot_id,operation_id,organization_id),
     FOREIGN KEY(snapshot_id,operation_id,organization_id)
         REFERENCES candidate_analysis_snapshots(snapshot_id,operation_id,organization_id)
         ON DELETE RESTRICT
@@ -768,6 +1212,18 @@ FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_attempts_append_only
 BEFORE UPDATE OR DELETE ON candidate_analysis_attempts
 FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+
+ALTER TABLE hypothesis_candidate_gate_decisions
+    ADD CONSTRAINT hypothesis_candidate_gate_decision_snapshot_fk
+        FOREIGN KEY(candidate_snapshot_id,operation_id,organization_id)
+        REFERENCES candidate_analysis_snapshots(snapshot_id,operation_id,organization_id)
+        ON DELETE RESTRICT,
+    ADD CONSTRAINT hypothesis_candidate_gate_decision_attempt_fk
+        FOREIGN KEY(
+            analysis_attempt_id,candidate_snapshot_id,operation_id,organization_id
+        ) REFERENCES candidate_analysis_attempts(
+            analysis_attempt_id,snapshot_id,operation_id,organization_id
+        ) ON DELETE RESTRICT;
 
 -- ---------------------------------------------------------------------------
 -- Projection heads and immutable batch spine
@@ -946,25 +1402,30 @@ CREATE TABLE attack_hypothesis_verification_objective_claim_components (
         REFERENCES attack_hypothesis_verification_contracts(
             contract_id,revision_id,objective_id
         ) ON DELETE RESTRICT,
-    FOREIGN KEY(claim_component_id)
-        REFERENCES attack_hypothesis_claim_components(component_id) ON DELETE RESTRICT
+    FOREIGN KEY(claim_component_id,revision_id,component_member_hash)
+        REFERENCES attack_hypothesis_claim_components(
+            component_id,revision_id,member_hash
+        ) ON DELETE RESTRICT
 );
 
 CREATE TABLE attack_hypothesis_verification_predicate_components (
     predicate_component_id UUID PRIMARY KEY,
     contract_id UUID NOT NULL REFERENCES attack_hypothesis_verification_contracts(contract_id) ON DELETE RESTRICT,
     ordinal INTEGER NOT NULL CHECK (ordinal>=0),
-    component_semantic_key TEXT NOT NULL CHECK (btrim(component_semantic_key)<>''),
+    semantic_key TEXT NOT NULL CHECK (btrim(semantic_key)<>''),
     predicate_schema TEXT NOT NULL CHECK (btrim(predicate_schema)<>''),
     predicate_version INTEGER NOT NULL CHECK (predicate_version>0),
-    normalized_argument_hash TEXT NOT NULL CHECK (normalized_argument_hash ~ '^sha256:[0-9a-f]{64}$'),
+    normalized_arguments JSONB NOT NULL CHECK (jsonb_typeof(normalized_arguments)='object'),
+    normalized_arguments_hash TEXT NOT NULL CHECK (normalized_arguments_hash ~ '^sha256:[0-9a-f]{64}$'),
     expected_polarity TEXT NOT NULL CHECK (expected_polarity IN ('positive','negative')),
     prerequisite_hash TEXT NOT NULL CHECK (prerequisite_hash ~ '^sha256:[0-9a-f]{64}$'),
     member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(contract_id,ordinal),
-    UNIQUE(contract_id,component_semantic_key),
-    UNIQUE(predicate_component_id,contract_id)
+    UNIQUE(contract_id,semantic_key),
+    UNIQUE(predicate_component_id,contract_id),
+    UNIQUE(predicate_component_id,contract_id,semantic_key),
+    UNIQUE(predicate_component_id,contract_id,semantic_key,member_hash)
 );
 
 CREATE TABLE attack_hypothesis_verification_required_controls (
@@ -978,37 +1439,52 @@ CREATE TABLE attack_hypothesis_verification_required_controls (
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(contract_id,ordinal),
     UNIQUE(contract_id,control_id,control_version),
-    UNIQUE(required_control_id,contract_id,control_id,control_version,control_contract_hash)
+    UNIQUE(required_control_id,contract_id,control_id,control_version,control_contract_hash),
+    UNIQUE(
+        required_control_id,contract_id,control_id,control_version,
+        control_contract_hash,member_hash
+    )
 );
 
 CREATE TABLE attack_hypothesis_verification_pair_bindings (
     pair_binding_id UUID PRIMARY KEY,
     contract_id UUID NOT NULL REFERENCES attack_hypothesis_verification_contracts(contract_id) ON DELETE RESTRICT,
     ordinal INTEGER NOT NULL CHECK (ordinal>=0),
+    pair_key TEXT NOT NULL CHECK (btrim(pair_key)<>''),
     baseline_component_id UUID NOT NULL,
+    baseline_component_key TEXT NOT NULL CHECK (btrim(baseline_component_key)<>''),
     variant_component_id UUID NOT NULL,
+    variant_component_key TEXT NOT NULL CHECK (btrim(variant_component_key)<>''),
     required_control_member_id UUID NOT NULL,
-    control_id TEXT NOT NULL,
-    control_version INTEGER NOT NULL,
-    control_contract_hash TEXT NOT NULL,
-    comparator_rule_version TEXT NOT NULL CHECK (btrim(comparator_rule_version)<>''),
+    required_control_id TEXT NOT NULL CHECK (btrim(required_control_id)<>''),
+    required_control_version INTEGER NOT NULL CHECK (required_control_version>0),
+    required_control_contract_hash TEXT NOT NULL CHECK (required_control_contract_hash ~ '^sha256:[0-9a-f]{64}$'),
+    required_control_member_hash TEXT NOT NULL CHECK (required_control_member_hash ~ '^sha256:[0-9a-f]{64}$'),
+    comparator_rule_id TEXT NOT NULL CHECK (btrim(comparator_rule_id)<>''),
+    comparator_rule_version INTEGER NOT NULL CHECK (comparator_rule_version>0),
     comparator_rule_digest TEXT NOT NULL CHECK (comparator_rule_digest ~ '^sha256:[0-9a-f]{64}$'),
     member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK (baseline_component_id<>variant_component_id),
     UNIQUE(contract_id,ordinal),
+    UNIQUE(contract_id,pair_key),
     UNIQUE(contract_id,baseline_component_id,variant_component_id),
-    FOREIGN KEY(baseline_component_id,contract_id)
+    FOREIGN KEY(baseline_component_id,contract_id,baseline_component_key)
         REFERENCES attack_hypothesis_verification_predicate_components(
-            predicate_component_id,contract_id
+            predicate_component_id,contract_id,semantic_key
         ) ON DELETE RESTRICT,
-    FOREIGN KEY(variant_component_id,contract_id)
+    FOREIGN KEY(variant_component_id,contract_id,variant_component_key)
         REFERENCES attack_hypothesis_verification_predicate_components(
-            predicate_component_id,contract_id
+            predicate_component_id,contract_id,semantic_key
         ) ON DELETE RESTRICT,
-    FOREIGN KEY(required_control_member_id,contract_id,control_id,control_version,control_contract_hash)
+    FOREIGN KEY(
+        required_control_member_id,contract_id,required_control_id,
+        required_control_version,required_control_contract_hash,
+        required_control_member_hash
+    )
         REFERENCES attack_hypothesis_verification_required_controls(
-            required_control_id,contract_id,control_id,control_version,control_contract_hash
+            required_control_id,contract_id,control_id,control_version,
+            control_contract_hash,member_hash
         ) ON DELETE RESTRICT
 );
 
@@ -1017,23 +1493,25 @@ CREATE TABLE attack_hypothesis_verification_ordered_steps (
     contract_id UUID NOT NULL REFERENCES attack_hypothesis_verification_contracts(contract_id) ON DELETE RESTRICT,
     step_ordinal INTEGER NOT NULL CHECK (step_ordinal>=0),
     predicate_component_id UUID NOT NULL,
-    predecessor_step_id UUID,
+    component_key TEXT NOT NULL CHECK (btrim(component_key)<>''),
+    predecessor_step_ordinal INTEGER CHECK (predecessor_step_ordinal>=0),
     session_binding_key_schema TEXT NOT NULL CHECK (btrim(session_binding_key_schema)<>''),
     session_binding_key_version INTEGER NOT NULL CHECK (session_binding_key_version>0),
-    interleaving_policy TEXT NOT NULL CHECK (interleaving_policy IN ('forbidden','explicitly_bounded')),
-    reset_policy TEXT NOT NULL CHECK (reset_policy IN ('same_session','server_reset_required')),
+    session_scope TEXT NOT NULL CHECK (session_scope='same_execution_session'),
+    interleaving_policy TEXT NOT NULL CHECK (interleaving_policy='forbid'),
+    reset_policy TEXT NOT NULL CHECK (reset_policy='restart_at_step_zero'),
     step_hash TEXT NOT NULL CHECK (step_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(contract_id,step_ordinal),
     UNIQUE(ordered_step_id,contract_id),
-    FOREIGN KEY(predicate_component_id,contract_id)
+    FOREIGN KEY(predicate_component_id,contract_id,component_key)
         REFERENCES attack_hypothesis_verification_predicate_components(
-            predicate_component_id,contract_id
+            predicate_component_id,contract_id,semantic_key
         ) ON DELETE RESTRICT,
-    FOREIGN KEY(predecessor_step_id,contract_id)
-        REFERENCES attack_hypothesis_verification_ordered_steps(ordered_step_id,contract_id)
+    FOREIGN KEY(contract_id,predecessor_step_ordinal)
+        REFERENCES attack_hypothesis_verification_ordered_steps(contract_id,step_ordinal)
         ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
-    CHECK ((step_ordinal=0)=(predecessor_step_id IS NULL))
+    CHECK ((step_ordinal=0)=(predecessor_step_ordinal IS NULL))
 );
 
 CREATE TABLE attack_hypothesis_verification_plan_objectives (
@@ -1041,25 +1519,42 @@ CREATE TABLE attack_hypothesis_verification_plan_objectives (
     plan_id UUID NOT NULL,
     revision_id UUID NOT NULL,
     objective_id UUID NOT NULL,
-    contract_id UUID NOT NULL,
+    verification_contract_id UUID NOT NULL,
     ordinal INTEGER NOT NULL CHECK (ordinal>=0),
     objective_hash TEXT NOT NULL CHECK (objective_hash ~ '^sha256:[0-9a-f]{64}$'),
-    contract_version INTEGER NOT NULL CHECK (contract_version=1),
-    contract_hash TEXT NOT NULL CHECK (contract_hash ~ '^sha256:[0-9a-f]{64}$'),
-    claim_component_subset_count BIGINT NOT NULL CHECK (claim_component_subset_count>0),
-    claim_component_subset_set_hash TEXT NOT NULL CHECK (claim_component_subset_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    verification_contract_version INTEGER NOT NULL CHECK (verification_contract_version=1),
+    verification_contract_hash TEXT NOT NULL CHECK (verification_contract_hash ~ '^sha256:[0-9a-f]{64}$'),
+    claim_component_count BIGINT NOT NULL CHECK (claim_component_count>0),
+    claim_component_set_hash TEXT NOT NULL CHECK (claim_component_set_hash ~ '^sha256:[0-9a-f]{64}$'),
     stopping_criteria_hash TEXT NOT NULL CHECK (stopping_criteria_hash ~ '^sha256:[0-9a-f]{64}$'),
-    outcome_requirement TEXT NOT NULL CHECK (outcome_requirement IN ('required','required_with_falsifier')),
+    outcome_requirement TEXT NOT NULL CHECK (outcome_requirement IN (
+        'satisfy_bound_components','satisfy_or_falsify_bound_required_components'
+    )),
     member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(plan_id,ordinal),
     UNIQUE(plan_id,objective_id),
-    UNIQUE(plan_objective_id,plan_id,revision_id,claim_component_subset_set_hash),
+    UNIQUE(plan_objective_id,plan_id,revision_id,claim_component_set_hash),
+    UNIQUE(
+        plan_objective_id,plan_id,revision_id,
+        claim_component_set_hash,verification_contract_hash
+    ),
+    UNIQUE(
+        plan_objective_id,plan_id,revision_id,
+        claim_component_set_hash,verification_contract_hash,member_hash
+    ),
     FOREIGN KEY(plan_id,revision_id)
         REFERENCES attack_hypothesis_verification_plans(plan_id,revision_id) ON DELETE RESTRICT,
-    FOREIGN KEY(contract_id,revision_id,objective_id,contract_hash)
+    FOREIGN KEY(
+        verification_contract_id,revision_id,objective_id,
+        verification_contract_version,verification_contract_hash
+    )
         REFERENCES attack_hypothesis_verification_contracts(
-            contract_id,revision_id,objective_id,contract_hash
+            contract_id,revision_id,objective_id,contract_version,contract_hash
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(objective_id,revision_id,objective_hash)
+        REFERENCES attack_hypothesis_verification_objectives(
+            objective_id,revision_id,objective_hash
         ) ON DELETE RESTRICT
 );
 
@@ -1082,29 +1577,500 @@ CREATE TABLE attack_hypothesis_verification_plan_path_members (
     path_id UUID NOT NULL,
     plan_id UUID NOT NULL,
     plan_objective_id UUID NOT NULL,
+    plan_objective_member_hash TEXT NOT NULL CHECK (plan_objective_member_hash ~ '^sha256:[0-9a-f]{64}$'),
     revision_id UUID NOT NULL,
     member_ordinal INTEGER NOT NULL CHECK (member_ordinal>=0),
-    claim_component_subset_set_hash TEXT NOT NULL CHECK (claim_component_subset_set_hash ~ '^sha256:[0-9a-f]{64}$'),
-    proof_role TEXT NOT NULL CHECK (proof_role IN (
+    verification_contract_hash TEXT NOT NULL CHECK (verification_contract_hash ~ '^sha256:[0-9a-f]{64}$'),
+    claim_component_set_hash TEXT NOT NULL CHECK (claim_component_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    role TEXT NOT NULL CHECK (role IN (
         'required_proof','required_proof_and_path_falsifier'
     )),
-    falsifiable_component_member_hashes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    falsifier_claim_component_member_hashes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    falsifier_claim_component_count BIGINT NOT NULL CHECK (falsifier_claim_component_count>=0),
+    falsifier_claim_component_set_hash TEXT NOT NULL CHECK (falsifier_claim_component_set_hash ~ '^sha256:[0-9a-f]{64}$'),
     member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK (
-        (proof_role='required_proof' AND cardinality(falsifiable_component_member_hashes)=0)
-        OR (proof_role='required_proof_and_path_falsifier'
-            AND cardinality(falsifiable_component_member_hashes)>0)
+        (role='required_proof'
+            AND cardinality(falsifier_claim_component_member_hashes)=0
+            AND falsifier_claim_component_count=0)
+        OR (role='required_proof_and_path_falsifier'
+            AND cardinality(falsifier_claim_component_member_hashes)>0
+            AND falsifier_claim_component_count=cardinality(falsifier_claim_component_member_hashes))
     ),
     UNIQUE(path_id,member_ordinal),
     UNIQUE(path_id,plan_objective_id),
     FOREIGN KEY(path_id,plan_id)
         REFERENCES attack_hypothesis_verification_plan_paths(path_id,plan_id) ON DELETE RESTRICT,
-    FOREIGN KEY(plan_objective_id,plan_id,revision_id,claim_component_subset_set_hash)
+    FOREIGN KEY(
+        plan_objective_id,plan_id,revision_id,claim_component_set_hash,
+        verification_contract_hash,plan_objective_member_hash
+    )
         REFERENCES attack_hypothesis_verification_plan_objectives(
-            plan_objective_id,plan_id,revision_id,claim_component_subset_set_hash
+            plan_objective_id,plan_id,revision_id,claim_component_set_hash,
+            verification_contract_hash,member_hash
         ) ON DELETE RESTRICT
 );
+
+CREATE FUNCTION enforce_attack_hypothesis_verification_contract_exact_sets()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    contract attack_hypothesis_verification_contracts%ROWTYPE;
+    predicate_count BIGINT;
+    predicate_ordinal_count BIGINT;
+    predicate_min INTEGER;
+    predicate_max INTEGER;
+    predicate_set_hash TEXT;
+    control_count BIGINT;
+    control_ordinal_count BIGINT;
+    control_min INTEGER;
+    control_max INTEGER;
+    control_set_hash TEXT;
+    pair_count BIGINT;
+    pair_ordinal_count BIGINT;
+    pair_min INTEGER;
+    pair_max INTEGER;
+    pair_set_hash TEXT;
+    pair_component_count BIGINT;
+    pair_control_count BIGINT;
+    ordered_count BIGINT;
+    ordered_ordinal_count BIGINT;
+    ordered_min INTEGER;
+    ordered_max INTEGER;
+    ordered_set_hash TEXT;
+BEGIN
+    SELECT * INTO STRICT contract
+      FROM attack_hypothesis_verification_contracts
+     WHERE contract_id=NEW.contract_id;
+    SELECT COUNT(*),COUNT(DISTINCT ordinal),MIN(ordinal),MAX(ordinal),
+           verification_contract_exact_member_set_hash(
+               'verification_predicate_set.v1',
+               COALESCE(array_agg(member_hash ORDER BY ordinal),ARRAY[]::TEXT[])
+           )
+      INTO predicate_count,predicate_ordinal_count,predicate_min,predicate_max,predicate_set_hash
+      FROM attack_hypothesis_verification_predicate_components
+     WHERE contract_id=contract.contract_id;
+    SELECT COUNT(*),COUNT(DISTINCT ordinal),MIN(ordinal),MAX(ordinal),
+           verification_contract_exact_member_set_hash(
+               'verification_control_set.v1',
+               COALESCE(array_agg(member_hash ORDER BY ordinal),ARRAY[]::TEXT[])
+           )
+      INTO control_count,control_ordinal_count,control_min,control_max,control_set_hash
+      FROM attack_hypothesis_verification_required_controls
+     WHERE contract_id=contract.contract_id;
+    SELECT COUNT(*),COUNT(DISTINCT ordinal),MIN(ordinal),MAX(ordinal),
+           verification_contract_exact_member_set_hash(
+               'verification_paired_differential_set.v1',
+               COALESCE(array_agg(member_hash ORDER BY ordinal),ARRAY[]::TEXT[])
+           )
+      INTO pair_count,pair_ordinal_count,pair_min,pair_max,pair_set_hash
+      FROM attack_hypothesis_verification_pair_bindings
+     WHERE contract_id=contract.contract_id;
+    SELECT COUNT(DISTINCT component_id)
+      INTO pair_component_count
+      FROM (
+          SELECT baseline_component_id AS component_id
+            FROM attack_hypothesis_verification_pair_bindings
+           WHERE contract_id=contract.contract_id
+          UNION ALL
+          SELECT variant_component_id
+            FROM attack_hypothesis_verification_pair_bindings
+           WHERE contract_id=contract.contract_id
+      ) AS pair_components;
+    SELECT COUNT(DISTINCT required_control_member_id)
+      INTO pair_control_count
+      FROM attack_hypothesis_verification_pair_bindings
+     WHERE contract_id=contract.contract_id;
+    SELECT COUNT(*),COUNT(DISTINCT step_ordinal),MIN(step_ordinal),MAX(step_ordinal),
+           verification_contract_exact_member_set_hash(
+               'verification_ordered_step_set.v1',
+               COALESCE(array_agg(step_hash ORDER BY step_ordinal),ARRAY[]::TEXT[])
+           )
+      INTO ordered_count,ordered_ordinal_count,ordered_min,ordered_max,ordered_set_hash
+      FROM attack_hypothesis_verification_ordered_steps
+     WHERE contract_id=contract.contract_id;
+
+    IF predicate_count<>contract.predicate_count
+       OR predicate_ordinal_count<>predicate_count
+       OR predicate_min<>0 OR predicate_max<>predicate_count-1
+       OR predicate_set_hash<>contract.predicate_set_hash
+       OR control_count<>contract.required_control_count
+       OR control_ordinal_count<>control_count
+       OR (control_count>0 AND (control_min<>0 OR control_max<>control_count-1))
+       OR control_set_hash<>contract.required_control_set_hash
+       OR pair_count<>contract.paired_differential_count
+       OR pair_ordinal_count<>pair_count
+       OR (pair_count>0 AND (pair_min<>0 OR pair_max<>pair_count-1))
+       OR pair_set_hash<>contract.paired_differential_set_hash
+       OR ordered_count<>contract.ordered_step_count
+       OR ordered_ordinal_count<>ordered_count
+       OR (ordered_count>0 AND (ordered_min<>0 OR ordered_max<>ordered_count-1))
+       OR ordered_set_hash<>contract.ordered_step_set_hash
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_VERIFICATION_CONTRACT_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+    IF contract.combinator='paired_differential'
+       AND (
+           pair_component_count<>predicate_count
+           OR pair_count*2<>predicate_count
+           OR pair_control_count<>control_count
+       )
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_VERIFICATION_PAIR_COMPONENT_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+    IF contract.combinator='ordered_sequence'
+       AND (
+           ordered_count<>predicate_count
+           OR (SELECT COUNT(DISTINCT predicate_component_id)
+                 FROM attack_hypothesis_verification_ordered_steps
+                WHERE contract_id=contract.contract_id)<>predicate_count
+           OR (SELECT COUNT(DISTINCT ROW(
+                    session_binding_key_schema,session_binding_key_version,session_scope,
+                    interleaving_policy,reset_policy
+                ))
+                 FROM attack_hypothesis_verification_ordered_steps
+                WHERE contract_id=contract.contract_id)<>1
+           OR EXISTS (
+               SELECT 1
+                 FROM attack_hypothesis_verification_ordered_steps step
+            LEFT JOIN attack_hypothesis_verification_ordered_steps predecessor
+                   ON predecessor.contract_id=step.contract_id
+                  AND predecessor.step_ordinal=step.predecessor_step_ordinal
+                WHERE step.contract_id=contract.contract_id
+                  AND step.step_ordinal>0
+                  AND predecessor.step_ordinal IS DISTINCT FROM step.step_ordinal-1
+           )
+       )
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_VERIFICATION_ORDERED_STEP_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_verification_contract_exact_sets
+AFTER INSERT ON attack_hypothesis_verification_contracts
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_verification_contract_exact_sets();
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_predicate_component_contract_exact_set
+AFTER INSERT ON attack_hypothesis_verification_predicate_components
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_verification_contract_exact_sets();
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_required_control_contract_exact_set
+AFTER INSERT ON attack_hypothesis_verification_required_controls
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_verification_contract_exact_sets();
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_pair_binding_contract_exact_set
+AFTER INSERT ON attack_hypothesis_verification_pair_bindings
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_verification_contract_exact_sets();
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_ordered_step_contract_exact_set
+AFTER INSERT ON attack_hypothesis_verification_ordered_steps
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_verification_contract_exact_sets();
+
+CREATE FUNCTION enforce_attack_hypothesis_verification_plan_exact_sets()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    sealed_plan attack_hypothesis_verification_plans%ROWTYPE;
+    required_component_count BIGINT;
+    required_component_set_hash TEXT;
+    objective_count BIGINT;
+    objective_ordinal_count BIGINT;
+    objective_min INTEGER;
+    objective_max INTEGER;
+    objective_set_hash TEXT;
+    path_count BIGINT;
+    path_ordinal_count BIGINT;
+    path_min INTEGER;
+    path_max INTEGER;
+    path_set_hash TEXT;
+BEGIN
+    SELECT * INTO STRICT sealed_plan
+      FROM attack_hypothesis_verification_plans
+     WHERE plan_id=NEW.plan_id;
+    SELECT COUNT(*),investigation_exact_member_set_hash(
+               'hypothesis_verification_plan_required_components.v1',
+               COALESCE(array_agg(member_hash ORDER BY component_ordinal),ARRAY[]::TEXT[])
+           )
+      INTO required_component_count,required_component_set_hash
+      FROM attack_hypothesis_claim_components
+     WHERE revision_id=sealed_plan.revision_id AND required;
+    SELECT COUNT(*),COUNT(DISTINCT ordinal),MIN(ordinal),MAX(ordinal),
+           investigation_exact_member_set_hash(
+               'hypothesis_verification_plan_objectives.v1',
+               COALESCE(array_agg(member_hash ORDER BY ordinal),ARRAY[]::TEXT[])
+           )
+      INTO objective_count,objective_ordinal_count,objective_min,objective_max,objective_set_hash
+      FROM attack_hypothesis_verification_plan_objectives
+     WHERE plan_id=sealed_plan.plan_id;
+    SELECT COUNT(*),COUNT(DISTINCT path_ordinal),MIN(path_ordinal),MAX(path_ordinal),
+           investigation_exact_member_set_hash(
+               'hypothesis_verification_plan_paths.v1',
+               COALESCE(array_agg(path_hash ORDER BY path_ordinal),ARRAY[]::TEXT[])
+           )
+      INTO path_count,path_ordinal_count,path_min,path_max,path_set_hash
+      FROM attack_hypothesis_verification_plan_paths
+     WHERE plan_id=sealed_plan.plan_id;
+
+    IF required_component_count<>sealed_plan.required_claim_component_count
+       OR required_component_set_hash<>sealed_plan.required_claim_component_set_hash
+       OR objective_count<>sealed_plan.objective_count
+       OR objective_ordinal_count<>objective_count
+       OR objective_min<>0 OR objective_max<>objective_count-1
+       OR objective_set_hash<>sealed_plan.objective_set_hash
+       OR path_count<>sealed_plan.proof_path_count
+       OR path_ordinal_count<>path_count
+       OR path_min<>0 OR path_max<>path_count-1
+       OR path_set_hash<>sealed_plan.proof_path_set_hash
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_VERIFICATION_PLAN_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM attack_hypothesis_verification_plan_objectives plan_objective
+          JOIN attack_hypothesis_verification_contracts contract
+            ON contract.contract_id=plan_objective.verification_contract_id
+           AND contract.revision_id=plan_objective.revision_id
+           AND contract.objective_id=plan_objective.objective_id
+     LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS member_count,
+                   investigation_exact_member_set_hash(
+                       'hypothesis_verification_plan_objective_components.v1',
+                       COALESCE(array_agg(component_member_hash ORDER BY ordinal),ARRAY[]::TEXT[])
+                   ) AS member_set_hash
+              FROM attack_hypothesis_verification_objective_claim_components binding
+             WHERE binding.contract_id=plan_objective.verification_contract_id
+        ) component_set ON TRUE
+         WHERE plan_objective.plan_id=sealed_plan.plan_id
+           AND (
+               component_set.member_count<>plan_objective.claim_component_count
+               OR component_set.member_set_hash<>plan_objective.claim_component_set_hash
+               OR contract.stopping_criteria_hash<>plan_objective.stopping_criteria_hash
+           )
+    ) THEN
+        RAISE EXCEPTION 'HYPOTHESIS_PLAN_OBJECTIVE_COMPONENT_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM attack_hypothesis_verification_objectives objective
+         WHERE objective.revision_id=sealed_plan.revision_id
+           AND NOT EXISTS (
+               SELECT 1 FROM attack_hypothesis_verification_plan_objectives plan_objective
+                WHERE plan_objective.plan_id=sealed_plan.plan_id
+                  AND plan_objective.objective_id=objective.objective_id
+           )
+    ) OR EXISTS (
+        SELECT 1
+          FROM attack_hypothesis_verification_plan_objectives plan_objective
+         WHERE plan_objective.plan_id=sealed_plan.plan_id
+           AND NOT EXISTS (
+               SELECT 1 FROM attack_hypothesis_verification_plan_path_members path_member
+                WHERE path_member.plan_id=sealed_plan.plan_id
+                  AND path_member.plan_objective_id=plan_objective.plan_objective_id
+           )
+    ) THEN
+        RAISE EXCEPTION 'HYPOTHESIS_PLAN_OBJECTIVE_COVERAGE_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM attack_hypothesis_verification_plan_paths path
+     LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS member_count,COUNT(DISTINCT member_ordinal) AS ordinal_count,
+                   MIN(member_ordinal) AS minimum_ordinal,MAX(member_ordinal) AS maximum_ordinal,
+                   investigation_exact_member_set_hash(
+                       'hypothesis_verification_plan_path_members.v1',
+                       COALESCE(array_agg(member_hash ORDER BY member_ordinal),ARRAY[]::TEXT[])
+                   ) AS member_set_hash,
+                   COUNT(*) FILTER (
+                       WHERE role='required_proof_and_path_falsifier'
+                   ) AS falsifier_count
+              FROM attack_hypothesis_verification_plan_path_members member
+             WHERE member.path_id=path.path_id
+        ) member_set ON TRUE
+         WHERE path.plan_id=sealed_plan.plan_id
+           AND (
+               member_set.member_count<>path.member_count
+               OR member_set.ordinal_count<>member_set.member_count
+               OR member_set.minimum_ordinal<>0
+               OR member_set.maximum_ordinal<>member_set.member_count-1
+               OR member_set.member_set_hash<>path.member_set_hash
+               OR member_set.falsifier_count=0
+           )
+    ) THEN
+        RAISE EXCEPTION 'HYPOTHESIS_PLAN_PATH_MEMBER_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM attack_hypothesis_verification_plan_path_members member
+         WHERE member.plan_id=sealed_plan.plan_id
+           AND (
+               member.falsifier_claim_component_member_hashes IS DISTINCT FROM
+                   ARRAY(
+                       SELECT DISTINCT falsifier.member_hash
+                         FROM unnest(member.falsifier_claim_component_member_hashes)
+                              AS falsifier(member_hash)
+                        ORDER BY falsifier.member_hash
+                   )
+               OR member.falsifier_claim_component_set_hash<>
+                   investigation_exact_member_set_hash(
+                       'hypothesis_verification_plan_path_falsifiers.v1',
+                       member.falsifier_claim_component_member_hashes
+                   )
+               OR EXISTS (
+                   SELECT 1
+                     FROM unnest(member.falsifier_claim_component_member_hashes)
+                          AS falsifier(member_hash)
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                          FROM attack_hypothesis_verification_plan_objectives plan_objective
+                          JOIN attack_hypothesis_verification_objective_claim_components binding
+                            ON binding.contract_id=plan_objective.verification_contract_id
+                           AND binding.component_member_hash=falsifier.member_hash
+                          JOIN attack_hypothesis_claim_components component
+                            ON component.component_id=binding.claim_component_id
+                           AND component.revision_id=member.revision_id
+                           AND component.required
+                         WHERE plan_objective.plan_objective_id=member.plan_objective_id
+                    )
+               )
+           )
+    ) THEN
+        RAISE EXCEPTION 'HYPOTHESIS_PLAN_PATH_FALSIFIER_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM attack_hypothesis_verification_plan_paths path
+         WHERE path.plan_id=sealed_plan.plan_id
+           AND (
+               EXISTS (
+                   SELECT component.member_hash
+                     FROM attack_hypothesis_claim_components component
+                    WHERE component.revision_id=sealed_plan.revision_id AND component.required
+                   EXCEPT
+                   SELECT binding.component_member_hash
+                     FROM attack_hypothesis_verification_plan_path_members path_member
+                     JOIN attack_hypothesis_verification_plan_objectives plan_objective
+                       ON plan_objective.plan_objective_id=path_member.plan_objective_id
+                     JOIN attack_hypothesis_verification_objective_claim_components binding
+                       ON binding.contract_id=plan_objective.verification_contract_id
+                    WHERE path_member.path_id=path.path_id
+               )
+               OR EXISTS (
+                   SELECT binding.component_member_hash
+                     FROM attack_hypothesis_verification_plan_path_members path_member
+                     JOIN attack_hypothesis_verification_plan_objectives plan_objective
+                       ON plan_objective.plan_objective_id=path_member.plan_objective_id
+                     JOIN attack_hypothesis_verification_objective_claim_components binding
+                       ON binding.contract_id=plan_objective.verification_contract_id
+                    WHERE path_member.path_id=path.path_id
+                   EXCEPT
+                   SELECT component.member_hash
+                     FROM attack_hypothesis_claim_components component
+                    WHERE component.revision_id=sealed_plan.revision_id AND component.required
+               )
+           )
+    ) THEN
+        RAISE EXCEPTION 'HYPOTHESIS_PLAN_PATH_REQUIRED_COMPONENT_COVERAGE_MISMATCH'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_verification_plan_exact_sets
+AFTER INSERT ON attack_hypothesis_verification_plans
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_verification_plan_exact_sets();
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_plan_objective_exact_set
+AFTER INSERT ON attack_hypothesis_verification_plan_objectives
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_verification_plan_exact_sets();
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_plan_path_exact_set
+AFTER INSERT ON attack_hypothesis_verification_plan_paths
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_verification_plan_exact_sets();
+
+CREATE CONSTRAINT TRIGGER attack_hypothesis_plan_path_member_exact_set
+AFTER INSERT ON attack_hypothesis_verification_plan_path_members
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_attack_hypothesis_verification_plan_exact_sets();
+
+-- These three inputs are compiled before the immutable plan header.  Once a
+-- plan exists, appending another objective/component/binding would silently
+-- change its denominator without touching any plan-owned child table.
+CREATE FUNCTION reject_attack_hypothesis_sealed_plan_input_insert()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_TABLE_NAME='attack_hypothesis_claim_components'
+       AND EXISTS (
+           SELECT 1 FROM attack_hypothesis_verification_plans plan
+            WHERE plan.revision_id=(to_jsonb(NEW)->>'revision_id')::UUID
+       )
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_PLAN_CLAIM_COMPONENT_SET_SEALED'
+            USING ERRCODE='23514';
+    END IF;
+    IF TG_TABLE_NAME='attack_hypothesis_verification_objectives'
+       AND EXISTS (
+           SELECT 1 FROM attack_hypothesis_verification_plans plan
+            WHERE plan.revision_id=(to_jsonb(NEW)->>'revision_id')::UUID
+       )
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_PLAN_OBJECTIVE_SET_SEALED'
+            USING ERRCODE='23514';
+    END IF;
+    IF TG_TABLE_NAME='attack_hypothesis_verification_objective_claim_components'
+       AND EXISTS (
+           SELECT 1
+             FROM attack_hypothesis_verification_plan_objectives plan_objective
+            WHERE plan_objective.verification_contract_id=
+                  (to_jsonb(NEW)->>'contract_id')::UUID
+       )
+    THEN
+        RAISE EXCEPTION 'HYPOTHESIS_PLAN_OBJECTIVE_COMPONENT_SET_SEALED'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER attack_hypothesis_claim_components_plan_seal_guard
+BEFORE INSERT ON attack_hypothesis_claim_components
+FOR EACH ROW EXECUTE FUNCTION reject_attack_hypothesis_sealed_plan_input_insert();
+
+CREATE TRIGGER attack_hypothesis_verification_objectives_plan_seal_guard
+BEFORE INSERT ON attack_hypothesis_verification_objectives
+FOR EACH ROW EXECUTE FUNCTION reject_attack_hypothesis_sealed_plan_input_insert();
+
+CREATE TRIGGER attack_hypothesis_objective_components_plan_seal_guard
+BEFORE INSERT ON attack_hypothesis_verification_objective_claim_components
+FOR EACH ROW EXECUTE FUNCTION reject_attack_hypothesis_sealed_plan_input_insert();
 
 -- ---------------------------------------------------------------------------
 -- Registry lineage, generation seals, and retained residual risk
@@ -1114,17 +2080,29 @@ CREATE TABLE attack_hypothesis_relations (
     relation_id UUID PRIMARY KEY,
     operation_id UUID NOT NULL REFERENCES operation_state(operation_id) ON DELETE RESTRICT,
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
-    source_root_id UUID NOT NULL REFERENCES attack_hypotheses(root_id) ON DELETE RESTRICT,
-    source_revision_id UUID NOT NULL REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
-    target_root_id UUID NOT NULL REFERENCES attack_hypotheses(root_id) ON DELETE RESTRICT,
-    target_revision_id UUID NOT NULL REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
+    source_root_id UUID NOT NULL,
+    source_revision_id UUID NOT NULL,
+    target_root_id UUID NOT NULL,
+    target_revision_id UUID NOT NULL,
     relation_kind TEXT NOT NULL CHECK (relation_kind IN (
         'support','contradict','refine','split','merge','derive','duplicate','supersede'
     )),
     relation_hash TEXT NOT NULL CHECK (relation_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK (source_revision_id<>target_revision_id),
-    UNIQUE(operation_id,organization_id,source_revision_id,target_revision_id,relation_kind)
+    UNIQUE(operation_id,organization_id,source_revision_id,target_revision_id,relation_kind),
+    FOREIGN KEY(source_root_id,operation_id,organization_id)
+        REFERENCES attack_hypotheses(root_id,operation_id,organization_id) ON DELETE RESTRICT,
+    FOREIGN KEY(target_root_id,operation_id,organization_id)
+        REFERENCES attack_hypotheses(root_id,operation_id,organization_id) ON DELETE RESTRICT,
+    FOREIGN KEY(source_revision_id,source_root_id,operation_id,organization_id)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,root_id,operation_id,organization_id
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(target_revision_id,target_root_id,operation_id,organization_id)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,root_id,operation_id,organization_id
+        ) ON DELETE RESTRICT
 );
 
 CREATE TABLE hypothesis_generations (
@@ -1138,11 +2116,13 @@ CREATE TABLE hypothesis_generations (
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(operation_id,organization_id,generation_ordinal),
     UNIQUE(generation_id,operation_id,organization_id),
+    UNIQUE(generation_id,previous_generation_id,operation_id,organization_id),
     FOREIGN KEY(candidate_snapshot_id,operation_id,organization_id)
         REFERENCES candidate_analysis_snapshots(snapshot_id,operation_id,organization_id)
         ON DELETE RESTRICT,
-    FOREIGN KEY(previous_generation_id)
-        REFERENCES hypothesis_generations(generation_id) ON DELETE RESTRICT
+    FOREIGN KEY(previous_generation_id,operation_id,organization_id)
+        REFERENCES hypothesis_generations(generation_id,operation_id,organization_id)
+        ON DELETE RESTRICT
 );
 
 CREATE TABLE hypothesis_generation_members (
@@ -1150,41 +2130,71 @@ CREATE TABLE hypothesis_generation_members (
     generation_id UUID NOT NULL,
     operation_id UUID NOT NULL,
     organization_id UUID NOT NULL,
-    revision_id UUID NOT NULL REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
+    revision_id UUID NOT NULL,
     ordinal INTEGER NOT NULL CHECK (ordinal>=0),
     member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(generation_id,ordinal),
     UNIQUE(generation_id,revision_id),
+    UNIQUE(generation_member_id,revision_id),
+    UNIQUE(
+        generation_member_id,generation_id,operation_id,organization_id,revision_id
+    ),
     FOREIGN KEY(generation_id,operation_id,organization_id)
         REFERENCES hypothesis_generations(generation_id,operation_id,organization_id)
-        ON DELETE RESTRICT
+        ON DELETE RESTRICT,
+    FOREIGN KEY(revision_id,operation_id,organization_id)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,operation_id,organization_id
+        ) ON DELETE RESTRICT
 );
 
 CREATE TABLE hypothesis_generation_transitions (
     transition_id UUID PRIMARY KEY,
-    generation_id UUID NOT NULL REFERENCES hypothesis_generations(generation_id) ON DELETE RESTRICT,
+    generation_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    previous_generation_id UUID NOT NULL,
     previous_generation_member_id UUID NOT NULL,
     previous_revision_id UUID NOT NULL,
     disposition TEXT NOT NULL CHECK (disposition IN ('unchanged','terminal','successor')),
     transition_hash TEXT NOT NULL CHECK (transition_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(generation_id,previous_generation_member_id),
-    FOREIGN KEY(previous_generation_member_id)
-        REFERENCES hypothesis_generation_members(generation_member_id) ON DELETE RESTRICT,
-    FOREIGN KEY(previous_revision_id)
-        REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT
+    UNIQUE(transition_id,operation_id,organization_id),
+    FOREIGN KEY(
+        generation_id,previous_generation_id,operation_id,organization_id
+    ) REFERENCES hypothesis_generations(
+        generation_id,previous_generation_id,operation_id,organization_id
+    ) ON DELETE RESTRICT,
+    FOREIGN KEY(
+        previous_generation_member_id,previous_generation_id,
+        operation_id,organization_id,previous_revision_id
+    ) REFERENCES hypothesis_generation_members(
+        generation_member_id,generation_id,operation_id,organization_id,revision_id
+    )
+        ON DELETE RESTRICT
 );
 
 CREATE TABLE hypothesis_generation_transition_successors (
     successor_id UUID PRIMARY KEY,
-    transition_id UUID NOT NULL REFERENCES hypothesis_generation_transitions(transition_id) ON DELETE RESTRICT,
-    successor_revision_id UUID NOT NULL REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
+    transition_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    successor_revision_id UUID NOT NULL,
     ordinal INTEGER NOT NULL CHECK (ordinal>=0),
     member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(transition_id,ordinal),
-    UNIQUE(transition_id,successor_revision_id)
+    UNIQUE(transition_id,successor_revision_id),
+    FOREIGN KEY(transition_id,operation_id,organization_id)
+        REFERENCES hypothesis_generation_transitions(
+            transition_id,operation_id,organization_id
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(successor_revision_id,operation_id,organization_id)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,operation_id,organization_id
+        ) ON DELETE RESTRICT
 );
 
 CREATE TABLE hypothesis_generation_seals (
@@ -1205,15 +2215,23 @@ CREATE TABLE hypothesis_residual_risks (
     residual_id UUID PRIMARY KEY,
     operation_id UUID NOT NULL REFERENCES operation_state(operation_id) ON DELETE RESTRICT,
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
-    revision_id UUID REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
-    snapshot_id UUID REFERENCES candidate_analysis_snapshots(snapshot_id) ON DELETE RESTRICT,
+    revision_id UUID,
+    snapshot_id UUID,
     reason_code TEXT NOT NULL CHECK (btrim(reason_code)<>''),
     owner_kind TEXT NOT NULL CHECK (owner_kind IN ('candidate_analysis','reporting','operator','plan_c')),
     affected_inputs JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(affected_inputs)='array'),
     next_action JSONB NOT NULL CHECK (jsonb_typeof(next_action)='object'),
     residual_hash TEXT NOT NULL CHECK (residual_hash ~ '^sha256:[0-9a-f]{64}$'),
     closed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    FOREIGN KEY(revision_id,operation_id,organization_id)
+        REFERENCES attack_hypothesis_revisions(
+            revision_id,operation_id,organization_id
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(snapshot_id,operation_id,organization_id)
+        REFERENCES candidate_analysis_snapshots(
+            snapshot_id,operation_id,organization_id
+        ) ON DELETE RESTRICT
 );
 
 CREATE TRIGGER attack_hypothesis_verification_objective_claim_components_append_only BEFORE UPDATE OR DELETE ON attack_hypothesis_verification_objective_claim_components FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();

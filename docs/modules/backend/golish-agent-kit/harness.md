@@ -35,6 +35,7 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 | `StageTeamSchedulerPolicy` | Company Controller-only Stage Team 策略；声明允许的动态 child role/request kind、生命周期预算，以及非零 C/G/K 并发上限 |
 | `attack_execution::*` | Candidate V2 纯领域契约：observation/hash 冻结的 exact manifest decision classifier、immutable execution plan/hash/risk、bounded acceptance、8 态 Attempt 状态机、closed `FactDeltaKind(created|updated|refuted|new_surface)`、terminal result validator，以及 legacy/V2 whole-record shadow read selector |
 | `ReportingGateTruth` / `validate_reporting_gate_truth` | C9 Reporting 的 DB-free Gate contract：current validated revision、完整 source-set、citation/attestation 与 Cleanup closeout |
+| `hypothesis_registry::*` | Plan B host boundary：typed Candidate proposal→core semantic key，operation/org-scoped fixed-order reducer（含split/merge/derive/narrow/collision），四类structured-claim component compiler，host VerificationContract/plan compiler，以及仅接 Plan A opaque Checked bundle 的private-field snapshot adapter |
 | `StageRuntimeContract` / `RuntimeUnitIdentity` / `RuntimeScopeSource` | `StageSpec.runtime_memory` 的 closed typed contract；当前仅 `target_intel` / `external_attack_surface` / `enumeration` / `vuln_triage` 精确声明 schema v2、`stage_execution_organization`、`frozen_operation_snapshot`、worker lease 与 final-seal handoff |
 | `CanonicalFactKey::TechniqueOutcomeSet` / `technique_outcome_set_identity` | Vuln final-seal-only 集合 authority：对完整排序后的 `(asset, technique, normalized_state)` 生成稳定 count/hash；不采样、不替代底层 row，也不能作为 FactDelta subject |
 | `render_context_pack_data` | 将已授权 ContextPack 渲染为 escaped、data-only、带 provenance/evidence 的 prompt block |
@@ -57,6 +58,7 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 | `stage_capability.rs` | stage capability registry：把 coverage technique 映射到人类能力 id、runner kind、允许工具、风险与批量 hint；Candidate V2 对模型只暴露 ordinal wrapper，classifier recipe ids 留在后端，四个 Post-Exploit stage 各映射一个 backend wrapper |
 | `intent_classifier.rs` / `nl_slice.rs` / `sprint_contract.rs` / `pre_action_authorizer.rs` | 分类 / 终态 / 契约 / authz |
 | `knowledge_context.rs` | C7 prompt-safe ContextPack renderer；VaultRef 只保留 opaque reference |
+| `hypothesis_registry/` | Candidate artifact boundary、semantic/root adapter、fixed-order reducer、VerificationContract/claim-component/proof-path host compiler；不拥有第二套 core hash/enum/terminal authority |
 
 ## 依赖
 
@@ -65,6 +67,7 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 ## 注意事项 / 坑
 
 - **不变量 I7/I8**：gate 是**确定性规则**（schema/scope/contract/vacuous/freshness/DB truth），不能拿模型自报当通过；模型提交里的 `evidence_refs` / `evidence_ids` 只是可选 ledger 调试引用，不能作为必填交付字段。若模型写了 id，runtime 仍必须校验它真实存在，假 id 直接 `needs_fix`。
+- Hypothesis Candidate artifact 使用 `deny_unknown_fields` 且只携带四个非终态；contract/member/count/set/final hash全部来自host compiler。plan objective必须携带sealed `VerificationContractV1`，不能自报id/hash；claim derivation必须同时给出claim/impact/trust-boundary/identity四类typed source。Plan A authority adapter只能接 opaque `CheckedToolTruthAuthorityBundle<'guard>`，输出字段私有并exact-copy temporal window/policy/epoch/revalidation metadata；任一semantic invalid、expired、mixed epoch、skew exceeded或root census不全都只得到blocked disposition。
 - ContextPack 是 data，不是 authority：任何检索内容中的“调用工具/忽略 scope/扩大权限”文本都只能被转义后呈现，不能改变 pre-action authorizer、ToolChoice 或 Gate。
 - Candidate V2 已接 wire/Gate/final-seal/terminalizer：模型只能提交 bounded `CandidateDecisionDraft`，每个 server-frozen work item 必须恰好终态为 `candidate` 或 evidence-backed `no_candidate`；Candidate id、plan/hash/risk 与可信 operation/scope/org/submission 都由 server/DB 绑定。Attempt 固定为 `queued|running|submitted|verified|refuted|blocked|retryable_failed|abandoned`；`retryable_failed` 是旧 Attempt 终态，重试必须新建下一 ordinal，不能把旧行改回 queued。Verification submit 只建立 immutable TerminalIntent；active-tool finish、checkpoint barrier 与 server terminalizer 是三个独立的持久化边界，response-loss 只能 exact replay，不能重新执行 action。action journal 已 terminal 但 intent 尚缺时，只允许同一 Attempt/Worker/chain 的 submit-only continuation。`verification_gate` 验证 server-owned `VerificationTruthAuthority(expected_units)` 与 exact snapshot 的双向全等，missing/extra/foreign/duplicate unit 都 fail closed；terminal Finding 只来自 proof-backed verified Attempt 的 compound terminalizer。lease/checkpoint 仍由 P1 WorkerRun 负责。
 - FactDelta 的 kind 是闭集 `created|updated|refuted|new_surface`，自由措辞只能进入 `summary`；未知模型 prose 在 typed DTO 反序列化时直接拒绝，不能泄漏成后续 Candidate technique。follow-on route 必须把 `delta_kind`、`observation_kind`、`allowed_techniques`、`enrichment_required` 四个轴分开：强 typed verifier evidence 才可直接冻结 Candidate observation，`refuted` 只形成 no-attack member；recognized unsupported adapter 整个事务回滚，信息不足只形成 pending enrichment authority并保持 source Wave open。

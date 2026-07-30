@@ -29,7 +29,10 @@ pub mod tool_name;
 
 pub mod event_emitter;
 pub mod hitl;
+pub mod hypothesis_semantic_key;
+pub mod hypothesis_verification;
 pub mod investigation_contract;
+pub mod investigation_projection;
 pub mod jsonl;
 pub mod os;
 pub mod paths;
@@ -44,6 +47,7 @@ pub mod time;
 pub mod tool_args;
 pub mod utils;
 pub mod vault;
+pub mod verification_contract;
 pub mod web_fetch;
 
 // Re-exports

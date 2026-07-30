@@ -11,7 +11,8 @@ serde_json = { version = "1.0" }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = { workspace = true }
 async-trait = "0.1"
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1.0", features = ["v4", "v5", "serde"] }
+sha2 = { workspace = true }
 anyhow = "1.0"
 base64 = "0.22"
 dirs = { workspace = true }
@@ -19,5 +20,6 @@ tokio = { version = "1.0", features = ["full"] }
 ts-rs = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 serial_test = "3.0"
 tempfile = "3.8"

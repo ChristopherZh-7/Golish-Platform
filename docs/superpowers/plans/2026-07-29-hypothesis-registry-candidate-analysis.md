@@ -1284,6 +1284,30 @@ git commit -m "feat(investigation): freeze operation rollout mode"
 
 ## Task 4：实现 semantic key、host-owned VerificationContract、root/revision identity 与 reducer
 
+> **2026-07-30 implementation correction (core/schema closure):** `golish-db`
+> cannot consume identity code owned only by `golish-agent-kit` because kit already
+> depends on DB. Canonical JSON, claim polarity, semantic-key hashing and UUIDv5
+> formulas therefore live in additive `golish-core::hypothesis_semantic_key`, while
+> the planned kit files remain narrow host adapters/reducer boundaries. This also
+> requires `sha2` and UUIDv5 features in `golish-core/Cargo.toml`. The initially
+> committed Plan B migration still admitted `threshold`, lacked several child
+> exact-set fields, and represented mutable current state on append-only revisions;
+> Task 4 tightens the same sole `00006` migration (never `00005`) to the core V1
+> vocabulary, adds deferred exact-set/ownership validation and a separate CAS head.
+> Real concurrent head-CAS/replay remains a Task 5 repository test; Task 4 proves
+> deterministic pure routing and hash replay only. Raw duplicate JSON detection is
+> guaranteed by the raw parser; an already-parsed `serde_json::Value` cannot retain
+> evidence of duplicate source keys and is accepted only as trusted typed input.
+> The Task 4 audit also found that a generic projection record plus caller-supplied
+> content hash/type tag, raw contract hashes inside plan objectives, an unscoped
+> reducer catalog, and a public status-only Checked-bundle disposition helper were
+> weaker than the frozen design.  The implementation therefore uses per-entity typed
+> projection record wrappers with replay hash validation, binds plan objectives to a
+> sealed `VerificationContractV1`, scopes every reducer catalog to operation+org and
+> exposes all closed operators, and makes Checked-bundle disposition derivable only
+> from the opaque Plan A guard.  These are additive host-boundary tightenings; no
+> Plan C tables or terminal write path were added.
+
 **文件：**
 
 - 创建：`backend/crates/golish-agent-kit/src/harness/hypothesis_registry/{mod.rs,types.rs,semantic_key.rs,verification_contract_compiler.rs,verification_plan_compiler.rs,reducer.rs,rollout.rs}`
@@ -1325,7 +1349,7 @@ fn non_identity_fields_do_not_change_semantic_key_or_initial_root() {
 just space-guard
 (cd backend && cargo nextest run -p golish-agent-kit --test hypothesis_registry_gate -E 'test(semantic_) | test(non_identity_) | test(provider_completion_) | test(verification_contract_) | test(hypothesis_claim_component_) | test(hypothesis_verification_plan_) | test(hypothesis_revision_adjudication_) | test(candidate_terminal_state_)')
 just space-guard
-(cd backend && cargo nextest run -p golish-core -E 'test(verification_contract_) | test(hypothesis_claim_component_) | test(hypothesis_verification_plan_) | test(hypothesis_revision_adjudication_) | test(investigation_projection_catalog_) | test(projection_plan_c_route_catalog_) | test(projection_ts_decl_golden_)')
+(cd backend && cargo nextest run -p golish-core -E 'test(verification_contract_) | test(hypothesis_claim_component_) | test(hypothesis_verification_plan_) | test(hypothesis_revision_adjudication_) | test(investigation_projection_catalog_) | test(projection_plan_b_verification_plan_route_) | test(projection_plan_c_route_catalog_) | test(projection_ts_decl_golden_) | test(projection_source_snapshot_)')
 ```
 
 Expected：semantic/contract/verification-plan/revision-adjudication/Candidate-state与projection catalog/TS declaration模块或类型未定义而编译失败；不能只因semantic tests命中就漏掉本Task其余RED。
@@ -1859,7 +1883,7 @@ route 顺序严格对应设计 §5.5.1 的 1–5；禁止 embedding、provider p
 just space-guard
 (cd backend && cargo nextest run -p golish-agent-kit --test hypothesis_registry_gate -E 'test(semantic_) | test(root_) | test(reducer_) | test(provider_completion_) | test(verification_contract_) | test(hypothesis_claim_component_) | test(hypothesis_verification_plan_) | test(hypothesis_revision_adjudication_) | test(candidate_terminal_state_)')
 just space-guard
-(cd backend && cargo nextest run -p golish-core -E 'test(verification_contract_) | test(hypothesis_claim_component_) | test(hypothesis_verification_plan_) | test(hypothesis_revision_adjudication_) | test(investigation_projection_catalog_) | test(projection_plan_c_route_catalog_) | test(projection_ts_decl_golden_)')
+(cd backend && cargo nextest run -p golish-core -E 'test(verification_contract_) | test(hypothesis_claim_component_) | test(hypothesis_verification_plan_) | test(hypothesis_revision_adjudication_) | test(investigation_projection_catalog_) | test(projection_plan_b_verification_plan_route_) | test(projection_plan_c_route_catalog_) | test(projection_ts_decl_golden_) | test(projection_source_snapshot_)')
 ```
 
 Expected：key/root/replay/collision/order、host-owned VerificationContract exact-set、B-owned verification plan/path/member outer aggregation、revision adjudication authority、Plan A temporal/bundle authority adapter的exact-copy/fail-closed、Candidate terminal-state rejection与四类projection catalog/TS declaration round-trip tests全部`PASS`；没有caller构造contract/plan/path/member/temporal decision hash、以单Campaign terminal冒充revision authority或由Candidate写`verified/refuted/invalid`的public seam。TTL ordering/epoch/skew reducer证据归Plan A对应定向tests所有，B不复制；本Task未写generated文件。
