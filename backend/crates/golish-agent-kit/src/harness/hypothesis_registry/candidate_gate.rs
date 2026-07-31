@@ -465,6 +465,46 @@ pub struct CandidateCompiledAuthorityV1 {
     pub verification_plan_set: CandidateExactSetSealV1,
 }
 
+/// Repository-native aggregate hashes. They use the storage contracts of
+/// Plan A/Plan B and are deliberately distinct from this module's internal
+/// exact-set proof hashes. The DB adapter loads these fields from locked rows;
+/// the Gate validates the typed members separately and the canonical apply
+/// transaction exact-revalidates these storage hashes.
+#[derive(Debug, Clone)]
+pub struct CandidateRepositoryGateHashesV1 {
+    pub tool_truth_authority_root_set_hash: String,
+    pub tool_truth_authority_bundle_member_set_hash: String,
+    pub tool_truth_authority_receipt_set_hash: String,
+    pub denominator_graph_bundle_hash: String,
+    pub semantic_authority_bundle_hash: String,
+    pub freshness_attestation_bundle_hash: String,
+    pub temporal_validity_bundle_hash: String,
+    pub temporal_validity_policy_digest: String,
+    pub temporal_validity_decision_set_hash: String,
+    pub knowledge_feed_catalog_policy_seal_hash: String,
+    pub knowledge_feed_required_member_set_hash: String,
+    pub knowledge_feed_signature_algorithm_set_hash: String,
+    pub knowledge_feed_trust_store_hash: String,
+    pub knowledge_feed_key_revocation_epoch_hash: String,
+    pub knowledge_feed_snapshot_set_hash: String,
+    pub product_version_census_hash: String,
+    pub knowledge_feed_match_census_hash: String,
+    pub stale_revalidation_obligation_set_hash: String,
+    pub knowledge_feed_obligation_set_hash: String,
+    pub prior_terminal_attempt_chain_hash: String,
+    pub proposal_census_hash: String,
+    pub critic_census_hash: String,
+    pub controller_decision_set_hash: String,
+    pub input_chunk_census_set_hash: String,
+    pub coverage_subreview_census_set_hash: String,
+    pub coverage_synthesis_census_set_hash: String,
+    pub coverage_global_semantic_root_hash: String,
+    pub coverage_global_review_hash: String,
+    pub coverage_review_set_hash: String,
+    pub coverage_checklist_set_hash: String,
+    pub generation_transition_set_hash: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct FrozenCandidateGateMaterialV1 {
     pub snapshot_id: Uuid,
@@ -483,6 +523,7 @@ pub struct FrozenCandidateGateMaterialV1 {
     pub mutations: Vec<CandidateHypothesisMutation>,
     pub mutation_set: CandidateExactSetSealV1,
     pub compiled: CandidateCompiledAuthorityV1,
+    pub repository_hashes: CandidateRepositoryGateHashesV1,
     pub input_dispositions: Vec<InputProcessingDispositionDecision>,
     pub input_disposition_set: CandidateExactSetSealV1,
     pub input_relations: Vec<InputHypothesisRelationDecision>,
@@ -492,6 +533,7 @@ pub struct FrozenCandidateGateMaterialV1 {
     pub capability_assessment_present: bool,
     pub final_submitter_worker_run_id: Uuid,
     pub controller_worker_run_id: Uuid,
+    pub controller_dispatch_worker_run_id: Uuid,
 }
 
 /// Opaque wrapper consumed by the Gate. The repository/bridge constructs this
@@ -618,115 +660,126 @@ pub fn validate_candidate_gate(
             "Plan B readiness is invalid or includes future capability authority",
         ));
     }
+    if repository_hash_values(&material.repository_hashes)
+        .iter()
+        .any(|hash| !valid_hash(hash))
+    {
+        return Err(CandidateGateBlock::new(
+            CandidateGateBlockKind::AuthorityBundle,
+            "repository aggregate hash material is malformed",
+        ));
+    }
     if material.final_submitter_worker_run_id.is_nil()
         || material.final_submitter_worker_run_id != material.controller_worker_run_id
+        || material.controller_dispatch_worker_run_id.is_nil()
+        || material.controller_dispatch_worker_run_id == material.controller_worker_run_id
     {
         return Err(CandidateGateBlock::new(
             CandidateGateBlockKind::FinalSubmitter,
-            "final submitter must be the Candidate Controller",
+            "final submitter must be a distinct, server-bound Candidate Controller role turn",
         ));
     }
 
     let authority = &material.authority;
-    let roots = authority_roots_by_family(&authority.roots);
     Ok(CandidateGatePass {
         snapshot_id: material.snapshot_id,
         snapshot_hash: material.snapshot_hash.clone(),
         candidate_snapshot_authority_hash: material.candidate_snapshot_authority_hash.clone(),
         tool_truth_authority_bundle_seal_id: authority.bundle_seal_id,
-        tool_truth_authority_root_set_hash: authority.root_set.observed_set_hash.clone(),
-        tool_truth_authority_bundle_member_set_hash: authority
-            .bundle_member_set
-            .observed_set_hash
+        tool_truth_authority_root_set_hash: material
+            .repository_hashes
+            .tool_truth_authority_root_set_hash
             .clone(),
-        tool_truth_authority_receipt_set_hash: authority.receipt_set.observed_set_hash.clone(),
-        denominator_graph_bundle_hash: exact_set_hash(
-            "candidate_denominator_graph_bundle.v1",
-            &roots
-                .values()
-                .map(|root| root.graph_hash.clone())
-                .collect::<Vec<_>>(),
-        ),
-        semantic_authority_bundle_hash: exact_set_hash(
-            "candidate_semantic_authority_bundle.v1",
-            &roots
-                .values()
-                .map(|root| root.semantic_hash.clone())
-                .collect::<Vec<_>>(),
-        ),
-        freshness_attestation_bundle_hash: exact_set_hash(
-            "candidate_freshness_attestation_bundle.v1",
-            &roots
-                .values()
-                .map(|root| root.freshness_hash.clone())
-                .collect::<Vec<_>>(),
-        ),
-        temporal_validity_bundle_hash: exact_set_hash(
-            "candidate_temporal_validity_bundle.v1",
-            &roots
-                .values()
-                .map(|root| root.temporal_hash.clone())
-                .collect::<Vec<_>>(),
-        ),
-        temporal_validity_policy_digest: authority.temporal_decision_set.observed_set_hash.clone(),
-        temporal_validity_decision_set_hash: authority
-            .temporal_decision_set
-            .observed_set_hash
+        tool_truth_authority_bundle_member_set_hash: material
+            .repository_hashes
+            .tool_truth_authority_bundle_member_set_hash
+            .clone(),
+        tool_truth_authority_receipt_set_hash: material
+            .repository_hashes
+            .tool_truth_authority_receipt_set_hash
+            .clone(),
+        denominator_graph_bundle_hash: material
+            .repository_hashes
+            .denominator_graph_bundle_hash
+            .clone(),
+        semantic_authority_bundle_hash: material
+            .repository_hashes
+            .semantic_authority_bundle_hash
+            .clone(),
+        freshness_attestation_bundle_hash: material
+            .repository_hashes
+            .freshness_attestation_bundle_hash
+            .clone(),
+        temporal_validity_bundle_hash: material
+            .repository_hashes
+            .temporal_validity_bundle_hash
+            .clone(),
+        temporal_validity_policy_digest: material
+            .repository_hashes
+            .temporal_validity_policy_digest
+            .clone(),
+        temporal_validity_decision_set_hash: material
+            .repository_hashes
+            .temporal_validity_decision_set_hash
             .clone(),
         target_state_epoch_set_hash: authority.snapshot_target_state_epoch_set_hash.clone(),
         gate_temporal_reevaluation_hash: authority.gate_temporal_reevaluation_hash.clone(),
         knowledge_feed_catalog_policy_seal_hash: material
-            .knowledge_feed
-            .catalog_policy_seal_hash
+            .repository_hashes
+            .knowledge_feed_catalog_policy_seal_hash
             .clone(),
         knowledge_feed_required_member_set_hash: material
-            .knowledge_feed
-            .required_member_set
-            .observed_set_hash
+            .repository_hashes
+            .knowledge_feed_required_member_set_hash
             .clone(),
         knowledge_feed_signature_algorithm_set_hash: material
-            .knowledge_feed
-            .signature_algorithm_set
-            .observed_set_hash
+            .repository_hashes
+            .knowledge_feed_signature_algorithm_set_hash
             .clone(),
-        knowledge_feed_trust_store_hash: material.knowledge_feed.trust_store_hash.clone(),
+        knowledge_feed_trust_store_hash: material
+            .repository_hashes
+            .knowledge_feed_trust_store_hash
+            .clone(),
         knowledge_feed_key_revocation_epoch_hash: material
-            .knowledge_feed
-            .key_revocation_epoch_hash
+            .repository_hashes
+            .knowledge_feed_key_revocation_epoch_hash
             .clone(),
         knowledge_feed_snapshot_set_hash: material
-            .knowledge_feed
-            .signed_snapshot_set
-            .observed_set_hash
+            .repository_hashes
+            .knowledge_feed_snapshot_set_hash
             .clone(),
         product_version_census_hash: material
-            .knowledge_feed
-            .product_version_census
-            .observed_set_hash
+            .repository_hashes
+            .product_version_census_hash
             .clone(),
         knowledge_feed_match_census_hash: material
-            .knowledge_feed
-            .match_census
-            .observed_set_hash
+            .repository_hashes
+            .knowledge_feed_match_census_hash
             .clone(),
         gate_knowledge_feed_reevaluation_hash: material
             .knowledge_feed
             .gate_reevaluation_hash
             .clone(),
-        stale_revalidation_obligation_set_hash: hash_parts(
-            "candidate_stale_revalidation_obligation_set.v1",
-            &[],
-        ),
-        knowledge_feed_obligation_set_hash: material.knowledge_feed.obligation_set_hash.clone(),
+        stale_revalidation_obligation_set_hash: material
+            .repository_hashes
+            .stale_revalidation_obligation_set_hash
+            .clone(),
+        knowledge_feed_obligation_set_hash: material
+            .repository_hashes
+            .knowledge_feed_obligation_set_hash
+            .clone(),
         active_analysis_attempt_id: material.attempt.active_attempt_id,
         active_analysis_attempt_ordinal: material.attempt.active_attempt_ordinal,
         prior_terminal_attempt_chain_hash: material
-            .attempt
+            .repository_hashes
             .prior_terminal_attempt_chain_hash
             .clone(),
-        proposal_census_hash: material.proposal_census.observed_set_hash.clone(),
-        critic_census_hash: material.critic_census.observed_set_hash.clone(),
-        controller_decision_set_hash: material.controller_decision_set.observed_set_hash.clone(),
+        proposal_census_hash: material.repository_hashes.proposal_census_hash.clone(),
+        critic_census_hash: material.repository_hashes.critic_census_hash.clone(),
+        controller_decision_set_hash: material
+            .repository_hashes
+            .controller_decision_set_hash
+            .clone(),
         mutation_set: material.mutations.clone(),
         mutation_set_hash: material.mutation_set.observed_set_hash.clone(),
         hypothesis_claim_components: material.compiled.claim_components.clone(),
@@ -749,41 +802,76 @@ pub fn validate_candidate_gate(
             .clone(),
         input_dispositions: material.input_dispositions.clone(),
         input_relations: material.input_relations.clone(),
-        input_chunk_census_set_hash: material.read.chunk_set.observed_set_hash.clone(),
+        input_chunk_census_set_hash: material
+            .repository_hashes
+            .input_chunk_census_set_hash
+            .clone(),
         hypothesis_coverage_subreview_census_set_hash: material
-            .coverage
-            .observed_subreview_set
-            .observed_set_hash
+            .repository_hashes
+            .coverage_subreview_census_set_hash
             .clone(),
         hypothesis_coverage_synthesis_census_set_hash: material
-            .coverage
-            .synthesis_node_set
-            .observed_set_hash
+            .repository_hashes
+            .coverage_synthesis_census_set_hash
             .clone(),
         hypothesis_coverage_global_semantic_root_hash: material
-            .coverage
-            .synthesis_nodes
-            .iter()
-            .find(|node| node.node_kind == CandidateCoverageSynthesisNodeKindV1::GlobalSemanticRoot)
-            .map(|node| node.node_hash.clone())
-            .expect("validated exactly one global root"),
-        hypothesis_coverage_global_review_hash: material.coverage.global_review_hash.clone(),
+            .repository_hashes
+            .coverage_global_semantic_root_hash
+            .clone(),
+        hypothesis_coverage_global_review_hash: material
+            .repository_hashes
+            .coverage_global_review_hash
+            .clone(),
         hypothesis_coverage_review_set_hash: material
-            .coverage
-            .per_input_review_set
-            .observed_set_hash
+            .repository_hashes
+            .coverage_review_set_hash
             .clone(),
         hypothesis_coverage_checklist_set_hash: material
-            .coverage
-            .checklist_member_set
-            .observed_set_hash
+            .repository_hashes
+            .coverage_checklist_set_hash
             .clone(),
         generation_transition_set_hash: material
-            .generation_transition_set
-            .observed_set_hash
+            .repository_hashes
+            .generation_transition_set_hash
             .clone(),
         final_submitter_worker_run_id: material.final_submitter_worker_run_id,
     })
+}
+
+fn repository_hash_values(value: &CandidateRepositoryGateHashesV1) -> [&str; 31] {
+    [
+        &value.tool_truth_authority_root_set_hash,
+        &value.tool_truth_authority_bundle_member_set_hash,
+        &value.tool_truth_authority_receipt_set_hash,
+        &value.denominator_graph_bundle_hash,
+        &value.semantic_authority_bundle_hash,
+        &value.freshness_attestation_bundle_hash,
+        &value.temporal_validity_bundle_hash,
+        &value.temporal_validity_policy_digest,
+        &value.temporal_validity_decision_set_hash,
+        &value.knowledge_feed_catalog_policy_seal_hash,
+        &value.knowledge_feed_required_member_set_hash,
+        &value.knowledge_feed_signature_algorithm_set_hash,
+        &value.knowledge_feed_trust_store_hash,
+        &value.knowledge_feed_key_revocation_epoch_hash,
+        &value.knowledge_feed_snapshot_set_hash,
+        &value.product_version_census_hash,
+        &value.knowledge_feed_match_census_hash,
+        &value.stale_revalidation_obligation_set_hash,
+        &value.knowledge_feed_obligation_set_hash,
+        &value.prior_terminal_attempt_chain_hash,
+        &value.proposal_census_hash,
+        &value.critic_census_hash,
+        &value.controller_decision_set_hash,
+        &value.input_chunk_census_set_hash,
+        &value.coverage_subreview_census_set_hash,
+        &value.coverage_synthesis_census_set_hash,
+        &value.coverage_global_semantic_root_hash,
+        &value.coverage_global_review_hash,
+        &value.coverage_review_set_hash,
+        &value.coverage_checklist_set_hash,
+        &value.generation_transition_set_hash,
+    ]
 }
 
 fn validate_authority(material: &FrozenCandidateGateMaterialV1) -> Result<(), CandidateGateBlock> {
@@ -1180,6 +1268,30 @@ fn validate_compiled(material: &FrozenCandidateGateMaterialV1) -> Result<(), Can
         .iter()
         .map(|component| component.member_hash().to_owned())
         .collect::<Vec<_>>();
+    if material.mutations.is_empty() {
+        if !compiled.claim_components.is_empty()
+            || !compiled.verification_contracts.is_empty()
+            || !compiled.verification_plans.is_empty()
+            || !compiled
+                .claim_component_set
+                .observed_member_hashes
+                .is_empty()
+            || !compiled
+                .verification_contract_set
+                .observed_member_hashes
+                .is_empty()
+            || !compiled
+                .verification_plan_set
+                .observed_member_hashes
+                .is_empty()
+        {
+            return Err(CandidateGateBlock::new(
+                CandidateGateBlockKind::ClaimComponent,
+                "empty mutation closure carries compiled authority",
+            ));
+        }
+        return Ok(());
+    }
     if canonical_members(component_hashes)
         != canonical_members(compiled.claim_component_set.observed_member_hashes.clone())
         || compiled.claim_components.is_empty()

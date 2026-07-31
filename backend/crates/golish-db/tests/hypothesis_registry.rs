@@ -21,6 +21,10 @@ use uuid::Uuid;
 // Task 5 repository contract: these modules must be registered as public, typed ports.
 // Keeping this as a compile-time dependency ensures callers never fall back to raw SQL.
 use golish_db::repo::{
+    attack_candidates::{
+        precheck_legacy_candidate_mutation,
+        ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT,
+    },
     candidate_analysis::{
         freeze_candidate_snapshot, load_candidate_gate_material, CandidateSnapshotDispositionRow,
         FreezeCandidateSnapshotInput, LoadCandidateGateMaterialInput,
@@ -28,9 +32,10 @@ use golish_db::repo::{
     hypothesis_legacy_projection::ProjectionSourceBatchView,
     hypothesis_registry::ApplyCandidateGatePassInput,
     investigation_projection::{
-        capture_projection_head, enqueue_projection_batch_on, project_projection_batch,
-        read_projection_at_head, ProjectionOutboxBatchInput, ProjectionOutboxMemberInput,
-        ProjectionProjectOutcome, ProjectionSourceStorageV1,
+        capture_projection_head, compare_and_record_v1, enqueue_projection_batch_on,
+        project_projection_batch, read_projection_at_head, CompareAndRecordV1Input,
+        ProjectionOutboxBatchInput, ProjectionOutboxMemberInput, ProjectionProjectOutcome,
+        ProjectionSourceStorageV1,
     },
 };
 
@@ -228,6 +233,354 @@ async fn projection_batch_projects_atomically_and_replays_exact_once() {
 
 #[tokio::test]
 #[serial]
+async fn projection_registry_source_derives_typed_compatibility_invalidations_atomically() {
+    let (db, _data_dir) = fixture("projection-registry-compatibility").await;
+    for statement in [
+        "ALTER TABLE tool_truth_rollout DISABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+        "ALTER TABLE investigation_rollout DISABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    ] {
+        sqlx::query(statement)
+            .execute(db.pool())
+            .await
+            .expect("disable rollout guard in isolated compatibility fixture");
+    }
+    sqlx::query(
+        "UPDATE tool_truth_rollout SET new_operation_contract='receipt_v1',row_version=row_version+1 WHERE singleton=TRUE",
+    )
+    .execute(db.pool())
+    .await
+    .expect("install isolated receipt Tool Truth default");
+    sqlx::query(
+        r#"UPDATE investigation_rollout
+              SET contract_version='hypothesis_registry_v1',
+                  rollout_mode='registry_authoritative_legacy_projection',
+                  mode_rank=3,row_version=row_version+1
+            WHERE singleton=TRUE"#,
+    )
+    .execute(db.pool())
+    .await
+    .expect("install isolated compatibility Investigation default");
+    let operation_id = Uuid::new_v4();
+    let project_scope_id = Uuid::new_v4();
+    let project_path = format!(
+        "/tmp/projection-registry-compatibility-{}",
+        Uuid::new_v4().simple()
+    );
+    sqlx::query(
+        "INSERT INTO project_scopes(project_scope_id,canonical_project_path,path_sha256) VALUES($1,$2,$3)",
+    )
+    .bind(project_scope_id)
+    .bind(project_path)
+    .bind(digest('a'))
+    .execute(db.pool())
+    .await
+    .expect("insert compatibility project scope");
+    sqlx::query(
+        r#"INSERT INTO operation_state(
+               operation_id,profile,current_stage,runtime_memory_contract,
+               attack_execution_contract,tool_truth_contract,project_scope_id,
+               investigation_contract_version,investigation_rollout_mode
+           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','receipt_v1',
+                    $2,'hypothesis_registry_v1','registry_authoritative_legacy_projection')"#,
+    )
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .execute(db.pool())
+    .await
+    .expect("insert registry-authoritative operation");
+
+    let root_id = Uuid::new_v4();
+    let revision_id = Uuid::new_v4();
+    let source = ProjectionSourceSnapshotV1::Hypothesis(
+        HypothesisProjectionRecordV1::try_new(
+            root_id.to_string(),
+            1,
+            1,
+            CanonicalJsonObject::try_from_value(serde_json::json!({
+                "root_id": root_id,
+                "revision_id": revision_id,
+                "state": "proposed",
+            }))
+            .expect("canonical registry hypothesis body"),
+        )
+        .expect("bounded registry hypothesis source"),
+    );
+    let batch_id = Uuid::new_v4();
+    let outbox_member_id = Uuid::new_v4();
+    let enqueue = enqueue_projection_batch(
+        db.pool(),
+        ProjectionOutboxBatchInput {
+            batch_id,
+            operation_id,
+            project_scope_id: Some(project_scope_id),
+            stable_request_id: Uuid::new_v4(),
+            source_transaction_id: Uuid::new_v4(),
+            source_occurred_at: None,
+            source_time_status: ProjectionSourceTimeStatusV1::HistoricalUnknown,
+            members: vec![ProjectionOutboxMemberInput {
+                outbox_member_id,
+                change_kind: ProjectionChangeKind::Insert,
+                source,
+                source_occurred_at: None,
+                source_time_status: ProjectionSourceTimeStatusV1::HistoricalUnknown,
+                invalidation_reason: None,
+                storage: ProjectionSourceStorageV1::Inline,
+            }],
+        },
+    )
+    .await;
+    assert!(!enqueue.replayed);
+    let receipt = match project_projection_batch(db.pool(), operation_id, batch_id)
+        .await
+        .expect("project canonical source plus compatibility invalidations")
+    {
+        ProjectionProjectOutcome::Applied(receipt) => receipt,
+        other => panic!("expected applied compatibility batch, got {other:?}"),
+    };
+    assert_eq!((receipt.first_change_seq, receipt.last_change_seq), (1, 3));
+    let replay = project_projection_batch(db.pool(), operation_id, batch_id)
+        .await
+        .expect("replay expanded compatibility receipt");
+    assert!(matches!(
+        replay,
+        ProjectionProjectOutcome::Replay(ref replayed) if replayed == &receipt
+    ));
+
+    let head = capture_projection_head(db.pool(), operation_id)
+        .await
+        .expect("capture expanded projection head");
+    let page = read_projection_at_head(db.pool(), &head)
+        .await
+        .expect("read canonical and compatibility projections");
+    assert_eq!(head.change_seq, 3);
+    assert_eq!(page.entities.len(), 3);
+    assert_eq!(page.changes.len(), 3);
+    assert_eq!(
+        page.entities
+            .iter()
+            .map(|entity| entity.entity_kind.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "hypothesis",
+            "legacy_candidate_projection",
+            "legacy_attempt_projection",
+        ]
+    );
+    for compatibility in &page.entities[1..] {
+        assert_eq!(compatibility.entity_id, root_id.to_string());
+        assert_eq!(compatibility.entity_version, 1);
+        assert_eq!(
+            compatibility.invalidation_reason,
+            Some(
+                golish_core::investigation_projection::ProjectionInvalidationReason::LegacyProjectionDerivationFailed
+            )
+        );
+    }
+    let event_ids = page
+        .changes
+        .iter()
+        .map(|change| change.event_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(event_ids.len(), 3);
+    for change in &page.changes {
+        assert_eq!(change.outbox_member_id, outbox_member_id);
+        assert!(!change.event_id.is_nil());
+        assert!(change.change_hash.starts_with("sha256:"));
+    }
+    let compatibility_rows: i64 = sqlx::query_scalar(
+        r#"SELECT
+             (SELECT COUNT(*) FROM hypothesis_legacy_candidate_projection_versions
+               WHERE operation_id=$1)
+           + (SELECT COUNT(*) FROM hypothesis_legacy_attempt_projection_versions
+               WHERE operation_id=$1)"#,
+    )
+    .bind(operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count authority-bound compatibility rows");
+    assert_eq!(
+        compatibility_rows, 0,
+        "missing canonical authority cannot be forged"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn projection_source_response_loss_replays_exact_envelope_and_rejects_drift() {
+    let (db, _data_dir) = fixture("projection-source-response-loss").await;
+    let operation_id = Uuid::new_v4();
+    insert_operation(db.pool(), operation_id).await;
+    let input = projection_batch_input(
+        operation_id,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        1,
+        "response-loss",
+        ProjectionSourceStorageV1::Inline,
+    );
+    let first = enqueue_projection_batch(db.pool(), input.clone()).await;
+    assert!(!first.replayed);
+    let replay = enqueue_projection_batch(db.pool(), input.clone()).await;
+    assert!(replay.replayed);
+    assert_eq!(
+        (
+            replay.batch_id,
+            replay.source_batch_seq,
+            replay.member_count,
+            replay.member_set_hash.as_str(),
+        ),
+        (
+            first.batch_id,
+            first.source_batch_seq,
+            first.member_count,
+            first.member_set_hash.as_str(),
+        )
+    );
+
+    let mut drifted = input;
+    drifted.project_scope_id = Some(Uuid::new_v4());
+    let mut tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin replay drift transaction");
+    let error = enqueue_projection_batch_on(&mut tx, drifted)
+        .await
+        .expect_err("same stable request cannot change the source envelope");
+    assert!(error
+        .to_string()
+        .contains("INVESTIGATION_SOURCE_BATCH_REPLAY_DRIFT"));
+    tx.rollback().await.expect("rollback rejected replay drift");
+}
+
+#[tokio::test]
+#[serial]
+async fn comparison_record_missing_side_is_incomplete_and_replays_whole_record_only() {
+    let (mut db, _data_dir) = fixture("comparison-record-incomplete").await;
+    let operation_id = Uuid::new_v4();
+    let project_scope_id = Uuid::new_v4();
+    let project_path = format!("/tmp/comparison-{}", Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO project_scopes(project_scope_id,canonical_project_path,path_sha256) VALUES($1,$2,$3)",
+    )
+    .bind(project_scope_id)
+    .bind(project_path)
+    .bind(digest('a'))
+    .execute(db.pool())
+    .await
+    .expect("insert comparison project scope");
+    for statement in [
+        "ALTER TABLE tool_truth_rollout DISABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+        "ALTER TABLE investigation_rollout DISABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    ] {
+        sqlx::query(statement)
+            .execute(db.pool())
+            .await
+            .expect("disable rollout promotion guard in isolated comparison fixture");
+    }
+    sqlx::query(
+        "UPDATE tool_truth_rollout SET new_operation_contract='shadow_v1',row_version=row_version+1 WHERE singleton=TRUE",
+    )
+    .execute(db.pool())
+    .await
+    .expect("install isolated shadow Tool Truth default");
+    sqlx::query(
+        r#"UPDATE investigation_rollout
+              SET contract_version='hypothesis_registry_v1',rollout_mode='dual_read_compare',
+                  mode_rank=2,row_version=row_version+1
+            WHERE singleton=TRUE"#,
+    )
+    .execute(db.pool())
+    .await
+    .expect("install isolated dual-read Investigation default");
+    sqlx::query(
+        r#"INSERT INTO operation_state(
+               operation_id,profile,current_stage,runtime_memory_contract,
+               attack_execution_contract,tool_truth_contract,project_scope_id,
+               investigation_contract_version,investigation_rollout_mode
+           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','shadow_v1',$2,
+                    'hypothesis_registry_v1','dual_read_compare')"#,
+    )
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .execute(db.pool())
+    .await
+    .expect("insert dual-read comparison operation");
+
+    let input = CompareAndRecordV1Input {
+        operation_id,
+        organization_id: None,
+        as_of_change_seq: 0,
+        record_kind: "hypothesis".into(),
+        record_key: "root:one".into(),
+        legacy: None,
+        registry: None,
+    };
+    let first = compare_and_record_v1(db.pool(), input.clone())
+        .await
+        .expect("record incomplete whole-record comparison");
+    let replay = compare_and_record_v1(db.pool(), input)
+        .await
+        .expect("replay exact comparison sample");
+    assert_eq!(first, replay);
+    assert_eq!(first.comparison_state, "incomplete");
+    assert_eq!(first.legacy_hash, None);
+    assert_eq!(first.registry_hash, None);
+    assert_eq!(
+        first.diff_summary,
+        serde_json::json!({
+            "schema": "whole_record_comparison.v1",
+            "field_fallback": false,
+            "legacy_complete": false,
+            "registry_complete": false,
+        })
+    );
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM investigation_projection_compare_samples WHERE operation_id=$1",
+    )
+    .bind(operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count exact comparison sample");
+    assert_eq!(count, 1);
+
+    let shadow_entity_id = Uuid::new_v4();
+    let shadow_batch_id = Uuid::new_v4();
+    let mut shadow_source = projection_batch_input(
+        operation_id,
+        shadow_batch_id,
+        Uuid::new_v4(),
+        shadow_entity_id,
+        1,
+        "legacy-shadow-source",
+        ProjectionSourceStorageV1::Blob {
+            redaction_contract_version: "legacy_candidate_shadow.v1".to_owned(),
+        },
+    );
+    shadow_source.project_scope_id = Some(project_scope_id);
+    enqueue_projection_batch(db.pool(), shadow_source).await;
+    project_projection_batch(db.pool(), operation_id, shadow_batch_id)
+        .await
+        .expect("whole-batch projector invokes the comparison seam");
+    let automatic: (String, serde_json::Value) = sqlx::query_as(
+        r#"SELECT comparison_state,diff_summary
+             FROM investigation_projection_compare_samples
+            WHERE operation_id=$1 AND as_of_change_seq=1
+              AND record_kind='hypothesis' AND record_key=$2"#,
+    )
+    .bind(operation_id)
+    .bind(format!("{shadow_entity_id}:v1"))
+    .fetch_one(db.pool())
+    .await
+    .expect("load projector-owned incomplete comparison sample");
+    assert_eq!(automatic.0, "incomplete");
+    assert_eq!(automatic.1["field_fallback"], false);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn projection_rebuild_stability_preserves_identity_and_canonical_manifests() {
     let (first_db, _first_data_dir) = fixture("projection-rebuild-first").await;
     let (second_db, _second_data_dir) = fixture("projection-rebuild-second").await;
@@ -386,7 +739,8 @@ async fn projection_entity_predecessor_failure_rolls_back_whole_batch() {
 
 #[tokio::test]
 #[serial]
-async fn projection_batch_source_order_waits_for_predecessor_receipt() {
+async fn projection_batch_source_order_concurrent_later_worker_drives_predecessor_without_deadlock()
+{
     let (db, _data_dir) = fixture("projection-source-order").await;
     let operation_id = Uuid::new_v4();
     let entity_id = Uuid::new_v4();
@@ -420,19 +774,17 @@ async fn projection_batch_source_order_waits_for_predecessor_receipt() {
     )
     .await;
 
+    let (later, predecessor) = tokio::join!(
+        project_projection_batch(db.pool(), operation_id, second_batch),
+        project_projection_batch(db.pool(), operation_id, first_batch),
+    );
+    let later = later.expect("later worker completes after predecessor outside its transaction");
+    let predecessor = predecessor.expect("concurrent predecessor worker completes");
+    assert!(matches!(later, ProjectionProjectOutcome::Applied(_)));
     assert!(matches!(
-        project_projection_batch(db.pool(), operation_id, second_batch)
-            .await
-            .expect("future batch remains pending"),
-        ProjectionProjectOutcome::PredecessorPending(_)
+        predecessor,
+        ProjectionProjectOutcome::Applied(_) | ProjectionProjectOutcome::Replay(_)
     ));
-    project_projection_batch(db.pool(), operation_id, first_batch)
-        .await
-        .expect("project first batch");
-    let second = project_projection_batch(db.pool(), operation_id, second_batch)
-        .await
-        .expect("project second batch after predecessor");
-    assert!(matches!(second, ProjectionProjectOutcome::Applied(_)));
     assert_eq!(
         capture_projection_head(db.pool(), operation_id)
             .await
@@ -561,11 +913,60 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
     .execute(pool)
     .await
     .expect("insert Candidate authority project scope");
+
+    // Test-only deployment-state construction in this brand-new embedded
+    // database. Restore both mutation guards before creating the operation;
+    // no production promotion path is invoked or exercised here.
+    let mut deployment_tx = pool
+        .begin()
+        .await
+        .expect("begin Candidate deployment fixture");
+    for statement in [
+        "ALTER TABLE tool_truth_rollout DISABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+        "ALTER TABLE investigation_rollout DISABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *deployment_tx)
+            .await
+            .expect("disable Candidate deployment fixture guard");
+    }
+    sqlx::query(
+        "UPDATE tool_truth_rollout SET new_operation_contract='receipt_v1',row_version=row_version+1 WHERE singleton=TRUE",
+    )
+    .execute(&mut *deployment_tx)
+    .await
+    .expect("install Candidate Tool Truth deployment fixture");
+    sqlx::query(
+        r#"UPDATE investigation_rollout
+              SET contract_version='hypothesis_registry_v1',
+                  rollout_mode='registry_authoritative_legacy_projection',mode_rank=3,
+                  row_version=row_version+1
+            WHERE singleton=TRUE"#,
+    )
+    .execute(&mut *deployment_tx)
+    .await
+    .expect("install Candidate Investigation deployment fixture");
+    for statement in [
+        "ALTER TABLE investigation_rollout ENABLE TRIGGER investigation_rollout_direct_mutation_guard",
+        "ALTER TABLE tool_truth_rollout ENABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *deployment_tx)
+            .await
+            .expect("restore Candidate deployment fixture guard");
+    }
+    deployment_tx
+        .commit()
+        .await
+        .expect("commit Candidate deployment fixture");
+
     sqlx::query(
         r#"INSERT INTO operation_state(
                operation_id,profile,current_stage,runtime_memory_contract,
-               attack_execution_contract,tool_truth_contract,project_scope_id
-           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','legacy_v1',$2)"#,
+               attack_execution_contract,tool_truth_contract,project_scope_id,
+               investigation_contract_version,investigation_rollout_mode
+           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','receipt_v1',$2,
+                    'hypothesis_registry_v1','registry_authoritative_legacy_projection')"#,
     )
     .bind(operation_id)
     .bind(project_scope_id)
@@ -875,11 +1276,12 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
     sqlx::query(
         r#"INSERT INTO candidate_analysis_attempt_state_events(
                attempt_event_id,analysis_attempt_id,event_ordinal,event_kind,event_hash
-           ) VALUES($1,$2,0,'opened',$3)"#,
+           ) VALUES($1,$2,0,'opened',tool_truth_sha256(jsonb_build_object(
+               'attempt',$2::UUID,'ordinal',0,'event','opened'
+           )::TEXT))"#,
     )
     .bind(Uuid::new_v4())
     .bind(analysis_attempt_id)
-    .bind(digest('7'))
     .execute(&mut *candidate_tx)
     .await
     .expect("open Candidate analysis attempt");
@@ -1421,6 +1823,85 @@ fn operation_repository_joint_contract_rank_is_closed() {
 
 #[tokio::test]
 #[serial]
+async fn legacy_mutation_guard_uses_operation_frozen_mode_not_deployment_default() {
+    let (mut db, _data_dir) = fixture("legacy_mutation_frozen_mode").await;
+    let runtime_contract: String =
+        sqlx::query_scalar("SELECT contract FROM runtime_memory_rollout WHERE singleton_id=1")
+            .fetch_one(db.pool())
+            .await
+            .expect("read compatible runtime deployment contract");
+    let legacy_operation_id = Uuid::new_v4();
+    golish_db::repo::operation_state::insert(
+        db.pool(),
+        legacy_operation_id,
+        "assessment",
+        "target_intel",
+        &runtime_contract,
+    )
+    .await
+    .expect("freeze legacy operation mode");
+
+    for statement in [
+        "ALTER TABLE tool_truth_rollout DISABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+        "ALTER TABLE investigation_rollout DISABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    ] {
+        sqlx::query(statement)
+            .execute(db.pool())
+            .await
+            .expect("disable immutable rollout guard in isolated fixture");
+    }
+    let mut promotion = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin isolated default change");
+    sqlx::query(
+        "UPDATE tool_truth_rollout SET new_operation_contract='receipt_v1',row_version=row_version+1 WHERE singleton=TRUE",
+    )
+    .execute(&mut *promotion)
+    .await
+    .expect("set isolated Tool Truth default");
+    sqlx::query(
+        r#"UPDATE investigation_rollout
+              SET contract_version='hypothesis_registry_v1',
+                  rollout_mode='registry_authoritative_legacy_projection',
+                  mode_rank=3,row_version=row_version+1
+            WHERE singleton=TRUE"#,
+    )
+    .execute(&mut *promotion)
+    .await
+    .expect("set isolated Investigation default");
+    promotion
+        .commit()
+        .await
+        .expect("commit isolated complete joint pair");
+
+    precheck_legacy_candidate_mutation(db.pool(), legacy_operation_id)
+        .await
+        .expect("legacy operation remains mutable after defaults change");
+
+    let registry_operation_id = Uuid::new_v4();
+    golish_db::repo::operation_state::insert(
+        db.pool(),
+        registry_operation_id,
+        "assessment",
+        "target_intel",
+        &runtime_contract,
+    )
+    .await
+    .expect("freeze registry-authoritative operation mode");
+    let forbidden = precheck_legacy_candidate_mutation(db.pool(), registry_operation_id)
+        .await
+        .expect_err("registry-authoritative operation rejects legacy mutation");
+    assert!(forbidden
+        .to_string()
+        .starts_with(ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT));
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn operation_repository_freezes_and_resumes_complete_joint_pair() {
     let (mut db, _data_dir) = fixture("operation_repo_freeze").await;
     let operation_id = Uuid::new_v4();
@@ -1664,6 +2145,180 @@ async fn hypothesis_registry_schema_defaults_existing_operations_to_legacy() {
 
     pool.close().await;
     embedded.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_headers_freeze_snapshot_and_exact_member_sets_after_commit() {
+    let (mut db, _data_dir) = fixture("candidate_header_freeze").await;
+    let mut connection = db
+        .pool()
+        .acquire()
+        .await
+        .expect("acquire isolated connection");
+    let snapshot_id = Uuid::new_v4();
+    let attempt_id = Uuid::new_v4();
+    let proposal_census_id = Uuid::new_v4();
+    let subreview_census_id = Uuid::new_v4();
+    let critic_census_id = Uuid::new_v4();
+    let conflict_component_id = Uuid::new_v4();
+    let input_id = Uuid::new_v4();
+    let digest = format!("sha256:{}", "a".repeat(64));
+    sqlx::query("SET session_replication_role='replica'")
+        .execute(&mut *connection)
+        .await
+        .expect("disable fixture relationship triggers");
+    sqlx::query(
+        r#"INSERT INTO candidate_analysis_snapshots(
+               snapshot_id,operation_id,organization_id,wave_ordinal,scope_snapshot_id,
+               genesis,source_set_hash,capability_revision_hash,policy_revision_hash,
+               credential_revision_hash,snapshot_status,tool_truth_authority_bundle_seal_id,
+               stable_consumer_request_id,relevant_root_count,relevant_root_set_hash,
+               bundle_member_count,bundle_member_set_hash,semantic_authority_bundle_hash,
+               freshness_attestation_bundle_hash,temporal_validity_bundle_hash,
+               temporal_validity_policy_set_hash,target_state_epoch_set_hash,
+               observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash)
+           VALUES($1,$2,$3,0,$4,TRUE,$5,$5,$5,$5,'sealed_ready',$6,$7,4,$5,4,$5,
+                  $5,$5,$5,$5,$5,$5,statement_timestamp(),$5)"#,
+    )
+    .bind(snapshot_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(&digest)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .execute(&mut *connection)
+    .await
+    .expect("seed committed snapshot header");
+    sqlx::query(
+        "INSERT INTO candidate_analysis_proposal_censuses VALUES($1,$2,1,$3,$3,statement_timestamp())",
+    )
+    .bind(proposal_census_id)
+    .bind(attempt_id)
+    .bind(&digest)
+    .execute(&mut *connection)
+    .await
+    .expect("seed committed proposal census header");
+    sqlx::query(
+        r#"INSERT INTO candidate_analysis_hypothesis_coverage_subreview_censuses(
+               subreview_census_id,analysis_attempt_id,snapshot_input_id,
+               checklist_member_count,checklist_member_set_hash,chunk_partition_count,
+               chunk_partition_set_hash,expected_member_count,member_set_hash,census_hash)
+           VALUES($1,$2,$3,1,$4,1,$4,1,$4,$4)"#,
+    )
+    .bind(subreview_census_id)
+    .bind(attempt_id)
+    .bind(input_id)
+    .bind(&digest)
+    .execute(&mut *connection)
+    .await
+    .expect("seed committed subreview census header");
+    sqlx::query(
+        "INSERT INTO candidate_analysis_critic_censuses VALUES($1,$2,1,$3,$3,statement_timestamp())",
+    )
+    .bind(critic_census_id)
+    .bind(attempt_id)
+    .bind(&digest)
+    .execute(&mut *connection)
+    .await
+    .expect("seed committed critic census header");
+    sqlx::query(
+        r#"INSERT INTO candidate_analysis_conflict_components(
+               conflict_component_id,analysis_attempt_id,ordinal,proposal_count,
+               proposal_set_hash,component_hash) VALUES($1,$2,0,1,$3,$3)"#,
+    )
+    .bind(conflict_component_id)
+    .bind(attempt_id)
+    .bind(&digest)
+    .execute(&mut *connection)
+    .await
+    .expect("seed committed conflict component header");
+    sqlx::query("SET session_replication_role='origin'")
+        .execute(&mut *connection)
+        .await
+        .expect("restore all guards");
+
+    let snapshot_error = sqlx::query(
+        r#"INSERT INTO candidate_analysis_snapshot_source_sets(
+               source_set_id,snapshot_id,source_kind,member_count,member_set_hash,sealed_empty)
+           VALUES($1,$2,'relations',0,$3,TRUE)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(snapshot_id)
+    .bind(&digest)
+    .execute(&mut *connection)
+    .await
+    .expect_err("committed snapshot cannot accept a late child");
+    assert_database_rejection(&snapshot_error, "FROZEN");
+
+    let proposal_error = sqlx::query(
+        r#"INSERT INTO candidate_analysis_proposal_census_members(
+               census_member_id,proposal_census_id,analysis_attempt_id,proposal_id,
+               ordinal,proposal_hash,member_hash) VALUES($1,$2,$3,$4,0,$5,$5)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(proposal_census_id)
+    .bind(attempt_id)
+    .bind(Uuid::new_v4())
+    .bind(&digest)
+    .execute(&mut *connection)
+    .await
+    .expect_err("committed proposal census cannot accept a late member");
+    assert_database_rejection(&proposal_error, "FROZEN");
+
+    let subreview_error = sqlx::query(
+        r#"INSERT INTO candidate_analysis_hypothesis_coverage_subreview_census_members(
+               subreview_census_member_id,subreview_census_id,analysis_attempt_id,
+               snapshot_input_id,checklist_member_id,chunk_partition_id,checklist_ordinal,
+               partition_ordinal,designated_stage_work_item_id,disposition,member_hash)
+           VALUES($1,$2,$3,$4,$5,$6,0,0,$7,'required',$8)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(subreview_census_id)
+    .bind(attempt_id)
+    .bind(input_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(&digest)
+    .execute(&mut *connection)
+    .await
+    .expect_err("committed subreview census cannot accept a late member");
+    assert_database_rejection(&subreview_error, "FROZEN");
+
+    let critic_error = sqlx::query(
+        r#"INSERT INTO candidate_analysis_critic_census_members(
+               critic_member_id,critic_census_id,analysis_attempt_id,ordinal,member_kind,
+               source_identity,source_hash,member_hash)
+           VALUES($1,$2,$3,0,'proposal_conflict_review',$4,$5,$5)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(critic_census_id)
+    .bind(attempt_id)
+    .bind(Uuid::new_v4())
+    .bind(&digest)
+    .execute(&mut *connection)
+    .await
+    .expect_err("committed critic census cannot accept a late member");
+    assert_database_rejection(&critic_error, "FROZEN");
+
+    let conflict_error = sqlx::query(
+        r#"INSERT INTO candidate_analysis_conflict_component_members(
+               conflict_member_id,conflict_component_id,analysis_attempt_id,
+               proposal_id,ordinal,member_hash) VALUES($1,$2,$3,$4,0,$5)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(conflict_component_id)
+    .bind(attempt_id)
+    .bind(Uuid::new_v4())
+    .bind(&digest)
+    .execute(&mut *connection)
+    .await
+    .expect_err("committed conflict component cannot accept a late member");
+    assert_database_rejection(&conflict_error, "FROZEN");
+    drop(connection);
+    db.stop().await;
 }
 
 #[tokio::test]

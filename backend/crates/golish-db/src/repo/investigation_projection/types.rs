@@ -7,6 +7,10 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+pub const INVESTIGATION_PROJECTION_STALE: &str = "INVESTIGATION_PROJECTION_STALE";
+pub const INVESTIGATION_PROJECTION_PAYLOAD_INVALID: &str =
+    "INVESTIGATION_PROJECTION_PAYLOAD_INVALID";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionBatchEnqueueReceipt {
     pub batch_id: Uuid,
@@ -57,10 +61,146 @@ pub struct CapturedProjectionHead {
     pub cursor_salt: Vec<u8>,
 }
 
+/// Operation contract and cursor identity captured with the projection head.
+/// `cursor_salt` is an internal signing key and must never cross IPC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationOperationReadAuthority {
+    pub operation_id: Uuid,
+    pub tool_truth_contract: String,
+    pub investigation_contract_version: String,
+    pub investigation_rollout_mode: String,
+    pub cursor_salt: [u8; 32],
+}
+
+/// The four values that define one stable read/pagination snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationTemporalReadAuthority {
+    pub projection_schema_version: i32,
+    pub as_of_change_seq: i64,
+    pub as_of_temporal_cutoff: DateTime<Utc>,
+    pub authority_epoch_set_hash: String,
+    pub earliest_effective_valid_until: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationReadAuthority {
+    pub operation: InvestigationOperationReadAuthority,
+    pub temporal: InvestigationTemporalReadAuthority,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationPageValidationInput {
+    pub as_of_change_seq: i64,
+    pub as_of_temporal_cutoff: DateTime<Utc>,
+    pub authority_epoch_set_hash: String,
+    pub earliest_effective_valid_until: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvestigationPageValidation {
+    Current(InvestigationReadAuthority),
+    Stale {
+        current_change_seq: i64,
+        restart_required: bool,
+    },
+}
+
+/// Frozen six-field Hypothesis keyset shared by Plan B and future Plan D.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct InvestigationHypothesisSortKey {
+    pub organization_ordinal: i32,
+    pub group_key: String,
+    pub readiness_rank: i16,
+    pub epistemic_rank: i16,
+    pub root_id: Uuid,
+    pub revision_ordinal: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InvestigationHypothesisFilters {
+    pub organization_ids: Vec<Uuid>,
+    pub epistemic_states: Vec<String>,
+    pub readiness_states: Vec<String>,
+    pub capability_states: Vec<String>,
+    pub source_kinds: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationHypothesisListQuery {
+    pub filters: InvestigationHypothesisFilters,
+    pub after: Option<InvestigationHypothesisSortKey>,
+    /// Signed cursor authority decoded by the app.  When present, the DB
+    /// revalidates it and runs the page query in this same read transaction.
+    pub expected_page_authority: Option<InvestigationPageValidationInput>,
+    pub page_size: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationHypothesisListItem {
+    pub sort_key: InvestigationHypothesisSortKey,
+    pub root_id: Uuid,
+    pub revision_id: Uuid,
+    pub organization_id: Uuid,
+    pub subject_kind: String,
+    pub subject_identity_hash: String,
+    pub target_type_at_time: String,
+    pub target_value_at_time: String,
+    pub predicate_schema: String,
+    pub predicate_summary: String,
+    pub trust_boundary: String,
+    pub polarity: String,
+    pub epistemic_state: String,
+    pub lifecycle_state: String,
+    pub planning_readiness: String,
+    pub support_count: i64,
+    pub contradiction_count: i64,
+    pub gap_count: i64,
+    pub legacy_projection_status: Option<String>,
+    pub residual_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationHypothesisListPage {
+    pub authority: InvestigationReadAuthority,
+    pub hypotheses: Vec<InvestigationHypothesisListItem>,
+    pub next_key: Option<InvestigationHypothesisSortKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationHypothesisDetail {
+    pub authority: InvestigationReadAuthority,
+    pub hypothesis: InvestigationHypothesisListItem,
+    pub predecessor_revision_id: Option<Uuid>,
+    pub lineage_revision_ids: Vec<Uuid>,
+    pub support_ref_ids: Vec<String>,
+    pub contradiction_ref_ids: Vec<String>,
+    pub application_context_ref_ids: Vec<String>,
+    pub gap_ref_ids: Vec<String>,
+    pub verification_objective_summaries: Vec<String>,
+    pub legacy_unavailable_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationSummary {
+    pub authority: InvestigationReadAuthority,
+    pub active_generation_id: Option<Uuid>,
+    pub active_generation_seal_hash: Option<String>,
+    pub current_hypothesis_count: i64,
+    pub closed_hypothesis_count: i64,
+    pub contested_hypothesis_count: i64,
+    pub residual_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationLegacyProjection {
+    pub status: Option<String>,
+    pub unavailable_fields: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedProjectionEntity {
     pub entity_kind: ProjectionEntityKind,
-    pub entity_id: Uuid,
+    pub entity_id: String,
     pub entity_version: i64,
     pub projection_hash: String,
     pub entity: ProjectionEntityV1,
@@ -76,7 +216,7 @@ pub struct InvestigationProjectionChange {
     pub source_batch_seq: i64,
     pub outbox_member_id: Uuid,
     pub entity_kind: ProjectionEntityKind,
-    pub entity_id: Uuid,
+    pub entity_id: String,
     pub entity_version: i64,
     pub change_kind: ProjectionChangeKind,
     pub timeline_event_kind: TimelineEventKind,
@@ -102,6 +242,13 @@ pub enum InvestigationProjectionError {
     Serialization(#[from] serde_json::Error),
     #[error("{0}")]
     Contract(&'static str),
+    #[error("{code}: {message}")]
+    InvalidPayload { code: &'static str, message: String },
+    #[error("{code}: projection snapshot changed at sequence {current_change_seq}")]
+    Stale {
+        code: &'static str,
+        current_change_seq: i64,
+    },
 }
 
 impl InvestigationProjectionError {
@@ -110,7 +257,29 @@ impl InvestigationProjectionError {
             Self::Storage(_) => "INVESTIGATION_PROJECTION_STORAGE",
             Self::Serialization(_) => "INVESTIGATION_PROJECTION_SERIALIZATION",
             Self::Contract(code) => code,
+            Self::InvalidPayload { code, .. } => code,
+            Self::Stale { code, .. } => code,
         }
+    }
+
+    pub const fn current_change_seq(&self) -> Option<i64> {
+        match self {
+            Self::Stale {
+                current_change_seq, ..
+            } => Some(*current_change_seq),
+            _ => None,
+        }
+    }
+
+    pub const fn restart_required(&self) -> bool {
+        matches!(self, Self::Stale { .. })
+    }
+}
+
+pub(crate) fn invalid_payload(message: impl Into<String>) -> InvestigationProjectionError {
+    InvestigationProjectionError::InvalidPayload {
+        code: INVESTIGATION_PROJECTION_PAYLOAD_INVALID,
+        message: message.into(),
     }
 }
 

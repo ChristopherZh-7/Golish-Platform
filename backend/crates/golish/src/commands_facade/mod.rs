@@ -41,6 +41,7 @@ pub mod git_pty;
 pub mod indexer;
 pub mod integrations;
 pub mod intel_providers;
+pub mod investigation;
 pub mod mcp;
 pub mod organization_recon;
 pub mod pentest;

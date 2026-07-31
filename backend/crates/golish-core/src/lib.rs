@@ -31,6 +31,7 @@ pub mod event_emitter;
 pub mod hitl;
 pub mod hypothesis_semantic_key;
 pub mod hypothesis_verification;
+pub mod investigation_comparison;
 pub mod investigation_contract;
 pub mod investigation_projection;
 pub mod jsonl;

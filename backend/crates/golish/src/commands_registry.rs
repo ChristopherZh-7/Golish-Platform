@@ -22,6 +22,8 @@ use commands_facade::git_pty::*;
 use commands_facade::indexer::*;
 use commands_facade::integrations::*;
 use commands_facade::intel_providers::*;
+#[allow(unused_imports)]
+use commands_facade::investigation::*;
 use commands_facade::mcp::*;
 use commands_facade::organization_recon::*;
 use commands_facade::pentest::*;
@@ -172,6 +174,10 @@ fn install_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         cleanup_list_obligations,
         cleanup_get_closeout_gate,
         cleanup_waive_obligation,
+        // ── investigation (Hypothesis Registry audit read model) ─
+        investigation_get_summary,
+        investigation_list_hypotheses,
+        investigation_get_hypothesis,
         // ── reporting (cited read model / explicit publication) ─
         reporting_get_read_model,
         reporting_build_read_model,

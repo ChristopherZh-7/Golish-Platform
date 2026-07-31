@@ -317,9 +317,15 @@ pub(crate) fn setup_subsystems(app: &mut tauri::App) -> Result<(), Box<dyn std::
         let memory_supervisor = state.memory_supervisor.clone();
         let cleanup_closeout = state.cleanup_closeout.clone();
         let reporting_artifact_gc = state.reporting_artifact_gc.clone();
+        let investigation_projection_worker = state.investigation_projection_worker.clone();
         async_runtime::spawn(async move {
             let ready = db_gate.wait().await;
             if ready {
+                let started = investigation_projection_worker.start().await;
+                tracing::info!(
+                    started,
+                    "Investigation projection worker started after DB readiness"
+                );
                 match memory_supervisor.start().await {
                     Ok(outcome) => tracing::info!(
                         ?outcome,

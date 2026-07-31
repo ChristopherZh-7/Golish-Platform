@@ -1,12 +1,14 @@
 #[allow(dead_code)]
 #[path = "../src/ai/candidate_analysis_gate.rs"]
 mod candidate_analysis_gate;
+#[allow(dead_code)]
 #[path = "../src/ai/candidate_analysis_projection.rs"]
 mod candidate_analysis_projection;
+#[allow(dead_code)]
 #[path = "../src/ai/candidate_analysis_runtime.rs"]
 mod candidate_analysis_runtime;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -15,7 +17,10 @@ use candidate_analysis_projection::{
     project_sealed_candidate_chunk, CandidateAtTimeSubject, CandidateInputProvenance,
     CandidateKnowledgeFeedEligibility, SealedCandidateChunkProjectionRow,
 };
-use candidate_analysis_runtime::{live_lane_limit, PgHypothesisAnalysisStageRuntime};
+use candidate_analysis_runtime::{
+    live_lane_limit, project_critic_input, PgHypothesisAnalysisStageRuntime,
+};
+use golish_agent_kit::db_traits::CandidateRepositoryWriteFenceV1;
 use golish_agent_kit::harness::stage_spec::CandidateAnalysisTeamPolicy;
 use golish_agent_kit::task_orchestrator::hypothesis_analysis::*;
 use golish_pentest_domain::tool_truth::ToolTruthRootFamilyV1;
@@ -80,7 +85,7 @@ fn stable_id(label: &str) -> Uuid {
 }
 
 fn payload_digest(payload: &CandidateBoundedPayload) -> String {
-    let bytes = serde_json::to_vec(payload).unwrap();
+    let bytes = serde_json::to_vec(&serde_json::to_value(payload).unwrap()).unwrap();
     let digest = Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -94,10 +99,13 @@ fn projection_row(
     knowledge_feed_eligibility: Option<CandidateKnowledgeFeedEligibility>,
 ) -> SealedCandidateChunkProjectionRow {
     let input_id = stable_id("projection-input");
+    let chunk_id = stable_id("projection-chunk");
     SealedCandidateChunkProjectionRow {
         snapshot_ready: true,
         input_id,
         expected_input_id: input_id,
+        chunk_id,
+        expected_chunk_id: chunk_id,
         input_key: "frozen:input".into(),
         input_kind,
         knowledge_feed_eligibility,
@@ -119,6 +127,7 @@ fn projection_row(
         persisted_payload_hash: payload_digest(&payload),
         bounded_payload: payload,
         max_chunk_bytes: 16_384,
+        instruction_authority: false,
     }
 }
 
@@ -136,6 +145,30 @@ fn binding(
         lane_ordinal: item as u32,
         read_only: true,
         allowed_tools: vec!["submit_result".into()],
+    }
+}
+
+fn authority(binding: &CandidateAnalysisAgentBinding) -> CandidateRuntimeWorkAuthority {
+    CandidateRuntimeWorkAuthority {
+        fence: CandidateRepositoryWriteFenceV1 {
+            operation_id: stable_id("operation"),
+            scope_snapshot_id: stable_id("scope"),
+            organization_id: stable_id("organization"),
+            snapshot_id: stable_id("snapshot"),
+            team_plan_id: stable_id("team-plan"),
+            work_item_id: binding.work_item_id,
+            worker_run_id: binding.worker_run_id,
+            lease_token: stable_id(&format!("lease-{}", binding.worker_run_id)),
+            lease_epoch: 1,
+            analysis_attempt_id: binding.analysis_attempt_id,
+            analysis_attempt_ordinal: binding.analysis_attempt_ordinal,
+            attempt_epoch: 1,
+            expected_snapshot_row_version: 0,
+            expected_team_plan_row_version: 0,
+            expected_work_item_row_version: 0,
+            expected_worker_row_version: 0,
+            expected_attempt_row_version: 0,
+        },
     }
 }
 
@@ -174,6 +207,52 @@ impl FakeRunner {
     }
 }
 
+fn no_miss_leaf_finding(
+    snapshot_input_id: Uuid,
+    checklist_member_id: Uuid,
+    proposals: &[CandidateCoverageProposalSummary],
+) -> CandidateLocalCoverageFinding {
+    CandidateLocalCoverageFinding {
+        outcome: CandidateCriticOutcome::NoMiss,
+        missed_hypothesis_refs: Vec::new(),
+        blocker_codes: Vec::new(),
+        context_truncated: false,
+        semantic_summary: CandidateCoverageSemanticSummary {
+            covered_input_ids: vec![snapshot_input_id],
+            covered_checklist_member_ids: vec![checklist_member_id],
+            observed_proposal_ids: proposals.iter().map(|item| item.proposal_id).collect(),
+            missed_checklist_member_ids: Vec::new(),
+            blocker_codes: Vec::new(),
+            semantic_observations: Vec::new(),
+        },
+    }
+}
+
+fn no_miss_synthesis_finding(node: &CandidateCoverageNodeInput) -> CandidateLocalCoverageFinding {
+    CandidateLocalCoverageFinding {
+        outcome: CandidateCriticOutcome::NoMiss,
+        missed_hypothesis_refs: Vec::new(),
+        blocker_codes: Vec::new(),
+        context_truncated: false,
+        semantic_summary: CandidateCoverageSemanticSummary {
+            covered_input_ids: node.covered_input_ids.clone(),
+            covered_checklist_member_ids: node.covered_checklist_member_ids.clone(),
+            observed_proposal_ids: node
+                .h1_proposal_summaries
+                .iter()
+                .map(|item| item.proposal_id)
+                .collect(),
+            missed_checklist_member_ids: Vec::new(),
+            blocker_codes: Vec::new(),
+            semantic_observations: node
+                .child_semantic_summaries
+                .iter()
+                .flat_map(|child| child.semantic_summary.semantic_observations.clone())
+                .collect(),
+        },
+    }
+}
+
 #[async_trait]
 impl HypothesisAnalysisAgentRunner for FakeRunner {
     async fn run_controller_dispatch(
@@ -202,8 +281,6 @@ impl HypothesisAnalysisAgentRunner for FakeRunner {
             provider_attempt_id: Uuid::new_v5(&binding.worker_run_id, b"analyst"),
             output: HypothesisProposalArtifact {
                 proposals: Vec::new(),
-                blocked_input_ids: Vec::new(),
-                blocker_codes: Vec::new(),
             },
         })
     }
@@ -214,48 +291,50 @@ impl HypothesisAnalysisAgentRunner for FakeRunner {
         input: CandidateCriticInput,
     ) -> anyhow::Result<CandidateAnalysisAgentAttempt<HypothesisCriticArtifact>> {
         self.enter().await;
-        let no_miss = || CandidateLocalCoverageFinding {
-            outcome: CandidateCriticOutcome::NoMiss,
-            missed_hypothesis_refs: Vec::new(),
-            blocker_codes: Vec::new(),
-            context_truncated: false,
-        };
         let (trace, output) = match input {
             CandidateCriticInput::ProposalConflict {
                 conflict_component_id,
                 ..
+            } => (
+                "proposal_conflict".to_string(),
+                HypothesisCriticArtifact::ProposalConflict {
+                    conflict_component_id,
+                    decision: CandidateConflictDecisionKind::NoConflict,
+                    related_proposal_ids: Vec::new(),
+                },
+            ),
+            CandidateCriticInput::CoverageSubreview {
+                subreview_census_member_id,
+                snapshot_input_id,
+                checklist_member_id,
+                chunk_partition_id,
+                h1_proposal_summaries,
+                ..
             } => {
-                let outcome = if self.miss_first_attempt && binding.analysis_attempt_ordinal == 0 {
-                    CandidateCriticOutcome::MissedHypothesis
-                } else {
-                    CandidateCriticOutcome::NoMiss
-                };
+                let mut finding = no_miss_leaf_finding(
+                    snapshot_input_id,
+                    checklist_member_id,
+                    &h1_proposal_summaries,
+                );
+                if self.miss_first_attempt && binding.analysis_attempt_ordinal == 0 {
+                    finding.outcome = CandidateCriticOutcome::MissedHypothesis;
+                    finding.missed_hypothesis_refs = vec![checklist_member_id];
+                    finding.semantic_summary.missed_checklist_member_ids =
+                        vec![checklist_member_id];
+                }
                 (
-                    "proposal_conflict".to_string(),
-                    HypothesisCriticArtifact::ProposalConflict {
-                        conflict_component_id,
-                        outcome,
-                        related_proposal_ids: Vec::new(),
+                    format!("subreview:{checklist_member_id}:{chunk_partition_id}"),
+                    HypothesisCriticArtifact::CoverageSubreview {
+                        subreview_census_member_id,
+                        finding,
                     },
                 )
             }
-            CandidateCriticInput::CoverageSubreview {
-                subreview_census_member_id,
-                checklist_member_id,
-                chunk_partition_id,
-                ..
-            } => (
-                format!("subreview:{checklist_member_id}:{chunk_partition_id}"),
-                HypothesisCriticArtifact::CoverageSubreview {
-                    subreview_census_member_id,
-                    finding: no_miss(),
-                },
-            ),
             CandidateCriticInput::CoverageCrossChunkSynthesis { node } => (
                 "cross_chunk".to_string(),
                 HypothesisCriticArtifact::CoverageCrossChunkSynthesis {
                     synthesis_node_id: node.synthesis_node_id,
-                    finding: no_miss(),
+                    finding: no_miss_synthesis_finding(&node),
                     descendant_worker_set_hash: node.descendant_worker_set_hash,
                 },
             ),
@@ -263,7 +342,7 @@ impl HypothesisAnalysisAgentRunner for FakeRunner {
                 "cross_input_partition".to_string(),
                 HypothesisCriticArtifact::CoverageCrossInputPartition {
                     synthesis_node_id: node.synthesis_node_id,
-                    finding: no_miss(),
+                    finding: no_miss_synthesis_finding(&node),
                     descendant_worker_set_hash: node.descendant_worker_set_hash,
                 },
             ),
@@ -271,7 +350,7 @@ impl HypothesisAnalysisAgentRunner for FakeRunner {
                 "cross_input_reduce".to_string(),
                 HypothesisCriticArtifact::CoverageCrossInputReduce {
                     synthesis_node_id: node.synthesis_node_id,
-                    finding: no_miss(),
+                    finding: no_miss_synthesis_finding(&node),
                     descendant_worker_set_hash: node.descendant_worker_set_hash,
                 },
             ),
@@ -279,7 +358,7 @@ impl HypothesisAnalysisAgentRunner for FakeRunner {
                 "cross_dimension_reduce".to_string(),
                 HypothesisCriticArtifact::CoverageCrossDimensionReduce {
                     synthesis_node_id: node.synthesis_node_id,
-                    finding: no_miss(),
+                    finding: no_miss_synthesis_finding(&node),
                     descendant_worker_set_hash: node.descendant_worker_set_hash,
                 },
             ),
@@ -287,7 +366,7 @@ impl HypothesisAnalysisAgentRunner for FakeRunner {
                 "global_semantic_root".to_string(),
                 HypothesisCriticArtifact::CoverageGlobalSemanticRoot {
                     synthesis_node_id: node.synthesis_node_id,
-                    finding: no_miss(),
+                    finding: no_miss_synthesis_finding(&node),
                     descendant_worker_set_hash: node.descendant_worker_set_hash,
                 },
             ),
@@ -320,10 +399,12 @@ struct FakeRepository {
     blocked: bool,
     invalidate: bool,
     claim_plan_incomplete: bool,
+    terminal_blocked_before_h1: bool,
     coverage_shape: Option<(u32, u32)>,
     retry_once: AtomicBool,
     saw_missed_hypothesis: AtomicBool,
     response_loss_once: AtomicBool,
+    prepared_analyst_attempts: Mutex<BTreeSet<u32>>,
     receipts: Mutex<BTreeMap<Uuid, CandidateArtifactReceipt>>,
     events: Mutex<Vec<String>>,
 }
@@ -335,10 +416,12 @@ impl FakeRepository {
             blocked: false,
             invalidate: false,
             claim_plan_incomplete: false,
+            terminal_blocked_before_h1: false,
             coverage_shape: None,
             retry_once: AtomicBool::new(false),
             saw_missed_hypothesis: AtomicBool::new(false),
             response_loss_once: AtomicBool::new(false),
+            prepared_analyst_attempts: Mutex::new(BTreeSet::new()),
             receipts: Mutex::new(BTreeMap::new()),
             events: Mutex::new(Vec::new()),
         }
@@ -383,6 +466,7 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
             snapshot_authority_hash: hash('b'),
             input_chunk_census_set_hash: hash('c'),
             blocked_residual_hash: self.blocked.then(|| hash('d')),
+            stage_execution_id: stable_id("stage-execution"),
         })
     }
 
@@ -390,6 +474,7 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
         &self,
         snapshot_id: Uuid,
         attempt_ordinal: u32,
+        _stage_execution_id: Uuid,
     ) -> anyhow::Result<CandidateRuntimeAttempt> {
         self.record(format!("open:{attempt_ordinal}"));
         let controller_binding =
@@ -397,6 +482,8 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
         Ok(CandidateRuntimeAttempt {
             analysis_attempt_id: controller_binding.analysis_attempt_id,
             analysis_attempt_ordinal: attempt_ordinal,
+            stage_execution_id: stable_id("stage-execution"),
+            controller_authority: authority(&controller_binding),
             controller_binding,
             controller_dispatch_input: CandidateControllerDispatchInput {
                 snapshot_id,
@@ -404,7 +491,10 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
                 input_count: self.input_count,
                 input_chunk_census_set_hash: hash('c'),
                 relationship_cross_index_hash: hash('e'),
+                missed_hypothesis_signals: Vec::new(),
+                missed_hypothesis_signal_set_hash: hash('0'),
             },
+            controller_dispatch_replay: None,
         })
     }
 
@@ -415,28 +505,54 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
         _host_lane_limit: usize,
     ) -> anyhow::Result<Vec<CandidateAnalystWorkItem>> {
         self.record("prepare_analyst");
+        if !self
+            .prepared_analyst_attempts
+            .lock()
+            .unwrap()
+            .insert(attempt.analysis_attempt_ordinal)
+        {
+            return Ok(Vec::new());
+        }
         let count = (self.input_count as usize).div_ceil(24).max(1);
         Ok((0..count)
-            .map(|ordinal| CandidateAnalystWorkItem {
-                binding: binding(
+            .map(|ordinal| {
+                let binding = binding(
                     attempt.analysis_attempt_ordinal,
                     CandidateAnalysisAgentRole::Analyst,
                     ordinal,
-                ),
-                input: CandidateAnalystInput {
-                    microbatch_id: stable_id(&format!("microbatch-{ordinal}")),
-                    microbatch_ordinal: ordinal as u32,
-                    chunks: Vec::new(),
-                    relationship_cross_index_hash: hash('e'),
-                    trust_boundary_cross_index_hash: hash('f'),
-                },
+                );
+                CandidateAnalystWorkItem {
+                    authority: authority(&binding),
+                    binding,
+                    input: CandidateAnalystInput {
+                        microbatch_id: stable_id(&format!("microbatch-{ordinal}")),
+                        microbatch_ordinal: ordinal as u32,
+                        chunks: Vec::new(),
+                        relationship_cross_index_hash: hash('e'),
+                        trust_boundary_cross_index_hash: hash('f'),
+                        missed_hypothesis_signals: Vec::new(),
+                        missed_hypothesis_signal_set_hash: hash('0'),
+                    },
+                    replayed_receipt: None,
+                }
             })
             .collect())
+    }
+
+    async fn persist_controller_dispatch(
+        &self,
+        _binding: &CandidateAnalysisAgentBinding,
+        _authority: &CandidateRuntimeWorkAuthority,
+        _attempt: &CandidateAnalysisAgentAttempt<CandidateControllerDispatchPlan>,
+    ) -> anyhow::Result<()> {
+        self.record("persist_dispatch");
+        Ok(())
     }
 
     async fn persist_analyst_artifact(
         &self,
         _binding: &CandidateAnalysisAgentBinding,
+        _authority: &CandidateRuntimeWorkAuthority,
         attempt: &CandidateAnalysisAgentAttempt<HypothesisProposalArtifact>,
     ) -> anyhow::Result<CandidateArtifactPersistence> {
         self.record("persist_analyst");
@@ -446,21 +562,34 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
     async fn prepare_critic_wave(
         &self,
         attempt: &CandidateRuntimeAttempt,
+        max_coverage_subreview_work_items: usize,
     ) -> anyhow::Result<CandidateCriticWavePlan> {
         self.record("seal_h1_prepare_critic");
+        if self.terminal_blocked_before_h1 {
+            return Ok(CandidateCriticWavePlan {
+                work_items: Vec::new(),
+                h1_census_hash: hash('9'),
+                terminal_blocked_residual_hash: Some(hash('8')),
+            });
+        }
         if let Some((checklist_count, partition_count)) = self.coverage_shape {
             let mut work_items = Vec::new();
             let mut worker_ordinal = 10_000usize;
             for checklist_ordinal in 0..checklist_count {
                 for partition_ordinal in 0..partition_count {
+                    if work_items.len() == max_coverage_subreview_work_items {
+                        break;
+                    }
                     let checklist_member_id = stable_id(&format!("checklist-{checklist_ordinal}"));
                     let chunk_partition_id = stable_id(&format!("partition-{partition_ordinal}"));
+                    let binding = binding(
+                        attempt.analysis_attempt_ordinal,
+                        CandidateAnalysisAgentRole::Critic,
+                        worker_ordinal,
+                    );
                     work_items.push(CandidateCriticWorkItem {
-                        binding: binding(
-                            attempt.analysis_attempt_ordinal,
-                            CandidateAnalysisAgentRole::Critic,
-                            worker_ordinal,
-                        ),
+                        authority: authority(&binding),
+                        binding,
                         input: CandidateCriticInput::CoverageSubreview {
                             subreview_census_id: stable_id("subreview-census"),
                             subreview_census_member_id: stable_id(&format!(
@@ -468,13 +597,26 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
                             )),
                             snapshot_input_id: stable_id("large-input"),
                             checklist_member_id,
+                            checklist: CandidateCoverageChecklistSummary {
+                                checklist_member_id,
+                                snapshot_input_id: stable_id("large-input"),
+                                attack_class_id: "test_attack".to_owned(),
+                                attack_class_version: 1,
+                                trust_boundary_identity: "test_boundary".to_owned(),
+                                trust_boundary_hash: hash('9'),
+                            },
                             chunk_partition_id,
                             designated_chunks: Vec::new(),
                             h1_proposal_refs: Vec::new(),
+                            h1_proposal_summaries: Vec::new(),
                             read_receipt_set_hash: hash('a'),
                         },
+                        replayed_receipt: None,
                     });
                     worker_ordinal += 1;
+                }
+                if work_items.len() == max_coverage_subreview_work_items {
+                    break;
                 }
             }
             let node = |label: &str, level: u32, partition_ordinal: u32, child_count: u32| {
@@ -488,15 +630,21 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
                     child_receipt_set_hash: hash('c'),
                     descendant_worker_set_hash: hash('d'),
                     relationship_cross_index_hash: hash('e'),
+                    covered_input_ids: vec![stable_id("large-input")],
+                    covered_checklist_member_ids: vec![stable_id("checklist-0")],
+                    h1_proposal_summaries: Vec::new(),
+                    child_semantic_summaries: Vec::new(),
                 }
             };
             for checklist_ordinal in 0..checklist_count {
+                let binding = binding(
+                    attempt.analysis_attempt_ordinal,
+                    CandidateAnalysisAgentRole::Critic,
+                    worker_ordinal,
+                );
                 work_items.push(CandidateCriticWorkItem {
-                    binding: binding(
-                        attempt.analysis_attempt_ordinal,
-                        CandidateAnalysisAgentRole::Critic,
-                        worker_ordinal,
-                    ),
+                    authority: authority(&binding),
+                    binding,
                     input: CandidateCriticInput::CoverageCrossChunkSynthesis {
                         node: node(
                             &format!("cross-chunk-{checklist_ordinal}"),
@@ -505,6 +653,7 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
                             partition_count,
                         ),
                     },
+                    replayed_receipt: None,
                 });
                 worker_ordinal += 1;
             }
@@ -523,44 +672,56 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
                 },
             ];
             for input in synthesis_tail {
+                let binding = binding(
+                    attempt.analysis_attempt_ordinal,
+                    CandidateAnalysisAgentRole::Critic,
+                    worker_ordinal,
+                );
                 work_items.push(CandidateCriticWorkItem {
-                    binding: binding(
-                        attempt.analysis_attempt_ordinal,
-                        CandidateAnalysisAgentRole::Critic,
-                        worker_ordinal,
-                    ),
+                    authority: authority(&binding),
+                    binding,
                     input,
+                    replayed_receipt: None,
                 });
                 worker_ordinal += 1;
             }
             return Ok(CandidateCriticWavePlan {
                 work_items,
                 h1_census_hash: hash('2'),
+                terminal_blocked_residual_hash: None,
             });
         }
         let count = (self.input_count as usize).div_ceil(16).max(1);
         Ok(CandidateCriticWavePlan {
             work_items: (0..count)
-                .map(|ordinal| CandidateCriticWorkItem {
-                    binding: binding(
+                .map(|ordinal| {
+                    let binding = binding(
                         attempt.analysis_attempt_ordinal,
                         CandidateAnalysisAgentRole::Critic,
                         ordinal + 10_000,
-                    ),
-                    input: CandidateCriticInput::ProposalConflict {
-                        conflict_component_id: stable_id(&format!("conflict-{ordinal}")),
-                        conflict_component_hash: hash('1'),
-                        proposals: Vec::new(),
-                    },
+                    );
+                    CandidateCriticWorkItem {
+                        authority: authority(&binding),
+                        binding,
+                        input: CandidateCriticInput::ProposalConflict {
+                            conflict_component_id: stable_id(&format!("conflict-{ordinal}")),
+                            conflict_component_hash: hash('1'),
+                            proposals: Vec::new(),
+                            proposal_summaries: Vec::new(),
+                        },
+                        replayed_receipt: None,
+                    }
                 })
                 .collect(),
             h1_census_hash: hash('2'),
+            terminal_blocked_residual_hash: None,
         })
     }
 
     async fn persist_critic_artifact(
         &self,
         binding: &CandidateAnalysisAgentBinding,
+        _authority: &CandidateRuntimeWorkAuthority,
         attempt: &CandidateAnalysisAgentAttempt<HypothesisCriticArtifact>,
     ) -> anyhow::Result<CandidateArtifactPersistence> {
         self.record("persist_critic");
@@ -590,6 +751,7 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
     async fn reduce_and_seal_critic_wave(
         &self,
         attempt: &CandidateRuntimeAttempt,
+        _max_coverage_subreview_work_items: usize,
     ) -> anyhow::Result<CandidateCriticReduction> {
         self.record("reduce_seal_h2");
         if self.retry_once.swap(false, Ordering::SeqCst)
@@ -601,6 +763,7 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
         }
         Ok(CandidateCriticReduction::Ready(Box::new(
             CandidateFinalizationPlan {
+                authority: attempt.controller_authority.clone(),
                 binding: attempt.controller_binding.clone(),
                 input: CandidateControllerFinalInput {
                     snapshot_id: stable_id("snapshot"),
@@ -611,7 +774,22 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
                     claim_component_set_hash: hash('5'),
                     verification_contract_set_hash: hash('6'),
                     verification_plan_set_hash: hash('7'),
-                    cluster_page_hashes: vec![hash('8')],
+                    proposal_pages: vec![CandidateControllerProposalPage {
+                        page_ordinal: 0,
+                        proposal_count: 1,
+                        proposals: vec![CandidateControllerProposalSummary {
+                            proposal_id: stable_id("proposal"),
+                            semantic_key_hash: hash('8'),
+                            structured_claim: "bounded fixture claim".to_owned(),
+                            trust_boundary: "internet".to_owned(),
+                            polarity: "positive".to_owned(),
+                            route_kind: "create_initial".to_owned(),
+                            proof_ref_count: 1,
+                            refutation_ref_count: 0,
+                        }],
+                        page_hash: hash('9'),
+                    }],
+                    proposal_page_set_hash: hash('a'),
                 },
                 claim_component_compilation: CandidateClaimComponentCompilation {
                     claim_component_count: 2,
@@ -625,6 +803,7 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
                     plan_scope: CandidateVerificationPlanScope::ExactOriginalClaim,
                     incomplete_residual_hash: hash('0'),
                 },
+                controller_final_replay: None,
             },
         )))
     }
@@ -645,13 +824,50 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
         })
     }
 
+    async fn validate_controller_final_binding(
+        &self,
+        attempt: &CandidateRuntimeAttempt,
+        finalization: &CandidateFinalizationPlan,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            attempt.analysis_attempt_id == finalization.binding.analysis_attempt_id
+                && attempt.analysis_attempt_ordinal
+                    == finalization.binding.analysis_attempt_ordinal,
+            "fake Controller binding drift"
+        );
+        Ok(())
+    }
+
     async fn persist_controller_final(
         &self,
         _binding: &CandidateAnalysisAgentBinding,
+        _authority: &CandidateRuntimeWorkAuthority,
         attempt: &CandidateAnalysisAgentAttempt<CandidateControllerDecisionArtifact>,
     ) -> anyhow::Result<CandidateArtifactPersistence> {
         self.record("persist_final");
         Ok(self.persist(attempt.provider_attempt_id))
+    }
+
+    async fn finalize_generation(
+        &self,
+        _attempt: &CandidateRuntimeAttempt,
+        _finalization: &CandidateFinalizationPlan,
+        _final_receipt: &CandidateArtifactReceipt,
+    ) -> anyhow::Result<CandidateGenerationSealOutcome> {
+        self.record("finalize_generation");
+        Ok(CandidateGenerationSealOutcome {
+            generation_id: stable_id("generation"),
+            generation_ordinal: 0,
+            generation_seal_id: stable_id("generation-seal"),
+            generation_member_count: 0,
+            generation_member_set_hash: hash('a'),
+            generation_event_set_hash: hash('b'),
+            open_obligation_set_hash: hash('c'),
+            projection_outbox_batch_id: stable_id("outbox"),
+            projection_source_batch_seq: 1,
+            projection_outbox_member_set_hash: hash('d'),
+            replayed: false,
+        })
     }
 }
 
@@ -661,6 +877,7 @@ fn request() -> HypothesisAnalysisStageRequest {
         operation_id: stable_id("operation"),
         scope_snapshot_id: stable_id("scope"),
         organization_id: stable_id("organization"),
+        stage_execution_id: stable_id("stage-execution"),
     }
 }
 
@@ -751,7 +968,10 @@ async fn candidate_temporal_recheck_blocks_old_attempt_before_final_controller()
 
 #[tokio::test]
 async fn candidate_analysis_attempt_retry_reopens_a_contiguous_attempt_chain() {
-    let repository = Arc::new(FakeRepository::ready(24));
+    let repository = Arc::new(FakeRepository {
+        coverage_shape: Some((1, 1)),
+        ..FakeRepository::ready(24)
+    });
     let runtime = PgHypothesisAnalysisStageRuntime::new(repository.clone(), policy()).unwrap();
     let runner = FakeRunner::new().with_missed_hypothesis_on_first_attempt();
     let outcome = runtime.run(request(), &runner).await.unwrap();
@@ -777,12 +997,20 @@ async fn candidate_analysis_attempt_retry_reopens_a_contiguous_attempt_chain() {
     assert!(events
         .iter()
         .any(|event| event == "persist_critic_attempt:1"));
-    assert_eq!(repository.receipts.lock().unwrap().len(), 7);
+    assert_eq!(repository.receipts.lock().unwrap().len(), 15);
     assert_eq!(runner.final_calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
 fn candidate_hypothesis_coverage_review_schema_rejects_generic_or_unknown_modes() {
+    assert!(
+        serde_json::from_value::<HypothesisProposalArtifact>(serde_json::json!({
+            "proposals":[],
+            "blocked_input_ids":[stable_id("model-blocked")],
+            "blocker_codes":["model_claimed_blocker"]
+        }))
+        .is_err()
+    );
     assert!(
         serde_json::from_value::<CandidateCriticInput>(serde_json::json!({
             "mode": "generic_review",
@@ -874,6 +1102,36 @@ async fn candidate_hypothesis_coverage_subreview_and_recursive_synthesis_are_exa
     assert!(runner.peak.load(Ordering::SeqCst) <= 8);
 }
 
+#[tokio::test]
+async fn candidate_coverage_policy_caps_provider_subreviews_without_changing_live_lane_cap() {
+    let repository = Arc::new(FakeRepository {
+        coverage_shape: Some((2, 16)),
+        ..FakeRepository::ready(1)
+    });
+    let mut capped_policy = policy();
+    capped_policy.max_coverage_subreview_work_items = 10;
+    let runtime = PgHypothesisAnalysisStageRuntime::new(repository, capped_policy).unwrap();
+    let runner = FakeRunner::new();
+    let outcome = runtime.run(request(), &runner).await.unwrap();
+    assert!(matches!(
+        outcome,
+        HypothesisAnalysisStageOutcome::AnalysisArtifactsReady {
+            critic_work_item_count: 16,
+            peak_live_lanes: 1,
+            ..
+        }
+    ));
+    let trace = runner.critic_trace.lock().unwrap();
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|mode| mode.starts_with("subreview:"))
+            .count(),
+        10
+    );
+    assert!(runner.peak.load(Ordering::SeqCst) <= 8);
+}
+
 #[test]
 fn candidate_chunk_source_replay_uses_only_the_immutable_materialized_payload() {
     let payload = CandidateBoundedPayload::ToolTruthRecord {
@@ -904,6 +1162,28 @@ fn candidate_chunk_exact_authority_rejects_ordinal_or_body_hash_tamper() {
     let mut body_tamper = projection_row(CandidateInputKind::ToolTruthFact, payload, None);
     body_tamper.persisted_payload_hash = hash('f');
     assert!(project_sealed_candidate_chunk(body_tamper).is_err());
+
+    let mismatched_payload = CandidateBoundedPayload::ResidualOrObligation {
+        reason_code: "open_obligation".into(),
+        authority_hash: hash('a'),
+    };
+    assert!(project_sealed_candidate_chunk(projection_row(
+        CandidateInputKind::ToolTruthFact,
+        mismatched_payload,
+        None,
+    ))
+    .is_err());
+
+    let mut instruction_tamper = projection_row(
+        CandidateInputKind::ToolTruthFact,
+        CandidateBoundedPayload::ToolTruthRecord {
+            record_schema: "tool_truth_fact.v1".into(),
+            redacted_fields: vec![("subject".into(), "service:443".into())],
+        },
+        None,
+    );
+    instruction_tamper.instruction_authority = true;
+    assert!(project_sealed_candidate_chunk(instruction_tamper).is_err());
 }
 
 #[tokio::test]
@@ -983,5 +1263,103 @@ async fn candidate_claim_component_plan_cannot_seal_a_partial_wide_claim() {
         runtime.run(request(), &runner).await.unwrap(),
         HypothesisAnalysisStageOutcome::BlockedAnalysis { .. }
     ));
+    assert_eq!(runner.final_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn candidate_conflict_input_rejects_semantic_summary_set_tamper() {
+    let proposal_id = Uuid::new_v4();
+    let tampered_summary_id = Uuid::new_v4();
+    let rejected = project_critic_input(serde_json::json!({
+        "mode":"proposal_conflict",
+        "conflict_component_id":Uuid::new_v4(),
+        "conflict_component_hash":hash('a'),
+        "proposals":[{"proposal_id":proposal_id,"proposal_hash":hash('b')}],
+        "proposal_summaries":[{
+            "proposal_id":tampered_summary_id,
+            "proposal_hash":hash('b'),
+            "subject_kind":"organization",
+            "subject_identity_hash":hash('c'),
+            "predicate_schema":"network_service_exposure",
+            "predicate_version":1,
+            "predicate_arguments":[["port","443"]],
+            "polarity":"positive",
+            "trust_boundary":"internet",
+            "readiness":"ready_for_strategy",
+            "structured_claim":"TLS service is externally reachable",
+            "preconditions":["target remains in scope"],
+            "impact":"external attack surface",
+            "proof_input_ids":[Uuid::new_v4()],
+            "application_context_input_ids":[],
+            "gap_input_ids":[],
+            "knowledge_signals":[]
+        }]
+    }))
+    .expect_err("conflict semantic summaries must match the exact component proposal set");
+    assert!(rejected
+        .to_string()
+        .contains("semantic summary exact set is invalid"));
+}
+
+#[test]
+fn candidate_conflict_input_accepts_empty_proof_knowledge_only_summary_without_promoting_it() {
+    let proposal_id = Uuid::new_v4();
+    let feed_snapshot_id = Uuid::new_v4();
+    let feed_match_member_id = Uuid::new_v4();
+    let projected = project_critic_input(serde_json::json!({
+        "mode":"proposal_conflict",
+        "conflict_component_id":Uuid::new_v4(),
+        "conflict_component_hash":hash('a'),
+        "proposals":[{"proposal_id":proposal_id,"proposal_hash":hash('b')}],
+        "proposal_summaries":[{
+            "proposal_id":proposal_id,
+            "proposal_hash":hash('b'),
+            "subject_kind":"organization",
+            "subject_identity_hash":hash('c'),
+            "predicate_schema":"network_service_exposure",
+            "predicate_version":1,
+            "predicate_arguments":[["port","443"]],
+            "polarity":"positive",
+            "trust_boundary":"internet",
+            "readiness":"needs_enrichment",
+            "structured_claim":"A knowledge signal suggests possible exposure",
+            "preconditions":["confirm with tool truth"],
+            "impact":"potential external attack surface",
+            "proof_input_ids":[],
+            "application_context_input_ids":[],
+            "gap_input_ids":[],
+            "knowledge_signals":[{
+                "feed_snapshot_id":feed_snapshot_id,
+                "feed_match_member_id":feed_match_member_id,
+                "feed_match_member_hash":hash('d'),
+                "product_version_match_hash":hash('e'),
+                "source_authority":"knowledge_signal_only"
+            }]
+        }]
+    }))
+    .expect("empty-proof knowledge-only conflict summary remains a typed bounded input");
+    let CandidateCriticInput::ProposalConflict {
+        proposal_summaries, ..
+    } = projected
+    else {
+        panic!("expected conflict input");
+    };
+    assert!(proposal_summaries[0].proof_input_ids.is_empty());
+    assert_eq!(proposal_summaries[0].knowledge_signals.len(), 1);
+}
+
+#[tokio::test]
+async fn candidate_attempt_wide_proposal_cap_returns_durable_block_before_h1() {
+    let repository = Arc::new(FakeRepository {
+        terminal_blocked_before_h1: true,
+        ..FakeRepository::ready(65)
+    });
+    let runtime = PgHypothesisAnalysisStageRuntime::new(repository, policy()).unwrap();
+    let runner = FakeRunner::new();
+    assert!(matches!(
+        runtime.run(request(), &runner).await.unwrap(),
+        HypothesisAnalysisStageOutcome::BlockedAnalysis { .. }
+    ));
+    assert!(runner.critic_trace.lock().unwrap().is_empty());
     assert_eq!(runner.final_calls.load(Ordering::SeqCst), 0);
 }

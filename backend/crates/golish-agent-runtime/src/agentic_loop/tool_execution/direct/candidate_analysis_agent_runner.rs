@@ -188,6 +188,8 @@ mod tests {
             input_count: 1,
             input_chunk_census_set_hash: format!("sha256:{}", "b".repeat(64)),
             relationship_cross_index_hash: format!("sha256:{}", "c".repeat(64)),
+            missed_hypothesis_signals: Vec::new(),
+            missed_hypothesis_signal_set_hash: format!("sha256:{}", "d".repeat(64)),
         }
     }
 

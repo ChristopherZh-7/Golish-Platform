@@ -4,7 +4,7 @@
 //! never writes materialized projection/legacy rows and never advances the
 //! projection head.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use golish_core::hypothesis_semantic_key::{
@@ -15,6 +15,12 @@ use golish_core::hypothesis_verification::{
     HypothesisClaimComponentV1, HypothesisVerificationPlanPathMemberRoleV1,
     HypothesisVerificationPlanV1,
 };
+use golish_core::investigation_comparison::{
+    CheckedAuthorityComparisonV1, ComparisonAuthorityBasisInputV1,
+    ComparisonHypothesisDispositionV1, ComparisonHypothesisReadinessV1, GenerationComparisonV1,
+    InvestigationComparisonRecordInputV1, KnowledgeFeedComparisonV1,
+    PlanBCheckedComparisonAuthorityInputV1, PlanCComparisonAuthorityInputV1,
+};
 use golish_core::investigation_projection::{
     GenerationProjectionRecordV1, HypothesisProjectionRecordV1,
     HypothesisStateEventProjectionRecordV1, HypothesisVerificationPlanProjectionRecordV1,
@@ -22,20 +28,21 @@ use golish_core::investigation_projection::{
     RelationProjectionRecordV1, ResidualProjectionRecordV1,
 };
 use golish_core::verification_contract::VerificationContractV1;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use super::candidate_analysis::{
-    hash_text_array_on, load_snapshot_on, reevaluate_candidate_gate_authority_on,
-    validate_final_submitter_fence_on, validate_write_fence_on, AnalysisArtifactBodyRow,
-    CandidateSnapshotDispositionRow, CandidateWriteFenceRow,
+    hash_text_array_on, load_snapshot_on, lock_and_require_registry_canonical_on,
+    reevaluate_candidate_gate_authority_on, validate_final_submitter_fence_on,
+    validate_write_fence_on, AnalysisArtifactBodyRow, CandidateSnapshotDispositionRow,
+    CandidateWriteFenceRow,
 };
 use super::hypothesis_legacy_projection::{
-    append_projection_source_batch_on, AppendProjectionSourceBatchRow, ProjectionOutboxSourceRow,
-    ProjectionSourceStorageV1,
+    append_projection_source_batch_on, freeze_comparison_projection_source_body_v1,
+    AppendProjectionSourceBatchRow, ProjectionOutboxSourceRow, ProjectionSourceStorageV1,
 };
 use crate::{DbError, Result};
 
@@ -351,6 +358,7 @@ pub struct InputHypothesisRelationRow {
 #[derive(Debug, Clone)]
 pub struct ApplyCandidateGatePassInput {
     pub fence: CandidateWriteFenceRow,
+    pub stable_compilation_request_id: Uuid,
     pub stable_apply_request_id: Uuid,
     pub expected_authority: CandidateExpectedAuthorityRow,
     pub active_analysis_attempt_id: Uuid,
@@ -425,24 +433,22 @@ fn validate_apply_envelope(input: &ApplyCandidateGatePassInput) -> Result<()> {
         .iter()
         .map(|mutation| mutation.proposal_id)
         .collect::<std::collections::BTreeSet<_>>();
-    if input.mutations.is_empty()
-        || input.mutations.iter().any(|mutation| {
-            mutation.organization_id != input.fence.organization_id
-                || mutation.mutation_hash != candidate_mutation_hash(mutation)
-                || mutation.proof_refs.iter().any(|source| {
-                    matches!(
-                        source,
-                        CandidateRevisionSourceRefRow::ApplicationContext(_)
-                            | CandidateRevisionSourceRefRow::KnowledgeSignal(_)
-                            | CandidateRevisionSourceRefRow::Gap(_)
-                    )
-                })
-                || mutation
-                    .refutation_refs
-                    .iter()
-                    .any(|source| matches!(source, CandidateRevisionSourceRefRow::Gap(_)))
-        })
-        || mutation_hashes.iter().any(|hash| !is_sha256(hash))
+    if input.mutations.iter().any(|mutation| {
+        mutation.organization_id != input.fence.organization_id
+            || mutation.mutation_hash != candidate_mutation_hash(mutation)
+            || mutation.proof_refs.iter().any(|source| {
+                matches!(
+                    source,
+                    CandidateRevisionSourceRefRow::ApplicationContext(_)
+                        | CandidateRevisionSourceRefRow::KnowledgeSignal(_)
+                        | CandidateRevisionSourceRefRow::Gap(_)
+                )
+            })
+            || mutation
+                .refutation_refs
+                .iter()
+                .any(|source| matches!(source, CandidateRevisionSourceRefRow::Gap(_)))
+    }) || mutation_hashes.iter().any(|hash| !is_sha256(hash))
         || transition_hashes.iter().any(|hash| !is_sha256(hash))
         || unique_mutations.len() != mutation_hashes.len()
         || unique_proposals.len() != input.mutations.len()
@@ -465,6 +471,7 @@ async fn gate_authority_hash_on(
         &json!({
             "domain":"candidate_gate_apply_authority.v1",
             "fence":&input.fence,
+            "stable_compilation_request_id":input.stable_compilation_request_id,
             "expected_authority":&input.expected_authority,
             "active_analysis_attempt_id":input.active_analysis_attempt_id,
             "active_analysis_attempt_ordinal":input.active_analysis_attempt_ordinal,
@@ -482,17 +489,126 @@ async fn gate_authority_hash_on(
     .await
 }
 
+async fn seal_candidate_compilation_for_apply_on(
+    tx: &mut Transaction<'_, Postgres>,
+    input: &ApplyCandidateGatePassInput,
+) -> Result<()> {
+    let material_hash: String = sqlx::query_scalar(
+        r#"SELECT material_hash
+             FROM candidate_analysis_host_compilation_materials
+            WHERE stable_compilation_request_id=$1
+              AND analysis_attempt_id=$2 AND snapshot_id=$3
+              AND operation_id=$4 AND organization_id=$5
+              AND final_submitter_worker_run_id=$6
+              AND mutation_set_hash=$7 AND claim_component_set_hash=$8
+              AND verification_contract_set_hash=$9
+              AND verification_plan_set_hash=$10
+              AND generation_transition_set_hash=$11
+            FOR SHARE"#,
+    )
+    .bind(input.stable_compilation_request_id)
+    .bind(input.active_analysis_attempt_id)
+    .bind(input.fence.snapshot_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.organization_id)
+    .bind(input.final_submitter_worker_run_id)
+    .bind(&input.mutation_set_hash)
+    .bind(&input.claim_component_set_hash)
+    .bind(&input.verification_contract_set_hash)
+    .bind(&input.verification_plan_set_hash)
+    .bind(&input.expected_authority.generation_transition_set_hash)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| conflict(AUTHORITY_MISMATCH))?;
+    let compilation_seal_id = Uuid::new_v5(
+        &input.active_analysis_attempt_id,
+        b"candidate_host_compilation_seal.v1",
+    );
+    let compiler_seal_hash = hash_json_on(
+        tx,
+        &json!({
+            "domain":"candidate_host_compilation_seal.v1",
+            "analysis_attempt_id":input.active_analysis_attempt_id,
+            "snapshot_id":input.fence.snapshot_id,
+            "operation_id":input.fence.operation_id,
+            "organization_id":input.fence.organization_id,
+            "final_submitter_worker_run_id":input.final_submitter_worker_run_id,
+            "mutation_set_hash":input.mutation_set_hash,
+            "claim_component_set_hash":input.claim_component_set_hash,
+            "verification_contract_set_hash":input.verification_contract_set_hash,
+            "verification_plan_set_hash":input.verification_plan_set_hash,
+            "generation_transition_set_hash":input.expected_authority.generation_transition_set_hash,
+            "compilation_material_hash":material_hash,
+        }),
+    )
+    .await?;
+    let inserted = sqlx::query(
+        r#"INSERT INTO candidate_analysis_host_compilation_seals(
+               compilation_seal_id,stable_compilation_request_id,
+               analysis_attempt_id,snapshot_id,operation_id,organization_id,
+               final_submitter_worker_run_id,mutation_set_hash,
+               claim_component_set_hash,verification_contract_set_hash,
+               verification_plan_set_hash,generation_transition_set_hash,
+               compilation_material_hash,compiler_seal_hash)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+           ON CONFLICT(analysis_attempt_id) DO NOTHING"#,
+    )
+    .bind(compilation_seal_id)
+    .bind(input.stable_compilation_request_id)
+    .bind(input.active_analysis_attempt_id)
+    .bind(input.fence.snapshot_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.organization_id)
+    .bind(input.final_submitter_worker_run_id)
+    .bind(&input.mutation_set_hash)
+    .bind(&input.claim_component_set_hash)
+    .bind(&input.verification_contract_set_hash)
+    .bind(&input.verification_plan_set_hash)
+    .bind(&input.expected_authority.generation_transition_set_hash)
+    .bind(&material_hash)
+    .bind(&compiler_seal_hash)
+    .execute(&mut **tx)
+    .await?;
+    if inserted.rows_affected() == 0 {
+        let persisted: Option<(Uuid, Uuid, String, String)> = sqlx::query_as(
+            r#"SELECT compilation_seal_id,stable_compilation_request_id,
+                      compilation_material_hash,compiler_seal_hash
+                 FROM candidate_analysis_host_compilation_seals
+                WHERE analysis_attempt_id=$1"#,
+        )
+        .bind(input.active_analysis_attempt_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if persisted
+            != Some((
+                compilation_seal_id,
+                input.stable_compilation_request_id,
+                material_hash,
+                compiler_seal_hash,
+            ))
+        {
+            return Err(conflict(AUTHORITY_MISMATCH));
+        }
+    }
+    Ok(())
+}
+
 pub async fn apply_candidate_gate_pass(
     pool: &PgPool,
     input: ApplyCandidateGatePassInput,
 ) -> Result<CandidateGenerationSealRowView> {
     validate_apply_envelope(&input)?;
     let mut tx = pool.begin().await?;
-    sqlx::query("SELECT operation_id FROM operation_state WHERE operation_id=$1 FOR UPDATE")
-        .bind(input.fence.operation_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| DbError::NotFound("operation_state".into()))?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *tx)
+        .await?;
+    let isolation: String = sqlx::query_scalar("SHOW transaction_isolation")
+        .fetch_one(&mut *tx)
+        .await?;
+    if isolation != "repeatable read" {
+        return Err(conflict(AUTHORITY_MISMATCH));
+    }
+    lock_and_require_registry_canonical_on(&mut tx, input.fence.operation_id).await?;
 
     if let Some(replayed) = load_apply_replay_on(&mut tx, &input).await? {
         tx.commit().await?;
@@ -500,6 +616,24 @@ pub async fn apply_candidate_gate_pass(
     }
     validate_write_fence_on(&mut tx, &input.fence).await?;
     validate_final_submitter_fence_on(&mut tx, &input.fence).await?;
+    let exact_closure = super::candidate_analysis::validate_candidate_analysis_exact_closure_on(
+        &mut tx,
+        input.active_analysis_attempt_id,
+        input.fence.snapshot_id,
+    )
+    .await?;
+    if !exact_closure.gate_eligible
+        || exact_closure.proposal_census_hash != input.expected_authority.proposal_census_hash
+        || exact_closure.critic_census_hash.as_deref()
+            != Some(input.expected_authority.critic_census_hash.as_str())
+        || exact_closure.coverage_subreview_census_set_hash
+            != input.expected_authority.coverage_subreview_census_set_hash
+        || exact_closure.coverage_checklist_set_hash
+            != input.expected_authority.coverage_checklist_set_hash
+    {
+        return Err(conflict(AUTHORITY_MISMATCH));
+    }
+    seal_candidate_compilation_for_apply_on(&mut tx, &input).await?;
     validate_apply_authority_on(&mut tx, &input).await?;
 
     let generation_ordinal: i32 = sqlx::query_scalar(
@@ -553,6 +687,13 @@ pub async fn apply_candidate_gate_pass(
                 right.proposal_id,
             ))
     });
+    let root_ordinals = pending
+        .iter()
+        .map(|mutation| (mutation.root_id, mutation.revision_ordinal))
+        .collect::<BTreeSet<_>>();
+    if root_ordinals.len() != pending.len() {
+        return Err(conflict(MUTATION_SET_INVALID));
+    }
     validate_compiled_exact_sets(&input, &pending)?;
     let mutation_hashes = input
         .mutations
@@ -810,23 +951,35 @@ pub async fn apply_candidate_gate_pass(
     .execute(&mut *tx)
     .await?;
 
-    let residual_id = Uuid::new_v5(&generation_id, b"plan_c_verification_unavailable");
+    let (residual_reason, residual_route) = if input.mutations.is_empty() {
+        (
+            "candidate_true_zero_proposal_closeout",
+            json!({"route":"reporting","verification":"not_applicable_true_zero"}),
+        )
+    } else {
+        (
+            "plan_c_verification_unavailable",
+            json!({"route":"reporting","verification":"not_available_plan_c"}),
+        )
+    };
+    let residual_id = Uuid::new_v5(&generation_id, residual_reason.as_bytes());
     let residual_hash = hash_json_on(
         &mut tx,
-        &json!({"generation":generation_id,"reason":"plan_c_verification_unavailable"}),
+        &json!({"generation":generation_id,"reason":residual_reason}),
     )
     .await?;
     sqlx::query(
         r#"INSERT INTO hypothesis_residual_risks(
                residual_id,operation_id,organization_id,snapshot_id,reason_code,
                owner_kind,next_action,residual_hash
-           ) VALUES($1,$2,$3,$4,'plan_c_verification_unavailable','candidate_analysis',$5,$6)"#,
+           ) VALUES($1,$2,$3,$4,$5,'candidate_analysis',$6,$7)"#,
     )
     .bind(residual_id)
     .bind(input.fence.operation_id)
     .bind(input.fence.organization_id)
     .bind(input.fence.snapshot_id)
-    .bind(json!({"route":"reporting","verification":"not_available_plan_c"}))
+    .bind(residual_reason)
+    .bind(residual_route)
     .bind(&residual_hash)
     .execute(&mut *tx)
     .await?;
@@ -1427,19 +1580,70 @@ async fn prepare_mutation_on(
     input: &ApplyCandidateGatePassInput,
     mutation: &CandidateMutationRow,
 ) -> Result<PreparedMutation> {
+    #[derive(Debug, Deserialize)]
+    struct PersistedProposal {
+        proposal_id: Uuid,
+        subject_kind: String,
+        subject_identity_hash: String,
+        predicate_schema: String,
+        predicate_version: u32,
+        predicate_arguments: Vec<(String, String)>,
+        trust_boundary: String,
+        polarity: String,
+        structured_claim: String,
+        proof_refs: Vec<Value>,
+    }
     let body: Value = sqlx::query_scalar(
-        r#"SELECT artifact.artifact_body
+        r#"SELECT proposal.structured_proposal
              FROM hypothesis_proposals proposal
-             JOIN candidate_analysis_artifacts artifact ON artifact.artifact_id=proposal.artifact_id
-            WHERE proposal.proposal_id=$1 AND proposal.analysis_attempt_id=$2
-              AND artifact.artifact_kind='hypothesis_proposal.v1'"#,
+            WHERE proposal.proposal_id=$1 AND proposal.analysis_attempt_id=$2"#,
     )
     .bind(mutation.proposal_id)
     .bind(input.active_analysis_attempt_id)
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| DbError::NotFound("hypothesis_proposal".into()))?;
-    let proposal: AnalysisArtifactBodyRow = serde_json::from_value(body)?;
+    let persisted: PersistedProposal = serde_json::from_value(body)?;
+    if persisted.proposal_id != mutation.proposal_id {
+        return Err(conflict(MUTATION_SET_INVALID));
+    }
+    let mut predicate_arguments = serde_json::Map::new();
+    for (key, value) in persisted.predicate_arguments {
+        if predicate_arguments
+            .insert(key, Value::String(value))
+            .is_some()
+        {
+            return Err(conflict(MUTATION_SET_INVALID));
+        }
+    }
+    let predicate = golish_core::hypothesis_semantic_key::PredicateIdentity::new(
+        persisted.predicate_schema,
+        persisted.predicate_version,
+        Value::Object(predicate_arguments),
+    )
+    .map_err(|error| DbError::Other(anyhow::Error::new(error)))?;
+    let polarity =
+        golish_core::hypothesis_semantic_key::ClaimPolarity::try_from(persisted.polarity.as_str())
+            .map_err(|error| DbError::Other(anyhow::Error::new(error)))?;
+    let evidence_refs = persisted
+        .proof_refs
+        .iter()
+        .filter_map(|reference| reference.get("source_hash").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let proposal = AnalysisArtifactBodyRow::HypothesisProposal {
+        proposal_id: persisted.proposal_id,
+        subject_kind: persisted.subject_kind,
+        subject_identity_hash: persisted.subject_identity_hash,
+        predicate,
+        trust_boundary: persisted.trust_boundary,
+        polarity,
+        prose: persisted.structured_claim,
+        confidence: 0,
+        priority: 0,
+        tags: Vec::new(),
+        evidence_refs,
+    };
     let AnalysisArtifactBodyRow::HypothesisProposal {
         subject_kind,
         subject_identity_hash,
@@ -1449,7 +1653,7 @@ async fn prepare_mutation_on(
         ..
     } = &proposal
     else {
-        return Err(conflict(MUTATION_SET_INVALID));
+        unreachable!("constructed hypothesis proposal variant")
     };
     let semantic_key = HypothesisSemanticKeyV1::new(
         input.fence.organization_id,
@@ -2558,6 +2762,34 @@ async fn build_projection_members(
     occurred_at: DateTime<Utc>,
 ) -> Result<Vec<ProjectionOutboxSourceRow>> {
     let mut members = Vec::new();
+    let (source_set_hash, observation_window_hash): (String, String) = sqlx::query_as(
+        r#"SELECT source_set_hash,observation_window_hash
+             FROM candidate_analysis_snapshots
+            WHERE snapshot_id=$1 AND operation_id=$2 AND organization_id=$3"#,
+    )
+    .bind(input.fence.snapshot_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.organization_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let (
+        generation_ordinal,
+        generation_seal_hash,
+        generation_member_set_hash,
+        generation_event_set_hash,
+        open_obligation_set_hash,
+    ): (i32, String, String, String, String) = sqlx::query_as(
+        r#"SELECT generation.generation_ordinal,seal.generation_hash,
+                  seal.member_set_hash,seal.event_set_hash,seal.open_obligation_set_hash
+             FROM hypothesis_generations generation
+             JOIN hypothesis_generation_seals seal USING(generation_id)
+            WHERE generation.generation_id=$1"#,
+    )
+    .bind(generation_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let generation_ordinal =
+        u32::try_from(generation_ordinal).map_err(|_| conflict(MUTATION_SET_INVALID))?;
     let generation_manifest: Value = sqlx::query_scalar(
         r#"SELECT jsonb_build_object(
                'generation_id',generation.generation_id,
@@ -2622,8 +2854,196 @@ async fn build_projection_members(
         storage: ProjectionSourceStorageV1::Inline,
     });
     for (mutation, event_id) in mutations.iter().zip(state_event_ids) {
-        let hypothesis_body =
-            golish_core::hypothesis_semantic_key::CanonicalJsonObject::try_from_value(json!({
+        let target_value_at_time = mutation
+            .semantic_key
+            .get("subject")
+            .and_then(|subject| subject.get("identity_hash"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| conflict(MUTATION_SET_INVALID))?;
+        let plan = input
+            .verification_plans
+            .iter()
+            .find(|plan| plan.revision_id() == mutation.revision_id)
+            .ok_or_else(|| conflict(COMPILED_AUTHORITY_INCOMPLETE))?;
+        let disposition = match mutation.state {
+            CandidateMutationEpistemicState::Proposed => {
+                ComparisonHypothesisDispositionV1::Proposed
+            }
+            CandidateMutationEpistemicState::Supported => {
+                ComparisonHypothesisDispositionV1::Supported
+            }
+            CandidateMutationEpistemicState::Contested => {
+                ComparisonHypothesisDispositionV1::Contested
+            }
+            CandidateMutationEpistemicState::Inconclusive => {
+                ComparisonHypothesisDispositionV1::Inconclusive
+            }
+        };
+        let comparison_record = InvestigationComparisonRecordInputV1 {
+            semantic_key_hash: mutation.semantic_key_hash.clone(),
+            revision_ingredients_hash: mutation.revision_ingredients_hash.clone(),
+            authority_basis: ComparisonAuthorityBasisInputV1::PlanBChecked {
+                authority: Box::new(PlanBCheckedComparisonAuthorityInputV1 {
+                    checked_authority: CheckedAuthorityComparisonV1 {
+                        bundle_seal_hash: input
+                            .expected_authority
+                            .candidate_snapshot_authority_hash
+                            .clone(),
+                        root_set_hash: input
+                            .expected_authority
+                            .tool_truth_authority_root_set_hash
+                            .clone(),
+                        bundle_member_set_hash: input
+                            .expected_authority
+                            .tool_truth_authority_bundle_member_set_hash
+                            .clone(),
+                        receipt_set_hash: input
+                            .expected_authority
+                            .tool_truth_authority_receipt_set_hash
+                            .clone(),
+                        denominator_graph_bundle_hash: input
+                            .expected_authority
+                            .denominator_graph_bundle_hash
+                            .clone(),
+                        semantic_authority_bundle_hash: input
+                            .expected_authority
+                            .semantic_authority_bundle_hash
+                            .clone(),
+                        freshness_attestation_bundle_hash: input
+                            .expected_authority
+                            .freshness_attestation_bundle_hash
+                            .clone(),
+                        temporal_validity_bundle_hash: input
+                            .expected_authority
+                            .temporal_validity_bundle_hash
+                            .clone(),
+                        temporal_validity_policy_set_hash: input
+                            .expected_authority
+                            .temporal_validity_policy_set_hash
+                            .clone(),
+                        temporal_validity_decision_set_hash: input
+                            .expected_authority
+                            .temporal_validity_decision_set_hash
+                            .clone(),
+                        target_state_epoch_set_hash: input
+                            .expected_authority
+                            .target_state_epoch_set_hash
+                            .clone(),
+                        observation_window_hash: observation_window_hash.clone(),
+                        gate_temporal_reevaluation_hash: input
+                            .expected_authority
+                            .gate_temporal_reevaluation_hash
+                            .clone(),
+                    },
+                    knowledge_feed: KnowledgeFeedComparisonV1 {
+                        catalog_policy_seal_hash: input
+                            .expected_authority
+                            .knowledge_feed_catalog_policy_seal_hash
+                            .clone(),
+                        required_member_set_hash: input
+                            .expected_authority
+                            .knowledge_feed_required_member_set_hash
+                            .clone(),
+                        signature_algorithm_set_hash: input
+                            .expected_authority
+                            .knowledge_feed_signature_algorithm_set_hash
+                            .clone(),
+                        trust_store_hash: input
+                            .expected_authority
+                            .knowledge_feed_trust_store_hash
+                            .clone(),
+                        key_revocation_epoch_hash: input
+                            .expected_authority
+                            .knowledge_feed_key_revocation_epoch_hash
+                            .clone(),
+                        snapshot_set_hash: input
+                            .expected_authority
+                            .knowledge_feed_snapshot_set_hash
+                            .clone(),
+                        product_version_census_hash: input
+                            .expected_authority
+                            .product_version_census_hash
+                            .clone(),
+                        match_census_hash: input
+                            .expected_authority
+                            .knowledge_feed_match_census_hash
+                            .clone(),
+                        source_set_hash: source_set_hash.clone(),
+                        gate_reevaluation_hash: input
+                            .expected_authority
+                            .gate_knowledge_feed_reevaluation_hash
+                            .clone(),
+                        obligation_set_hash: input
+                            .expected_authority
+                            .knowledge_feed_obligation_set_hash
+                            .clone(),
+                    },
+                    claim_component_member_hashes: input
+                        .claim_components
+                        .iter()
+                        .filter(|component| component.revision_id() == mutation.revision_id)
+                        .map(|component| component.member_hash().to_owned())
+                        .collect(),
+                    verification_contract_member_hashes: input
+                        .verification_contracts
+                        .iter()
+                        .filter(|contract| contract.revision_id() == mutation.revision_id)
+                        .map(|contract| contract.contract_hash().to_owned())
+                        .collect(),
+                    verification_plan_member_hashes: vec![plan.plan_hash().to_owned()],
+                    verification_plan_objective_member_hashes: plan
+                        .objectives()
+                        .iter()
+                        .map(|objective| objective.member_hash().to_owned())
+                        .collect(),
+                    verification_plan_path_member_hashes: plan
+                        .proof_paths()
+                        .iter()
+                        .map(|path| path.path_hash().to_owned())
+                        .collect(),
+                    coverage_subreview_member_hashes: vec![input
+                        .expected_authority
+                        .coverage_subreview_census_set_hash
+                        .clone()],
+                    coverage_synthesis_member_hashes: vec![
+                        input
+                            .expected_authority
+                            .coverage_synthesis_census_set_hash
+                            .clone(),
+                        input
+                            .expected_authority
+                            .coverage_global_semantic_root_hash
+                            .clone(),
+                    ],
+                    coverage_final_review_member_hashes: vec![
+                        input.expected_authority.coverage_global_review_hash.clone(),
+                        input.expected_authority.coverage_review_set_hash.clone(),
+                    ],
+                    coverage_checklist_member_hashes: vec![input
+                        .expected_authority
+                        .coverage_checklist_set_hash
+                        .clone()],
+                    sampling_degraded_residual_member_hashes: Vec::new(),
+                }),
+            },
+            generation: GenerationComparisonV1 {
+                generation_ordinal,
+                generation_seal_hash: generation_seal_hash.clone(),
+                generation_member_set_hash: generation_member_set_hash.clone(),
+                generation_event_set_hash: generation_event_set_hash.clone(),
+                open_obligation_set_hash: open_obligation_set_hash.clone(),
+            },
+            disposition,
+            readiness: ComparisonHypothesisReadinessV1::ReportingOnlyPlanCUnavailable,
+            plan_c: PlanCComparisonAuthorityInputV1::not_available_plan_c(),
+            finding_lineage_member_hashes: Vec::new(),
+            refutation_lineage_member_hashes: Vec::new(),
+            residual_member_hashes: vec![residual_hash.to_owned()],
+            coverage_member_hashes: vec![input.expected_authority.coverage_review_set_hash.clone()],
+        };
+        let hypothesis_body = freeze_comparison_projection_source_body_v1(
+            json!({
+                "source_generation_id":generation_id,
                 "root_id":mutation.root_id,"revision_id":mutation.revision_id,
                 "revision_ordinal":mutation.revision_ordinal,
                 "predecessor_revision_id":mutation.predecessor_revision_id,
@@ -2632,6 +3052,10 @@ async fn build_projection_members(
                 "semantic_key":mutation.semantic_key,
                 "semantic_key_hash":mutation.semantic_key_hash,
                 "state":mutation.state.as_str(),
+                "lifecycle_state":"current",
+                "planning_readiness":"ready_for_strategy",
+                "target_type_at_time":"subject_identity_hash",
+                "target_value_at_time":target_value_at_time,
                 "origin_decision_hash":mutation.origin_decision_hash,
                 "proposal":mutation.proposal,
                 "proof_refs":mutation.proof_refs,
@@ -2640,8 +3064,10 @@ async fn build_projection_members(
                     "root_id":source.root_id,"revision_id":source.revision_id,
                     "relation_kind":source.relation_kind,
                 })).collect::<Vec<_>>(),
-            }))
-            .map_err(|error| DbError::Other(anyhow::Error::new(error)))?;
+            }),
+            None,
+            Some(comparison_record),
+        )?;
         let hypothesis_version = u64::try_from(mutation.revision_ordinal + 1)
             .map_err(|_| conflict(MUTATION_SET_INVALID))?;
         members.push(ProjectionOutboxSourceRow {
@@ -2665,11 +3091,6 @@ async fn build_projection_members(
             invalidation_reason: None,
             storage: ProjectionSourceStorageV1::Inline,
         });
-        let plan = input
-            .verification_plans
-            .iter()
-            .find(|plan| plan.revision_id() == mutation.revision_id)
-            .ok_or_else(|| conflict(COMPILED_AUTHORITY_INCOMPLETE))?;
         let plan_body = golish_core::hypothesis_semantic_key::CanonicalJsonObject::try_from_value(
             serde_json::to_value(plan)?,
         )

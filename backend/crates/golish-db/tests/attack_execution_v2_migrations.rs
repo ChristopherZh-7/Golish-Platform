@@ -292,6 +292,33 @@ async fn migrated_db(label: &str) -> (GolishDb, tempfile::TempDir) {
     (db, data_dir)
 }
 
+async fn install_shadow_investigation_defaults(pool: &PgPool) {
+    for statement in [
+        "ALTER TABLE tool_truth_rollout DISABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+        "ALTER TABLE investigation_rollout DISABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .expect("disable immutable rollout guard in isolated shadow fixture");
+    }
+    sqlx::query(
+        "UPDATE tool_truth_rollout SET new_operation_contract='shadow_v1',row_version=row_version+1 WHERE singleton=TRUE",
+    )
+    .execute(pool)
+    .await
+    .expect("install isolated shadow Tool Truth default");
+    sqlx::query(
+        r#"UPDATE investigation_rollout
+              SET contract_version='hypothesis_registry_v1',rollout_mode='shadow_registry',
+                  mode_rank=1,row_version=row_version+1
+            WHERE singleton=TRUE"#,
+    )
+    .execute(pool)
+    .await
+    .expect("install isolated shadow Investigation default");
+}
+
 /// Recreate the pre-cutover rollout state for the three repository tests that
 /// exercise each adjacent transition explicitly. Production migrations remain
 /// forward-only; this helper is confined to a fresh, isolated embedded test DB.
@@ -784,8 +811,14 @@ async fn seed_attack_fixture_with_candidate_pass_and_contract(
     sqlx::query(
         r#"INSERT INTO operation_state (
                operation_id,profile,current_stage,runtime_memory_contract,
-               attack_execution_contract,project_scope_id
-           ) VALUES ($1,'red_team','attack_candidate','v2_only',$3,$2)"#,
+               attack_execution_contract,project_scope_id,tool_truth_contract,
+               investigation_contract_version,investigation_rollout_mode
+           ) SELECT $1,'red_team','attack_candidate','v2_only',$3,$2,
+                    tool_truth.new_operation_contract,investigation.contract_version,
+                    investigation.rollout_mode
+               FROM tool_truth_rollout tool_truth
+               CROSS JOIN investigation_rollout investigation
+              WHERE tool_truth.singleton AND investigation.singleton"#,
     )
     .bind(operation_id)
     .bind(project_scope_id)
@@ -5520,6 +5553,7 @@ async fn attack_execution_schema_is_relational_and_attempt_does_not_own_recovery
 #[serial]
 async fn accept_candidate_batch_requires_final_pass_and_complete_manifest() {
     let (mut db, _data_dir) = migrated_db("accept_manifest").await;
+    install_shadow_investigation_defaults(db.pool()).await;
     let fixture = seed_attack_fixture(db.pool()).await;
     let evidence_id: i64 = sqlx::query_scalar(
         "SELECT evidence_ids[1] FROM stage_handoffs WHERE source_stage_run_unit_id=$1",
@@ -5791,6 +5825,17 @@ async fn accept_candidate_batch_requires_final_pass_and_complete_manifest() {
         result.no_candidate_work_item_ids,
         vec![no_candidate_item.work_item_id]
     );
+    let first_shadow: (Uuid, i64, i64, String, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+        r#"SELECT batch_id,source_batch_seq,member_count,member_set_hash,
+                      source_occurred_at
+                 FROM investigation_projection_outbox_batches
+                WHERE operation_id=$1"#,
+    )
+    .bind(fixture.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read accepted Candidate shadow batch");
+    assert_eq!(first_shadow.2, 2);
 
     let mut decision_evidence_drift_tx = db
         .pool()
@@ -5886,6 +5931,25 @@ async fn accept_candidate_batch_requires_final_pass_and_complete_manifest() {
         replay.no_candidate_work_item_ids,
         vec![no_candidate_item.work_item_id]
     );
+    let replay_shadow: (Uuid, i64, i64, String, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+        r#"SELECT batch_id,source_batch_seq,member_count,member_set_hash,
+                      source_occurred_at
+                 FROM investigation_projection_outbox_batches
+                WHERE operation_id=$1"#,
+    )
+    .bind(fixture.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("re-read exact response-loss Candidate shadow batch");
+    assert_eq!(replay_shadow, first_shadow);
+    let shadow_member_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM investigation_projection_outbox WHERE operation_id=$1",
+    )
+    .bind(fixture.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count exact-once Candidate shadow members");
+    assert_eq!(shadow_member_count, 2);
 
     let mut drifted = command;
     drifted.no_candidate_decisions[0].detail = "drifted terminal decision".to_string();
@@ -6106,6 +6170,7 @@ async fn attack_rollout_shadow_promotion_requires_complete_matching_samples() {
 #[serial]
 async fn review_batch_is_plan_bound_org_scoped_and_reopens_after_expiry() {
     let (mut db, _data_dir) = migrated_db("review_plan_scope_expiry").await;
+    install_shadow_investigation_defaults(db.pool()).await;
     let fixture = seed_attack_fixture(db.pool()).await;
     let candidate = seed_candidate(db.pool(), &fixture, fixture.org_a).await;
     mark_candidate_wave_review_ready(db.pool(), &fixture).await;
@@ -6179,6 +6244,29 @@ async fn review_batch_is_plan_bound_org_scoped_and_reopens_after_expiry() {
         state,
         ("proposed".into(), "expired".into(), false, "open".into())
     );
+    let shadow_versions: Vec<(i64, chrono::DateTime<chrono::Utc>, String)> = sqlx::query_as(
+        r#"SELECT member.source_entity_version,batch.source_occurred_at,
+                  member.source_snapshot_hash
+             FROM investigation_projection_outbox_batches batch
+             JOIN investigation_projection_outbox member ON member.batch_id=batch.batch_id
+            WHERE batch.operation_id=$1 AND member.entity_kind='hypothesis'
+              AND member.source_entity_id=$2
+            ORDER BY member.source_entity_version"#,
+    )
+    .bind(fixture.operation_id)
+    .bind(candidate.candidate_id.to_string())
+    .fetch_all(db.pool())
+    .await
+    .expect("read approval and expiry Candidate shadow versions");
+    assert_eq!(
+        shadow_versions
+            .iter()
+            .map(|(version, _, _)| *version)
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert_eq!(shadow_versions[1].1, approved.approvals[0].start_before);
+    assert_ne!(shadow_versions[0].2, shadow_versions[1].2);
     db.stop().await;
 }
 
@@ -6186,6 +6274,7 @@ async fn review_batch_is_plan_bound_org_scoped_and_reopens_after_expiry() {
 #[serial]
 async fn review_response_loss_replays_the_exact_durable_decision() {
     let (mut db, _data_dir) = migrated_db("review_response_loss_replay").await;
+    install_shadow_investigation_defaults(db.pool()).await;
     let fixture = seed_attack_fixture(db.pool()).await;
     let candidate = seed_candidate(db.pool(), &fixture, fixture.org_a).await;
     mark_candidate_wave_review_ready(db.pool(), &fixture).await;
@@ -6207,6 +6296,33 @@ async fn review_response_loss_replays_the_exact_durable_decision() {
     let first = review_wave_candidates(db.pool(), command.clone())
         .await
         .expect("first exact review");
+    type CandidateShadowEnvelope = (
+        Uuid,
+        Uuid,
+        i64,
+        String,
+        chrono::DateTime<chrono::Utc>,
+        i64,
+        String,
+        String,
+        String,
+    );
+    let first_shadow: CandidateShadowEnvelope = sqlx::query_as(
+        r#"SELECT batch.batch_id,batch.stable_request_id,batch.source_batch_seq,
+                  batch.member_set_hash,batch.source_occurred_at,
+                  member.source_entity_version,member.source_entity_hash,
+                  member.source_snapshot_hash,member.member_hash
+             FROM investigation_projection_outbox_batches batch
+             JOIN investigation_projection_outbox member ON member.batch_id=batch.batch_id
+            WHERE batch.operation_id=$1 AND member.entity_kind='hypothesis'
+              AND member.source_entity_id=$2"#,
+    )
+    .bind(fixture.operation_id)
+    .bind(candidate.candidate_id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .expect("read durable approval Candidate shadow envelope");
+    assert_eq!(first_shadow.5, 2);
 
     let replay = review_wave_candidates(db.pool(), command)
         .await
@@ -6224,6 +6340,32 @@ async fn review_response_loss_replays_the_exact_durable_decision() {
         approval_count, 1,
         "response loss must not duplicate decisions"
     );
+    let replay_shadow: CandidateShadowEnvelope = sqlx::query_as(
+        r#"SELECT batch.batch_id,batch.stable_request_id,batch.source_batch_seq,
+                  batch.member_set_hash,batch.source_occurred_at,
+                  member.source_entity_version,member.source_entity_hash,
+                  member.source_snapshot_hash,member.member_hash
+             FROM investigation_projection_outbox_batches batch
+             JOIN investigation_projection_outbox member ON member.batch_id=batch.batch_id
+            WHERE batch.operation_id=$1 AND member.entity_kind='hypothesis'
+              AND member.source_entity_id=$2"#,
+    )
+    .bind(fixture.operation_id)
+    .bind(candidate.candidate_id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .expect("re-read replayed Candidate shadow envelope");
+    assert_eq!(replay_shadow, first_shadow);
+    let shadow_count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM investigation_projection_outbox
+            WHERE operation_id=$1 AND entity_kind='hypothesis' AND source_entity_id=$2"#,
+    )
+    .bind(fixture.operation_id)
+    .bind(candidate.candidate_id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .expect("count exact-once Candidate shadow member");
+    assert_eq!(shadow_count, 1);
     db.stop().await;
 }
 
@@ -6648,6 +6790,7 @@ async fn compound_claim_owns_worker_and_lane_with_one_lease_token() {
 #[serial]
 async fn heartbeat_and_retry_release_terminalizes_old_attempt_and_claims_new_ordinal() {
     let (mut db, _data_dir) = migrated_db("candidate_heartbeat_release").await;
+    install_shadow_investigation_defaults(db.pool()).await;
     let fixture = seed_attack_fixture(db.pool()).await;
     let candidate = seed_candidate(db.pool(), &fixture, fixture.org_a).await;
     insert_approval(db.pool(), &fixture, candidate, fixture.org_a)
@@ -6738,10 +6881,14 @@ async fn heartbeat_and_retry_release_terminalizes_old_attempt_and_claims_new_ord
             .expect("classify pristine Candidate release"),
         CandidateExecutionContinuation::SafeRelease
     );
-    let released = release_candidate_execution(db.pool(), release)
+    let released = release_candidate_execution(db.pool(), release.clone())
         .await
         .expect("release worker and lane");
     assert!(!released.requeued);
+    let replayed_release = release_candidate_execution(db.pool(), release)
+        .await
+        .expect("retryable release response loss must replay exactly");
+    assert_eq!(replayed_release, released);
     type ReleasedOwnership = (
         Option<Uuid>,
         Option<Uuid>,
@@ -6749,10 +6896,11 @@ async fn heartbeat_and_retry_release_terminalizes_old_attempt_and_claims_new_ord
         String,
         Option<serde_json::Value>,
         Option<chrono::DateTime<chrono::Utc>>,
+        i64,
     );
     let ownership: ReleasedOwnership = sqlx::query_as(
         r#"SELECT lane.stage_worker_run_id,worker.lease_token,worker.status,attempt.status,
-                  attempt.result_json,attempt.terminal_at
+                  attempt.result_json,attempt.terminal_at,attempt.row_version
            FROM attack_execution_lanes lane
            JOIN stage_worker_runs worker ON worker.id=$1
            JOIN candidate_attempts attempt ON attempt.id=$2
@@ -6778,6 +6926,21 @@ async fn heartbeat_and_retry_release_terminalizes_old_attempt_and_claims_new_ord
         "retry release must persist the full command fence"
     );
     assert!(ownership.5.is_some());
+    let attempt_shadow: (i64, chrono::DateTime<chrono::Utc>, i64) = sqlx::query_as(
+        r#"SELECT member.source_entity_version,batch.source_occurred_at,COUNT(*) OVER()
+             FROM investigation_projection_outbox_batches batch
+             JOIN investigation_projection_outbox member ON member.batch_id=batch.batch_id
+            WHERE batch.operation_id=$1 AND member.entity_kind='legacy_attempt_projection'
+              AND member.source_entity_id=$2"#,
+    )
+    .bind(fixture.operation_id)
+    .bind(claimed.attempt.id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .expect("read exact-once retryable Attempt shadow");
+    assert_eq!(attempt_shadow.0, ownership.6);
+    assert_eq!(Some(attempt_shadow.1), ownership.5);
+    assert_eq!(attempt_shadow.2, 1);
 
     let retried = claim_next_candidate_attempt(
         db.pool(),
@@ -7167,6 +7330,7 @@ async fn release_preserves_retry_fuel_and_replays_after_live_target_deletion() {
 #[serial]
 async fn terminalizer_replay_returns_same_finding_and_lineage() {
     let (mut db, _data_dir) = migrated_db("terminalize_verified").await;
+    install_shadow_investigation_defaults(db.pool()).await;
     let fixture = seed_attack_fixture(db.pool()).await;
     let candidate = seed_candidate(db.pool(), &fixture, fixture.org_a).await;
     ensure_fixture_manifest_is_evidenced_for_close(db.pool(), &fixture, fixture.org_a.wave_unit_id)
@@ -7460,6 +7624,57 @@ async fn terminalizer_replay_returns_same_finding_and_lineage() {
         attempt_epoch: exact.attempt_epoch,
         expected_checkpoint_version: exact.expected_checkpoint_version,
     };
+    sqlx::raw_sql(
+        r#"CREATE FUNCTION reject_attempt_projection_outbox_fixture()
+           RETURNS trigger AS $$
+           BEGIN
+               RAISE EXCEPTION 'fixture rejects Attempt projection outbox';
+           END;
+           $$ LANGUAGE plpgsql;
+           CREATE TRIGGER reject_attempt_projection_outbox_fixture
+           BEFORE INSERT ON investigation_projection_outbox_batches
+           FOR EACH ROW EXECUTE FUNCTION reject_attempt_projection_outbox_fixture();"#,
+    )
+    .execute(db.pool())
+    .await
+    .expect("install Attempt projection outbox failure fixture");
+    let mut rejected_projection_tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin rejected projection terminalization");
+    terminalize_candidate_attempt(&mut rejected_projection_tx, generic_terminalize.clone())
+        .await
+        .expect_err("projection outbox failure must reject Candidate terminalization");
+    rejected_projection_tx
+        .rollback()
+        .await
+        .expect("rollback rejected projection terminalization");
+    let projection_rollback: (String, String, Option<Uuid>, Option<Uuid>, i64) = sqlx::query_as(
+        r#"SELECT attempt.status,candidate.disposition,candidate.terminal_attempt_id,
+                  candidate.terminal_finding_id,
+                  (SELECT COUNT(*) FROM investigation_projection_outbox_batches
+                    WHERE operation_id=attempt.operation_id)
+             FROM candidate_attempts attempt
+             JOIN attack_candidates candidate ON candidate.candidate_id=attempt.candidate_id
+            WHERE attempt.id=$1"#,
+    )
+    .bind(claimed.attempt.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read Candidate state after projection rollback");
+    assert_eq!(
+        projection_rollback,
+        ("submitted".into(), "approved".into(), None, None, 0)
+    );
+    sqlx::raw_sql(
+        r#"DROP TRIGGER reject_attempt_projection_outbox_fixture
+             ON investigation_projection_outbox_batches;
+           DROP FUNCTION reject_attempt_projection_outbox_fixture();"#,
+    )
+    .execute(db.pool())
+    .await
+    .expect("remove Attempt projection outbox failure fixture");
     let mut terminal_tx = db.pool().begin().await.expect("begin terminalization");
     let terminal = terminalize_candidate_attempt(&mut terminal_tx, generic_terminalize.clone())
         .await
@@ -7495,6 +7710,27 @@ async fn terminalizer_replay_returns_same_finding_and_lineage() {
     assert_eq!(replay.disposition, terminal.disposition);
     assert_eq!(replay.evidence_count, terminal.evidence_count);
     assert_eq!(replay.fact_delta_count, terminal.fact_delta_count);
+    let durable_attempt: (i64, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as("SELECT row_version,terminal_at FROM candidate_attempts WHERE id=$1")
+            .bind(claimed.attempt.id)
+            .fetch_one(db.pool())
+            .await
+            .expect("read durable terminal Attempt version");
+    let terminal_shadow: (i64, chrono::DateTime<chrono::Utc>, i64) = sqlx::query_as(
+        r#"SELECT member.source_entity_version,batch.source_occurred_at,COUNT(*) OVER()
+             FROM investigation_projection_outbox_batches batch
+             JOIN investigation_projection_outbox member ON member.batch_id=batch.batch_id
+            WHERE batch.operation_id=$1 AND member.entity_kind='legacy_attempt_projection'
+              AND member.source_entity_id=$2"#,
+    )
+    .bind(fixture.operation_id)
+    .bind(claimed.attempt.id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .expect("read exact-once terminal Attempt shadow");
+    assert_eq!(terminal_shadow.0, durable_attempt.0);
+    assert_eq!(terminal_shadow.1, durable_attempt.1);
+    assert_eq!(terminal_shadow.2, 1);
     let state: (String, String, Option<Uuid>, Option<Uuid>, Option<Uuid>) = sqlx::query_as(
         r#"SELECT attempt.status,candidate.disposition,candidate.terminal_attempt_id,
                   candidate.terminal_finding_id,lane.stage_worker_run_id

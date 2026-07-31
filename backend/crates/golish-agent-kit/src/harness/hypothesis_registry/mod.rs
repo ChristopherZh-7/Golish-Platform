@@ -15,7 +15,8 @@ pub use candidate_gate::{
     CandidateCoverageSynthesisNodeV1, CandidateExactSetSealV1, CandidateGateBlock,
     CandidateGateBlockKind, CandidateGatePass, CandidateGateSnapshot, CandidateHypothesisMutation,
     CandidateKnowledgeFeedGateV1, CandidateKnowledgeFeedMemberV1, CandidateReadGateV1,
-    FrozenCandidateGateMaterialV1, InputHypothesisRelationDecision, InputHypothesisRelationKindV1,
+    CandidateRepositoryGateHashesV1, FrozenCandidateGateMaterialV1,
+    InputHypothesisRelationDecision, InputHypothesisRelationKindV1,
     InputProcessingDispositionDecision, InputProcessingDispositionV1, PriorCandidateAttemptV1,
     RevisionSourceRef,
 };

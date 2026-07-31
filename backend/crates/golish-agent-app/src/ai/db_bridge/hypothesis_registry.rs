@@ -612,8 +612,12 @@ impl HypothesisRegistryRepository for PgHypothesisRegistryRepository {
                 subreview_census_member_id: request.subreview_census_member_id,
                 outcome: outcome.to_owned(),
                 missed_proposal_ids: request.missed_proposal_ids,
-                blocker_reason: request.blocker_reason,
+                blocker_codes: request.blocker_codes,
+                semantic_summary: serde_json::to_value(request.semantic_summary)
+                    .map_err(|error| HypothesisRegistryError::InvalidRequest(error.to_string()))?,
                 review_notes: request.review_notes,
+                provider_attempt_id: None,
+                provider_artifact_body: None,
             },
         )
         .await
@@ -679,8 +683,12 @@ impl HypothesisRegistryRepository for PgHypothesisRegistryRepository {
                 node_kind: node_kind.to_owned(),
                 outcome: outcome.to_owned(),
                 missed_proposal_ids: request.missed_proposal_ids,
-                blocker_reason: request.blocker_reason,
+                blocker_codes: request.blocker_codes,
+                semantic_summary: serde_json::to_value(request.semantic_summary)
+                    .map_err(|error| HypothesisRegistryError::InvalidRequest(error.to_string()))?,
                 review_notes: request.review_notes,
+                provider_attempt_id: None,
+                provider_artifact_body: None,
             },
         )
         .await
@@ -779,6 +787,7 @@ impl HypothesisRegistryRepository for PgHypothesisRegistryRepository {
             generation_transition_set_hash: row.generation_transition_set_hash,
             compiler_seal_hash: row.compiler_seal_hash,
             final_submitter_worker_run_id: row.final_submitter_worker_run_id,
+            controller_dispatch_worker_run_id: row.controller_dispatch_worker_run_id,
             snapshot_row_version: row.snapshot_row_version,
             attempt_row_version: row.attempt_row_version,
         })
@@ -967,6 +976,7 @@ impl HypothesisRegistryRepository for PgHypothesisRegistryRepository {
             self.pool.as_ref(),
             registry::ApplyCandidateGatePassInput {
                 fence: write_fence(request.fence)?,
+                stable_compilation_request_id: request.stable_compilation_request_id,
                 stable_apply_request_id: request.stable_apply_request_id,
                 expected_authority: registry::CandidateExpectedAuthorityRow {
                     snapshot_hash: expected.snapshot_hash,

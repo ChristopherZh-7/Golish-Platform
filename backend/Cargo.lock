@@ -2593,6 +2593,7 @@ version = "0.2.43"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "dirs",
  "dotenvy",
@@ -2628,6 +2629,7 @@ dependencies = [
  "golish-sidecar",
  "golish-sub-agents",
  "graph-flow",
+ "hmac 0.13.0",
  "parking_lot",
  "regex",
  "rig-core",

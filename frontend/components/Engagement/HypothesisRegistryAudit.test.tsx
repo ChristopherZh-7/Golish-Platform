@@ -25,6 +25,7 @@ const MODES = [
   "registry_authoritative_legacy_projection",
   "new_only",
 ] as const;
+const SESSION_ID = "session-1";
 
 function envelope(mode = "registry_authoritative_legacy_projection") {
   return {
@@ -124,10 +125,17 @@ describe("HypothesisRegistryAudit", () => {
       listHypotheses: vi.fn().mockReturnValue(new Promise(() => undefined)),
     });
 
-    render(<HypothesisRegistryAudit operationId="operation-1" api={api} />);
+    render(<HypothesisRegistryAudit sessionId={SESSION_ID} operationId="operation-1" api={api} />);
 
     expect(screen.getByText("Loading registry summary…")).toBeInTheDocument();
     expect(screen.getByText("Loading hypotheses…")).toBeInTheDocument();
+    expect(api.getSummary).toHaveBeenCalledWith({
+      sessionId: SESSION_ID,
+      operationId: "operation-1",
+    });
+    expect(api.listHypotheses).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: SESSION_ID, operationId: "operation-1" })
+    );
   });
 
   it("keeps summary and list errors independently retryable", async () => {
@@ -141,7 +149,7 @@ describe("HypothesisRegistryAudit", () => {
       .mockResolvedValueOnce({ envelope: envelope(), hypotheses: [] });
     const api = apiWith({ getSummary: summaryCall, listHypotheses: listCall });
 
-    render(<HypothesisRegistryAudit operationId="operation-1" api={api} />);
+    render(<HypothesisRegistryAudit sessionId={SESSION_ID} operationId="operation-1" api={api} />);
 
     expect(await screen.findByText("summary unavailable")).toBeInTheDocument();
     expect(await screen.findByText("list unavailable")).toBeInTheDocument();
@@ -168,7 +176,9 @@ describe("HypothesisRegistryAudit", () => {
       listHypotheses: vi.fn().mockResolvedValue({ envelope: envelope(), hypotheses: [] }),
     });
 
-    render(<HypothesisRegistryAudit operationId="operation-empty" api={api} />);
+    render(
+      <HypothesisRegistryAudit sessionId={SESSION_ID} operationId="operation-empty" api={api} />
+    );
 
     expect(await screen.findByText("No active hypothesis generation.")).toBeVisible();
     expect(screen.getByText("No hypotheses in this projection.")).toBeVisible();
@@ -180,7 +190,13 @@ describe("HypothesisRegistryAudit", () => {
       listHypotheses: vi.fn().mockResolvedValue({ envelope: envelope(mode), hypotheses: [] }),
     });
 
-    render(<HypothesisRegistryAudit operationId={`operation-${mode}`} api={api} />);
+    render(
+      <HypothesisRegistryAudit
+        sessionId={SESSION_ID}
+        operationId={`operation-${mode}`}
+        api={api}
+      />
+    );
 
     expect(await screen.findByText(mode)).toBeVisible();
   });
@@ -198,7 +214,7 @@ describe("HypothesisRegistryAudit", () => {
       .mockReturnValueOnce(nextList.promise);
     const api = apiWith({ getSummary: summaryCall, listHypotheses: listCall });
 
-    render(<HypothesisRegistryAudit operationId="operation-1" api={api} />);
+    render(<HypothesisRegistryAudit sessionId={SESSION_ID} operationId="operation-1" api={api} />);
     expect(await screen.findByText("Predicate revision-1")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh audit" }));
@@ -229,7 +245,7 @@ describe("HypothesisRegistryAudit", () => {
       getHypothesis: vi.fn().mockReturnValue(detail.promise),
     });
 
-    render(<HypothesisRegistryAudit operationId="operation-1" api={api} />);
+    render(<HypothesisRegistryAudit sessionId={SESSION_ID} operationId="operation-1" api={api} />);
 
     expect(await screen.findByText("legacy_unavailable")).toBeVisible();
     expect(screen.getByText("unsupported")).toBeVisible();
@@ -240,6 +256,11 @@ describe("HypothesisRegistryAudit", () => {
     expect(screen.queryByText(/Queue \d+/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Open Predicate revision-unsupported/ }));
+    expect(api.getHypothesis).toHaveBeenCalledWith({
+      sessionId: SESSION_ID,
+      operationId: "operation-1",
+      revisionId: "revision-unsupported",
+    });
     expect(screen.getByText("Loading hypothesis detail…")).toBeInTheDocument();
     await act(async () => {
       detail.resolve({
@@ -280,9 +301,13 @@ describe("HypothesisRegistryAudit", () => {
             })
       ),
     });
-    const view = render(<HypothesisRegistryAudit operationId="operation-old" api={api} />);
+    const view = render(
+      <HypothesisRegistryAudit sessionId={SESSION_ID} operationId="operation-old" api={api} />
+    );
 
-    view.rerender(<HypothesisRegistryAudit operationId="operation-new" api={api} />);
+    view.rerender(
+      <HypothesisRegistryAudit sessionId={SESSION_ID} operationId="operation-new" api={api} />
+    );
     expect(await screen.findByText("seal-new")).toBeVisible();
     expect(await screen.findByText("Predicate revision-new")).toBeVisible();
 
@@ -295,5 +320,47 @@ describe("HypothesisRegistryAudit", () => {
     });
     expect(screen.queryByText("seal-old")).not.toBeInTheDocument();
     expect(screen.queryByText("Predicate revision-old")).not.toBeInTheDocument();
+  });
+
+  it("does not let a late response from another session overwrite the same operation", async () => {
+    const oldSummary = deferred<ReturnType<typeof summary>>();
+    const oldList = deferred<{
+      envelope: ReturnType<typeof envelope>;
+      hypotheses: ReturnType<typeof hypothesis>[];
+    }>();
+    const api = apiWith({
+      getSummary: vi.fn(({ sessionId }) =>
+        sessionId === "session-old"
+          ? oldSummary.promise
+          : Promise.resolve({ ...summary(), activeGenerationSealHash: "seal-new-session" })
+      ),
+      listHypotheses: vi.fn(({ sessionId }) =>
+        sessionId === "session-old"
+          ? oldList.promise
+          : Promise.resolve({
+              envelope: envelope(),
+              hypotheses: [hypothesis("revision-new-session")],
+            })
+      ),
+    });
+    const view = render(
+      <HypothesisRegistryAudit sessionId="session-old" operationId="operation-1" api={api} />
+    );
+
+    view.rerender(
+      <HypothesisRegistryAudit sessionId="session-new" operationId="operation-1" api={api} />
+    );
+    expect(await screen.findByText("seal-new-session")).toBeVisible();
+    expect(await screen.findByText("Predicate revision-new-session")).toBeVisible();
+
+    await act(async () => {
+      oldSummary.resolve({ ...summary(), activeGenerationSealHash: "seal-old-session" });
+      oldList.resolve({
+        envelope: envelope(),
+        hypotheses: [hypothesis("revision-old-session")],
+      });
+    });
+    expect(screen.queryByText("seal-old-session")).not.toBeInTheDocument();
+    expect(screen.queryByText("Predicate revision-old-session")).not.toBeInTheDocument();
   });
 });

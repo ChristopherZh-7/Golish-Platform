@@ -799,7 +799,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
 
         {candidateOperationId && (
           <div className="border-b border-border/20 px-4 py-3">
-            <HypothesisRegistryAudit operationId={candidateOperationId} />
+            <HypothesisRegistryAudit sessionId={sessionId} operationId={candidateOperationId} />
           </div>
         )}
 

@@ -113,6 +113,34 @@ struct TerminalAttemptUpdate {
     terminal_at: DateTime<Utc>,
 }
 
+async fn append_legacy_attempt_terminal_shadow(
+    tx: &mut Transaction<'_, Postgres>,
+    mode: golish_core::InvestigationRolloutMode,
+    command: &TerminalizeCandidateAttempt,
+    row_version: i64,
+    terminal_at: DateTime<Utc>,
+    disposition: &str,
+    result_hash: &str,
+) -> crate::Result<()> {
+    super::hypothesis_legacy_projection::append_legacy_attempt_shadow_with_connection(
+        tx,
+        mode,
+        command.operation_id,
+        terminal_at,
+        super::hypothesis_legacy_projection::LegacyAttemptShadowSourceV1 {
+            attempt_id: command.attempt_id,
+            entity_version: row_version,
+            organization_id: command.organization_id,
+            candidate_id: command.candidate_id,
+            candidate_plan_hash: command.candidate_plan_hash.clone(),
+            result_hash: result_hash.to_owned(),
+            disposition: disposition.to_owned(),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct RecoveryTerminalStateRow {
     operation_id: Uuid,
@@ -604,6 +632,8 @@ async fn terminalize_candidate_attempt_inner(
     intent_result: Option<serde_json::Value>,
 ) -> crate::Result<TerminalizedCandidateAttempt> {
     let server_authority = intent_result.is_some();
+    let investigation_mode =
+        super::candidate_attempts::lock_v2_operation(tx, command.operation_id).await?;
     let contracts: Option<(String, String, Uuid)> = sqlx::query_as(
         "SELECT runtime_memory_contract,attack_execution_contract,project_scope_id
          FROM operation_state WHERE operation_id=$1 FOR UPDATE",
@@ -793,6 +823,18 @@ async fn terminalize_candidate_attempt_inner(
                 &command.expected_result_hash,
             )
             .await?;
+            append_legacy_attempt_terminal_shadow(
+                tx,
+                investigation_mode,
+                &command,
+                state.attempt_row_version,
+                state
+                    .terminal_at
+                    .ok_or_else(|| conflict("terminal Attempt timestamp missing"))?,
+                &payload.disposition,
+                &command.expected_result_hash,
+            )
+            .await?;
             let (evidence_count, fact_delta_count) =
                 durable_terminal_counts(tx, command.attempt_id).await?;
             return Ok(TerminalizedCandidateAttempt {
@@ -869,6 +911,18 @@ async fn terminalize_candidate_attempt_inner(
                 .terminal_at
                 .ok_or_else(|| conflict("terminal Attempt timestamp missing"))?,
             &actual_evidence,
+            &command.expected_result_hash,
+        )
+        .await?;
+        append_legacy_attempt_terminal_shadow(
+            tx,
+            investigation_mode,
+            &command,
+            state.attempt_row_version,
+            state
+                .terminal_at
+                .ok_or_else(|| conflict("terminal Attempt timestamp missing"))?,
+            &payload.disposition,
             &command.expected_result_hash,
         )
         .await?;
@@ -1149,6 +1203,16 @@ async fn terminalize_candidate_attempt_inner(
         &command.expected_result_hash,
     )
     .await?;
+    append_legacy_attempt_terminal_shadow(
+        tx,
+        investigation_mode,
+        &command,
+        attempt_updated.row_version,
+        attempt_updated.terminal_at,
+        &payload.disposition,
+        &command.expected_result_hash,
+    )
+    .await?;
     let (evidence_count, fact_delta_count) =
         durable_terminal_counts(tx, command.attempt_id).await?;
     Ok(TerminalizedCandidateAttempt {
@@ -1223,6 +1287,8 @@ pub(super) async fn terminalize_blocked_candidate_recovery(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| crate::DbError::NotFound("candidate_recovery_case".to_string()))?;
+    let investigation_mode =
+        super::candidate_attempts::lock_v2_operation(tx, state.operation_id).await?;
     if state.recovery_status != "decision_recorded"
         || !matches!(
             state.resolution_kind.as_deref(),
@@ -1313,7 +1379,7 @@ pub(super) async fn terminalize_blocked_candidate_recovery(
     let attempt_updated = sqlx::query_as::<_, TerminalAttemptUpdate>(
         "UPDATE candidate_attempts
          SET status='blocked',result_json=$3,result_hash=$4,
-             row_version=row_version+1,updated_at=NOW()
+             terminal_at=NOW(),row_version=row_version+1,updated_at=NOW()
          WHERE id=$1 AND stage_worker_run_id=$2 AND status='running'
            AND row_version=$5 AND result_json IS NULL AND result_hash IS NULL
          RETURNING row_version,terminal_at",
@@ -1416,6 +1482,16 @@ pub(super) async fn terminalize_blocked_candidate_recovery(
         attempt_updated.row_version,
         attempt_updated.terminal_at,
         &relational_evidence,
+        &result_hash,
+    )
+    .await?;
+    append_legacy_attempt_terminal_shadow(
+        tx,
+        investigation_mode,
+        &event_command,
+        attempt_updated.row_version,
+        attempt_updated.terminal_at,
+        "blocked",
         &result_hash,
     )
     .await?;

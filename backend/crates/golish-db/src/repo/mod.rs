@@ -13,6 +13,7 @@ pub mod attack_wave_consolidations;
 pub mod attack_waves;
 pub mod audit;
 pub mod candidate_analysis;
+pub mod candidate_analysis_runtime;
 pub mod candidate_attempts;
 pub mod candidate_recovery;
 pub mod canonical_fact_refs;

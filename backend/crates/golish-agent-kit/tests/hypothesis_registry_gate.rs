@@ -868,6 +868,42 @@ fn gate_fixture() -> golish_agent_kit::harness::hypothesis_registry::CandidateGa
                 vec![plan_hash],
             ),
         },
+        repository_hashes: CandidateRepositoryGateHashesV1 {
+            tool_truth_authority_root_set_hash: hash('1'),
+            tool_truth_authority_bundle_member_set_hash: hash('2'),
+            tool_truth_authority_receipt_set_hash: hash('3'),
+            denominator_graph_bundle_hash: hash('4'),
+            semantic_authority_bundle_hash: hash('5'),
+            freshness_attestation_bundle_hash: hash('6'),
+            temporal_validity_bundle_hash: hash('7'),
+            temporal_validity_policy_digest: hash('8'),
+            temporal_validity_decision_set_hash: hash('9'),
+            knowledge_feed_catalog_policy_seal_hash: hash('a'),
+            knowledge_feed_required_member_set_hash: hash('b'),
+            knowledge_feed_signature_algorithm_set_hash: hash('c'),
+            knowledge_feed_trust_store_hash: hash('d'),
+            knowledge_feed_key_revocation_epoch_hash: hash('e'),
+            knowledge_feed_snapshot_set_hash: hash('f'),
+            product_version_census_hash: hash('0'),
+            knowledge_feed_match_census_hash: hash('1'),
+            stale_revalidation_obligation_set_hash: hash('2'),
+            knowledge_feed_obligation_set_hash: hash('3'),
+            prior_terminal_attempt_chain_hash: exact_set_hash(
+                "candidate_prior_terminal_attempt_chain.v1",
+                &[],
+            ),
+            proposal_census_hash: hash('4'),
+            critic_census_hash: hash('5'),
+            controller_decision_set_hash: hash('6'),
+            input_chunk_census_set_hash: hash('7'),
+            coverage_subreview_census_set_hash: hash('8'),
+            coverage_synthesis_census_set_hash: hash('9'),
+            coverage_global_semantic_root_hash: hash('a'),
+            coverage_global_review_hash: hash('b'),
+            coverage_review_set_hash: hash('c'),
+            coverage_checklist_set_hash: hash('d'),
+            generation_transition_set_hash: hash('e'),
+        },
         input_dispositions: vec![InputProcessingDispositionDecision {
             input_id: Uuid::from_u128(0xb011),
             disposition: InputProcessingDispositionV1::Analyzed,
@@ -895,6 +931,7 @@ fn gate_fixture() -> golish_agent_kit::harness::hypothesis_registry::CandidateGa
         capability_assessment_present: false,
         final_submitter_worker_run_id: controller_worker_run_id,
         controller_worker_run_id,
+        controller_dispatch_worker_run_id: Uuid::from_u128(0xbeee),
     })
 }
 
@@ -1075,6 +1112,22 @@ fn zero_proposal_special_case_gate_uses_the_same_empty_exact_set_rule() {
     material.generation_transition_set =
         CandidateExactSetSealV1::seal("candidate_generation_transitions.v1", vec![]);
     material.coverage.h1_proposal_set = CandidateExactSetSealV1::seal("candidate_h1.v1", vec![]);
+    material.coverage.h2_proposal_set = CandidateExactSetSealV1::seal("candidate_h2.v1", vec![]);
+    material.proposal_census = CandidateExactSetSealV1::seal("candidate_proposals.v1", vec![]);
+    material.controller_decision_set =
+        CandidateExactSetSealV1::seal("candidate_controller_decisions.v1", vec![]);
+    material.compiled.claim_components.clear();
+    material.compiled.claim_component_set =
+        CandidateExactSetSealV1::seal("candidate_claim_components.v1", vec![]);
+    material.compiled.verification_contracts.clear();
+    material.compiled.verification_contract_set =
+        CandidateExactSetSealV1::seal("candidate_contracts.v1", vec![]);
+    material.compiled.verification_plans.clear();
+    material.compiled.verification_plan_set =
+        CandidateExactSetSealV1::seal("candidate_plans.v1", vec![]);
+    material.input_relations.clear();
+    material.input_relation_set =
+        CandidateExactSetSealV1::seal("candidate_input_relations.v1", vec![]);
     assert!(validate_candidate_gate(&snapshot).is_ok());
 }
 

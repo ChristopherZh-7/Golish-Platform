@@ -6,14 +6,14 @@ use golish_agent_kit::task_orchestrator::hypothesis_analysis::{
     CandidateBoundedPayload, CandidateChunkRef, CandidateInputKind,
     CandidateKnowledgeSignalAuthority,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const MAX_INPUT_KEY_CHARS: usize = 512;
 const MAX_KIND_CHARS: usize = 128;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CandidateInputProvenance {
     ToolTruthAuthority,
@@ -22,7 +22,8 @@ pub enum CandidateInputProvenance {
     CandidateResidual,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum CandidateKnowledgeFeedEligibility {
     CurrentKnownVersionSigned,
     Stale,
@@ -30,7 +31,7 @@ pub(crate) enum CandidateKnowledgeFeedEligibility {
     InvalidSignature,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CandidateAtTimeSubject {
     pub kind: String,
     pub identity_hash: String,
@@ -39,6 +40,7 @@ pub struct CandidateAtTimeSubject {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UntrustedCandidateInputChunkEnvelope {
     pub input_id: Uuid,
+    pub chunk_id: Uuid,
     pub input_key: String,
     pub input_kind: CandidateInputKind,
     pub provenance: CandidateInputProvenance,
@@ -54,11 +56,14 @@ pub struct UntrustedCandidateInputChunkEnvelope {
     pub instruction_authority: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SealedCandidateChunkProjectionRow {
     pub snapshot_ready: bool,
     pub input_id: Uuid,
     pub expected_input_id: Uuid,
+    pub chunk_id: Uuid,
+    pub expected_chunk_id: Uuid,
     pub input_key: String,
     pub input_kind: CandidateInputKind,
     pub knowledge_feed_eligibility: Option<CandidateKnowledgeFeedEligibility>,
@@ -77,6 +82,7 @@ pub(crate) struct SealedCandidateChunkProjectionRow {
     pub bounded_payload: CandidateBoundedPayload,
     pub persisted_payload_hash: String,
     pub max_chunk_bytes: u32,
+    pub instruction_authority: bool,
 }
 
 fn valid_hash(value: &str) -> bool {
@@ -86,7 +92,8 @@ fn valid_hash(value: &str) -> bool {
 }
 
 fn payload_hash(payload: &CandidateBoundedPayload) -> anyhow::Result<(String, usize)> {
-    let bytes = serde_json::to_vec(payload)?;
+    let canonical_value = serde_json::to_value(payload)?;
+    let bytes = serde_json::to_vec(&canonical_value)?;
     let digest = Sha256::digest(&bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -102,6 +109,7 @@ fn kind_matches_payload(kind: &CandidateInputKind, payload: &CandidateBoundedPay
                 CandidateInputKind::ToolTruthFact
                     | CandidateInputKind::ToolTruthObservation
                     | CandidateInputKind::ToolTruthEvidence
+                    | CandidateInputKind::ApplicationContext
                     | CandidateInputKind::FactDelta
                     | CandidateInputKind::Relation,
                 CandidateBoundedPayload::ToolTruthRecord { .. },
@@ -128,12 +136,82 @@ fn kind_matches_payload(kind: &CandidateInputKind, payload: &CandidateBoundedPay
     )
 }
 
+pub(crate) fn validate_candidate_chunk_ref(value: &CandidateChunkRef) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !value.instruction_authority,
+        "candidate source cannot carry instruction authority"
+    );
+    anyhow::ensure!(
+        !value.input_id.is_nil()
+            && !value.chunk_id.is_nil()
+            && !value.input_key.is_empty()
+            && value.input_key.chars().count() <= MAX_INPUT_KEY_CHARS
+            && valid_hash(&value.source_hash)
+            && valid_hash(&value.chunk_census_hash)
+            && valid_hash(&value.bounded_payload_hash),
+        "candidate chunk reference authority is malformed"
+    );
+    anyhow::ensure!(
+        kind_matches_payload(&value.input_kind, &value.bounded_payload),
+        "candidate input kind and payload disagree"
+    );
+    if let CandidateBoundedPayload::KnowledgeFeedMatch {
+        feed_snapshot_id,
+        feed_match_member_id,
+        feed_kind,
+        feed_version,
+        published_at_unix_seconds,
+        content_hash,
+        manifest_hash,
+        provenance_hash,
+        signature_receipt_hash,
+        product_version_match_hash,
+        matcher_hash,
+        member_hash,
+        source_authority,
+    } = &value.bounded_payload
+    {
+        anyhow::ensure!(
+            value.input_kind == CandidateInputKind::KnowledgeSignal
+                && *source_authority == CandidateKnowledgeSignalAuthority::KnowledgeSignalOnly
+                && !feed_snapshot_id.is_nil()
+                && !feed_match_member_id.is_nil()
+                && !feed_kind.is_empty()
+                && !feed_version.is_empty()
+                && *published_at_unix_seconds > 0
+                && [
+                    content_hash,
+                    manifest_hash,
+                    provenance_hash,
+                    signature_receipt_hash,
+                    product_version_match_hash,
+                    matcher_hash,
+                    member_hash,
+                ]
+                .into_iter()
+                .all(|hash| valid_hash(hash)),
+            "candidate knowledge feed match authority is malformed"
+        );
+    }
+    let (derived_hash, _) = payload_hash(&value.bounded_payload)?;
+    anyhow::ensure!(
+        derived_hash == value.bounded_payload_hash,
+        "candidate payload hash mismatch"
+    );
+    Ok(())
+}
+
 pub(crate) fn project_sealed_candidate_chunk(
     row: SealedCandidateChunkProjectionRow,
 ) -> anyhow::Result<UntrustedCandidateInputChunkEnvelope> {
     anyhow::ensure!(row.snapshot_ready, "candidate snapshot is not sealed_ready");
     anyhow::ensure!(
+        !row.instruction_authority,
+        "candidate source cannot carry instruction authority"
+    );
+    anyhow::ensure!(
         row.input_id == row.expected_input_id
+            && row.chunk_id == row.expected_chunk_id
             && row.chunk_ordinal == row.expected_chunk_ordinal
             && row.chunk_census_hash == row.expected_chunk_census_hash,
         "candidate chunk authority mismatch"
@@ -218,6 +296,7 @@ pub(crate) fn project_sealed_candidate_chunk(
     );
     Ok(UntrustedCandidateInputChunkEnvelope {
         input_id: row.input_id,
+        chunk_id: row.chunk_id,
         input_key: row.input_key,
         input_kind: row.input_kind,
         provenance: row.provenance,
@@ -240,12 +319,13 @@ impl From<&UntrustedCandidateInputChunkEnvelope> for CandidateChunkRef {
             input_id: value.input_id,
             input_key: value.input_key.clone(),
             input_kind: value.input_kind.clone(),
-            chunk_id: Uuid::new_v5(&value.input_id, value.bounded_payload_hash.as_bytes()),
+            chunk_id: value.chunk_id,
             chunk_ordinal: value.chunk_ordinal,
             chunk_census_hash: value.chunk_census_hash.clone(),
             source_hash: value.source_hash.clone(),
             bounded_payload: value.bounded_payload.clone(),
             bounded_payload_hash: value.bounded_payload_hash.clone(),
+            instruction_authority: false,
         }
     }
 }
@@ -262,11 +342,14 @@ mod tests {
         };
         let persisted_payload_hash = payload_hash(&payload).unwrap().0;
         let input_id = Uuid::new_v4();
+        let chunk_id = Uuid::new_v4();
         let hash = format!("sha256:{}", "b".repeat(64));
         let row = SealedCandidateChunkProjectionRow {
             snapshot_ready: true,
             input_id,
             expected_input_id: input_id,
+            chunk_id,
+            expected_chunk_id: chunk_id,
             input_key: "residual:feed".into(),
             input_kind: CandidateInputKind::ResidualRisk,
             knowledge_feed_eligibility: None,
@@ -288,6 +371,7 @@ mod tests {
             bounded_payload: payload,
             persisted_payload_hash,
             max_chunk_bytes: 16_384,
+            instruction_authority: false,
         };
         let projected = project_sealed_candidate_chunk(row).unwrap();
         assert!(!projected.instruction_authority);

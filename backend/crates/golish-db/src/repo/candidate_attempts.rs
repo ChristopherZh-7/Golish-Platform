@@ -813,7 +813,10 @@ async fn append_fuel_terminal_event(
 pub(super) async fn lock_v2_operation(
     tx: &mut Transaction<'_, Postgres>,
     operation_id: Uuid,
-) -> crate::Result<()> {
+) -> crate::Result<golish_core::InvestigationRolloutMode> {
+    let investigation_mode =
+        super::attack_candidates::lock_and_require_legacy_candidate_mutation(tx, operation_id)
+            .await?;
     let contracts: Option<(String, String)> = sqlx::query_as(
         "SELECT runtime_memory_contract,attack_execution_contract FROM operation_state
          WHERE operation_id=$1 FOR UPDATE",
@@ -822,7 +825,9 @@ pub(super) async fn lock_v2_operation(
     .fetch_optional(&mut **tx)
     .await?;
     match contracts {
-        Some((runtime, attack)) if runtime == "v2_only" && attack == "v2_only" => Ok(()),
+        Some((runtime, attack)) if runtime == "v2_only" && attack == "v2_only" => {
+            Ok(investigation_mode)
+        }
         Some(_) => Err(conflict(
             "operation contracts do not execute Candidate V2 verifier",
         )),
@@ -2175,7 +2180,7 @@ pub async fn release_candidate_execution(
     release: CandidateExecutionRelease,
 ) -> crate::Result<ReleaseOutcome> {
     let mut tx = pool.begin().await?;
-    lock_v2_operation(&mut tx, release.operation_id).await?;
+    let investigation_mode = lock_v2_operation(&mut tx, release.operation_id).await?;
     lock_claim_scope(
         &mut tx,
         release.operation_id,
@@ -2321,10 +2326,99 @@ pub async fn release_candidate_execution(
             &mut tx,
             &release,
             &authority,
-            replay.result_hash,
+            replay.result_hash.clone(),
             replay.row_version,
             replay.terminal_at,
             blocker_evidence,
+        )
+        .await?;
+        super::hypothesis_legacy_projection::append_legacy_attempt_shadow_with_connection(
+            &mut tx,
+            investigation_mode,
+            release.operation_id,
+            replay.terminal_at,
+            super::hypothesis_legacy_projection::LegacyAttemptShadowSourceV1 {
+                attempt_id: release.attempt_id,
+                entity_version: replay.row_version,
+                organization_id: release.organization_id,
+                candidate_id: authority.candidate_id,
+                candidate_plan_hash: authority.candidate_plan_hash.clone(),
+                result_hash: replay.result_hash.clone(),
+                disposition: "blocked".to_owned(),
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(ReleaseOutcome { requeued: false });
+    }
+    if authority.attempt_status == "retryable_failed"
+        && authority.candidate_disposition == "approved"
+    {
+        let replay: (serde_json::Value, String, i64, DateTime<Utc>) = sqlx::query_as(
+            r#"SELECT attempt.result_json,attempt.result_hash,attempt.row_version,
+                      attempt.terminal_at
+                 FROM candidate_attempts attempt
+                 JOIN stage_worker_runs worker
+                   ON worker.id=attempt.stage_worker_run_id
+                  AND worker.operation_id=attempt.operation_id
+                  AND worker.stage_execution_id=$8
+                  AND worker.stage_run_unit_id=$9
+                  AND worker.organization_id=attempt.organization_id
+                  AND worker.attempt_epoch=$10
+                  AND worker.checkpoint_version=$11
+                  AND worker.status='failed' AND worker.terminal_at IS NOT NULL
+                  AND worker.lease_token IS NULL AND worker.lease_owner IS NULL
+                WHERE attempt.id=$1 AND attempt.operation_id=$2
+                  AND attempt.scope_snapshot_id=$3 AND attempt.wave_run_id=$4
+                  AND attempt.wave_unit_id=$5 AND attempt.organization_id=$6
+                  AND attempt.stage_worker_run_id=$7
+                  AND attempt.status='retryable_failed'
+                  AND attempt.result_json IS NOT NULL AND attempt.result_hash IS NOT NULL
+                  AND attempt.terminal_at IS NOT NULL
+                FOR UPDATE OF attempt,worker"#,
+        )
+        .bind(release.attempt_id)
+        .bind(release.operation_id)
+        .bind(release.scope_snapshot_id)
+        .bind(release.wave_run_id)
+        .bind(release.wave_unit_id)
+        .bind(release.organization_id)
+        .bind(release.worker_run_id)
+        .bind(release.stage_execution_id)
+        .bind(release.stage_run_unit_id)
+        .bind(release.attempt_epoch)
+        .bind(release.expected_checkpoint_version)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| conflict("partial retryable Candidate release replay"))?;
+        if replay
+            .0
+            .get("release_fence_hash")
+            .and_then(serde_json::Value::as_str)
+            != Some(release_fence_hash.as_str())
+            || replay
+                .0
+                .get("disposition")
+                .and_then(serde_json::Value::as_str)
+                != Some("retryable_failed")
+            || canonical_result_hash(&replay.0)? != replay.1
+        {
+            return Err(conflict("retryable Candidate release replay drift"));
+        }
+        super::hypothesis_legacy_projection::append_legacy_attempt_shadow_with_connection(
+            &mut tx,
+            investigation_mode,
+            release.operation_id,
+            replay.3,
+            super::hypothesis_legacy_projection::LegacyAttemptShadowSourceV1 {
+                attempt_id: release.attempt_id,
+                entity_version: replay.2,
+                organization_id: release.organization_id,
+                candidate_id: authority.candidate_id,
+                candidate_plan_hash: authority.candidate_plan_hash.clone(),
+                result_hash: replay.1,
+                disposition: "retryable_failed".to_owned(),
+            },
         )
         .await?;
         tx.commit().await?;
@@ -2627,29 +2721,60 @@ pub async fn release_candidate_execution(
             &mut tx,
             &release,
             &authority,
-            result_hash,
+            result_hash.clone(),
             terminal.row_version,
             terminal.terminal_at,
             blocker_evidence,
         )
         .await?;
+        super::hypothesis_legacy_projection::append_legacy_attempt_shadow_with_connection(
+            &mut tx,
+            investigation_mode,
+            release.operation_id,
+            terminal.terminal_at,
+            super::hypothesis_legacy_projection::LegacyAttemptShadowSourceV1 {
+                attempt_id: release.attempt_id,
+                entity_version: terminal.row_version,
+                organization_id: release.organization_id,
+                candidate_id: authority.candidate_id,
+                candidate_plan_hash: authority.candidate_plan_hash.clone(),
+                result_hash: result_hash.clone(),
+                disposition: "blocked".to_owned(),
+            },
+        )
+        .await?;
     } else {
-        let released_attempt = sqlx::query(
+        let released_attempt: (i64, DateTime<Utc>) = sqlx::query_as(
             "UPDATE candidate_attempts
              SET status='retryable_failed',result_json=$3,result_hash=$4,terminal_at=NOW(),
                  row_version=row_version+1,updated_at=NOW()
              WHERE id=$1 AND status='running' AND stage_worker_run_id=$2
-               AND result_json IS NULL AND result_hash IS NULL AND terminal_at IS NULL",
+               AND result_json IS NULL AND result_hash IS NULL AND terminal_at IS NULL
+               RETURNING row_version,terminal_at",
         )
         .bind(release.attempt_id)
         .bind(release.worker_run_id)
         .bind(&result_json)
         .bind(&result_hash)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| conflict("Candidate Attempt release CAS lost"))?;
+        super::hypothesis_legacy_projection::append_legacy_attempt_shadow_with_connection(
+            &mut tx,
+            investigation_mode,
+            release.operation_id,
+            released_attempt.1,
+            super::hypothesis_legacy_projection::LegacyAttemptShadowSourceV1 {
+                attempt_id: release.attempt_id,
+                entity_version: released_attempt.0,
+                organization_id: release.organization_id,
+                candidate_id: authority.candidate_id,
+                candidate_plan_hash: authority.candidate_plan_hash.clone(),
+                result_hash: result_hash.clone(),
+                disposition: "retryable_failed".to_owned(),
+            },
+        )
         .await?;
-        if released_attempt.rows_affected() != 1 {
-            return Err(conflict("Candidate Attempt release CAS lost"));
-        }
     }
     tx.commit().await?;
     Ok(ReleaseOutcome { requeued: false })

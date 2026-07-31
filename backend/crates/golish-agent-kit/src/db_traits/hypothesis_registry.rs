@@ -19,6 +19,8 @@ use golish_pentest_domain::tool_truth::{
 };
 use uuid::Uuid;
 
+use crate::task_orchestrator::hypothesis_analysis::CandidateCoverageSemanticSummary;
+
 /// Stable optimistic-concurrency and worker-ownership fence shared by every
 /// repository operation that writes analysis state (including page receipts).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,7 +397,8 @@ pub struct RecordHypothesisCoverageSubreview {
     pub subreview_census_member_id: Uuid,
     pub outcome: HypothesisCoverageSubreviewOutcomeV1,
     pub missed_proposal_ids: Vec<Uuid>,
-    pub blocker_reason: Option<String>,
+    pub blocker_codes: Vec<String>,
+    pub semantic_summary: CandidateCoverageSemanticSummary,
     pub review_notes: String,
 }
 
@@ -452,7 +455,8 @@ pub struct RecordHypothesisCoverageSynthesisReview {
     pub node_kind: HypothesisCoverageSynthesisNodeKindV1,
     pub outcome: HypothesisCoverageSynthesisOutcomeV1,
     pub missed_proposal_ids: Vec<Uuid>,
-    pub blocker_reason: Option<String>,
+    pub blocker_codes: Vec<String>,
+    pub semantic_summary: CandidateCoverageSemanticSummary,
     pub review_notes: String,
 }
 
@@ -554,6 +558,7 @@ pub struct CandidateGateMaterial {
     pub generation_transition_set_hash: String,
     pub compiler_seal_hash: String,
     pub final_submitter_worker_run_id: Uuid,
+    pub controller_dispatch_worker_run_id: Uuid,
     pub snapshot_row_version: i64,
     pub attempt_row_version: i64,
 }
@@ -718,6 +723,7 @@ pub struct CandidateGatePassV1 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyCandidateGatePass {
     pub fence: CandidateRepositoryWriteFenceV1,
+    pub stable_compilation_request_id: Uuid,
     pub stable_apply_request_id: Uuid,
     pub gate_pass: CandidateGatePassV1,
     pub expected_source_head_version: i64,

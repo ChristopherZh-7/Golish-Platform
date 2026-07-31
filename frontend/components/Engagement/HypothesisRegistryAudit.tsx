@@ -23,12 +23,13 @@ const defaultApi: HypothesisRegistryAuditApi = {
 };
 
 export interface HypothesisRegistryAuditProps {
+  sessionId: string;
   operationId: string;
   api?: HypothesisRegistryAuditApi;
 }
 
-type ScopedData<T> = { operationId: string; data: T } | null;
-type ScopedError = { operationId: string; message: string } | null;
+type ScopedData<T> = { scopeKey: string; data: T } | null;
+type ScopedError = { scopeKey: string; message: string } | null;
 
 const MODE_BADGE_STYLES: Record<string, string> = {
   legacy_only: "border-slate-400/35 bg-slate-400/10 text-slate-300",
@@ -256,20 +257,22 @@ function DetailPanel({ detail }: { detail: InvestigationHypothesisDetailView }) 
 }
 
 export function HypothesisRegistryAudit({
+  sessionId,
   operationId,
   api = defaultApi,
 }: HypothesisRegistryAuditProps) {
+  const scopeKey = `${sessionId}:${operationId}`;
   const [summaryState, setSummaryState] = useState<ScopedData<InvestigationSummaryView>>(null);
   const [listState, setListState] = useState<ScopedData<InvestigationHypothesisListView>>(null);
   const [detailState, setDetailState] = useState<{
-    operationId: string;
+    scopeKey: string;
     revisionId: string;
     data: InvestigationHypothesisDetailView;
   } | null>(null);
   const [summaryError, setSummaryError] = useState<ScopedError>(null);
   const [listError, setListError] = useState<ScopedError>(null);
   const [detailError, setDetailError] = useState<{
-    operationId: string;
+    scopeKey: string;
     revisionId: string;
     message: string;
   } | null>(null);
@@ -281,17 +284,16 @@ export function HypothesisRegistryAudit({
   const listSequence = useRef(0);
   const detailSequence = useRef(0);
 
-  const summary = summaryState?.operationId === operationId ? summaryState.data : null;
-  const list = listState?.operationId === operationId ? listState.data : null;
+  const summary = summaryState?.scopeKey === scopeKey ? summaryState.data : null;
+  const list = listState?.scopeKey === scopeKey ? listState.data : null;
   const detail =
-    detailState?.operationId === operationId && detailState.revisionId === selectedRevisionId
+    detailState?.scopeKey === scopeKey && detailState.revisionId === selectedRevisionId
       ? detailState.data
       : null;
-  const activeSummaryError =
-    summaryError?.operationId === operationId ? summaryError.message : null;
-  const activeListError = listError?.operationId === operationId ? listError.message : null;
+  const activeSummaryError = summaryError?.scopeKey === scopeKey ? summaryError.message : null;
+  const activeListError = listError?.scopeKey === scopeKey ? listError.message : null;
   const activeDetailError =
-    detailError?.operationId === operationId && detailError.revisionId === selectedRevisionId
+    detailError?.scopeKey === scopeKey && detailError.revisionId === selectedRevisionId
       ? detailError.message
       : null;
 
@@ -300,16 +302,16 @@ export function HypothesisRegistryAudit({
     setSummaryLoading(true);
     setSummaryError(null);
     try {
-      const data = await api.getSummary({ operationId });
+      const data = await api.getSummary({ sessionId, operationId });
       if (summarySequence.current !== sequence) return;
-      setSummaryState({ operationId, data });
+      setSummaryState({ scopeKey, data });
     } catch (error) {
       if (summarySequence.current !== sequence) return;
-      setSummaryError({ operationId, message: errorMessage(error) });
+      setSummaryError({ scopeKey, message: errorMessage(error) });
     } finally {
       if (summarySequence.current === sequence) setSummaryLoading(false);
     }
-  }, [api, operationId]);
+  }, [api, operationId, scopeKey, sessionId]);
 
   const loadList = useCallback(async () => {
     const sequence = ++listSequence.current;
@@ -317,6 +319,7 @@ export function HypothesisRegistryAudit({
     setListError(null);
     try {
       const data = await api.listHypotheses({
+        sessionId,
         operationId,
         organizationIds: [],
         epistemicStates: [],
@@ -328,14 +331,14 @@ export function HypothesisRegistryAudit({
         pageSize: 100,
       });
       if (listSequence.current !== sequence) return;
-      setListState({ operationId, data });
+      setListState({ scopeKey, data });
     } catch (error) {
       if (listSequence.current !== sequence) return;
-      setListError({ operationId, message: errorMessage(error) });
+      setListError({ scopeKey, message: errorMessage(error) });
     } finally {
       if (listSequence.current === sequence) setListLoading(false);
     }
-  }, [api, operationId]);
+  }, [api, operationId, scopeKey, sessionId]);
 
   const loadDetail = useCallback(
     async (revisionId: string) => {
@@ -343,17 +346,17 @@ export function HypothesisRegistryAudit({
       setDetailLoading(true);
       setDetailError(null);
       try {
-        const data = await api.getHypothesis({ operationId, revisionId });
+        const data = await api.getHypothesis({ sessionId, operationId, revisionId });
         if (detailSequence.current !== sequence) return;
-        setDetailState({ operationId, revisionId, data });
+        setDetailState({ scopeKey, revisionId, data });
       } catch (error) {
         if (detailSequence.current !== sequence) return;
-        setDetailError({ operationId, revisionId, message: errorMessage(error) });
+        setDetailError({ scopeKey, revisionId, message: errorMessage(error) });
       } finally {
         if (detailSequence.current === sequence) setDetailLoading(false);
       }
     },
-    [api, operationId]
+    [api, operationId, scopeKey, sessionId]
   );
 
   useEffect(() => {
@@ -362,7 +365,7 @@ export function HypothesisRegistryAudit({
     setDetailError(null);
     setDetailLoading(false);
     detailSequence.current += 1;
-  }, [operationId]);
+  }, [scopeKey]);
 
   useEffect(() => {
     void loadSummary();

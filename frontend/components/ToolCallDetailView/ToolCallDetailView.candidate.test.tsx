@@ -248,7 +248,7 @@ describe("ToolCallDetailView Candidate production entry", () => {
     render(<ToolCallDetailView sessionId={SESSION_ID} />);
 
     expect(screen.getByTestId("hypothesis-registry-audit-production-entry")).toHaveTextContent(
-      JSON.stringify({ operationId: "operation-registry-1" })
+      JSON.stringify({ sessionId: SESSION_ID, operationId: "operation-registry-1" })
     );
     expect(screen.getByTestId("hypothesis-registry-audit-production-entry")).not.toHaveTextContent(
       "session-global-hint-must-not-own-audit"

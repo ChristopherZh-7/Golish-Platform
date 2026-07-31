@@ -8,6 +8,7 @@
 use chrono::{DateTime, Utc};
 use golish_app_core::domain::operator::{OperatorChannel, TrustedOperatorPrincipal};
 use golish_db::repo::attack_candidate_approvals as review_repo;
+use golish_db::repo::attack_candidates as candidate_repo;
 use golish_db::repo::candidate_recovery as recovery_repo;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -782,6 +783,9 @@ pub async fn attack_review_candidates(
     authorize_local_operator(&state).await?;
     let operation_id = parse_uuid(&request.operation_id, "operationId")?;
     let wave_run_id = parse_uuid(&request.wave_run_id, "waveRunId")?;
+    candidate_repo::precheck_legacy_candidate_mutation(&state.db_pool, operation_id)
+        .await
+        .map_err(AttackReviewCommandError::from_db)?;
     let decisions = request
         .decisions
         .into_iter()
@@ -837,6 +841,9 @@ pub async fn attack_resume_candidate_review(
     authorize_local_operator(&state).await?;
     let operation_id = parse_uuid(&request.operation_id, "operationId")?;
     let wave_run_id = parse_uuid(&request.wave_run_id, "waveRunId")?;
+    candidate_repo::precheck_legacy_candidate_mutation(&state.db_pool, operation_id)
+        .await
+        .map_err(AttackReviewCommandError::from_db)?;
     let claim = review_repo::claim_candidate_review_resume(
         &state.db_pool,
         operation_id,
@@ -956,6 +963,9 @@ pub async fn attack_resolve_candidate_recovery(
     let principal = local_operator(&state).await?;
     let operation_id = parse_uuid(&request.operation_id, "operationId")?;
     let wave_run_id = parse_uuid(&request.wave_run_id, "waveRunId")?;
+    candidate_repo::precheck_legacy_candidate_mutation(&state.db_pool, operation_id)
+        .await
+        .map_err(AttackReviewCommandError::from_db)?;
     let recovery_case_id = parse_uuid(&request.recovery_case_id, "recoveryCaseId")?;
     if request.request_id.is_empty()
         || request.request_id != request.request_id.trim()
@@ -1116,6 +1126,16 @@ mod tests {
         assert_eq!(
             serde_json::to_value(error).unwrap()["code"],
             review_repo::ATTACK_CANDIDATE_PLAN_CHANGED
+        );
+        let forbidden = AttackReviewCommandError::from_db(
+            candidate_repo::require_legacy_candidate_mutation(
+                golish_core::InvestigationRolloutMode::NewOnly,
+            )
+            .expect_err("new_only must reject legacy Candidate mutation"),
+        );
+        assert_eq!(
+            serde_json::to_value(forbidden).unwrap()["code"],
+            candidate_repo::ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT
         );
     }
 

@@ -141,7 +141,15 @@ struct ReviewAuthority {
     project_path_at_freeze: String,
     runtime_memory_contract: String,
     attack_execution_contract: String,
+    investigation_rollout_mode: String,
     max_attempts_total: i32,
+}
+
+impl ReviewAuthority {
+    fn investigation_mode(&self) -> crate::Result<golish_core::InvestigationRolloutMode> {
+        golish_core::InvestigationRolloutMode::try_from(self.investigation_rollout_mode.as_str())
+            .map_err(|error| review_error(ATTACK_REVIEW_SCOPE_MISMATCH, error.to_string()))
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -162,6 +170,69 @@ struct CandidateForReview {
     execution_plan: serde_json::Value,
     disposition: String,
     row_version: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ExpiringCandidateApproval {
+    approval_id: Uuid,
+    candidate_id: Uuid,
+    wave_unit_id: Uuid,
+    organization_id: Uuid,
+    start_before: DateTime<Utc>,
+    target_type_at_time: String,
+    target_value_at_time: String,
+    target_identity_hash: String,
+    hypothesis: String,
+    technique: Option<String>,
+    candidate_plan_hash: String,
+    source_work_item_id: Uuid,
+}
+
+fn candidate_shadow_source(
+    candidate: &CandidateForReview,
+    entity_version: i64,
+    disposition: &str,
+) -> super::hypothesis_legacy_projection::LegacyCandidateShadowSourceV1 {
+    super::hypothesis_legacy_projection::LegacyCandidateShadowSourceV1 {
+        entity_id: candidate.candidate_id,
+        entity_version,
+        organization_id: candidate.organization_id,
+        source_work_item_id: candidate.source_work_item_id,
+        target_type_at_time: candidate.target_type_at_time.clone(),
+        target_value_at_time: candidate.target_value_at_time.clone(),
+        target_identity_hash: candidate.target_identity_hash.clone(),
+        hypothesis_hash: Some(super::attack_candidates::hypothesis_hash(
+            &candidate.target_value_at_time,
+            candidate.technique.as_deref(),
+            &candidate.hypothesis,
+        )),
+        technique: candidate.technique.clone(),
+        candidate_plan_hash: Some(candidate.candidate_plan_hash.clone()),
+        disposition: disposition.to_owned(),
+    }
+}
+
+fn expired_candidate_shadow_source(
+    candidate: &ExpiringCandidateApproval,
+    entity_version: i64,
+) -> super::hypothesis_legacy_projection::LegacyCandidateShadowSourceV1 {
+    super::hypothesis_legacy_projection::LegacyCandidateShadowSourceV1 {
+        entity_id: candidate.candidate_id,
+        entity_version,
+        organization_id: candidate.organization_id,
+        source_work_item_id: candidate.source_work_item_id,
+        target_type_at_time: candidate.target_type_at_time.clone(),
+        target_value_at_time: candidate.target_value_at_time.clone(),
+        target_identity_hash: candidate.target_identity_hash.clone(),
+        hypothesis_hash: Some(super::attack_candidates::hypothesis_hash(
+            &candidate.target_value_at_time,
+            candidate.technique.as_deref(),
+            &candidate.hypothesis,
+        )),
+        technique: candidate.technique.clone(),
+        candidate_plan_hash: Some(candidate.candidate_plan_hash.clone()),
+        disposition: "proposed".to_owned(),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -207,6 +278,7 @@ pub fn stable_review_error_code(error: &crate::DbError) -> Option<&'static str> 
         ATTACK_REVIEW_ALREADY_CLOSED,
         ATTACK_RESUME_NOT_READY,
         ATTACK_ATTEMPT_FUEL_EXHAUSTED,
+        super::attack_candidates::ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT,
     ]
     .into_iter()
     .find(|code| message.starts_with(code))
@@ -217,18 +289,7 @@ async fn lock_authority(
     operation_id: Uuid,
     wave_run_id: Uuid,
 ) -> crate::Result<ReviewAuthority> {
-    let operation_lock: Option<Uuid> = sqlx::query_scalar(
-        "SELECT operation_id FROM operation_state WHERE operation_id=$1 FOR UPDATE",
-    )
-    .bind(operation_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    if operation_lock.is_none() {
-        return Err(review_error(
-            ATTACK_REVIEW_SCOPE_MISMATCH,
-            "operation authority did not match",
-        ));
-    }
+    super::attack_candidates::lock_and_require_legacy_candidate_mutation(tx, operation_id).await?;
     let authority = sqlx::query_as::<_, ReviewAuthority>(
         r#"SELECT operation.operation_id,
                   operation.project_scope_id,
@@ -238,6 +299,7 @@ async fn lock_authority(
                   snapshot.project_path_at_freeze,
                   operation.runtime_memory_contract,
                   operation.attack_execution_contract,
+                  operation.investigation_rollout_mode,
                   wave.max_attempts_total
              FROM attack_wave_runs wave
              JOIN operation_state operation
@@ -399,10 +461,20 @@ async fn expire_unstarted_approvals(
     tx: &mut Transaction<'_, Postgres>,
     authority: &ReviewAuthority,
 ) -> crate::Result<Vec<Uuid>> {
-    let expired: Vec<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
-        r#"SELECT approval.id,approval.candidate_id,approval.wave_unit_id,
-                  approval.organization_id
+    let expired = sqlx::query_as::<_, ExpiringCandidateApproval>(
+        r#"SELECT approval.id AS approval_id,approval.candidate_id,
+                  approval.wave_unit_id,approval.organization_id,approval.start_before,
+                  candidate.target_type_at_time,candidate.target_value_at_time,
+                  candidate.target_identity_hash,candidate.hypothesis,candidate.technique,
+                  candidate.candidate_plan_hash,candidate.source_work_item_id
              FROM attack_candidate_approvals approval
+             JOIN attack_candidates candidate
+               ON candidate.candidate_id=approval.candidate_id
+              AND candidate.operation_uuid=approval.operation_id
+              AND candidate.scope_snapshot_id=approval.scope_snapshot_id
+              AND candidate.wave_run_id=approval.wave_run_id
+              AND candidate.wave_unit_id=approval.wave_unit_id
+              AND candidate.organization_id=approval.organization_id
             WHERE approval.operation_id=$1 AND approval.scope_snapshot_id=$2
               AND approval.wave_run_id=$3 AND approval.status='approved'
               AND approval.start_before <= NOW()
@@ -414,7 +486,7 @@ async fn expire_unstarted_approvals(
                        )
                   )
             ORDER BY approval.candidate_id
-            FOR UPDATE OF approval"#,
+            FOR UPDATE OF approval,candidate"#,
     )
     .bind(authority.operation_id)
     .bind(authority.scope_snapshot_id)
@@ -422,32 +494,49 @@ async fn expire_unstarted_approvals(
     .fetch_all(&mut **tx)
     .await?;
     let mut reopened = Vec::new();
-    for (approval_id, candidate_id, wave_unit_id, organization_id) in expired {
+    for candidate in expired {
         sqlx::query(
             "UPDATE attack_candidate_approvals
              SET status='expired',row_version=row_version+1
              WHERE id=$1 AND status='approved'",
         )
-        .bind(approval_id)
+        .bind(candidate.approval_id)
         .execute(&mut **tx)
         .await?;
-        let updated = sqlx::query(
+        let updated_version: Option<i64> = sqlx::query_scalar(
             r#"UPDATE attack_candidates
                   SET disposition='proposed',row_version=row_version+1,updated_at=NOW()
                 WHERE candidate_id=$1 AND operation_uuid=$2 AND scope_snapshot_id=$3
                   AND wave_run_id=$4 AND wave_unit_id=$5 AND organization_id=$6
-                  AND disposition='approved'"#,
+                  AND disposition='approved'
+                RETURNING row_version"#,
         )
-        .bind(candidate_id)
+        .bind(candidate.candidate_id)
         .bind(authority.operation_id)
         .bind(authority.scope_snapshot_id)
         .bind(authority.wave_run_id)
-        .bind(wave_unit_id)
-        .bind(organization_id)
-        .execute(&mut **tx)
+        .bind(candidate.wave_unit_id)
+        .bind(candidate.organization_id)
+        .fetch_optional(&mut **tx)
         .await?;
-        if updated.rows_affected() == 1 {
-            reopened.push(candidate_id);
+        if let Some(entity_version) = updated_version {
+            let stable_source_id = Uuid::new_v5(
+                &candidate.approval_id,
+                b"legacy-candidate-approval-expired.v1",
+            );
+            super::hypothesis_legacy_projection::append_legacy_candidate_shadow_batch_with_connection(
+                tx,
+                authority.investigation_mode()?,
+                authority.operation_id,
+                stable_source_id,
+                candidate.start_before,
+                vec![expired_candidate_shadow_source(
+                    &candidate,
+                    entity_version.saturating_add(1),
+                )],
+            )
+            .await?;
+            reopened.push(candidate.candidate_id);
         }
     }
     Ok(reopened)
@@ -806,6 +895,19 @@ pub async fn review_wave_candidates(
                 &budget,
             )
         }) {
+            super::hypothesis_legacy_projection::append_legacy_candidate_shadow_batch_with_connection(
+                &mut tx,
+                authority.investigation_mode()?,
+                authority.operation_id,
+                approval.id,
+                approval.decided_at,
+                vec![candidate_shadow_source(
+                    candidate,
+                    candidate.row_version.saturating_add(1),
+                    &candidate.disposition,
+                )],
+            )
+            .await?;
             approvals.push(approval.clone());
             replayed_count += 1;
             continue;
@@ -904,12 +1006,13 @@ pub async fn review_wave_candidates(
             .bind(operator_id)
             .fetch_one(&mut *tx)
             .await?;
-        let updated = sqlx::query(
+        let updated_version: Option<i64> = sqlx::query_scalar(
             r#"UPDATE attack_candidates SET disposition=$2,row_version=row_version+1,
                        updated_at=NOW()
                 WHERE candidate_id=$1 AND operation_uuid=$3 AND scope_snapshot_id=$4
                   AND wave_run_id=$5 AND wave_unit_id=$6 AND organization_id=$7
-                  AND candidate_plan_hash=$8 AND row_version=$9 AND disposition='proposed'"#,
+                  AND candidate_plan_hash=$8 AND row_version=$9 AND disposition='proposed'
+                RETURNING row_version"#,
         )
         .bind(candidate.candidate_id)
         .bind(status)
@@ -920,14 +1023,27 @@ pub async fn review_wave_candidates(
         .bind(candidate.organization_id)
         .bind(&candidate.candidate_plan_hash)
         .bind(decision.expected_candidate_row_version)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
-        if updated.rows_affected() != 1 {
+        let Some(entity_version) = updated_version else {
             return Err(review_error(
                 ATTACK_CANDIDATE_PLAN_CHANGED,
                 "Candidate review row-version CAS was lost",
             ));
-        }
+        };
+        super::hypothesis_legacy_projection::append_legacy_candidate_shadow_batch_with_connection(
+            &mut tx,
+            authority.investigation_mode()?,
+            authority.operation_id,
+            approval.id,
+            approval.decided_at,
+            vec![candidate_shadow_source(
+                candidate,
+                entity_version.saturating_add(1),
+                status,
+            )],
+        )
+        .await?;
         approvals.push(approval);
     }
     let (barrier, counts, additionally_reopened) = refresh_barrier(
@@ -1166,6 +1282,12 @@ pub async fn mark_candidate_review_resumed(
     pool: &PgPool,
     claim: &ReviewResumeClaim,
 ) -> crate::Result<CandidateReviewBarrierRow> {
+    let mut tx = pool.begin().await?;
+    super::attack_candidates::lock_and_require_legacy_candidate_mutation(
+        &mut tx,
+        claim.operation_id,
+    )
+    .await?;
     let sql = format!(
         "UPDATE candidate_review_barriers
          SET status='resumed',resume_version=resume_version+1,
@@ -1174,14 +1296,16 @@ pub async fn mark_candidate_review_resumed(
            AND status='dispatching' AND resume_version=$4
          RETURNING {BARRIER_COLUMNS}"
     );
-    sqlx::query_as(&sql)
+    let barrier = sqlx::query_as(&sql)
         .bind(claim.wave_run_id)
         .bind(claim.operation_id)
         .bind(claim.scope_snapshot_id)
         .bind(claim.dispatch_resume_version)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await?
-        .ok_or_else(|| review_error(ATTACK_RESUME_NOT_READY, "resume completion CAS was lost"))
+        .ok_or_else(|| review_error(ATTACK_RESUME_NOT_READY, "resume completion CAS was lost"))?;
+    tx.commit().await?;
+    Ok(barrier)
 }
 
 pub async fn mark_candidate_review_resume_failed(
@@ -1189,6 +1313,12 @@ pub async fn mark_candidate_review_resume_failed(
     claim: &ReviewResumeClaim,
     error: &str,
 ) -> crate::Result<CandidateReviewBarrierRow> {
+    let mut tx = pool.begin().await?;
+    super::attack_candidates::lock_and_require_legacy_candidate_mutation(
+        &mut tx,
+        claim.operation_id,
+    )
+    .await?;
     let last_error = error.chars().take(2048).collect::<String>();
     let sql = format!(
         "UPDATE candidate_review_barriers
@@ -1198,38 +1328,71 @@ pub async fn mark_candidate_review_resume_failed(
            AND status='dispatching' AND resume_version=$4
          RETURNING {BARRIER_COLUMNS}"
     );
-    sqlx::query_as(&sql)
+    let barrier = sqlx::query_as(&sql)
         .bind(claim.wave_run_id)
         .bind(claim.operation_id)
         .bind(claim.scope_snapshot_id)
         .bind(claim.dispatch_resume_version)
         .bind(last_error)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await?
-        .ok_or_else(|| review_error(ATTACK_RESUME_NOT_READY, "resume failure CAS was lost"))
+        .ok_or_else(|| review_error(ATTACK_RESUME_NOT_READY, "resume failure CAS was lost"))?;
+    tx.commit().await?;
+    Ok(barrier)
 }
 
 pub async fn reap_stale_candidate_review_dispatches(
     pool: &PgPool,
     stale_after: Duration,
 ) -> crate::Result<u64> {
-    let result = sqlx::query(
-        r#"UPDATE candidate_review_barriers
-              SET status='resume_pending',resume_version=resume_version+1,
-                  dispatch_started_at=NULL,
-                  last_error='stale dispatch reclaimed after process restart',updated_at=NOW()
+    let stale_interval = format!("{} seconds", stale_after.num_seconds().max(1));
+    let operation_ids: Vec<Uuid> = sqlx::query_scalar(
+        r#"SELECT DISTINCT operation_id
+             FROM candidate_review_barriers
             WHERE status='dispatching'
-              AND (dispatch_started_at IS NULL OR dispatch_started_at <= NOW()-$1::interval)"#,
+              AND (dispatch_started_at IS NULL OR dispatch_started_at <= NOW()-$1::interval)
+            ORDER BY operation_id"#,
     )
-    .bind(format!("{} seconds", stale_after.num_seconds().max(1)))
-    .execute(pool)
+    .bind(&stale_interval)
+    .fetch_all(pool)
     .await?;
-    Ok(result.rows_affected())
+
+    let mut reaped = 0_u64;
+    for operation_id in operation_ids {
+        let mut tx = pool.begin().await?;
+        let mode =
+            super::attack_candidates::lock_frozen_investigation_rollout_mode(&mut tx, operation_id)
+                .await?;
+        if !stale_dispatch_reaper_allows(mode) {
+            tx.rollback().await?;
+            continue;
+        }
+        let result = sqlx::query(
+            r#"UPDATE candidate_review_barriers
+                  SET status='resume_pending',resume_version=resume_version+1,
+                      dispatch_started_at=NULL,
+                      last_error='stale dispatch reclaimed after process restart',updated_at=NOW()
+                WHERE operation_id=$1 AND status='dispatching'
+                  AND (dispatch_started_at IS NULL OR dispatch_started_at <= NOW()-$2::interval)"#,
+        )
+        .bind(operation_id)
+        .bind(&stale_interval)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        reaped = reaped.saturating_add(result.rows_affected());
+    }
+    Ok(reaped)
+}
+
+fn stale_dispatch_reaper_allows(mode: golish_core::InvestigationRolloutMode) -> bool {
+    mode.policy().allow_legacy_mutation
 }
 
 #[cfg(test)]
 mod fuel_tests {
-    use super::review_reservation_batch_fits;
+    use super::{review_reservation_batch_fits, stale_dispatch_reaper_allows};
+    use golish_core::InvestigationRolloutMode;
 
     #[test]
     fn review_approval_batch_reserves_every_first_attempt_atomically() {
@@ -1238,5 +1401,17 @@ mod fuel_tests {
         assert!(review_reservation_batch_fits(3, 0, 0, 3));
         assert!(!review_reservation_batch_fits(2, 0, 2, 3));
         assert!(!review_reservation_batch_fits(i64::MAX, 1, 0, i32::MAX));
+    }
+
+    #[test]
+    fn startup_stale_dispatch_reaper_uses_the_frozen_five_mode_policy() {
+        for mode in InvestigationRolloutMode::ALL {
+            assert_eq!(
+                stale_dispatch_reaper_allows(mode),
+                mode.policy().allow_legacy_mutation,
+                "reaper policy drift for {}",
+                mode.as_str()
+            );
+        }
     }
 }

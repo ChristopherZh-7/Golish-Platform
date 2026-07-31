@@ -4,6 +4,7 @@
 //! never receives a live-source handle, a provider/feed refresh handle, or a
 //! caller-selected Tool Truth authority bundle.
 
+use crate::db_traits::CandidateRepositoryWriteFenceV1;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -54,6 +55,7 @@ pub enum CandidateInputKind {
     ToolTruthObservation,
     ToolTruthEvidence,
     TechniqueOutcome,
+    ApplicationContext,
     KnowledgeSignal,
     PreviousGeneration,
     FactDelta,
@@ -116,6 +118,9 @@ pub struct CandidateChunkRef {
     pub source_hash: String,
     pub bounded_payload: CandidateBoundedPayload,
     pub bounded_payload_hash: String,
+    /// Always false for frozen source material. This explicit field prevents
+    /// prompt text from being promoted to host instruction authority.
+    pub instruction_authority: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +131,19 @@ pub struct CandidateControllerDispatchInput {
     pub input_count: u32,
     pub input_chunk_census_set_hash: String,
     pub relationship_cross_index_hash: String,
+    pub missed_hypothesis_signals: Vec<CandidateMissedHypothesisSignal>,
+    pub missed_hypothesis_signal_set_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateMissedHypothesisSignal {
+    pub checklist_member_id: Uuid,
+    pub attack_class_id: String,
+    pub attack_class_version: u32,
+    pub trust_boundary_identity: String,
+    pub trust_boundary_hash: String,
+    pub covered_input_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +162,8 @@ pub struct CandidateAnalystInput {
     pub chunks: Vec<CandidateChunkRef>,
     pub relationship_cross_index_hash: String,
     pub trust_boundary_cross_index_hash: String,
+    pub missed_hypothesis_signals: Vec<CandidateMissedHypothesisSignal>,
+    pub missed_hypothesis_signal_set_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,8 +233,6 @@ pub struct CandidateHypothesisProposal {
 #[serde(deny_unknown_fields)]
 pub struct HypothesisProposalArtifact {
     pub proposals: Vec<CandidateHypothesisProposal>,
-    pub blocked_input_ids: Vec<Uuid>,
-    pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +254,114 @@ pub struct CandidateCoverageNodeInput {
     pub child_receipt_set_hash: String,
     pub descendant_worker_set_hash: String,
     pub relationship_cross_index_hash: String,
+    pub covered_input_ids: Vec<Uuid>,
+    pub covered_checklist_member_ids: Vec<Uuid>,
+    pub h1_proposal_summaries: Vec<CandidateCoverageProposalSummary>,
+    pub child_semantic_summaries: Vec<CandidateCoverageChildSemanticSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateCoverageChildKind {
+    Subreview,
+    SynthesisNode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateCoverageSemanticObservationKind {
+    PotentialHypothesis,
+    SupportingPattern,
+    ContradictingPattern,
+    CoverageGap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateCoverageProposalSummary {
+    pub proposal_id: Uuid,
+    pub subject_kind: String,
+    pub subject_identity_hash: String,
+    pub predicate_schema: String,
+    pub predicate_version: u32,
+    pub polarity: String,
+    pub trust_boundary: String,
+    pub readiness: CandidateProposalReadiness,
+    pub proof_input_ids: Vec<Uuid>,
+}
+
+/// Bounded, server-frozen semantic projection used only for proposal conflict
+/// review. Knowledge/application/gap authority remains explicitly separate
+/// from proof authority so a critic cannot accidentally promote context into
+/// evidence while comparing otherwise similar proposals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateConflictProposalSummary {
+    pub proposal_id: Uuid,
+    pub proposal_hash: String,
+    pub subject_kind: String,
+    pub subject_identity_hash: String,
+    pub predicate_schema: String,
+    pub predicate_version: u32,
+    pub predicate_arguments: Vec<(String, String)>,
+    pub polarity: String,
+    pub trust_boundary: String,
+    pub readiness: CandidateProposalReadiness,
+    pub structured_claim: String,
+    pub preconditions: Vec<String>,
+    pub impact: String,
+    pub proof_input_ids: Vec<Uuid>,
+    pub application_context_input_ids: Vec<Uuid>,
+    pub gap_input_ids: Vec<Uuid>,
+    pub knowledge_signals: Vec<CandidateKnowledgeSignalReference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateCoverageSemanticObservation {
+    pub kind: CandidateCoverageSemanticObservationKind,
+    pub subject_kind: String,
+    pub subject_identity_hash: String,
+    pub predicate_schema: String,
+    pub predicate_version: u32,
+    pub polarity: String,
+    pub trust_boundary: String,
+    pub input_ids: Vec<Uuid>,
+    pub checklist_member_ids: Vec<Uuid>,
+    pub proposal_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateCoverageSemanticSummary {
+    pub covered_input_ids: Vec<Uuid>,
+    pub covered_checklist_member_ids: Vec<Uuid>,
+    pub observed_proposal_ids: Vec<Uuid>,
+    pub missed_checklist_member_ids: Vec<Uuid>,
+    pub blocker_codes: Vec<String>,
+    pub semantic_observations: Vec<CandidateCoverageSemanticObservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateCoverageChildSemanticSummary {
+    pub child_kind: CandidateCoverageChildKind,
+    pub child_identity: Uuid,
+    pub child_receipt_hash: String,
+    pub outcome: CandidateCriticOutcome,
+    pub semantic_summary_hash: String,
+    pub semantic_summary: CandidateCoverageSemanticSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateCoverageChecklistSummary {
+    pub checklist_member_id: Uuid,
+    pub snapshot_input_id: Uuid,
+    pub attack_class_id: String,
+    pub attack_class_version: u32,
+    pub trust_boundary_identity: String,
+    pub trust_boundary_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,15 +371,20 @@ pub enum CandidateCriticInput {
         conflict_component_id: Uuid,
         conflict_component_hash: String,
         proposals: Vec<CandidateProposalRef>,
+        /// Server-frozen, bounded semantic projection of the exact component.
+        /// The critic never has to infer semantics from opaque proposal IDs.
+        proposal_summaries: Vec<CandidateConflictProposalSummary>,
     },
     CoverageSubreview {
         subreview_census_id: Uuid,
         subreview_census_member_id: Uuid,
         snapshot_input_id: Uuid,
         checklist_member_id: Uuid,
+        checklist: CandidateCoverageChecklistSummary,
         chunk_partition_id: Uuid,
         designated_chunks: Vec<CandidateChunkRef>,
         h1_proposal_refs: Vec<CandidateProposalRef>,
+        h1_proposal_summaries: Vec<CandidateCoverageProposalSummary>,
         read_receipt_set_hash: String,
     },
     CoverageCrossChunkSynthesis {
@@ -281,13 +412,26 @@ pub enum CandidateCriticOutcome {
     Blocked,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateConflictDecisionKind {
+    NoConflict,
+    Duplicate,
+    Merge,
+    SplitRequired,
+    Blocked,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateLocalCoverageFinding {
     pub outcome: CandidateCriticOutcome,
+    /// Server-issued checklist-member identities missed by this exact review.
+    /// They are retry feedback, never proposal or free-form model identities.
     pub missed_hypothesis_refs: Vec<Uuid>,
     pub blocker_codes: Vec<String>,
     pub context_truncated: bool,
+    pub semantic_summary: CandidateCoverageSemanticSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,7 +439,7 @@ pub struct CandidateLocalCoverageFinding {
 pub enum HypothesisCriticArtifact {
     ProposalConflict {
         conflict_component_id: Uuid,
-        outcome: CandidateCriticOutcome,
+        decision: CandidateConflictDecisionKind,
         related_proposal_ids: Vec<Uuid>,
     },
     CoverageSubreview {
@@ -332,7 +476,9 @@ pub enum HypothesisCriticArtifact {
 impl HypothesisCriticArtifact {
     pub fn is_blocked_or_truncated(&self) -> bool {
         match self {
-            Self::ProposalConflict { outcome, .. } => *outcome == CandidateCriticOutcome::Blocked,
+            Self::ProposalConflict { decision, .. } => {
+                *decision == CandidateConflictDecisionKind::Blocked
+            }
             Self::CoverageSubreview { finding, .. }
             | Self::CoverageCrossChunkSynthesis { finding, .. }
             | Self::CoverageCrossInputPartition { finding, .. }
@@ -346,9 +492,7 @@ impl HypothesisCriticArtifact {
 
     pub fn found_miss(&self) -> bool {
         match self {
-            Self::ProposalConflict { outcome, .. } => {
-                *outcome == CandidateCriticOutcome::MissedHypothesis
-            }
+            Self::ProposalConflict { .. } => false,
             Self::CoverageSubreview { finding, .. }
             | Self::CoverageCrossChunkSynthesis { finding, .. }
             | Self::CoverageCrossInputPartition { finding, .. }
@@ -363,6 +507,28 @@ impl HypothesisCriticArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CandidateControllerProposalSummary {
+    pub proposal_id: Uuid,
+    pub semantic_key_hash: String,
+    pub structured_claim: String,
+    pub trust_boundary: String,
+    pub polarity: String,
+    pub route_kind: String,
+    pub proof_ref_count: u32,
+    pub refutation_ref_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateControllerProposalPage {
+    pub page_ordinal: u32,
+    pub proposal_count: u32,
+    pub proposals: Vec<CandidateControllerProposalSummary>,
+    pub page_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateControllerFinalInput {
     pub snapshot_id: Uuid,
     pub analysis_attempt_id: Uuid,
@@ -372,7 +538,8 @@ pub struct CandidateControllerFinalInput {
     pub claim_component_set_hash: String,
     pub verification_contract_set_hash: String,
     pub verification_plan_set_hash: String,
-    pub cluster_page_hashes: Vec<String>,
+    pub proposal_pages: Vec<CandidateControllerProposalPage>,
+    pub proposal_page_set_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -415,39 +582,61 @@ pub struct CandidateRuntimeSnapshot {
     pub snapshot_authority_hash: String,
     pub input_chunk_census_set_hash: String,
     pub blocked_residual_hash: Option<String>,
+    pub stage_execution_id: Uuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateRuntimeAttempt {
     pub analysis_attempt_id: Uuid,
     pub analysis_attempt_ordinal: u32,
+    pub stage_execution_id: Uuid,
     pub controller_binding: CandidateAnalysisAgentBinding,
+    pub controller_authority: CandidateRuntimeWorkAuthority,
     pub controller_dispatch_input: CandidateControllerDispatchInput,
+    pub controller_dispatch_replay:
+        Option<CandidateAnalysisAgentAttempt<CandidateControllerDispatchPlan>>,
+}
+
+/// Host-only ownership material for one model invocation. This value is never
+/// serialized into the model prompt; it is consumed only by the repository
+/// when the corresponding typed artifact is committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateRuntimeWorkAuthority {
+    pub fence: CandidateRepositoryWriteFenceV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateAnalystWorkItem {
     pub binding: CandidateAnalysisAgentBinding,
+    pub authority: CandidateRuntimeWorkAuthority,
     pub input: CandidateAnalystInput,
+    pub replayed_receipt: Option<CandidateArtifactReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateCriticWorkItem {
     pub binding: CandidateAnalysisAgentBinding,
+    pub authority: CandidateRuntimeWorkAuthority,
     pub input: CandidateCriticInput,
+    pub replayed_receipt: Option<CandidateArtifactReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateCriticWavePlan {
     pub work_items: Vec<CandidateCriticWorkItem>,
     pub h1_census_hash: String,
+    /// Host-persisted terminal closure discovered before H1 can be sealed.
+    pub terminal_blocked_residual_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateFinalizationPlan {
     pub binding: CandidateAnalysisAgentBinding,
+    pub authority: CandidateRuntimeWorkAuthority,
     pub input: CandidateControllerFinalInput,
     pub claim_component_compilation: CandidateClaimComponentCompilation,
+    pub controller_final_replay:
+        Option<CandidateAnalysisAgentAttempt<CandidateControllerDecisionArtifact>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -483,6 +672,7 @@ pub enum CandidateArtifactPersistence {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateCriticReduction {
+    MoreWork(CandidateCriticWavePlan),
     Ready(Box<CandidateFinalizationPlan>),
     RetryAttempt { next_attempt_ordinal: u32 },
     Blocked { residual_hash: String },
@@ -503,6 +693,25 @@ pub struct HypothesisAnalysisStageRequest {
     pub operation_id: Uuid,
     pub scope_snapshot_id: Uuid,
     pub organization_id: Uuid,
+    /// Server-owned Stage execution identity. It binds Candidate work to the
+    /// already-seeded AttackCandidate unit and is never accepted from tool
+    /// arguments.
+    pub stage_execution_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateGenerationSealOutcome {
+    pub generation_id: Uuid,
+    pub generation_ordinal: u32,
+    pub generation_seal_id: Uuid,
+    pub generation_member_count: u32,
+    pub generation_member_set_hash: String,
+    pub generation_event_set_hash: String,
+    pub open_obligation_set_hash: String,
+    pub projection_outbox_batch_id: Uuid,
+    pub projection_source_batch_seq: i64,
+    pub projection_outbox_member_set_hash: String,
+    pub replayed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -528,6 +737,7 @@ pub enum HypothesisAnalysisStageOutcome {
         critic_work_item_count: u32,
         peak_live_lanes: u32,
         final_receipt: CandidateArtifactReceipt,
+        generation: CandidateGenerationSealOutcome,
     },
 }
 
@@ -568,6 +778,7 @@ pub trait HypothesisAnalysisRuntimeRepository: Send + Sync {
         &self,
         snapshot_id: Uuid,
         attempt_ordinal: u32,
+        stage_execution_id: Uuid,
     ) -> anyhow::Result<CandidateRuntimeAttempt>;
     async fn prepare_analyst_wave(
         &self,
@@ -575,18 +786,27 @@ pub trait HypothesisAnalysisRuntimeRepository: Send + Sync {
         dispatch: &CandidateControllerDispatchPlan,
         host_lane_limit: usize,
     ) -> anyhow::Result<Vec<CandidateAnalystWorkItem>>;
+    async fn persist_controller_dispatch(
+        &self,
+        binding: &CandidateAnalysisAgentBinding,
+        authority: &CandidateRuntimeWorkAuthority,
+        attempt: &CandidateAnalysisAgentAttempt<CandidateControllerDispatchPlan>,
+    ) -> anyhow::Result<()>;
     async fn persist_analyst_artifact(
         &self,
         binding: &CandidateAnalysisAgentBinding,
+        authority: &CandidateRuntimeWorkAuthority,
         attempt: &CandidateAnalysisAgentAttempt<HypothesisProposalArtifact>,
     ) -> anyhow::Result<CandidateArtifactPersistence>;
     async fn prepare_critic_wave(
         &self,
         attempt: &CandidateRuntimeAttempt,
+        max_coverage_subreview_work_items: usize,
     ) -> anyhow::Result<CandidateCriticWavePlan>;
     async fn persist_critic_artifact(
         &self,
         binding: &CandidateAnalysisAgentBinding,
+        authority: &CandidateRuntimeWorkAuthority,
         attempt: &CandidateAnalysisAgentAttempt<HypothesisCriticArtifact>,
     ) -> anyhow::Result<CandidateArtifactPersistence>;
     async fn load_artifact_receipt(
@@ -596,17 +816,30 @@ pub trait HypothesisAnalysisRuntimeRepository: Send + Sync {
     async fn reduce_and_seal_critic_wave(
         &self,
         attempt: &CandidateRuntimeAttempt,
+        max_coverage_subreview_work_items: usize,
     ) -> anyhow::Result<CandidateCriticReduction>;
     async fn revalidate_authority(
         &self,
         snapshot_id: Uuid,
         analysis_attempt_id: Uuid,
     ) -> anyhow::Result<CandidateAuthorityRevalidation>;
+    async fn validate_controller_final_binding(
+        &self,
+        attempt: &CandidateRuntimeAttempt,
+        finalization: &CandidateFinalizationPlan,
+    ) -> anyhow::Result<()>;
     async fn persist_controller_final(
         &self,
         binding: &CandidateAnalysisAgentBinding,
+        authority: &CandidateRuntimeWorkAuthority,
         attempt: &CandidateAnalysisAgentAttempt<CandidateControllerDecisionArtifact>,
     ) -> anyhow::Result<CandidateArtifactPersistence>;
+    async fn finalize_generation(
+        &self,
+        attempt: &CandidateRuntimeAttempt,
+        finalization: &CandidateFinalizationPlan,
+        final_receipt: &CandidateArtifactReceipt,
+    ) -> anyhow::Result<CandidateGenerationSealOutcome>;
 }
 
 #[async_trait]

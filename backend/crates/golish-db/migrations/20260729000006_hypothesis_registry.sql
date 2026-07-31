@@ -736,9 +736,9 @@ CREATE TABLE hypothesis_candidate_gate_decisions (
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
     candidate_snapshot_id UUID NOT NULL,
     analysis_attempt_id UUID NOT NULL,
-    mutation_count BIGINT NOT NULL CHECK (mutation_count>0),
+    mutation_count BIGINT NOT NULL CHECK (mutation_count>=0),
     mutation_set_hash TEXT NOT NULL CHECK (mutation_set_hash ~ '^sha256:[0-9a-f]{64}$'),
-    generation_transition_count BIGINT NOT NULL CHECK (generation_transition_count>0),
+    generation_transition_count BIGINT NOT NULL CHECK (generation_transition_count>=0),
     generation_transition_set_hash TEXT NOT NULL CHECK (
         generation_transition_set_hash ~ '^sha256:[0-9a-f]{64}$'
     ),
@@ -1321,7 +1321,7 @@ CREATE TABLE investigation_projection_outbox_batches (
 CREATE TABLE investigation_projection_entity_versions (
     operation_id UUID NOT NULL,
     entity_kind TEXT NOT NULL,
-    entity_id UUID NOT NULL,
+    entity_id TEXT NOT NULL CHECK (btrim(entity_id)<>'' AND octet_length(entity_id)<=512),
     entity_version BIGINT NOT NULL CHECK (entity_version>0),
     batch_id UUID NOT NULL,
     source_hash TEXT NOT NULL CHECK (source_hash ~ '^sha256:[0-9a-f]{64}$'),
@@ -1338,6 +1338,7 @@ CREATE TABLE investigation_projection_entity_versions (
     PRIMARY KEY(operation_id,entity_kind,entity_id,entity_version),
     UNIQUE(operation_id,change_seq),
     UNIQUE(operation_id,entity_kind,entity_id,entity_version,projection_hash),
+    UNIQUE(operation_id,entity_kind,entity_id,entity_version,source_hash,projection_hash),
     CHECK ((source_time_status='known')=(source_occurred_at IS NOT NULL)),
     CHECK (
         (entity_version=1 AND predecessor_absent AND predecessor_entity_version IS NULL
@@ -1583,7 +1584,7 @@ CREATE TABLE attack_hypothesis_verification_plan_objectives (
     objective_hash TEXT NOT NULL CHECK (objective_hash ~ '^sha256:[0-9a-f]{64}$'),
     verification_contract_version INTEGER NOT NULL CHECK (verification_contract_version=1),
     verification_contract_hash TEXT NOT NULL CHECK (verification_contract_hash ~ '^sha256:[0-9a-f]{64}$'),
-    claim_component_count BIGINT NOT NULL CHECK (claim_component_count>0),
+    claim_component_count BIGINT NOT NULL CHECK (claim_component_count>=0),
     claim_component_set_hash TEXT NOT NULL CHECK (claim_component_set_hash ~ '^sha256:[0-9a-f]{64}$'),
     stopping_criteria_hash TEXT NOT NULL CHECK (stopping_criteria_hash ~ '^sha256:[0-9a-f]{64}$'),
     outcome_requirement TEXT NOT NULL CHECK (outcome_requirement IN (
@@ -2502,6 +2503,146 @@ CREATE TABLE candidate_managed_feed_trust_store_head (
         ) ON DELETE RESTRICT
 );
 
+-- Server-owned managed-feed catalog and local signed store. Candidate callers
+-- never provide catalog/member ids: an operation binds once to the current
+-- catalog head, after which the binding is immutable and rollback-safe.
+CREATE TABLE candidate_managed_feed_catalogs (
+    catalog_id UUID PRIMARY KEY,
+    catalog_version INTEGER NOT NULL CHECK (catalog_version>0),
+    catalog_hash TEXT NOT NULL CHECK (catalog_hash ~ '^sha256:[0-9a-f]{64}$'),
+    trust_policy_id UUID NOT NULL,
+    trust_policy_version INTEGER NOT NULL CHECK (trust_policy_version>0),
+    trust_policy_hash TEXT NOT NULL CHECK (trust_policy_hash ~ '^sha256:[0-9a-f]{64}$'),
+    signature_algorithm_allowlist_hash TEXT NOT NULL CHECK (
+        signature_algorithm_allowlist_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    required_source_count BIGINT NOT NULL CHECK (required_source_count=5),
+    required_source_set_hash TEXT NOT NULL CHECK (required_source_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    required_member_count BIGINT NOT NULL CHECK (required_member_count>=5),
+    required_member_set_hash TEXT NOT NULL CHECK (required_member_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    installed_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(catalog_id,catalog_version,catalog_hash,trust_policy_id,
+           trust_policy_version,trust_policy_hash,signature_algorithm_allowlist_hash,
+           required_source_count,required_source_set_hash,required_member_count,
+           required_member_set_hash)
+);
+
+CREATE TABLE candidate_managed_feed_catalog_members (
+    catalog_member_id UUID PRIMARY KEY,
+    catalog_id UUID NOT NULL REFERENCES candidate_managed_feed_catalogs(catalog_id) ON DELETE RESTRICT,
+    ordinal INTEGER NOT NULL CHECK (ordinal>=0),
+    source_kind TEXT NOT NULL CHECK (source_kind IN (
+        'cve','cpe','kev','vendor_advisory','detection_rule'
+    )),
+    source_identity TEXT NOT NULL CHECK (btrim(source_identity)<>''),
+    schema_name TEXT NOT NULL CHECK (btrim(schema_name)<>''),
+    schema_version INTEGER NOT NULL CHECK (schema_version>0),
+    member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
+    installed_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(catalog_id,ordinal),
+    UNIQUE(catalog_id,source_kind,source_identity),
+    UNIQUE(catalog_member_id,catalog_id)
+);
+
+CREATE TABLE candidate_managed_feed_catalog_head (
+    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    catalog_id UUID NOT NULL,
+    catalog_version INTEGER NOT NULL,
+    catalog_hash TEXT NOT NULL,
+    trust_policy_id UUID NOT NULL,
+    trust_policy_version INTEGER NOT NULL,
+    trust_policy_hash TEXT NOT NULL,
+    signature_algorithm_allowlist_hash TEXT NOT NULL,
+    required_source_count BIGINT NOT NULL,
+    required_source_set_hash TEXT NOT NULL,
+    required_member_count BIGINT NOT NULL,
+    required_member_set_hash TEXT NOT NULL,
+    head_version BIGINT NOT NULL DEFAULT 0 CHECK (head_version>=0),
+    FOREIGN KEY(catalog_id,catalog_version,catalog_hash,trust_policy_id,
+                trust_policy_version,trust_policy_hash,signature_algorithm_allowlist_hash,
+                required_source_count,required_source_set_hash,required_member_count,
+                required_member_set_hash)
+        REFERENCES candidate_managed_feed_catalogs(
+            catalog_id,catalog_version,catalog_hash,trust_policy_id,
+            trust_policy_version,trust_policy_hash,signature_algorithm_allowlist_hash,
+            required_source_count,required_source_set_hash,required_member_count,
+            required_member_set_hash
+        ) ON DELETE RESTRICT
+);
+
+CREATE TABLE candidate_operation_managed_feed_contracts (
+    operation_id UUID PRIMARY KEY REFERENCES operation_state(operation_id) ON DELETE RESTRICT,
+    catalog_id UUID NOT NULL,
+    catalog_version INTEGER NOT NULL,
+    catalog_hash TEXT NOT NULL,
+    trust_policy_id UUID NOT NULL,
+    trust_policy_version INTEGER NOT NULL,
+    trust_policy_hash TEXT NOT NULL,
+    signature_algorithm_allowlist_hash TEXT NOT NULL,
+    required_source_count BIGINT NOT NULL,
+    required_source_set_hash TEXT NOT NULL,
+    required_member_count BIGINT NOT NULL,
+    required_member_set_hash TEXT NOT NULL,
+    frozen_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    FOREIGN KEY(catalog_id,catalog_version,catalog_hash,trust_policy_id,
+                trust_policy_version,trust_policy_hash,signature_algorithm_allowlist_hash,
+                required_source_count,required_source_set_hash,required_member_count,
+                required_member_set_hash)
+        REFERENCES candidate_managed_feed_catalogs(
+            catalog_id,catalog_version,catalog_hash,trust_policy_id,
+            trust_policy_version,trust_policy_hash,signature_algorithm_allowlist_hash,
+            required_source_count,required_source_set_hash,required_member_count,
+            required_member_set_hash
+        ) ON DELETE RESTRICT
+);
+
+CREATE TABLE candidate_managed_feed_store_members (
+    store_member_id UUID PRIMARY KEY,
+    catalog_member_id UUID NOT NULL,
+    catalog_id UUID NOT NULL,
+    feed_id TEXT NOT NULL CHECK (btrim(feed_id)<>''),
+    source_id TEXT NOT NULL CHECK (btrim(source_id)<>''),
+    feed_schema TEXT NOT NULL CHECK (btrim(feed_schema)<>''),
+    feed_version INTEGER NOT NULL CHECK (feed_version>0),
+    published_at TIMESTAMPTZ NOT NULL,
+    host_ingested_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    effective_valid_until TIMESTAMPTZ NOT NULL,
+    content_hash TEXT NOT NULL CHECK (content_hash ~ '^sha256:[0-9a-f]{64}$'),
+    signed_manifest_hash TEXT NOT NULL CHECK (signed_manifest_hash ~ '^sha256:[0-9a-f]{64}$'),
+    signer_id TEXT NOT NULL CHECK (btrim(signer_id)<>''),
+    signer_key_id TEXT NOT NULL CHECK (btrim(signer_key_id)<>''),
+    signature_algorithm TEXT NOT NULL CHECK (signature_algorithm IN ('ed25519','ecdsa_p256_sha256')),
+    signature_verification_receipt_hash TEXT NOT NULL CHECK (
+        signature_verification_receipt_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    signer_key_member_hash TEXT NOT NULL CHECK (signer_key_member_hash ~ '^sha256:[0-9a-f]{64}$'),
+    provenance JSONB NOT NULL CHECK (jsonb_typeof(provenance)='object'),
+    age_policy_version TEXT NOT NULL CHECK (btrim(age_policy_version)<>''),
+    age_policy_digest TEXT NOT NULL CHECK (age_policy_digest ~ '^sha256:[0-9a-f]{64}$'),
+    immutable_feed_body JSONB NOT NULL CHECK (jsonb_typeof(immutable_feed_body)='object'),
+    member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
+    installed_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CHECK (published_at<=host_ingested_at AND host_ingested_at<effective_valid_until),
+    UNIQUE(store_member_id,catalog_member_id,catalog_id),
+    FOREIGN KEY(catalog_member_id,catalog_id)
+        REFERENCES candidate_managed_feed_catalog_members(catalog_member_id,catalog_id)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE candidate_managed_feed_store_member_heads (
+    catalog_member_id UUID PRIMARY KEY,
+    catalog_id UUID NOT NULL,
+    store_member_id UUID NOT NULL,
+    head_version BIGINT NOT NULL DEFAULT 0 CHECK (head_version>=0),
+    FOREIGN KEY(store_member_id,catalog_member_id,catalog_id)
+        REFERENCES candidate_managed_feed_store_members(
+            store_member_id,catalog_member_id,catalog_id
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(catalog_member_id,catalog_id)
+        REFERENCES candidate_managed_feed_catalog_members(catalog_member_id,catalog_id)
+        ON DELETE RESTRICT
+);
+
 CREATE TABLE candidate_analysis_snapshot_source_sets (
     source_set_id UUID PRIMARY KEY,
     snapshot_id UUID NOT NULL REFERENCES candidate_analysis_snapshots(snapshot_id) ON DELETE RESTRICT,
@@ -2839,6 +2980,10 @@ CREATE TRIGGER hypothesis_candidate_canonical_apply_receipts_append_only BEFORE 
 CREATE TRIGGER hypothesis_candidate_canonical_apply_receipt_members_append_only BEFORE UPDATE OR DELETE ON hypothesis_candidate_canonical_apply_receipt_members FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_managed_feed_trust_stores_append_only BEFORE UPDATE OR DELETE ON candidate_managed_feed_trust_stores FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_managed_feed_signer_keys_append_only BEFORE UPDATE OR DELETE ON candidate_managed_feed_signer_keys FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_managed_feed_catalogs_append_only BEFORE UPDATE OR DELETE ON candidate_managed_feed_catalogs FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_managed_feed_catalog_members_append_only BEFORE UPDATE OR DELETE ON candidate_managed_feed_catalog_members FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_operation_managed_feed_contracts_append_only BEFORE UPDATE OR DELETE ON candidate_operation_managed_feed_contracts FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_managed_feed_store_members_append_only BEFORE UPDATE OR DELETE ON candidate_managed_feed_store_members FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_knowledge_feed_denominator_members_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_knowledge_feed_denominator_members FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_knowledge_feed_snapshots_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_knowledge_feed_snapshots FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_knowledge_feed_snapshot_members_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_knowledge_feed_snapshot_members FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
@@ -3009,6 +3154,61 @@ CREATE TABLE candidate_analysis_work_items (
     UNIQUE(analysis_attempt_id,phase,capability,microbatch_key,component_id)
 );
 
+-- Page delivery is learned only after the immutable Candidate work row and
+-- scheduler worker exist. Keep that later authority in its own append-only
+-- seal instead of mutating candidate_analysis_work_items.
+CREATE TABLE candidate_analysis_work_page_authorities (
+    work_page_authority_id UUID PRIMARY KEY,
+    candidate_work_item_id UUID NOT NULL UNIQUE,
+    analysis_attempt_id UUID NOT NULL,
+    page_receipt_id UUID NOT NULL UNIQUE
+        REFERENCES candidate_analysis_page_receipts(page_receipt_id) ON DELETE RESTRICT,
+    page_authority_set_hash TEXT NOT NULL CHECK (
+        page_authority_set_hash ~ '^sha256:[0-9a-f]{64}$'
+    ),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(work_page_authority_id,analysis_attempt_id),
+    FOREIGN KEY(candidate_work_item_id,analysis_attempt_id)
+        REFERENCES candidate_analysis_work_items(candidate_work_item_id,analysis_attempt_id)
+        ON DELETE RESTRICT
+);
+
+CREATE FUNCTION enforce_candidate_work_page_authority_binding()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM candidate_analysis_work_items candidate
+          JOIN candidate_analysis_page_receipts page
+            ON page.page_receipt_id=NEW.page_receipt_id
+           AND page.analysis_attempt_id=candidate.analysis_attempt_id
+           AND page.page_kind='chunk_page'
+          JOIN stage_worker_runs worker
+            ON worker.id=page.consumer_worker_run_id
+           AND worker.work_item_id=candidate.stage_work_item_id
+         WHERE candidate.candidate_work_item_id=NEW.candidate_work_item_id
+           AND candidate.analysis_attempt_id=NEW.analysis_attempt_id
+           AND NEW.work_page_authority_id=uuid_generate_v5(
+                   candidate.candidate_work_item_id,'candidate_work_page_authority.v1'
+               )
+           AND NEW.page_authority_set_hash=tool_truth_sha256(
+                   to_jsonb(ARRAY[page.page_hash]::TEXT[])::TEXT
+               )
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_WORK_PAGE_AUTHORITY_BINDING_INVALID'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER candidate_work_page_authority_binding_guard
+AFTER INSERT ON candidate_analysis_work_page_authorities
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_work_page_authority_binding();
+
 CREATE TABLE candidate_analysis_artifacts (
     artifact_id UUID PRIMARY KEY,
     analysis_attempt_id UUID NOT NULL REFERENCES candidate_analysis_attempts(analysis_attempt_id) ON DELETE RESTRICT,
@@ -3025,11 +3225,79 @@ CREATE TABLE candidate_analysis_artifacts (
     artifact_body JSONB NOT NULL CHECK (jsonb_typeof(artifact_body)='object'),
     artifact_hash TEXT NOT NULL CHECK (artifact_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-    UNIQUE(analysis_attempt_id,artifact_kind,artifact_hash),
+    UNIQUE(candidate_work_item_id,artifact_kind,artifact_hash),
     UNIQUE(artifact_id,analysis_attempt_id),
     FOREIGN KEY(candidate_work_item_id,analysis_attempt_id)
         REFERENCES candidate_analysis_work_items(candidate_work_item_id,analysis_attempt_id)
         ON DELETE RESTRICT
+);
+
+-- Provider-attempt replay authority is separate from model output. A stable
+-- provider attempt may be looked up after response loss without invoking the
+-- provider again. The dispatch plan has no Candidate artifact row; every
+-- other kind exact-binds the durable artifact receipt.
+CREATE TABLE candidate_analysis_provider_attempts (
+    provider_attempt_id UUID PRIMARY KEY,
+    analysis_attempt_id UUID NOT NULL REFERENCES candidate_analysis_attempts(analysis_attempt_id) ON DELETE RESTRICT,
+    stage_work_item_id UUID NOT NULL UNIQUE REFERENCES stage_work_items(id) ON DELETE RESTRICT,
+    worker_run_id UUID NOT NULL REFERENCES stage_worker_runs(id) ON DELETE RESTRICT,
+    artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
+        'controller_dispatch.v1','hypothesis_proposal.v1','proposal_conflict_review.v1',
+        'hypothesis_coverage_subreview.v1','hypothesis_coverage_synthesis.v1',
+        'controller_decision.v1'
+    )),
+    artifact_body JSONB NOT NULL CHECK (jsonb_typeof(artifact_body)='object'),
+    artifact_hash TEXT NOT NULL CHECK (artifact_hash ~ '^sha256:[0-9a-f]{64}$'),
+    artifact_id UUID UNIQUE REFERENCES candidate_analysis_artifacts(artifact_id) ON DELETE RESTRICT
+        DEFERRABLE INITIALLY DEFERRED,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CHECK ((artifact_kind='controller_dispatch.v1')=(artifact_id IS NULL)),
+    UNIQUE(provider_attempt_id,analysis_attempt_id)
+);
+
+-- Gate-preseal compiler recipe. Core sealed objects remain non-Deserialize;
+-- the host reloads this server-authored recipe and recompiles them before
+-- constructing the opaque CandidateGateSnapshot. Model output cannot supply
+-- any count, exact-set hash, route, or generation transition in this row.
+CREATE TABLE candidate_analysis_host_compilation_materials (
+    compilation_material_id UUID PRIMARY KEY,
+    stable_compilation_request_id UUID NOT NULL UNIQUE,
+    stable_apply_request_id UUID NOT NULL UNIQUE,
+    analysis_attempt_id UUID NOT NULL UNIQUE,
+    snapshot_id UUID NOT NULL,
+    operation_id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    final_submitter_worker_run_id UUID NOT NULL REFERENCES stage_worker_runs(id) ON DELETE RESTRICT,
+    compiler_recipe JSONB NOT NULL CHECK (jsonb_typeof(compiler_recipe)='object'),
+    mutations JSONB NOT NULL CHECK (jsonb_typeof(mutations)='array'),
+    input_dispositions JSONB NOT NULL CHECK (jsonb_typeof(input_dispositions)='array'),
+    input_relations JSONB NOT NULL CHECK (jsonb_typeof(input_relations)='array'),
+    mutation_count BIGINT NOT NULL CHECK (mutation_count>=0),
+    mutation_set_hash TEXT NOT NULL CHECK (mutation_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    claim_component_count BIGINT NOT NULL CHECK (claim_component_count>=0),
+    claim_component_set_hash TEXT NOT NULL CHECK (claim_component_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    verification_contract_count BIGINT NOT NULL CHECK (verification_contract_count>=0),
+    verification_contract_set_hash TEXT NOT NULL CHECK (verification_contract_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    verification_plan_count BIGINT NOT NULL CHECK (verification_plan_count>=0),
+    verification_plan_set_hash TEXT NOT NULL CHECK (verification_plan_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    generation_transition_count BIGINT NOT NULL CHECK (generation_transition_count=mutation_count),
+    generation_transition_set_hash TEXT NOT NULL CHECK (generation_transition_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    material_hash TEXT NOT NULL CHECK (material_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CHECK (
+        (mutation_count=0 AND claim_component_count=0
+            AND verification_contract_count=0 AND verification_plan_count=0)
+        OR (mutation_count>0 AND claim_component_count>0
+            AND verification_contract_count>0 AND verification_plan_count>0)
+    ),
+    FOREIGN KEY(analysis_attempt_id,snapshot_id,operation_id,organization_id)
+        REFERENCES candidate_analysis_attempts(
+            analysis_attempt_id,snapshot_id,operation_id,organization_id
+        ) ON DELETE RESTRICT,
+    UNIQUE(stable_compilation_request_id,analysis_attempt_id,snapshot_id,
+           operation_id,organization_id,final_submitter_worker_run_id,
+           mutation_set_hash,claim_component_set_hash,verification_contract_set_hash,
+           verification_plan_set_hash,generation_transition_set_hash,material_hash)
 );
 
 -- Server-owned compiler output authority. This is deliberately separate from
@@ -3049,6 +3317,7 @@ CREATE TABLE candidate_analysis_host_compilation_seals (
     verification_contract_set_hash TEXT NOT NULL CHECK (verification_contract_set_hash ~ '^sha256:[0-9a-f]{64}$'),
     verification_plan_set_hash TEXT NOT NULL CHECK (verification_plan_set_hash ~ '^sha256:[0-9a-f]{64}$'),
     generation_transition_set_hash TEXT NOT NULL CHECK (generation_transition_set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    compilation_material_hash TEXT NOT NULL CHECK (compilation_material_hash ~ '^sha256:[0-9a-f]{64}$'),
     compiler_seal_hash TEXT NOT NULL CHECK (compiler_seal_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     UNIQUE(analysis_attempt_id),
@@ -3056,7 +3325,18 @@ CREATE TABLE candidate_analysis_host_compilation_seals (
     FOREIGN KEY(analysis_attempt_id,snapshot_id,operation_id,organization_id)
         REFERENCES candidate_analysis_attempts(
             analysis_attempt_id,snapshot_id,operation_id,organization_id
-        ) ON DELETE RESTRICT
+        ) ON DELETE RESTRICT,
+    FOREIGN KEY(stable_compilation_request_id,analysis_attempt_id,snapshot_id,
+                operation_id,organization_id,final_submitter_worker_run_id,
+                mutation_set_hash,claim_component_set_hash,verification_contract_set_hash,
+                verification_plan_set_hash,generation_transition_set_hash,
+                compilation_material_hash)
+        REFERENCES candidate_analysis_host_compilation_materials(
+                stable_compilation_request_id,analysis_attempt_id,snapshot_id,
+                operation_id,organization_id,final_submitter_worker_run_id,
+                mutation_set_hash,claim_component_set_hash,verification_contract_set_hash,
+                verification_plan_set_hash,generation_transition_set_hash,material_hash)
+        ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE FUNCTION enforce_candidate_artifact_recorded_output()
@@ -3217,7 +3497,8 @@ CREATE TABLE candidate_analysis_hypothesis_coverage_checklist_members (
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK ((applicability_disposition LIKE 'blocked_%')=(enrichment_obligation_id IS NOT NULL)),
     UNIQUE(analysis_attempt_id,snapshot_input_id,ordinal),
-    UNIQUE(analysis_attempt_id,snapshot_input_id,attack_class_id,attack_class_version,trust_boundary_hash),
+    UNIQUE(analysis_attempt_id,snapshot_input_id,attack_class_id,attack_class_version,
+           trust_boundary_identity,trust_boundary_hash),
     UNIQUE(checklist_member_id,analysis_attempt_id,snapshot_input_id)
 );
 
@@ -3244,8 +3525,11 @@ CREATE TRIGGER candidate_analysis_input_chunk_census_members_append_only BEFORE 
 CREATE TRIGGER candidate_analysis_attempt_state_events_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_attempt_state_events FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_page_receipts_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_page_receipts FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_work_items_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_work_items FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_analysis_work_page_authorities_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_work_page_authorities FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_artifacts_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_artifacts FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_host_compilation_seals_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_host_compilation_seals FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_analysis_provider_attempts_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_provider_attempts FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_analysis_host_compilation_materials_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_host_compilation_materials FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER hypothesis_proposals_append_only BEFORE UPDATE OR DELETE ON hypothesis_proposals FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER hypothesis_proposal_refs_append_only BEFORE UPDATE OR DELETE ON hypothesis_proposal_refs FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_proposal_censuses_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_proposal_censuses FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
@@ -3325,11 +3609,16 @@ CREATE TABLE candidate_analysis_hypothesis_coverage_subreviews (
     outcome TEXT NOT NULL CHECK (outcome IN ('no_local_miss','missed_hypothesis','blocked')),
     typed_missed_refs JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(typed_missed_refs)='array'),
     blocker_codes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    semantic_summary JSONB NOT NULL CHECK (jsonb_typeof(semantic_summary)='object'),
+    semantic_observation_count BIGINT NOT NULL CHECK (semantic_observation_count BETWEEN 0 AND 64),
+    semantic_summary_hash TEXT NOT NULL CHECK (semantic_summary_hash ~ '^sha256:[0-9a-f]{64}$'),
     subreview_hash TEXT NOT NULL CHECK (subreview_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK (primary_analyst_worker_run_id<>map_critic_worker_run_id),
     CHECK (NOT context_truncated OR outcome='blocked'),
     CHECK ((outcome='missed_hypothesis')=(jsonb_array_length(typed_missed_refs)>0)),
+    CHECK (jsonb_typeof(semantic_summary->'semantic_observations')='array'
+        AND jsonb_array_length(semantic_summary->'semantic_observations')=semantic_observation_count),
     FOREIGN KEY(subreview_census_member_id,subreview_census_id,analysis_attempt_id,snapshot_input_id)
         REFERENCES candidate_analysis_hypothesis_coverage_subreview_census_members(
             subreview_census_member_id,subreview_census_id,analysis_attempt_id,snapshot_input_id
@@ -3389,6 +3678,411 @@ ALTER TABLE candidate_analysis_hypothesis_coverage_synthesis_censuses
         synthesis_node_id,synthesis_census_id,analysis_attempt_id
     ) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED;
 
+CREATE TABLE candidate_analysis_hypothesis_coverage_synthesis_node_children (
+    child_member_id UUID PRIMARY KEY,
+    synthesis_node_id UUID NOT NULL,
+    synthesis_census_id UUID NOT NULL,
+    analysis_attempt_id UUID NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal>=0),
+    child_kind TEXT NOT NULL CHECK (child_kind IN ('subreview','synthesis_node')),
+    child_subreview_id UUID REFERENCES candidate_analysis_hypothesis_coverage_subreviews(subreview_id) ON DELETE RESTRICT,
+    child_synthesis_node_id UUID REFERENCES candidate_analysis_hypothesis_coverage_synthesis_census_members(synthesis_node_id) ON DELETE RESTRICT,
+    child_receipt_hash TEXT NOT NULL CHECK (child_receipt_hash ~ '^sha256:[0-9a-f]{64}$'),
+    member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    CHECK (
+        (child_kind='subreview' AND child_subreview_id IS NOT NULL
+            AND child_synthesis_node_id IS NULL)
+        OR (child_kind='synthesis_node' AND child_subreview_id IS NULL
+            AND child_synthesis_node_id IS NOT NULL)
+    ),
+    UNIQUE(synthesis_node_id,ordinal),
+    UNIQUE(synthesis_node_id,child_kind,child_subreview_id,child_synthesis_node_id),
+    FOREIGN KEY(synthesis_node_id,synthesis_census_id,analysis_attempt_id)
+        REFERENCES candidate_analysis_hypothesis_coverage_synthesis_census_members(
+            synthesis_node_id,synthesis_census_id,analysis_attempt_id
+        ) ON DELETE RESTRICT
+);
+
+CREATE TABLE candidate_analysis_hypothesis_coverage_synthesis_node_descendant_workers (
+    descendant_member_id UUID PRIMARY KEY,
+    synthesis_node_id UUID NOT NULL,
+    synthesis_census_id UUID NOT NULL,
+    analysis_attempt_id UUID NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal>=0),
+    worker_run_id UUID NOT NULL REFERENCES stage_worker_runs(id) ON DELETE RESTRICT,
+    descendant_role TEXT NOT NULL CHECK (descendant_role IN ('primary_analyst','map_critic')),
+    member_hash TEXT NOT NULL CHECK (member_hash ~ '^sha256:[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+    UNIQUE(synthesis_node_id,ordinal),
+    UNIQUE(synthesis_node_id,worker_run_id),
+    FOREIGN KEY(synthesis_node_id,synthesis_census_id,analysis_attempt_id)
+        REFERENCES candidate_analysis_hypothesis_coverage_synthesis_census_members(
+            synthesis_node_id,synthesis_census_id,analysis_attempt_id
+        ) ON DELETE RESTRICT
+);
+
+CREATE FUNCTION enforce_candidate_synthesis_node_exact_members()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    parent candidate_analysis_hypothesis_coverage_synthesis_census_members%ROWTYPE;
+    census_fan_in_limit INTEGER;
+    actual_child_count BIGINT;
+    child_ordinal_count BIGINT;
+    child_minimum_ordinal INTEGER;
+    child_maximum_ordinal INTEGER;
+    actual_child_set_hash TEXT;
+    actual_descendant_count BIGINT;
+    descendant_ordinal_count BIGINT;
+    descendant_minimum_ordinal INTEGER;
+    descendant_maximum_ordinal INTEGER;
+    actual_descendant_set_hash TEXT;
+BEGIN
+    SELECT * INTO STRICT parent
+      FROM candidate_analysis_hypothesis_coverage_synthesis_census_members
+     WHERE synthesis_node_id=NEW.synthesis_node_id;
+    SELECT fan_in_limit INTO STRICT census_fan_in_limit
+      FROM candidate_analysis_hypothesis_coverage_synthesis_censuses
+     WHERE synthesis_census_id=parent.synthesis_census_id;
+    IF parent.child_receipt_count>census_fan_in_limit THEN
+        RAISE EXCEPTION 'CANDIDATE_SYNTHESIS_FAN_IN_LIMIT_EXCEEDED'
+            USING ERRCODE='23514';
+    END IF;
+
+    SELECT COUNT(*),COUNT(DISTINCT ordinal),MIN(ordinal),MAX(ordinal),
+           tool_truth_sha256(to_jsonb(COALESCE(
+               array_agg(child_receipt_hash ORDER BY ordinal),ARRAY[]::TEXT[]
+           ))::TEXT)
+      INTO actual_child_count,child_ordinal_count,child_minimum_ordinal,
+           child_maximum_ordinal,actual_child_set_hash
+      FROM candidate_analysis_hypothesis_coverage_synthesis_node_children
+     WHERE synthesis_node_id=parent.synthesis_node_id;
+    IF actual_child_count<>parent.child_receipt_count
+       OR child_ordinal_count<>actual_child_count
+       OR child_minimum_ordinal<>0
+       OR child_maximum_ordinal<>actual_child_count-1
+       OR actual_child_set_hash<>parent.child_receipt_set_hash
+    THEN
+        RAISE EXCEPTION 'CANDIDATE_SYNTHESIS_CHILD_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM candidate_analysis_hypothesis_coverage_synthesis_node_children child
+          LEFT JOIN candidate_analysis_hypothesis_coverage_subreviews subreview
+            ON subreview.subreview_id=child.child_subreview_id
+          LEFT JOIN candidate_analysis_hypothesis_coverage_synthesis_census_members child_node
+            ON child_node.synthesis_node_id=child.child_synthesis_node_id
+         WHERE child.synthesis_node_id=parent.synthesis_node_id
+           AND (
+               child.synthesis_census_id<>parent.synthesis_census_id
+               OR child.analysis_attempt_id<>parent.analysis_attempt_id
+               OR child.member_hash<>tool_truth_sha256(jsonb_build_object(
+                   'synthesis_node_id',child.synthesis_node_id,
+                   'ordinal',child.ordinal,
+                   'child_kind',child.child_kind,
+                   'child_subreview_id',child.child_subreview_id,
+                   'child_synthesis_node_id',child.child_synthesis_node_id,
+                   'child_receipt_hash',child.child_receipt_hash
+               )::TEXT)
+               OR (child.child_kind='subreview' AND (
+                   parent.node_kind<>'cross_chunk'
+                   OR subreview.analysis_attempt_id IS DISTINCT FROM parent.analysis_attempt_id
+                   OR child.child_receipt_hash IS DISTINCT FROM subreview.subreview_hash
+               ))
+               OR (child.child_kind='synthesis_node' AND (
+                   parent.node_kind='cross_chunk'
+                   OR child_node.synthesis_census_id IS DISTINCT FROM parent.synthesis_census_id
+                   OR child_node.analysis_attempt_id IS DISTINCT FROM parent.analysis_attempt_id
+                   OR child.child_receipt_hash IS DISTINCT FROM child_node.node_hash
+                   OR child_node.synthesis_node_id=parent.synthesis_node_id
+                   OR CASE child_node.node_kind
+                          WHEN 'cross_chunk' THEN 0
+                          WHEN 'cross_input_partition' THEN 1
+                          WHEN 'cross_input_reduce' THEN 2+child_node.level
+                          WHEN 'cross_dimension_reduce' THEN 100+child_node.level
+                          WHEN 'global_semantic_root' THEN 1000
+                          ELSE 2000
+                      END >= CASE parent.node_kind
+                          WHEN 'cross_chunk' THEN 0
+                          WHEN 'cross_input_partition' THEN 1
+                          WHEN 'cross_input_reduce' THEN 2+parent.level
+                          WHEN 'cross_dimension_reduce' THEN 100+parent.level
+                          WHEN 'global_semantic_root' THEN 1000
+                          ELSE -1
+                      END
+               ))
+           )
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_SYNTHESIS_CHILD_AUTHORITY_MISMATCH'
+            USING ERRCODE='23514';
+    END IF;
+
+    IF EXISTS (
+        WITH RECURSIVE reachable(synthesis_node_id) AS (
+            SELECT child_synthesis_node_id
+              FROM candidate_analysis_hypothesis_coverage_synthesis_node_children
+             WHERE synthesis_node_id=parent.synthesis_node_id
+               AND child_synthesis_node_id IS NOT NULL
+            UNION
+            SELECT child.child_synthesis_node_id
+              FROM reachable prior
+              JOIN candidate_analysis_hypothesis_coverage_synthesis_node_children child
+                ON child.synthesis_node_id=prior.synthesis_node_id
+             WHERE child.child_synthesis_node_id IS NOT NULL
+        )
+        SELECT 1 FROM reachable
+         WHERE synthesis_node_id=parent.synthesis_node_id
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_SYNTHESIS_CHILD_CYCLE'
+            USING ERRCODE='23514';
+    END IF;
+
+    SELECT COUNT(*),COUNT(DISTINCT ordinal),MIN(ordinal),MAX(ordinal),
+           tool_truth_sha256(to_jsonb(COALESCE(
+               array_agg(worker_run_id::TEXT ORDER BY ordinal),ARRAY[]::TEXT[]
+           ))::TEXT)
+      INTO actual_descendant_count,descendant_ordinal_count,
+           descendant_minimum_ordinal,descendant_maximum_ordinal,
+           actual_descendant_set_hash
+      FROM candidate_analysis_hypothesis_coverage_synthesis_node_descendant_workers
+     WHERE synthesis_node_id=parent.synthesis_node_id;
+    IF actual_descendant_count<>parent.descendant_worker_count
+       OR descendant_ordinal_count<>actual_descendant_count
+       OR descendant_minimum_ordinal<>0
+       OR descendant_maximum_ordinal<>actual_descendant_count-1
+       OR actual_descendant_set_hash<>parent.descendant_worker_set_hash
+    THEN
+        RAISE EXCEPTION 'CANDIDATE_SYNTHESIS_DESCENDANT_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM candidate_analysis_hypothesis_coverage_synthesis_node_descendant_workers descendant
+         WHERE descendant.synthesis_node_id=parent.synthesis_node_id
+           AND (
+               descendant.synthesis_census_id<>parent.synthesis_census_id
+               OR descendant.analysis_attempt_id<>parent.analysis_attempt_id
+               OR descendant.member_hash<>tool_truth_sha256(jsonb_build_object(
+                   'synthesis_node_id',descendant.synthesis_node_id,
+                   'ordinal',descendant.ordinal,
+                   'worker_run_id',descendant.worker_run_id,
+                   'descendant_role',descendant.descendant_role
+               )::TEXT)
+           )
+    ) OR EXISTS (
+        WITH expected(worker_run_id,descendant_role) AS (
+            SELECT subreview.primary_analyst_worker_run_id,'primary_analyst'::TEXT
+              FROM candidate_analysis_hypothesis_coverage_synthesis_node_children child
+              JOIN candidate_analysis_hypothesis_coverage_subreviews subreview
+                ON subreview.subreview_id=child.child_subreview_id
+             WHERE child.synthesis_node_id=parent.synthesis_node_id
+               AND child.child_kind='subreview'
+            UNION
+            SELECT subreview.map_critic_worker_run_id,'map_critic'::TEXT
+              FROM candidate_analysis_hypothesis_coverage_synthesis_node_children child
+              JOIN candidate_analysis_hypothesis_coverage_subreviews subreview
+                ON subreview.subreview_id=child.child_subreview_id
+             WHERE child.synthesis_node_id=parent.synthesis_node_id
+               AND child.child_kind='subreview'
+            UNION
+            SELECT descendant.worker_run_id,descendant.descendant_role
+              FROM candidate_analysis_hypothesis_coverage_synthesis_node_children child
+              JOIN candidate_analysis_hypothesis_coverage_synthesis_node_descendant_workers descendant
+                ON descendant.synthesis_node_id=child.child_synthesis_node_id
+             WHERE child.synthesis_node_id=parent.synthesis_node_id
+               AND child.child_kind='synthesis_node'
+        ), actual AS (
+            SELECT worker_run_id,descendant_role
+              FROM candidate_analysis_hypothesis_coverage_synthesis_node_descendant_workers
+             WHERE synthesis_node_id=parent.synthesis_node_id
+        )
+        (SELECT * FROM expected EXCEPT SELECT * FROM actual)
+        UNION ALL
+        (SELECT * FROM actual EXCEPT SELECT * FROM expected)
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_SYNTHESIS_DESCENDANT_AUTHORITY_MISMATCH'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER candidate_synthesis_node_child_exact_set
+AFTER INSERT ON candidate_analysis_hypothesis_coverage_synthesis_census_members
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_synthesis_node_exact_members();
+
+CREATE CONSTRAINT TRIGGER candidate_synthesis_child_member_exact_set
+AFTER INSERT ON candidate_analysis_hypothesis_coverage_synthesis_node_children
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_synthesis_node_exact_members();
+
+CREATE CONSTRAINT TRIGGER candidate_synthesis_descendant_member_exact_set
+AFTER INSERT ON candidate_analysis_hypothesis_coverage_synthesis_node_descendant_workers
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_synthesis_node_exact_members();
+
+-- The census header is a receipt for the actual immutable member rows, not an
+-- independently trusted count/hash supplied by its writer.  Recompute the
+-- complete authority at deferred-constraint time so the header and all of its
+-- members/edges may be inserted in either order in one transaction.
+CREATE FUNCTION enforce_candidate_synthesis_census_exact_members()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    census candidate_analysis_hypothesis_coverage_synthesis_censuses%ROWTYPE;
+    actual_node_count BIGINT;
+    actual_node_set_hash TEXT;
+    dimension_pair_count BIGINT;
+    dimension_root_count BIGINT;
+    dimension_root_pair_count BIGINT;
+    dimension_root_set_hash TEXT;
+    global_root_count BIGINT;
+    actual_global_root_node_id UUID;
+    actual_census_hash TEXT;
+BEGIN
+    SELECT * INTO STRICT census
+      FROM candidate_analysis_hypothesis_coverage_synthesis_censuses
+     WHERE synthesis_census_id=NEW.synthesis_census_id;
+
+    SELECT COUNT(*),tool_truth_sha256(to_jsonb(ARRAY(
+               SELECT node_hash
+                 FROM candidate_analysis_hypothesis_coverage_synthesis_census_members
+                WHERE synthesis_census_id=census.synthesis_census_id
+                ORDER BY node_hash
+           ))::TEXT)
+      INTO actual_node_count,actual_node_set_hash
+      FROM candidate_analysis_hypothesis_coverage_synthesis_census_members
+     WHERE synthesis_census_id=census.synthesis_census_id;
+
+    SELECT COUNT(DISTINCT (attack_class_id,trust_boundary_hash))
+      INTO dimension_pair_count
+      FROM candidate_analysis_hypothesis_coverage_synthesis_census_members
+     WHERE synthesis_census_id=census.synthesis_census_id
+       AND attack_class_id IS NOT NULL
+       AND trust_boundary_hash IS NOT NULL;
+
+    WITH dimension_roots AS (
+        SELECT node.synthesis_node_id,node.attack_class_id,
+               node.trust_boundary_hash,node.node_hash,COUNT(*) AS reference_count
+          FROM candidate_analysis_hypothesis_coverage_synthesis_census_members node
+          JOIN candidate_analysis_hypothesis_coverage_synthesis_node_children child
+            ON child.child_synthesis_node_id=node.synthesis_node_id
+           AND child.synthesis_census_id=node.synthesis_census_id
+           AND child.analysis_attempt_id=node.analysis_attempt_id
+          JOIN candidate_analysis_hypothesis_coverage_synthesis_census_members parent
+            ON parent.synthesis_node_id=child.synthesis_node_id
+           AND parent.synthesis_census_id=node.synthesis_census_id
+           AND parent.analysis_attempt_id=node.analysis_attempt_id
+         WHERE node.synthesis_census_id=census.synthesis_census_id
+           AND node.attack_class_id IS NOT NULL
+           AND node.trust_boundary_hash IS NOT NULL
+           AND parent.attack_class_id IS NULL
+           AND parent.trust_boundary_hash IS NULL
+           AND parent.node_kind IN ('cross_dimension_reduce','global_semantic_root')
+         GROUP BY node.synthesis_node_id,node.attack_class_id,
+                  node.trust_boundary_hash,node.node_hash
+    )
+    SELECT COUNT(*),COUNT(DISTINCT (attack_class_id,trust_boundary_hash)),
+           tool_truth_sha256(to_jsonb(ARRAY(
+               SELECT node_hash FROM dimension_roots ORDER BY node_hash
+           ))::TEXT)
+      INTO dimension_root_count,dimension_root_pair_count,dimension_root_set_hash
+      FROM dimension_roots;
+
+    SELECT COUNT(*),MIN(synthesis_node_id::TEXT)::UUID
+      INTO global_root_count,actual_global_root_node_id
+      FROM candidate_analysis_hypothesis_coverage_synthesis_census_members
+     WHERE synthesis_census_id=census.synthesis_census_id
+       AND node_kind='global_semantic_root';
+
+    actual_census_hash:=tool_truth_sha256(jsonb_build_object(
+        'domain','candidate_hypothesis_coverage_synthesis_census.v1',
+        'analysis_attempt_id',census.analysis_attempt_id,
+        'relationship_cross_index_hash',census.relationship_cross_index_hash,
+        'fan_in_limit',census.fan_in_limit,
+        'node_count',actual_node_count,
+        'node_set_hash',actual_node_set_hash,
+        'dimension_root_count',dimension_root_count,
+        'dimension_root_set_hash',dimension_root_set_hash,
+        'global_root_node_id',actual_global_root_node_id
+    )::TEXT);
+
+    IF actual_node_count=0
+       OR census.node_count<>actual_node_count
+       OR census.node_set_hash<>actual_node_set_hash
+       OR dimension_pair_count=0
+       OR dimension_root_count<>dimension_pair_count
+       OR dimension_root_pair_count<>dimension_pair_count
+       OR census.dimension_root_count<>dimension_root_count
+       OR census.dimension_root_set_hash<>dimension_root_set_hash
+       OR global_root_count<>1
+       OR census.global_root_node_id<>actual_global_root_node_id
+       OR census.census_hash<>actual_census_hash
+       OR EXISTS (
+            SELECT 1
+              FROM candidate_analysis_hypothesis_coverage_synthesis_census_members member
+             WHERE member.synthesis_census_id=census.synthesis_census_id
+               AND (
+                   member.analysis_attempt_id<>census.analysis_attempt_id
+                   OR member.relationship_cross_index_hash<>
+                      census.relationship_cross_index_hash
+                   OR (member.attack_class_id IS NULL)<>
+                      (member.trust_boundary_hash IS NULL)
+                   OR (member.node_kind='global_semantic_root' AND (
+                       member.attack_class_id IS NOT NULL
+                       OR member.trust_boundary_hash IS NOT NULL
+                   ))
+               )
+       )
+       OR EXISTS (
+            WITH dimension_roots AS (
+                SELECT node.synthesis_node_id,node.attack_class_id,
+                       node.trust_boundary_hash,COUNT(*) AS reference_count
+                  FROM candidate_analysis_hypothesis_coverage_synthesis_census_members node
+                  JOIN candidate_analysis_hypothesis_coverage_synthesis_node_children child
+                    ON child.child_synthesis_node_id=node.synthesis_node_id
+                   AND child.synthesis_census_id=node.synthesis_census_id
+                   AND child.analysis_attempt_id=node.analysis_attempt_id
+                  JOIN candidate_analysis_hypothesis_coverage_synthesis_census_members parent
+                    ON parent.synthesis_node_id=child.synthesis_node_id
+                   AND parent.synthesis_census_id=node.synthesis_census_id
+                   AND parent.analysis_attempt_id=node.analysis_attempt_id
+                 WHERE node.synthesis_census_id=census.synthesis_census_id
+                   AND node.attack_class_id IS NOT NULL
+                   AND node.trust_boundary_hash IS NOT NULL
+                   AND parent.attack_class_id IS NULL
+                   AND parent.trust_boundary_hash IS NULL
+                   AND parent.node_kind IN ('cross_dimension_reduce','global_semantic_root')
+                 GROUP BY node.synthesis_node_id,node.attack_class_id,
+                          node.trust_boundary_hash
+            )
+            SELECT 1 FROM dimension_roots WHERE reference_count<>1
+       )
+    THEN
+        RAISE EXCEPTION 'CANDIDATE_SYNTHESIS_CENSUS_RELATIONAL_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER candidate_synthesis_census_header_exact_set_guard
+AFTER INSERT ON candidate_analysis_hypothesis_coverage_synthesis_censuses
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_synthesis_census_exact_members();
+
+CREATE CONSTRAINT TRIGGER candidate_synthesis_census_member_exact_set_guard
+AFTER INSERT ON candidate_analysis_hypothesis_coverage_synthesis_census_members
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_synthesis_census_exact_members();
+
 CREATE TABLE candidate_analysis_hypothesis_coverage_synthesis_reviews (
     synthesis_review_id UUID PRIMARY KEY,
     synthesis_node_id UUID NOT NULL UNIQUE,
@@ -3400,10 +4094,17 @@ CREATE TABLE candidate_analysis_hypothesis_coverage_synthesis_reviews (
     context_truncated BOOLEAN NOT NULL,
     outcome TEXT NOT NULL CHECK (outcome IN ('no_composite_miss','missed_hypothesis','blocked')),
     typed_missed_refs JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(typed_missed_refs)='array'),
+    blocker_codes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    semantic_summary JSONB NOT NULL CHECK (jsonb_typeof(semantic_summary)='object'),
+    semantic_observation_count BIGINT NOT NULL CHECK (semantic_observation_count BETWEEN 0 AND 64),
+    semantic_summary_hash TEXT NOT NULL CHECK (semantic_summary_hash ~ '^sha256:[0-9a-f]{64}$'),
     review_hash TEXT NOT NULL CHECK (review_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK (worker_separation_valid OR outcome='blocked'),
     CHECK (NOT context_truncated OR outcome='blocked'),
+    CHECK ((outcome='missed_hypothesis')=(jsonb_array_length(typed_missed_refs)>0)),
+    CHECK (jsonb_typeof(semantic_summary->'semantic_observations')='array'
+        AND jsonb_array_length(semantic_summary->'semantic_observations')=semantic_observation_count),
     FOREIGN KEY(synthesis_node_id,synthesis_census_id,analysis_attempt_id)
         REFERENCES candidate_analysis_hypothesis_coverage_synthesis_census_members(
             synthesis_node_id,synthesis_census_id,analysis_attempt_id
@@ -3440,7 +4141,7 @@ CREATE TABLE candidate_analysis_critic_census_members (
     analysis_attempt_id UUID NOT NULL,
     ordinal INTEGER NOT NULL CHECK (ordinal>=0),
     member_kind TEXT NOT NULL CHECK (member_kind IN (
-        'proposal_conflict_component','hypothesis_coverage_subreview',
+        'proposal_conflict_review','hypothesis_coverage_subreview',
         'hypothesis_coverage_synthesis','hypothesis_coverage_input_review',
         'hypothesis_coverage_global_review'
     )),
@@ -3457,6 +4158,7 @@ CREATE TABLE candidate_analysis_critic_census_members (
 
 CREATE TABLE candidate_analysis_hypothesis_coverage_reviews (
     coverage_review_id UUID PRIMARY KEY,
+    artifact_id UUID NOT NULL UNIQUE,
     analysis_attempt_id UUID NOT NULL REFERENCES candidate_analysis_attempts(analysis_attempt_id) ON DELETE RESTRICT,
     snapshot_input_id UUID NOT NULL REFERENCES candidate_analysis_snapshot_inputs(snapshot_input_id) ON DELETE RESTRICT,
     attempt_ordinal INTEGER NOT NULL CHECK (attempt_ordinal>=0),
@@ -3484,8 +4186,104 @@ CREATE TABLE candidate_analysis_hypothesis_coverage_reviews (
     review_hash TEXT NOT NULL CHECK (review_hash ~ '^sha256:[0-9a-f]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     CHECK (review_mode='full' OR outcome='blocked'),
-    UNIQUE(analysis_attempt_id,snapshot_input_id)
+    UNIQUE(analysis_attempt_id,snapshot_input_id),
+    FOREIGN KEY(artifact_id,analysis_attempt_id)
+        REFERENCES candidate_analysis_artifacts(artifact_id,analysis_attempt_id)
+        ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
 );
+
+-- Coverage-review artifacts are emitted by the controller reducer.  Neither
+-- the artifact kind nor the controller capability alone proves ownership, so
+-- bind every such artifact bidirectionally to the exact reduced review row.
+CREATE FUNCTION enforce_candidate_coverage_review_artifact_exact_set()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    target_attempt_id UUID:=NEW.analysis_attempt_id;
+BEGIN
+    IF (SELECT COUNT(*)
+          FROM candidate_analysis_artifacts artifact
+         WHERE artifact.analysis_attempt_id=target_attempt_id
+           AND artifact.artifact_kind='hypothesis_coverage_review.v1')
+       <>
+       (SELECT COUNT(*)
+          FROM candidate_analysis_hypothesis_coverage_reviews review
+         WHERE review.analysis_attempt_id=target_attempt_id)
+       OR EXISTS (
+            SELECT 1
+              FROM candidate_analysis_hypothesis_coverage_reviews review
+              LEFT JOIN candidate_analysis_artifacts artifact
+                ON artifact.artifact_id=review.artifact_id
+               AND artifact.analysis_attempt_id=review.analysis_attempt_id
+              LEFT JOIN candidate_analysis_work_items candidate
+                ON candidate.candidate_work_item_id=artifact.candidate_work_item_id
+               AND candidate.analysis_attempt_id=artifact.analysis_attempt_id
+              LEFT JOIN stage_work_items item
+                ON item.id=candidate.stage_work_item_id
+              LEFT JOIN stage_worker_runs worker
+                ON worker.id=artifact.worker_run_id
+               AND worker.work_item_id=item.id
+             WHERE review.analysis_attempt_id=target_attempt_id
+               AND (
+                   artifact.artifact_id IS NULL
+                   OR artifact.artifact_kind IS DISTINCT FROM
+                      'hypothesis_coverage_review.v1'
+                   OR artifact.stage_worker_output_id IS NOT NULL
+                   OR artifact.artifact_body IS DISTINCT FROM jsonb_build_object(
+                       'kind','hypothesis_coverage_review.v1',
+                       'analysis_attempt_id',review.analysis_attempt_id,
+                       'snapshot_input_id',review.snapshot_input_id,
+                       'outcome',review.outcome,
+                       'review_mode',review.review_mode,
+                       'checklist_dispositions',review.checklist_dispositions,
+                       'typed_missed_refs',review.typed_missed_refs
+                   )
+                   OR artifact.artifact_hash IS DISTINCT FROM
+                      tool_truth_sha256(artifact.artifact_body::TEXT)
+                   OR candidate.phase IS DISTINCT FROM 'controller'
+                   OR candidate.capability IS DISTINCT FROM
+                      'candidate_controller_dispatch'
+                   OR item.kind IS DISTINCT FROM 'candidate_controller_dispatch'
+                   OR item.role IS DISTINCT FROM 'controller'
+                   OR item.status IS DISTINCT FROM 'completed'
+                   OR worker.specialist IS DISTINCT FROM 'controller'
+                   OR worker.work_item_kind IS DISTINCT FROM
+                      'candidate_controller_dispatch'
+                   OR worker.status IS DISTINCT FROM 'passed'
+                   OR (SELECT COUNT(*) FROM stage_worker_runs exact_worker
+                        WHERE exact_worker.work_item_id=item.id)<>1
+               )
+       )
+       OR EXISTS (
+            SELECT 1
+              FROM candidate_analysis_artifacts artifact
+              LEFT JOIN candidate_analysis_hypothesis_coverage_reviews review
+                ON review.artifact_id=artifact.artifact_id
+               AND review.analysis_attempt_id=artifact.analysis_attempt_id
+             WHERE artifact.analysis_attempt_id=target_attempt_id
+               AND artifact.artifact_kind='hypothesis_coverage_review.v1'
+               AND review.coverage_review_id IS NULL
+       )
+    THEN
+        RAISE EXCEPTION 'CANDIDATE_COVERAGE_REVIEW_ARTIFACT_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER candidate_coverage_review_row_artifact_exact_set_guard
+AFTER INSERT ON candidate_analysis_hypothesis_coverage_reviews
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_coverage_review_artifact_exact_set();
+
+CREATE CONSTRAINT TRIGGER candidate_coverage_review_artifact_row_exact_set_guard
+AFTER INSERT ON candidate_analysis_artifacts
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+WHEN (NEW.artifact_kind='hypothesis_coverage_review.v1')
+EXECUTE FUNCTION enforce_candidate_coverage_review_artifact_exact_set();
 
 CREATE TABLE hypothesis_proposal_relations (
     proposal_relation_id UUID PRIMARY KEY,
@@ -3545,6 +4343,8 @@ CREATE TRIGGER candidate_analysis_hypothesis_coverage_subreview_census_members_a
 CREATE TRIGGER candidate_analysis_hypothesis_coverage_subreviews_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_hypothesis_coverage_subreviews FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_hypothesis_coverage_synthesis_censuses_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_hypothesis_coverage_synthesis_censuses FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_hypothesis_coverage_synthesis_census_members_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_hypothesis_coverage_synthesis_census_members FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_analysis_hypothesis_coverage_synthesis_node_children_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_hypothesis_coverage_synthesis_node_children FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
+CREATE TRIGGER candidate_analysis_hypothesis_coverage_synthesis_node_descendant_workers_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_hypothesis_coverage_synthesis_node_descendant_workers FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_hypothesis_coverage_synthesis_reviews_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_hypothesis_coverage_synthesis_reviews FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_hypothesis_coverage_global_reviews_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_hypothesis_coverage_global_reviews FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER candidate_analysis_critic_censuses_append_only BEFORE UPDATE OR DELETE ON candidate_analysis_critic_censuses FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
@@ -3715,7 +4515,8 @@ CREATE TABLE investigation_projection_outbox (
     change_kind TEXT NOT NULL CHECK (change_kind IN (
         'insert','supersede','close','compare','invalidate'
     )),
-    source_entity_id UUID NOT NULL,
+    source_entity_id TEXT NOT NULL
+        CHECK (btrim(source_entity_id)<>'' AND octet_length(source_entity_id)<=512),
     source_entity_version BIGINT NOT NULL CHECK (source_entity_version>0),
     source_entity_hash TEXT NOT NULL CHECK (source_entity_hash ~ '^sha256:[0-9a-f]{64}$'),
     source_occurred_at TIMESTAMPTZ,
@@ -3763,13 +4564,15 @@ CREATE TABLE investigation_projection_changes (
     source_batch_seq BIGINT NOT NULL CHECK (source_batch_seq>0),
     outbox_member_id UUID NOT NULL,
     entity_kind TEXT NOT NULL,
-    entity_id UUID NOT NULL,
+    entity_id TEXT NOT NULL CHECK (btrim(entity_id)<>'' AND octet_length(entity_id)<=512),
     entity_version BIGINT NOT NULL CHECK (entity_version>0),
     change_kind TEXT NOT NULL CHECK (change_kind IN (
         'insert','supersede','close','compare','invalidate'
     )),
     timeline_event_kind TEXT NOT NULL,
     invalidation_reason TEXT,
+    source_hash TEXT NOT NULL CHECK (source_hash ~ '^sha256:[0-9a-f]{64}$'),
+    projection_hash TEXT NOT NULL CHECK (projection_hash ~ '^sha256:[0-9a-f]{64}$'),
     change_hash TEXT NOT NULL CHECK (change_hash ~ '^sha256:[0-9a-f]{64}$'),
     source_occurred_at TIMESTAMPTZ,
     source_time_status TEXT NOT NULL CHECK (source_time_status IN ('known','historical_unknown')),
@@ -3792,9 +4595,9 @@ CREATE TABLE investigation_projection_changes (
         REFERENCES investigation_projection_outbox(
             outbox_member_id,batch_id,operation_id,source_batch_seq
         ) ON DELETE RESTRICT,
-    FOREIGN KEY(operation_id,entity_kind,entity_id,entity_version)
+    FOREIGN KEY(operation_id,entity_kind,entity_id,entity_version,source_hash,projection_hash)
         REFERENCES investigation_projection_entity_versions(
-            operation_id,entity_kind,entity_id,entity_version
+            operation_id,entity_kind,entity_id,entity_version,source_hash,projection_hash
         ) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
 );
 
@@ -3884,6 +4687,64 @@ ALTER TABLE attack_candidate_work_items
 ALTER TABLE attack_candidates
     ADD COLUMN hypothesis_revision_id UUID REFERENCES attack_hypothesis_revisions(revision_id) ON DELETE RESTRICT,
     ADD COLUMN legacy_projection_id UUID REFERENCES hypothesis_legacy_candidate_projection_versions(legacy_candidate_projection_id) ON DELETE RESTRICT;
+
+-- Repository checks provide the normal stable error path, but raw SQL must not
+-- bypass the operation-frozen Investigation authority boundary.  The three
+-- retained legacy mutation tables all expose operation_id (TEXT on Candidate,
+-- UUID on approval/Attempt), so compare through the canonical UUID text form.
+CREATE FUNCTION enforce_investigation_legacy_mutation_mode()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    forbidden BOOLEAN;
+BEGIN
+    IF TG_OP='INSERT' THEN
+        SELECT EXISTS(
+            SELECT 1 FROM operation_state operation
+             WHERE operation.operation_id::TEXT=NEW.operation_id::TEXT
+               AND operation.investigation_rollout_mode IN (
+                   'registry_authoritative_legacy_projection','new_only'
+               )
+        ) INTO forbidden;
+    ELSIF TG_OP='DELETE' THEN
+        SELECT EXISTS(
+            SELECT 1 FROM operation_state operation
+             WHERE operation.operation_id::TEXT=OLD.operation_id::TEXT
+               AND operation.investigation_rollout_mode IN (
+                   'registry_authoritative_legacy_projection','new_only'
+               )
+        ) INTO forbidden;
+    ELSE
+        SELECT EXISTS(
+            SELECT 1 FROM operation_state operation
+             WHERE operation.operation_id::TEXT IN (
+                       OLD.operation_id::TEXT,NEW.operation_id::TEXT
+                   )
+               AND operation.investigation_rollout_mode IN (
+                   'registry_authoritative_legacy_projection','new_only'
+               )
+        ) INTO forbidden;
+    END IF;
+    IF forbidden THEN
+        RAISE EXCEPTION 'ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+
+CREATE TRIGGER attack_candidates_investigation_legacy_mutation_guard
+BEFORE INSERT OR UPDATE OR DELETE ON attack_candidates
+FOR EACH ROW EXECUTE FUNCTION enforce_investigation_legacy_mutation_mode();
+
+CREATE TRIGGER attack_candidate_approvals_investigation_legacy_mutation_guard
+BEFORE INSERT OR UPDATE OR DELETE ON attack_candidate_approvals
+FOR EACH ROW EXECUTE FUNCTION enforce_investigation_legacy_mutation_mode();
+
+CREATE TRIGGER candidate_attempts_investigation_legacy_mutation_guard
+BEFORE INSERT OR UPDATE OR DELETE ON candidate_attempts
+FOR EACH ROW EXECUTE FUNCTION enforce_investigation_legacy_mutation_mode();
 
 CREATE TRIGGER investigation_projection_source_blobs_append_only BEFORE UPDATE OR DELETE ON investigation_projection_source_blobs FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
 CREATE TRIGGER investigation_projection_outbox_append_only BEFORE UPDATE OR DELETE ON investigation_projection_outbox FOR EACH ROW EXECUTE FUNCTION investigation_reject_append_only();
@@ -3988,15 +4849,40 @@ DECLARE
     candidate_item candidate_analysis_work_items%ROWTYPE;
     attempt candidate_analysis_attempts%ROWTYPE;
     snapshot candidate_analysis_snapshots%ROWTYPE;
+    expected_phase TEXT;
+    expected_creator TEXT;
     input_count BIGINT;
     adequate_review_count BIGINT;
 BEGIN
-    IF NEW.created_by<>'server_phase_transition' THEN
+    SELECT phase,creator INTO expected_phase,expected_creator FROM (VALUES
+        ('candidate_controller_dispatch','controller','server_seed'),
+        ('hypothesis_proposal','proposal','server_seed'),
+        ('proposal_conflict_review','critic','server_phase_transition'),
+        ('hypothesis_coverage_subreview','critic','server_phase_transition'),
+        ('hypothesis_coverage_sampling_omitted','critic','server_phase_transition'),
+        ('coverage_cross_chunk_synthesis','critic','server_phase_transition'),
+        ('coverage_cross_input_partition','critic','server_phase_transition'),
+        ('coverage_cross_input_reduce','critic','server_phase_transition'),
+        ('coverage_cross_dimension_reduce','critic','server_phase_transition'),
+        ('coverage_global_semantic_root','critic','server_phase_transition'),
+        ('candidate_controller_final','controller','server_phase_transition')
+    ) AS mapping(kind,phase,creator) WHERE kind=NEW.kind;
+    IF expected_phase IS NULL THEN
+        IF EXISTS (SELECT 1 FROM candidate_analysis_work_items
+                    WHERE stage_work_item_id=NEW.id) THEN
+            RAISE EXCEPTION 'CANDIDATE_WORK_CAPABILITY_INVALID' USING ERRCODE='23514';
+        END IF;
         RETURN NULL;
+    END IF;
+    IF NEW.created_by<>expected_creator THEN
+        RAISE EXCEPTION 'CANDIDATE_WORK_CREATOR_INVALID' USING ERRCODE='23514';
     END IF;
     SELECT * INTO candidate_item FROM candidate_analysis_work_items
      WHERE stage_work_item_id=NEW.id;
-    IF NOT FOUND THEN
+    IF NOT FOUND
+       OR candidate_item.phase<>expected_phase
+       OR candidate_item.capability<>NEW.kind
+    THEN
         RAISE EXCEPTION 'CANDIDATE_PHASE_TRANSITION_BINDING_REQUIRED' USING ERRCODE='23514';
     END IF;
     SELECT * INTO attempt FROM candidate_analysis_attempts
@@ -4009,8 +4895,22 @@ BEGIN
     THEN
         RAISE EXCEPTION 'CANDIDATE_PHASE_TRANSITION_AUTHORITY_MISMATCH' USING ERRCODE='23514';
     END IF;
-    IF candidate_item.phase='proposal' THEN
-        RAISE EXCEPTION 'CANDIDATE_PROPOSAL_REQUIRES_SERVER_SEED' USING ERRCODE='23514';
+    IF NEW.kind IN ('candidate_controller_dispatch','hypothesis_proposal')
+       AND EXISTS (
+           SELECT 1 FROM candidate_analysis_proposal_censuses census
+            WHERE census.analysis_attempt_id=candidate_item.analysis_attempt_id
+       ) THEN
+        RAISE EXCEPTION 'CANDIDATE_H1_WORK_AUTHORITY_FROZEN' USING ERRCODE='23514';
+    ELSIF NEW.kind IN ('candidate_controller_dispatch','hypothesis_proposal') THEN
+        RETURN NULL;
+    END IF;
+    IF NEW.kind='proposal_conflict_review' AND NOT EXISTS (
+        SELECT 1 FROM candidate_analysis_conflict_components component
+         WHERE component.conflict_component_id=candidate_item.component_id
+           AND component.analysis_attempt_id=candidate_item.analysis_attempt_id
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_CONFLICT_REVIEW_COMPONENT_REQUIRED'
+            USING ERRCODE='23514';
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM candidate_analysis_proposal_censuses census
@@ -4049,6 +4949,154 @@ AFTER INSERT ON stage_work_items
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION enforce_candidate_server_phase_transition();
 
+-- The stage-side trigger above prevents a Candidate kind from committing
+-- without its Candidate authority row. This reverse trigger closes the other
+-- direction: an unrelated or previously committed stage row cannot acquire a
+-- Candidate capability after the fact.
+CREATE FUNCTION enforce_candidate_work_item_parent_authority()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    expected_phase TEXT;
+    expected_creator TEXT;
+    expected_role TEXT;
+    exact_parent BOOLEAN:=FALSE;
+BEGIN
+    SELECT phase,creator,role
+      INTO expected_phase,expected_creator,expected_role
+      FROM (VALUES
+        ('candidate_controller_dispatch','controller','server_seed','controller'),
+        ('hypothesis_proposal','proposal','server_seed','analyst'),
+        ('proposal_conflict_review','critic','server_phase_transition','critic'),
+        ('hypothesis_coverage_subreview','critic','server_phase_transition','critic'),
+        ('hypothesis_coverage_sampling_omitted','critic','server_phase_transition','critic'),
+        ('coverage_cross_chunk_synthesis','critic','server_phase_transition','critic'),
+        ('coverage_cross_input_partition','critic','server_phase_transition','critic'),
+        ('coverage_cross_input_reduce','critic','server_phase_transition','critic'),
+        ('coverage_cross_dimension_reduce','critic','server_phase_transition','critic'),
+        ('coverage_global_semantic_root','critic','server_phase_transition','critic'),
+        ('candidate_controller_final','controller','server_phase_transition','controller')
+      ) AS mapping(capability,phase,creator,role)
+     WHERE capability=NEW.capability;
+    IF expected_phase IS NULL OR NEW.phase<>expected_phase THEN
+        RAISE EXCEPTION 'CANDIDATE_WORK_CAPABILITY_INVALID' USING ERRCODE='23514';
+    END IF;
+    IF NEW.capability IN ('candidate_controller_dispatch','hypothesis_proposal')
+       AND EXISTS (
+           SELECT 1 FROM candidate_analysis_proposal_censuses census
+            WHERE census.analysis_attempt_id=NEW.analysis_attempt_id
+       ) THEN
+        RAISE EXCEPTION 'CANDIDATE_H1_WORK_AUTHORITY_FROZEN' USING ERRCODE='23514';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM candidate_analysis_attempt_state_events terminal
+         WHERE terminal.analysis_attempt_id=NEW.analysis_attempt_id
+           AND terminal.event_kind IN ('superseded_missed_hypothesis','sealed','blocked')
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_ATTEMPT_TERMINAL_FROZEN' USING ERRCODE='23514';
+    END IF;
+    SELECT EXISTS(
+        SELECT 1
+          FROM stage_work_items item
+          JOIN stage_team_plans plan ON plan.id=item.team_plan_id
+          JOIN stage_worker_runs worker ON worker.work_item_id=item.id
+          JOIN candidate_analysis_attempts attempt
+            ON attempt.analysis_attempt_id=NEW.analysis_attempt_id
+          JOIN candidate_analysis_snapshots snapshot
+            ON snapshot.snapshot_id=attempt.snapshot_id
+         WHERE item.id=NEW.stage_work_item_id
+           AND item.xmin::TEXT=pg_current_xact_id()::TEXT
+           AND item.kind=NEW.capability
+           AND item.created_by=expected_creator
+           AND item.role=expected_role
+           AND item.input_manifest_hash=NEW.work_item_hash
+           AND item.output_schema='candidate_analysis_artifact_receipt.v1'
+           AND worker.xmin::TEXT=pg_current_xact_id()::TEXT
+           AND worker.specialist=expected_role
+           AND worker.work_item_kind=item.kind
+           AND worker.work_item_key=item.stable_key
+           AND ROW(worker.operation_id,worker.stage_execution_id,
+                   worker.stage_run_unit_id,worker.organization_id)
+               IS NOT DISTINCT FROM
+                   ROW(item.operation_id,item.stage_execution_id,
+                       item.stage_run_unit_id,item.organization_id)
+           AND plan.stage_kind='attack_candidate'
+           AND ROW(plan.id,plan.operation_id,plan.stage_execution_id,
+                   plan.stage_run_unit_id,plan.scope_snapshot_id,plan.organization_id)
+               IS NOT DISTINCT FROM
+                   ROW(item.team_plan_id,item.operation_id,item.stage_execution_id,
+                       item.stage_run_unit_id,item.scope_snapshot_id,item.organization_id)
+           AND ROW(item.operation_id,item.scope_snapshot_id,item.organization_id)
+               IS NOT DISTINCT FROM
+                   ROW(attempt.operation_id,snapshot.scope_snapshot_id,
+                       attempt.organization_id)
+           AND snapshot.snapshot_status='sealed_ready'
+    ) INTO exact_parent;
+    IF NOT exact_parent THEN
+        RAISE EXCEPTION 'CANDIDATE_WORK_PARENT_AUTHORITY_INVALID' USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER candidate_work_item_parent_authority_guard
+AFTER INSERT ON candidate_analysis_work_items
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_work_item_parent_authority();
+
+CREATE FUNCTION enforce_candidate_artifact_capability_binding()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    capability TEXT;
+    owned BOOLEAN:=FALSE;
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM candidate_analysis_attempt_state_events terminal
+         WHERE terminal.analysis_attempt_id=NEW.analysis_attempt_id
+           AND terminal.event_kind IN ('superseded_missed_hypothesis','sealed','blocked')
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_ATTEMPT_TERMINAL_FROZEN' USING ERRCODE='23514';
+    END IF;
+    SELECT candidate.capability INTO capability
+      FROM candidate_analysis_work_items candidate
+     WHERE candidate.candidate_work_item_id=NEW.candidate_work_item_id
+       AND candidate.analysis_attempt_id=NEW.analysis_attempt_id;
+    owned:=CASE NEW.artifact_kind
+        WHEN 'hypothesis_proposal.v1' THEN capability='hypothesis_proposal'
+        WHEN 'proposal_conflict_review.v1' THEN capability='proposal_conflict_review'
+        WHEN 'hypothesis_coverage_subreview.v1' THEN capability='hypothesis_coverage_subreview'
+        WHEN 'hypothesis_coverage_synthesis.v1' THEN capability IN (
+            'coverage_cross_chunk_synthesis','coverage_cross_input_partition',
+            'coverage_cross_input_reduce','coverage_cross_dimension_reduce',
+            'coverage_global_semantic_root'
+        )
+        WHEN 'hypothesis_coverage_review.v1' THEN capability='candidate_controller_dispatch'
+        WHEN 'controller_decision.v1' THEN capability='candidate_controller_final'
+        ELSE FALSE
+    END;
+    IF NOT COALESCE(owned,FALSE) OR NOT EXISTS (
+        SELECT 1
+          FROM candidate_analysis_work_items candidate
+          JOIN stage_worker_runs worker
+            ON worker.work_item_id=candidate.stage_work_item_id
+         WHERE candidate.candidate_work_item_id=NEW.candidate_work_item_id
+           AND candidate.analysis_attempt_id=NEW.analysis_attempt_id
+           AND worker.id=NEW.worker_run_id
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_ARTIFACT_CAPABILITY_MISMATCH' USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER candidate_artifact_capability_binding_guard
+AFTER INSERT ON candidate_analysis_artifacts
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_artifact_capability_binding();
+
 CREATE FUNCTION enforce_candidate_attempt_event_chain()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -4056,6 +5104,11 @@ AS $$
 DECLARE
     opened_count BIGINT;
     active_count BIGINT;
+    predecessor candidate_analysis_attempts%ROWTYPE;
+    predecessor_terminal candidate_analysis_attempt_state_events%ROWTYPE;
+    missed_signal_count BIGINT;
+    missed_signal_set_hash TEXT;
+    expected_attempt_input_hash TEXT;
 BEGIN
     SELECT COUNT(*) INTO opened_count
       FROM candidate_analysis_attempt_state_events
@@ -4064,26 +5117,67 @@ BEGIN
         RAISE EXCEPTION 'CANDIDATE_ATTEMPT_OPENED_EVENT_EXACT_ONE_REQUIRED'
             USING ERRCODE='23514';
     END IF;
-    IF (NEW.attempt_ordinal=0) IS DISTINCT FROM (NEW.predecessor_attempt_id IS NULL)
-       OR (
-           NEW.predecessor_attempt_id IS NOT NULL
-           AND NOT EXISTS (
-               SELECT 1 FROM candidate_analysis_attempts predecessor
-                WHERE predecessor.analysis_attempt_id=NEW.predecessor_attempt_id
-                  AND predecessor.snapshot_id=NEW.snapshot_id
-                  AND predecessor.attempt_ordinal=NEW.attempt_ordinal-1
-           )
-       )
-       OR (
-           NEW.predecessor_attempt_id IS NOT NULL
-           AND NOT EXISTS (
-               SELECT 1 FROM candidate_analysis_attempt_state_events predecessor_event
-                WHERE predecessor_event.analysis_attempt_id=NEW.predecessor_attempt_id
-                  AND predecessor_event.event_kind='superseded_missed_hypothesis'
-           )
-       )
-    THEN
+    IF (NEW.attempt_ordinal=0) IS DISTINCT FROM (NEW.predecessor_attempt_id IS NULL) THEN
         RAISE EXCEPTION 'CANDIDATE_ATTEMPT_PREDECESSOR_INVALID' USING ERRCODE='23514';
+    END IF;
+    IF NEW.predecessor_attempt_id IS NOT NULL THEN
+        SELECT * INTO STRICT predecessor
+          FROM candidate_analysis_attempts
+         WHERE analysis_attempt_id=NEW.predecessor_attempt_id;
+        SELECT * INTO STRICT predecessor_terminal
+          FROM candidate_analysis_attempt_state_events
+         WHERE analysis_attempt_id=NEW.predecessor_attempt_id
+           AND event_kind='superseded_missed_hypothesis';
+        WITH missed(checklist_member_id) AS (
+            SELECT jsonb_array_elements_text(subreview.typed_missed_refs)::UUID
+              FROM candidate_analysis_hypothesis_coverage_subreviews subreview
+             WHERE subreview.analysis_attempt_id=NEW.predecessor_attempt_id
+               AND subreview.outcome='missed_hypothesis'
+            UNION
+            SELECT jsonb_array_elements_text(review.typed_missed_refs)::UUID
+              FROM candidate_analysis_hypothesis_coverage_synthesis_reviews review
+             WHERE review.analysis_attempt_id=NEW.predecessor_attempt_id
+               AND review.outcome='missed_hypothesis'
+        ), signals AS (
+            SELECT checklist.checklist_member_id,
+                   tool_truth_sha256(jsonb_build_object(
+                       'checklist_member_id',checklist.checklist_member_id,
+                       'attack_class_id',checklist.attack_class_id,
+                       'attack_class_version',checklist.attack_class_version,
+                       'trust_boundary_identity',checklist.trust_boundary_identity,
+                       'trust_boundary_hash',checklist.trust_boundary_hash,
+                       'covered_input_ids',jsonb_build_array(checklist.snapshot_input_id)
+                   )::TEXT) AS signal_hash
+              FROM missed
+              JOIN candidate_analysis_hypothesis_coverage_checklist_members checklist
+                USING(checklist_member_id)
+             WHERE checklist.analysis_attempt_id=NEW.predecessor_attempt_id
+        )
+        SELECT (SELECT COUNT(*) FROM signals),
+               tool_truth_sha256(to_jsonb(ARRAY(
+                   SELECT signal_hash FROM signals ORDER BY checklist_member_id
+               ))::TEXT)
+          INTO missed_signal_count,missed_signal_set_hash;
+        IF missed_signal_count<=0 THEN
+            RAISE EXCEPTION 'CANDIDATE_RETRY_MISS_SIGNAL_EMPTY' USING ERRCODE='23514';
+        END IF;
+        expected_attempt_input_hash:=tool_truth_sha256(jsonb_build_object(
+            'schema','candidate_retry_attempt_input.v1',
+            'predecessor_attempt_id',predecessor.analysis_attempt_id,
+            'predecessor_attempt_input_hash',predecessor.attempt_input_hash,
+            'predecessor_terminal_event_id',predecessor_terminal.attempt_event_id,
+            'predecessor_terminal_event_hash',predecessor_terminal.event_hash,
+            'missed_hypothesis_signal_count',missed_signal_count,
+            'missed_hypothesis_signal_set_hash',missed_signal_set_hash
+        )::TEXT);
+        IF NEW.attempt_input_hash<>expected_attempt_input_hash THEN
+            RAISE EXCEPTION 'CANDIDATE_RETRY_ATTEMPT_INPUT_HASH_INVALID' USING ERRCODE='23514';
+        END IF;
+        IF predecessor.snapshot_id<>NEW.snapshot_id
+           OR predecessor.attempt_ordinal<>NEW.attempt_ordinal-1
+        THEN
+            RAISE EXCEPTION 'CANDIDATE_ATTEMPT_PREDECESSOR_INVALID' USING ERRCODE='23514';
+        END IF;
     END IF;
     SELECT COUNT(*) INTO active_count
       FROM candidate_analysis_attempts attempt
@@ -4104,3 +5198,1276 @@ CREATE CONSTRAINT TRIGGER candidate_analysis_attempt_event_chain_guard
 AFTER INSERT ON candidate_analysis_attempts
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION enforce_candidate_attempt_event_chain();
+
+CREATE FUNCTION enforce_candidate_attempt_state_event_chain()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    attempt candidate_analysis_attempts%ROWTYPE;
+    opened candidate_analysis_attempt_state_events%ROWTYPE;
+    predecessor_terminal UUID;
+    gate_hash TEXT;
+    successor_count BIGINT;
+BEGIN
+    SELECT * INTO attempt FROM candidate_analysis_attempts
+     WHERE analysis_attempt_id=NEW.analysis_attempt_id;
+    IF NEW.event_kind='opened' THEN
+        IF NEW.event_ordinal<>0 OR NEW.predecessor_event_id IS NOT NULL THEN
+            RAISE EXCEPTION 'CANDIDATE_ATTEMPT_OPENED_EVENT_INVALID' USING ERRCODE='23514';
+        END IF;
+        IF attempt.predecessor_attempt_id IS NULL THEN
+            IF NEW.event_hash<>tool_truth_sha256(jsonb_build_object(
+                'attempt',NEW.analysis_attempt_id,'ordinal',0,'event','opened'
+            )::TEXT) THEN
+                RAISE EXCEPTION 'CANDIDATE_ATTEMPT_EVENT_HASH_INVALID' USING ERRCODE='23514';
+            END IF;
+        ELSE
+            SELECT attempt_event_id INTO predecessor_terminal
+              FROM candidate_analysis_attempt_state_events
+             WHERE analysis_attempt_id=attempt.predecessor_attempt_id
+               AND event_kind='superseded_missed_hypothesis';
+            IF predecessor_terminal IS NULL
+               OR NEW.event_hash<>tool_truth_sha256(jsonb_build_object(
+                    'attempt',NEW.analysis_attempt_id,'ordinal',0,'event','opened',
+                    'predecessor_attempt_id',attempt.predecessor_attempt_id,
+                    'predecessor_terminal_event_id',predecessor_terminal
+               )::TEXT)
+            THEN
+                RAISE EXCEPTION 'CANDIDATE_ATTEMPT_EVENT_HASH_INVALID' USING ERRCODE='23514';
+            END IF;
+        END IF;
+        RETURN NULL;
+    END IF;
+    SELECT * INTO opened FROM candidate_analysis_attempt_state_events
+     WHERE analysis_attempt_id=NEW.analysis_attempt_id AND event_kind='opened';
+    IF NEW.event_ordinal<>1 OR NEW.predecessor_event_id IS DISTINCT FROM opened.attempt_event_id THEN
+        RAISE EXCEPTION 'CANDIDATE_ATTEMPT_TERMINAL_EVENT_CHAIN_INVALID' USING ERRCODE='23514';
+    END IF;
+    IF NEW.event_kind='superseded_missed_hypothesis'
+       AND NEW.event_hash<>tool_truth_sha256(jsonb_build_object(
+            'attempt',NEW.analysis_attempt_id,'ordinal',1,
+            'event','superseded_missed_hypothesis',
+            'predecessor_event_id',opened.attempt_event_id
+       )::TEXT)
+    THEN
+        RAISE EXCEPTION 'CANDIDATE_ATTEMPT_EVENT_HASH_INVALID' USING ERRCODE='23514';
+    ELSIF NEW.event_kind='superseded_missed_hypothesis' THEN
+        SELECT COUNT(*) INTO successor_count
+          FROM candidate_analysis_attempts successor
+          JOIN candidate_analysis_attempt_state_events successor_opened
+            ON successor_opened.analysis_attempt_id=successor.analysis_attempt_id
+           AND successor_opened.event_kind='opened'
+           AND successor_opened.event_ordinal=0
+         WHERE successor.snapshot_id=attempt.snapshot_id
+           AND successor.attempt_ordinal=attempt.attempt_ordinal+1
+           AND successor.predecessor_attempt_id=attempt.analysis_attempt_id
+           AND successor_opened.event_hash=tool_truth_sha256(jsonb_build_object(
+                'attempt',successor.analysis_attempt_id,'ordinal',0,'event','opened',
+                'predecessor_attempt_id',attempt.analysis_attempt_id,
+                'predecessor_terminal_event_id',NEW.attempt_event_id
+           )::TEXT);
+        IF successor_count<>1 THEN
+            RAISE EXCEPTION 'CANDIDATE_ATTEMPT_SUCCESSOR_EXACT_ONE_REQUIRED'
+                USING ERRCODE='23514';
+        END IF;
+    ELSIF NEW.event_kind='sealed' THEN
+        SELECT decision_hash INTO gate_hash FROM hypothesis_candidate_gate_decisions
+         WHERE analysis_attempt_id=NEW.analysis_attempt_id;
+        IF gate_hash IS NULL OR NEW.event_hash<>tool_truth_sha256(jsonb_build_object(
+            'attempt',NEW.analysis_attempt_id,'kind','sealed','gate',gate_hash
+        )::TEXT) THEN
+            RAISE EXCEPTION 'CANDIDATE_ATTEMPT_EVENT_HASH_INVALID' USING ERRCODE='23514';
+        END IF;
+    ELSIF NEW.event_kind='blocked' AND NOT EXISTS (
+        SELECT 1 FROM hypothesis_residual_risks residual
+         WHERE NEW.attempt_event_id=uuid_generate_v5(
+                   NEW.analysis_attempt_id,'candidate_attempt_blocked.v1'
+               )
+           AND residual.residual_id=uuid_generate_v5(
+                   NEW.analysis_attempt_id,'candidate_analysis_blocked_residual.v1'
+               )
+           AND ROW(residual.operation_id,residual.organization_id,residual.snapshot_id)
+               IS NOT DISTINCT FROM
+                   ROW(attempt.operation_id,attempt.organization_id,attempt.snapshot_id)
+           AND residual.owner_kind='candidate_analysis'
+           AND residual.reason_code IN (
+               'candidate_h1_proposal_cap_exceeded',
+               'candidate_noncomplete_input_blocked',
+               'candidate_controller_proposal_page_cap_exceeded',
+               'candidate_conflict_resolution_requires_typed_retry',
+               'candidate_hypothesis_coverage_blocked',
+               'candidate_hypothesis_coverage_retry_exhausted'
+           )
+           AND residual.closed_at IS NULL
+           AND residual.affected_inputs IS NOT NULL
+           AND jsonb_typeof(residual.affected_inputs)='array'
+           AND jsonb_array_length(residual.affected_inputs)=(
+               SELECT COUNT(DISTINCT affected.value)
+                 FROM jsonb_array_elements_text(residual.affected_inputs) affected(value)
+           )
+           AND residual.affected_inputs=(
+               SELECT to_jsonb(COALESCE(
+                   array_agg(input.snapshot_input_id ORDER BY input.snapshot_input_id),
+                   ARRAY[]::UUID[]
+               ))
+                 FROM jsonb_array_elements_text(residual.affected_inputs) affected(value)
+                 JOIN candidate_analysis_snapshot_inputs input
+                   ON input.snapshot_id=attempt.snapshot_id
+                  AND input.snapshot_input_id::TEXT=affected.value
+           )
+           AND residual.next_action=jsonb_build_object(
+                   'route','candidate_analysis_closeout','retry',FALSE
+               )
+           AND residual.residual_hash=tool_truth_sha256(jsonb_build_object(
+                   'analysis_attempt_id',NEW.analysis_attempt_id,
+                   'snapshot_id',attempt.snapshot_id,
+                   'reason_code',residual.reason_code,
+                   'affected_input_ids',residual.affected_inputs
+               )::TEXT)
+           AND NEW.event_hash=tool_truth_sha256(jsonb_build_object(
+                'attempt',NEW.analysis_attempt_id,'ordinal',1,'event','blocked',
+                'predecessor_event_id',opened.attempt_event_id,
+                'residual_hash',residual.residual_hash
+           )::TEXT)
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_ATTEMPT_EVENT_HASH_INVALID' USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER candidate_analysis_attempt_state_event_chain_guard
+AFTER INSERT ON candidate_analysis_attempt_state_events
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_attempt_state_event_chain();
+
+CREATE FUNCTION enforce_candidate_analysis_phase_freeze_insert()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    attempt_id UUID;
+    frozen BOOLEAN;
+BEGIN
+    attempt_id:=NEW.analysis_attempt_id;
+    IF EXISTS (
+        SELECT 1 FROM candidate_analysis_attempt_state_events terminal
+         WHERE terminal.analysis_attempt_id=attempt_id
+           AND terminal.event_kind IN ('superseded_missed_hypothesis','sealed','blocked')
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_ATTEMPT_TERMINAL_FROZEN' USING ERRCODE='23514';
+    END IF;
+    IF TG_TABLE_NAME IN ('hypothesis_proposals','hypothesis_proposal_refs') THEN
+        SELECT EXISTS(SELECT 1 FROM candidate_analysis_proposal_censuses
+         WHERE analysis_attempt_id=attempt_id) INTO frozen;
+        IF frozen THEN
+            RAISE EXCEPTION 'CANDIDATE_H1_CANONICAL_SOURCE_FROZEN' USING ERRCODE='23514';
+        END IF;
+    ELSIF TG_TABLE_NAME IN (
+        'candidate_analysis_input_proposal_dispositions',
+        'candidate_analysis_hypothesis_coverage_checklist_members',
+        'candidate_analysis_hypothesis_coverage_chunk_partitions'
+    ) THEN
+        SELECT EXISTS(
+            SELECT 1 FROM candidate_analysis_hypothesis_coverage_subreview_censuses
+             WHERE analysis_attempt_id=attempt_id
+        ) INTO frozen;
+        IF frozen THEN
+            RAISE EXCEPTION 'CANDIDATE_SUBREVIEW_DENOMINATOR_FROZEN' USING ERRCODE='23514';
+        END IF;
+    ELSIF TG_TABLE_NAME IN (
+        'candidate_analysis_conflict_components',
+        'candidate_analysis_conflict_component_members',
+        'candidate_analysis_hypothesis_coverage_subreviews',
+        'candidate_analysis_hypothesis_coverage_synthesis_censuses',
+        'candidate_analysis_hypothesis_coverage_synthesis_census_members',
+        'candidate_analysis_hypothesis_coverage_synthesis_node_children',
+        'candidate_analysis_hypothesis_coverage_synthesis_node_descendant_workers',
+        'candidate_analysis_hypothesis_coverage_synthesis_reviews',
+        'candidate_analysis_hypothesis_coverage_reviews',
+        'candidate_analysis_hypothesis_coverage_global_reviews'
+    ) THEN
+        SELECT EXISTS(SELECT 1 FROM candidate_analysis_critic_censuses
+         WHERE analysis_attempt_id=attempt_id) INTO frozen;
+        IF frozen THEN
+            RAISE EXCEPTION 'CANDIDATE_H2_CANONICAL_SOURCE_FROZEN' USING ERRCODE='23514';
+        END IF;
+    ELSIF TG_TABLE_NAME='candidate_analysis_host_compilation_materials' THEN
+        SELECT EXISTS(SELECT 1 FROM candidate_analysis_host_compilation_seals
+         WHERE analysis_attempt_id=attempt_id) INTO frozen;
+        IF frozen THEN
+            RAISE EXCEPTION 'CANDIDATE_HOST_COMPILATION_FROZEN' USING ERRCODE='23514';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER hypothesis_proposals_phase_freeze_guard
+BEFORE INSERT ON hypothesis_proposals
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER hypothesis_proposal_refs_phase_freeze_guard
+BEFORE INSERT ON hypothesis_proposal_refs
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_input_proposal_dispositions_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_input_proposal_dispositions
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_checklist_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_checklist_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_partitions_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_chunk_partitions
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_conflict_components_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_conflict_components
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_conflict_component_members_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_conflict_component_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_subreview_censuses_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_subreview_censuses
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_subreview_members_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_subreview_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_subreviews_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_subreviews
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_synthesis_censuses_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_synthesis_censuses
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_synthesis_members_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_synthesis_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_synthesis_children_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_synthesis_node_children
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_synthesis_descendants_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_synthesis_node_descendant_workers
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_synthesis_reviews_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_synthesis_reviews
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_reviews_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_reviews
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_coverage_global_reviews_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_global_reviews
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_host_compilation_materials_phase_freeze_guard
+BEFORE INSERT ON candidate_analysis_host_compilation_materials
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_artifacts_terminal_freeze_guard
+BEFORE INSERT ON candidate_analysis_artifacts
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_work_page_authorities_terminal_freeze_guard
+BEFORE INSERT ON candidate_analysis_work_page_authorities
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_provider_attempts_terminal_freeze_guard
+BEFORE INSERT ON candidate_analysis_provider_attempts
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_merge_decisions_terminal_freeze_guard
+BEFORE INSERT ON hypothesis_merge_decisions
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_proposal_censuses_terminal_freeze_guard
+BEFORE INSERT ON candidate_analysis_proposal_censuses
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_proposal_census_members_terminal_freeze_guard
+BEFORE INSERT ON candidate_analysis_proposal_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_critic_censuses_terminal_freeze_guard
+BEFORE INSERT ON candidate_analysis_critic_censuses
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+CREATE TRIGGER candidate_critic_census_members_terminal_freeze_guard
+BEFORE INSERT ON candidate_analysis_critic_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_phase_freeze_insert();
+
+CREATE FUNCTION enforce_candidate_analysis_relational_exact_set()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    target_attempt_id UUID:=NEW.analysis_attempt_id;
+    target_snapshot_id UUID;
+    canonical_count BIGINT;
+    persisted_count BIGINT;
+    canonical_set_hash TEXT;
+    canonical_census_hash TEXT;
+    checklist_count BIGINT;
+    checklist_set_hash TEXT;
+    partition_count BIGINT;
+    partition_set_hash TEXT;
+    mismatch BOOLEAN;
+    disposition_mismatch BOOLEAN:=FALSE;
+BEGIN
+    SELECT attempt.snapshot_id INTO STRICT target_snapshot_id
+      FROM candidate_analysis_attempts attempt
+     WHERE attempt.analysis_attempt_id=target_attempt_id;
+
+    IF TG_TABLE_NAME='candidate_analysis_proposal_censuses' THEN
+        IF (SELECT COUNT(*) FROM candidate_analysis_work_items candidate
+             WHERE candidate.analysis_attempt_id=target_attempt_id
+               AND candidate.phase='controller'
+               AND candidate.capability='candidate_controller_dispatch')<>1
+        OR (SELECT COUNT(*)
+              FROM candidate_analysis_work_items candidate
+              JOIN stage_work_items item ON item.id=candidate.stage_work_item_id
+              JOIN stage_worker_runs worker ON worker.work_item_id=item.id
+              JOIN candidate_analysis_provider_attempts receipt
+                ON receipt.analysis_attempt_id=candidate.analysis_attempt_id
+               AND receipt.stage_work_item_id=item.id
+               AND receipt.worker_run_id=worker.id
+               AND receipt.artifact_kind='controller_dispatch.v1'
+               AND receipt.artifact_id IS NULL
+             WHERE candidate.analysis_attempt_id=target_attempt_id
+               AND candidate.phase='controller'
+               AND candidate.capability='candidate_controller_dispatch'
+               AND item.kind='candidate_controller_dispatch'
+               AND item.role='controller'
+               AND item.status='completed'
+               AND worker.specialist='controller'
+               AND worker.work_item_kind='candidate_controller_dispatch'
+               AND worker.status='passed'
+               AND (SELECT COUNT(*) FROM stage_worker_runs all_worker
+                     WHERE all_worker.work_item_id=item.id)=1
+               AND (SELECT COUNT(*) FROM candidate_analysis_artifacts artifact
+                     WHERE artifact.candidate_work_item_id=candidate.candidate_work_item_id
+                       AND artifact.analysis_attempt_id=candidate.analysis_attempt_id)=0
+               AND (SELECT COUNT(*) FROM stage_worker_outputs output
+                     WHERE output.work_item_id=item.id)=0
+               AND receipt.artifact_hash=tool_truth_sha256(receipt.artifact_body::TEXT))<>1
+        OR EXISTS (
+            SELECT 1
+              FROM candidate_analysis_work_items candidate
+             WHERE candidate.analysis_attempt_id=target_attempt_id
+               AND candidate.phase='proposal'
+               AND candidate.capability='hypothesis_proposal'
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM stage_work_items item
+                     JOIN stage_worker_runs worker ON worker.work_item_id=item.id
+                     JOIN candidate_analysis_provider_attempts receipt
+                       ON receipt.analysis_attempt_id=candidate.analysis_attempt_id
+                      AND receipt.stage_work_item_id=item.id
+                      AND receipt.worker_run_id=worker.id
+                      AND receipt.artifact_kind='hypothesis_proposal.v1'
+                     JOIN candidate_analysis_artifacts artifact
+                       ON artifact.artifact_id=receipt.artifact_id
+                      AND artifact.analysis_attempt_id=receipt.analysis_attempt_id
+                      AND artifact.candidate_work_item_id=candidate.candidate_work_item_id
+                      AND artifact.worker_run_id=worker.id
+                      AND artifact.artifact_kind='hypothesis_proposal.v1'
+                      AND artifact.artifact_id=uuid_generate_v5(
+                              receipt.provider_attempt_id,'hypothesis_proposal.v1'
+                          )
+                      AND artifact.artifact_body=receipt.artifact_body
+                      AND artifact.artifact_hash=receipt.artifact_hash
+                      AND artifact.artifact_hash=tool_truth_sha256(artifact.artifact_body::TEXT)
+                      AND receipt.artifact_hash=tool_truth_sha256(receipt.artifact_body::TEXT)
+                      AND artifact.artifact_body=jsonb_build_object(
+                              'proposals',artifact.artifact_body->'proposals'
+                          )
+                      AND jsonb_typeof(artifact.artifact_body->'proposals')='array'
+                      AND (SELECT COUNT(*) FROM hypothesis_proposals proposal
+                            WHERE proposal.artifact_id=artifact.artifact_id
+                              AND proposal.analysis_attempt_id=artifact.analysis_attempt_id)
+                          =CASE
+                              WHEN jsonb_typeof(artifact.artifact_body->'proposals')='array'
+                                  THEN jsonb_array_length(artifact.artifact_body->'proposals')
+                              ELSE -1
+                           END
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM jsonb_array_elements(CASE
+                                     WHEN jsonb_typeof(artifact.artifact_body->'proposals')='array'
+                                         THEN artifact.artifact_body->'proposals'
+                                     ELSE '[]'::JSONB
+                                 END) body(proposal_body)
+                            LEFT JOIN hypothesis_proposals proposal
+                              ON proposal.artifact_id=artifact.artifact_id
+                             AND proposal.analysis_attempt_id=artifact.analysis_attempt_id
+                             AND proposal.proposal_id::TEXT=body.proposal_body->>'proposal_id'
+                             AND proposal.structured_proposal=body.proposal_body
+                             AND proposal.proposal_hash=tool_truth_sha256(body.proposal_body::TEXT)
+                           WHERE proposal.proposal_id IS NULL
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM hypothesis_proposals proposal
+                           WHERE proposal.artifact_id=artifact.artifact_id
+                             AND proposal.analysis_attempt_id=artifact.analysis_attempt_id
+                             AND NOT EXISTS (
+                                 SELECT 1
+                                   FROM jsonb_array_elements(CASE
+                                            WHEN jsonb_typeof(artifact.artifact_body->'proposals')='array'
+                                                THEN artifact.artifact_body->'proposals'
+                                            ELSE '[]'::JSONB
+                                        END) body(proposal_body)
+                                  WHERE proposal.proposal_id::TEXT=body.proposal_body->>'proposal_id'
+                                    AND proposal.structured_proposal=body.proposal_body
+                                    AND proposal.proposal_hash=tool_truth_sha256(body.proposal_body::TEXT)
+                             )
+                      )
+                     JOIN stage_worker_outputs output
+                       ON output.id=artifact.stage_worker_output_id
+                      AND output.id=uuid_generate_v5(
+                              artifact.artifact_id,'candidate_stage_worker_output.v1'
+                          )
+                      AND output.work_item_id=item.id
+                      AND output.worker_run_id=worker.id
+                      AND output.output_schema='candidate_analysis_artifact_receipt.v1'
+                      AND output.output_version=1
+                      AND output.business_disposition='artifact_recorded'
+                      AND output.canonical_output=jsonb_build_object(
+                              'schema','candidate_analysis_artifact_receipt.v1',
+                              'artifact_id',artifact.artifact_id,
+                              'artifact_hash',artifact.artifact_hash
+                          )
+                      AND output.canonical_fact_refs='[]'::JSONB
+                      AND cardinality(output.evidence_ids)=0
+                      AND output.checked_empty_cells='[]'::JSONB
+                      AND cardinality(output.blocker_codes)=0
+                      AND output.output_hash=tool_truth_sha256(output.canonical_output::TEXT)
+                     JOIN candidate_analysis_input_chunk_censuses input_census
+                       ON input_census.snapshot_id=target_snapshot_id
+                      AND input_census.snapshot_input_id::TEXT=candidate.microbatch_key
+                      AND input_census.disposition='complete'
+                    WHERE item.id=candidate.stage_work_item_id
+                      AND item.kind='hypothesis_proposal'
+                      AND item.role='analyst'
+                      AND item.status='completed'
+                      AND worker.specialist='analyst'
+                      AND worker.work_item_kind='hypothesis_proposal'
+                      AND worker.status='passed'
+                      AND (SELECT COUNT(*) FROM stage_worker_runs all_worker
+                            WHERE all_worker.work_item_id=item.id)=1
+                      AND (SELECT COUNT(*) FROM candidate_analysis_artifacts all_artifact
+                            WHERE all_artifact.candidate_work_item_id=candidate.candidate_work_item_id
+                              AND all_artifact.analysis_attempt_id=candidate.analysis_attempt_id)=1
+               )
+        ) OR (
+            SELECT COUNT(*) FROM candidate_analysis_work_items candidate
+             JOIN stage_work_items item ON item.id=candidate.stage_work_item_id
+            WHERE candidate.analysis_attempt_id=target_attempt_id
+              AND candidate.phase='proposal'
+              AND candidate.capability='hypothesis_proposal'
+        )<>(
+            SELECT COUNT(*) FROM candidate_analysis_input_chunk_censuses census
+            WHERE census.snapshot_id=target_snapshot_id AND census.disposition='complete'
+        ) OR (
+            SELECT COUNT(DISTINCT candidate.microbatch_key)
+              FROM candidate_analysis_work_items candidate
+              JOIN candidate_analysis_input_chunk_censuses census
+                ON census.snapshot_id=target_snapshot_id
+               AND census.snapshot_input_id::TEXT=candidate.microbatch_key
+               AND census.disposition='complete'
+             WHERE candidate.analysis_attempt_id=target_attempt_id
+               AND candidate.phase='proposal'
+               AND candidate.capability='hypothesis_proposal'
+        )<>(
+            SELECT COUNT(*) FROM candidate_analysis_input_chunk_censuses census
+             WHERE census.snapshot_id=target_snapshot_id AND census.disposition='complete'
+        ) OR (
+            SELECT COUNT(*) FROM candidate_analysis_input_proposal_dispositions disposition
+             WHERE disposition.analysis_attempt_id=target_attempt_id
+        )<>(
+            SELECT COUNT(*) FROM candidate_analysis_snapshot_inputs input
+             WHERE input.snapshot_id=target_snapshot_id
+        ) THEN
+            RAISE EXCEPTION 'CANDIDATE_H1_PROPOSAL_WAVE_NOT_CLOSED'
+                USING ERRCODE='23514';
+        END IF;
+        SELECT EXISTS(
+            SELECT 1
+              FROM candidate_analysis_snapshot_inputs input
+              LEFT JOIN candidate_analysis_input_proposal_dispositions disposition
+                ON disposition.analysis_attempt_id=target_attempt_id
+               AND disposition.snapshot_input_id=input.snapshot_input_id
+              CROSS JOIN LATERAL (
+                  SELECT (
+                             SELECT COUNT(*) FROM hypothesis_proposal_refs proposal_ref
+                              WHERE proposal_ref.analysis_attempt_id=target_attempt_id
+                                AND proposal_ref.snapshot_input_id=input.snapshot_input_id
+                         ) AS ref_count,
+                         tool_truth_sha256(to_jsonb(ARRAY(
+                             SELECT ref_hash FROM hypothesis_proposal_refs proposal_ref
+                              WHERE proposal_ref.analysis_attempt_id=target_attempt_id
+                                AND proposal_ref.snapshot_input_id=input.snapshot_input_id
+                              ORDER BY ref_hash,proposal_ref_id
+                         ))::TEXT) AS ref_set_hash
+              ) refs
+             WHERE input.snapshot_id=target_snapshot_id
+               AND (
+                   disposition.disposition_id IS NULL
+                   OR disposition.proposal_ref_count<>refs.ref_count
+                   OR disposition.proposal_ref_set_hash<>refs.ref_set_hash
+                   OR disposition.disposition<>CASE
+                       WHEN input.server_chunking_disposition<>'complete' THEN 'blocked'
+                       WHEN refs.ref_count=0 THEN 'zero_proposal'
+                       ELSE 'has_proposal'
+                   END
+                   OR disposition.blocker_code IS DISTINCT FROM CASE
+                       WHEN input.server_chunking_disposition<>'complete'
+                           THEN 'candidate_input_'||input.server_chunking_disposition
+                       ELSE NULL
+                   END
+               )
+        ) INTO disposition_mismatch;
+        SELECT COUNT(*),tool_truth_sha256(to_jsonb(ARRAY(
+                   SELECT proposal.proposal_hash FROM hypothesis_proposals proposal
+                    WHERE proposal.analysis_attempt_id=target_attempt_id
+                    ORDER BY proposal.proposal_ordinal,proposal.proposal_id
+               ))::TEXT)
+          INTO canonical_count,canonical_set_hash
+          FROM hypothesis_proposals proposal
+         WHERE proposal.analysis_attempt_id=target_attempt_id;
+        canonical_census_hash:=tool_truth_sha256(jsonb_build_object(
+            'kind','proposal','attempt',target_attempt_id,'count',canonical_count,
+            'set',canonical_set_hash
+        )::TEXT);
+        SELECT COUNT(*) INTO persisted_count
+          FROM candidate_analysis_proposal_census_members member
+         WHERE member.proposal_census_id=NEW.proposal_census_id
+           AND member.analysis_attempt_id=target_attempt_id;
+        SELECT EXISTS(
+            SELECT 1
+              FROM hypothesis_proposals proposal
+              LEFT JOIN candidate_analysis_proposal_census_members member
+                ON member.proposal_census_id=NEW.proposal_census_id
+               AND member.analysis_attempt_id=target_attempt_id
+               AND member.proposal_id=proposal.proposal_id
+             WHERE proposal.analysis_attempt_id=target_attempt_id
+               AND (
+                    member.proposal_id IS NULL
+                    OR member.ordinal<>proposal.proposal_ordinal
+                    OR member.proposal_hash<>proposal.proposal_hash
+                    OR member.member_hash<>tool_truth_sha256(jsonb_build_object(
+                        'proposal_id',proposal.proposal_id,
+                        'proposal_hash',proposal.proposal_hash
+                    )::TEXT)
+               )
+        ) INTO mismatch;
+        IF NEW.proposal_count<>canonical_count
+           OR NEW.proposal_set_hash<>canonical_set_hash
+           OR NEW.census_hash<>canonical_census_hash
+        THEN
+            RAISE EXCEPTION 'CANDIDATE_H1_CENSUS_HEADER_EXACT_SET_REQUIRED'
+                USING ERRCODE='23514';
+        ELSIF persisted_count<>canonical_count OR mismatch THEN
+            RAISE EXCEPTION 'CANDIDATE_H1_CENSUS_MEMBER_EXACT_SET_REQUIRED'
+                USING ERRCODE='23514';
+        ELSIF disposition_mismatch THEN
+            RAISE EXCEPTION 'CANDIDATE_H1_INPUT_DISPOSITION_EXACT_SET_REQUIRED'
+                USING ERRCODE='23514';
+        END IF;
+        RETURN NULL;
+    END IF;
+
+    IF TG_TABLE_NAME IN (
+        'candidate_analysis_hypothesis_coverage_subreview_censuses',
+        'candidate_analysis_critic_censuses'
+    ) THEN
+        SELECT COUNT(*) INTO canonical_count
+          FROM candidate_analysis_snapshot_inputs input
+         WHERE input.snapshot_id=target_snapshot_id;
+        SELECT COUNT(*) INTO persisted_count
+          FROM candidate_analysis_input_proposal_dispositions disposition
+         WHERE disposition.analysis_attempt_id=target_attempt_id;
+        SELECT EXISTS(
+            SELECT 1
+              FROM candidate_analysis_snapshot_inputs input
+              LEFT JOIN candidate_analysis_input_proposal_dispositions disposition
+                ON disposition.analysis_attempt_id=target_attempt_id
+               AND disposition.snapshot_input_id=input.snapshot_input_id
+              CROSS JOIN LATERAL (
+                  SELECT (
+                             SELECT COUNT(*) FROM hypothesis_proposal_refs proposal_ref
+                              WHERE proposal_ref.analysis_attempt_id=target_attempt_id
+                                AND proposal_ref.snapshot_input_id=input.snapshot_input_id
+                         ) AS ref_count,
+                         tool_truth_sha256(to_jsonb(ARRAY(
+                             SELECT ref_hash
+                               FROM hypothesis_proposal_refs proposal_ref
+                              WHERE proposal_ref.analysis_attempt_id=target_attempt_id
+                                AND proposal_ref.snapshot_input_id=input.snapshot_input_id
+                              ORDER BY ref_hash,proposal_ref_id
+                         ))::TEXT) AS ref_set_hash
+              ) refs
+             WHERE input.snapshot_id=target_snapshot_id
+               AND (
+                   disposition.disposition_id IS NULL
+                   OR disposition.proposal_ref_count<>refs.ref_count
+                   OR disposition.proposal_ref_set_hash<>refs.ref_set_hash
+                   OR disposition.disposition<>CASE
+                       WHEN input.server_chunking_disposition<>'complete' THEN 'blocked'
+                       WHEN refs.ref_count=0 THEN 'zero_proposal'
+                       ELSE 'has_proposal'
+                   END
+                   OR disposition.blocker_code IS DISTINCT FROM CASE
+                       WHEN input.server_chunking_disposition<>'complete'
+                           THEN 'candidate_input_'||input.server_chunking_disposition
+                       ELSE NULL
+                   END
+                   OR (disposition.disposition='blocked' AND refs.ref_count<>0)
+                   OR disposition.disposition_hash<>tool_truth_sha256(jsonb_build_object(
+                       'analysis_attempt_id',target_attempt_id,
+                       'snapshot_input_id',input.snapshot_input_id,
+                       'proposal_ref_set_hash',refs.ref_set_hash,
+                       'disposition',CASE
+                           WHEN input.server_chunking_disposition<>'complete' THEN 'blocked'
+                           WHEN refs.ref_count=0 THEN 'zero_proposal'
+                           ELSE 'has_proposal'
+                       END,
+                       'blocker_code',CASE
+                           WHEN input.server_chunking_disposition<>'complete'
+                               THEN 'candidate_input_'||input.server_chunking_disposition
+                           ELSE NULL
+                       END
+                   )::TEXT)
+               )
+        ) INTO mismatch;
+        IF persisted_count<>canonical_count OR mismatch THEN
+            RAISE EXCEPTION 'CANDIDATE_H1_INPUT_DISPOSITION_EXACT_SET_REQUIRED'
+                USING ERRCODE='23514';
+        END IF;
+    END IF;
+
+    IF TG_TABLE_NAME='candidate_analysis_hypothesis_coverage_subreview_censuses' THEN
+        SELECT COUNT(*),tool_truth_sha256(to_jsonb(ARRAY(
+                   SELECT checklist.member_hash
+                     FROM candidate_analysis_hypothesis_coverage_checklist_members checklist
+                    WHERE checklist.analysis_attempt_id=target_attempt_id
+                      AND checklist.snapshot_input_id=NEW.snapshot_input_id
+                    ORDER BY checklist.ordinal,checklist.checklist_member_id
+               ))::TEXT)
+          INTO checklist_count,checklist_set_hash
+          FROM candidate_analysis_hypothesis_coverage_checklist_members checklist
+         WHERE checklist.analysis_attempt_id=target_attempt_id
+           AND checklist.snapshot_input_id=NEW.snapshot_input_id;
+        SELECT COUNT(*),tool_truth_sha256(to_jsonb(ARRAY(
+                   SELECT partition.partition_hash
+                     FROM candidate_analysis_hypothesis_coverage_chunk_partitions partition
+                    WHERE partition.analysis_attempt_id=target_attempt_id
+                      AND partition.snapshot_input_id=NEW.snapshot_input_id
+                    ORDER BY partition.partition_ordinal,partition.chunk_partition_id
+               ))::TEXT)
+          INTO partition_count,partition_set_hash
+          FROM candidate_analysis_hypothesis_coverage_chunk_partitions partition
+         WHERE partition.analysis_attempt_id=target_attempt_id
+           AND partition.snapshot_input_id=NEW.snapshot_input_id;
+        canonical_count:=checklist_count*partition_count;
+        SELECT COUNT(*) INTO persisted_count
+          FROM candidate_analysis_hypothesis_coverage_subreview_census_members member
+         WHERE member.subreview_census_id=NEW.subreview_census_id
+           AND member.analysis_attempt_id=target_attempt_id
+           AND member.snapshot_input_id=NEW.snapshot_input_id;
+        SELECT EXISTS(
+            SELECT 1
+              FROM candidate_analysis_hypothesis_coverage_checklist_members checklist
+              CROSS JOIN candidate_analysis_hypothesis_coverage_chunk_partitions partition
+             WHERE checklist.analysis_attempt_id=target_attempt_id
+               AND checklist.snapshot_input_id=NEW.snapshot_input_id
+               AND partition.analysis_attempt_id=target_attempt_id
+               AND partition.snapshot_input_id=NEW.snapshot_input_id
+               AND 1<>(
+                   SELECT COUNT(*) FROM candidate_analysis_work_items item
+                    WHERE item.analysis_attempt_id=target_attempt_id
+                      AND item.phase='critic'
+                      AND item.capability IN (
+                          'hypothesis_coverage_subreview',
+                          'hypothesis_coverage_sampling_omitted'
+                      )
+                      AND item.component_id=checklist.checklist_member_id
+                      AND item.microbatch_key=partition.chunk_partition_id::TEXT
+               )
+        ) INTO mismatch;
+        IF mismatch THEN
+            RAISE EXCEPTION 'CANDIDATE_SUBREVIEW_DESIGNATION_EXACT_ONE_REQUIRED'
+                USING ERRCODE='23514';
+        END IF;
+        SELECT tool_truth_sha256(to_jsonb(ARRAY(
+                   SELECT tool_truth_sha256(jsonb_build_object(
+                       'domain','candidate_hypothesis_coverage_subreview_census_member.v1',
+                       'analysis_attempt_id',target_attempt_id,
+                       'snapshot_input_id',NEW.snapshot_input_id,
+                       'checklist_member_id',checklist.checklist_member_id,
+                       'checklist_ordinal',checklist.ordinal,
+                       'checklist_member_hash',checklist.member_hash,
+                       'chunk_partition_id',partition.chunk_partition_id,
+                       'partition_ordinal',partition.partition_ordinal,
+                       'chunk_partition_hash',partition.partition_hash,
+                       'designated_stage_work_item_id',item.stage_work_item_id,
+                       'disposition',CASE
+                           WHEN item.capability='hypothesis_coverage_sampling_omitted'
+                               THEN 'sampling_omitted'
+                           ELSE 'required'
+                       END
+                   )::TEXT)
+                     FROM candidate_analysis_hypothesis_coverage_checklist_members checklist
+                     CROSS JOIN candidate_analysis_hypothesis_coverage_chunk_partitions partition
+                     JOIN candidate_analysis_work_items item
+                       ON item.analysis_attempt_id=target_attempt_id
+                      AND item.phase='critic'
+                      AND item.capability IN (
+                          'hypothesis_coverage_subreview',
+                          'hypothesis_coverage_sampling_omitted'
+                      )
+                      AND item.component_id=checklist.checklist_member_id
+                      AND item.microbatch_key=partition.chunk_partition_id::TEXT
+                    WHERE checklist.analysis_attempt_id=target_attempt_id
+                      AND checklist.snapshot_input_id=NEW.snapshot_input_id
+                      AND partition.analysis_attempt_id=target_attempt_id
+                      AND partition.snapshot_input_id=NEW.snapshot_input_id
+                    ORDER BY checklist.ordinal,checklist.checklist_member_id,
+                             partition.partition_ordinal,partition.chunk_partition_id
+               ))::TEXT)
+          INTO canonical_set_hash;
+        canonical_census_hash:=tool_truth_sha256(jsonb_build_object(
+            'domain','candidate_hypothesis_coverage_subreview_census.v1',
+            'analysis_attempt_id',target_attempt_id,
+            'snapshot_input_id',NEW.snapshot_input_id,
+            'checklist_member_count',checklist_count,
+            'checklist_member_set_hash',checklist_set_hash,
+            'chunk_partition_count',partition_count,
+            'chunk_partition_set_hash',partition_set_hash,
+            'expected_member_count',canonical_count,
+            'member_set_hash',canonical_set_hash
+        )::TEXT);
+        SELECT EXISTS(
+            SELECT 1
+              FROM candidate_analysis_hypothesis_coverage_checklist_members checklist
+              CROSS JOIN candidate_analysis_hypothesis_coverage_chunk_partitions partition
+              JOIN candidate_analysis_work_items item
+                ON item.analysis_attempt_id=target_attempt_id
+               AND item.phase='critic'
+               AND item.capability IN (
+                   'hypothesis_coverage_subreview',
+                   'hypothesis_coverage_sampling_omitted'
+               )
+               AND item.component_id=checklist.checklist_member_id
+               AND item.microbatch_key=partition.chunk_partition_id::TEXT
+              LEFT JOIN candidate_analysis_hypothesis_coverage_subreview_census_members member
+                ON member.subreview_census_id=NEW.subreview_census_id
+               AND member.checklist_member_id=checklist.checklist_member_id
+               AND member.chunk_partition_id=partition.chunk_partition_id
+             WHERE checklist.analysis_attempt_id=target_attempt_id
+               AND checklist.snapshot_input_id=NEW.snapshot_input_id
+               AND partition.analysis_attempt_id=target_attempt_id
+               AND partition.snapshot_input_id=NEW.snapshot_input_id
+               AND (
+                   member.subreview_census_member_id IS NULL
+                   OR member.checklist_ordinal<>checklist.ordinal
+                   OR member.partition_ordinal<>partition.partition_ordinal
+                   OR member.designated_stage_work_item_id<>item.stage_work_item_id
+                   OR member.disposition<>CASE
+                       WHEN item.capability='hypothesis_coverage_sampling_omitted'
+                           THEN 'sampling_omitted'
+                       ELSE 'required'
+                   END
+                   OR member.member_hash<>tool_truth_sha256(jsonb_build_object(
+                       'domain','candidate_hypothesis_coverage_subreview_census_member.v1',
+                       'analysis_attempt_id',target_attempt_id,
+                       'snapshot_input_id',NEW.snapshot_input_id,
+                       'checklist_member_id',checklist.checklist_member_id,
+                       'checklist_ordinal',checklist.ordinal,
+                       'checklist_member_hash',checklist.member_hash,
+                       'chunk_partition_id',partition.chunk_partition_id,
+                       'partition_ordinal',partition.partition_ordinal,
+                       'chunk_partition_hash',partition.partition_hash,
+                       'designated_stage_work_item_id',item.stage_work_item_id,
+                       'disposition',CASE
+                           WHEN item.capability='hypothesis_coverage_sampling_omitted'
+                               THEN 'sampling_omitted'
+                           ELSE 'required'
+                       END
+                   )::TEXT)
+               )
+        ) INTO mismatch;
+        IF checklist_count<=0 OR partition_count<=0
+           OR NEW.checklist_member_count<>checklist_count
+           OR NEW.checklist_member_set_hash<>checklist_set_hash
+           OR NEW.chunk_partition_count<>partition_count
+           OR NEW.chunk_partition_set_hash<>partition_set_hash
+           OR NEW.expected_member_count<>canonical_count
+           OR persisted_count<>canonical_count
+           OR NEW.member_set_hash<>canonical_set_hash
+           OR NEW.census_hash<>canonical_census_hash
+           OR mismatch
+        THEN
+            RAISE EXCEPTION 'CANDIDATE_SUBREVIEW_RELATIONAL_EXACT_SET_REQUIRED'
+                USING ERRCODE='23514';
+        END IF;
+        RETURN NULL;
+    END IF;
+
+    IF TG_TABLE_NAME='candidate_analysis_critic_censuses' THEN
+        IF EXISTS (
+            SELECT 1 FROM hypothesis_merge_decisions decision
+             WHERE decision.analysis_attempt_id=target_attempt_id
+               AND decision.decision_kind<>'keep_distinct'
+        ) THEN
+            RAISE EXCEPTION 'CANDIDATE_CONFLICT_DECISION_UNRESOLVED'
+                USING ERRCODE='23514';
+        END IF;
+        WITH canonical AS (
+            SELECT member_kind,source_identity,source_hash,
+                   tool_truth_sha256(jsonb_build_object(
+                       'member_kind',member_kind,'source_identity',source_identity,
+                       'source_hash',source_hash
+                   )::TEXT) AS member_hash,
+                   (row_number() OVER (ORDER BY member_kind,source_identity)-1)::INTEGER AS ordinal
+              FROM (
+                  SELECT 'proposal_conflict_review'::TEXT AS member_kind,
+                         component.conflict_component_id AS source_identity,
+                         decision.decision_hash AS source_hash
+                    FROM candidate_analysis_conflict_components component
+                    JOIN hypothesis_merge_decisions decision
+                      USING(conflict_component_id,analysis_attempt_id)
+                   WHERE component.analysis_attempt_id=target_attempt_id
+                  UNION ALL
+                  SELECT 'hypothesis_coverage_subreview',subreview_id,subreview_hash
+                    FROM candidate_analysis_hypothesis_coverage_subreviews subreview
+                   WHERE subreview.analysis_attempt_id=target_attempt_id
+                  UNION ALL
+                  SELECT 'hypothesis_coverage_synthesis',synthesis_review_id,review_hash
+                    FROM candidate_analysis_hypothesis_coverage_synthesis_reviews synthesis
+                   WHERE synthesis.analysis_attempt_id=target_attempt_id
+                  UNION ALL
+                  SELECT 'hypothesis_coverage_input_review',coverage_review_id,review_hash
+                    FROM candidate_analysis_hypothesis_coverage_reviews input_review
+                   WHERE input_review.analysis_attempt_id=target_attempt_id
+                  UNION ALL
+                  SELECT 'hypothesis_coverage_global_review',global_review_id,review_hash
+                    FROM candidate_analysis_hypothesis_coverage_global_reviews global_review
+                   WHERE global_review.analysis_attempt_id=target_attempt_id
+              ) source
+        )
+        SELECT COUNT(*),tool_truth_sha256(to_jsonb(ARRAY(
+                   SELECT member_hash FROM canonical ORDER BY ordinal
+               ))::TEXT)
+          INTO canonical_count,canonical_set_hash FROM canonical;
+        canonical_census_hash:=tool_truth_sha256(jsonb_build_object(
+            'kind','critic','attempt',target_attempt_id,'count',canonical_count,
+            'set',canonical_set_hash
+        )::TEXT);
+        SELECT COUNT(*) INTO persisted_count
+          FROM candidate_analysis_critic_census_members member
+         WHERE member.critic_census_id=NEW.critic_census_id
+           AND member.analysis_attempt_id=target_attempt_id;
+        WITH canonical AS (
+            SELECT member_kind,source_identity,source_hash,
+                   tool_truth_sha256(jsonb_build_object(
+                       'member_kind',member_kind,'source_identity',source_identity,
+                       'source_hash',source_hash
+                   )::TEXT) AS member_hash,
+                   (row_number() OVER (ORDER BY member_kind,source_identity)-1)::INTEGER AS ordinal
+              FROM (
+                  SELECT 'proposal_conflict_review'::TEXT AS member_kind,
+                         component.conflict_component_id AS source_identity,
+                         decision.decision_hash AS source_hash
+                    FROM candidate_analysis_conflict_components component
+                    JOIN hypothesis_merge_decisions decision
+                      USING(conflict_component_id,analysis_attempt_id)
+                   WHERE component.analysis_attempt_id=target_attempt_id
+                  UNION ALL SELECT 'hypothesis_coverage_subreview',subreview_id,subreview_hash
+                    FROM candidate_analysis_hypothesis_coverage_subreviews subreview
+                   WHERE subreview.analysis_attempt_id=target_attempt_id
+                  UNION ALL SELECT 'hypothesis_coverage_synthesis',synthesis_review_id,review_hash
+                    FROM candidate_analysis_hypothesis_coverage_synthesis_reviews synthesis
+                   WHERE synthesis.analysis_attempt_id=target_attempt_id
+                  UNION ALL SELECT 'hypothesis_coverage_input_review',coverage_review_id,review_hash
+                    FROM candidate_analysis_hypothesis_coverage_reviews input_review
+                   WHERE input_review.analysis_attempt_id=target_attempt_id
+                  UNION ALL SELECT 'hypothesis_coverage_global_review',global_review_id,review_hash
+                    FROM candidate_analysis_hypothesis_coverage_global_reviews global_review
+                   WHERE global_review.analysis_attempt_id=target_attempt_id
+              ) source
+        )
+        SELECT EXISTS(
+            SELECT 1 FROM canonical
+            LEFT JOIN candidate_analysis_critic_census_members member
+              ON member.critic_census_id=NEW.critic_census_id
+             AND member.ordinal=canonical.ordinal
+            WHERE member.critic_member_id IS NULL
+               OR member.member_kind<>canonical.member_kind
+               OR member.source_identity<>canonical.source_identity
+               OR member.source_hash<>canonical.source_hash
+               OR member.member_hash<>canonical.member_hash
+        ) INTO mismatch;
+        IF NEW.member_count<>canonical_count
+           OR persisted_count<>canonical_count
+           OR NEW.member_set_hash<>canonical_set_hash
+           OR NEW.census_hash<>canonical_census_hash
+           OR mismatch
+           OR (SELECT COUNT(*) FROM candidate_analysis_hypothesis_coverage_subreview_census_members
+                WHERE candidate_analysis_hypothesis_coverage_subreview_census_members.analysis_attempt_id=target_attempt_id
+                  AND disposition='required')
+              <>(SELECT COUNT(*) FROM candidate_analysis_hypothesis_coverage_subreviews
+                  WHERE candidate_analysis_hypothesis_coverage_subreviews.analysis_attempt_id=target_attempt_id)
+           OR (SELECT COUNT(*) FROM candidate_analysis_hypothesis_coverage_synthesis_census_members
+                WHERE candidate_analysis_hypothesis_coverage_synthesis_census_members.analysis_attempt_id=target_attempt_id)
+              <>(SELECT COUNT(*) FROM candidate_analysis_hypothesis_coverage_synthesis_reviews
+                  WHERE candidate_analysis_hypothesis_coverage_synthesis_reviews.analysis_attempt_id=target_attempt_id)
+           OR EXISTS (
+                (SELECT synthesis_node_id
+                   FROM candidate_analysis_hypothesis_coverage_synthesis_census_members
+                  WHERE candidate_analysis_hypothesis_coverage_synthesis_census_members.analysis_attempt_id=target_attempt_id
+                 EXCEPT
+                 SELECT synthesis_node_id
+                   FROM candidate_analysis_hypothesis_coverage_synthesis_reviews
+                  WHERE candidate_analysis_hypothesis_coverage_synthesis_reviews.analysis_attempt_id=target_attempt_id)
+                UNION ALL
+                (SELECT synthesis_node_id
+                   FROM candidate_analysis_hypothesis_coverage_synthesis_reviews
+                  WHERE candidate_analysis_hypothesis_coverage_synthesis_reviews.analysis_attempt_id=target_attempt_id
+                 EXCEPT
+                 SELECT synthesis_node_id
+                   FROM candidate_analysis_hypothesis_coverage_synthesis_census_members
+                  WHERE candidate_analysis_hypothesis_coverage_synthesis_census_members.analysis_attempt_id=target_attempt_id)
+           )
+           OR (SELECT COUNT(*) FROM candidate_analysis_snapshot_inputs input
+                WHERE input.snapshot_id=target_snapshot_id)
+              <>(SELECT COUNT(*) FROM candidate_analysis_hypothesis_coverage_reviews
+                  WHERE candidate_analysis_hypothesis_coverage_reviews.analysis_attempt_id=target_attempt_id)
+           OR (SELECT COUNT(*) FROM candidate_analysis_hypothesis_coverage_global_reviews
+                WHERE candidate_analysis_hypothesis_coverage_global_reviews.analysis_attempt_id=target_attempt_id)<>1
+           OR (
+                (SELECT COUNT(*) FROM hypothesis_proposals
+                  WHERE hypothesis_proposals.analysis_attempt_id=target_attempt_id)=0
+                AND (
+                    (SELECT COUNT(*) FROM candidate_analysis_conflict_components
+                      WHERE candidate_analysis_conflict_components.analysis_attempt_id=target_attempt_id)<>0
+                    OR (SELECT COUNT(*) FROM hypothesis_merge_decisions
+                         WHERE hypothesis_merge_decisions.analysis_attempt_id=target_attempt_id)<>0
+                )
+           )
+           OR (
+                (SELECT COUNT(*) FROM hypothesis_proposals
+                  WHERE hypothesis_proposals.analysis_attempt_id=target_attempt_id)>0
+                AND (
+                    (SELECT COUNT(*) FROM candidate_analysis_conflict_components
+                      WHERE candidate_analysis_conflict_components.analysis_attempt_id=target_attempt_id)<>1
+                    OR (SELECT COUNT(*) FROM hypothesis_merge_decisions
+                         WHERE hypothesis_merge_decisions.analysis_attempt_id=target_attempt_id)<>1
+                )
+           )
+        THEN
+            RAISE EXCEPTION 'CANDIDATE_H2_RELATIONAL_EXACT_SET_REQUIRED'
+                USING ERRCODE='23514';
+        END IF;
+        RETURN NULL;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER candidate_proposal_census_relational_exact_set_guard
+AFTER INSERT ON candidate_analysis_proposal_censuses
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_relational_exact_set();
+
+CREATE CONSTRAINT TRIGGER candidate_subreview_census_relational_exact_set_guard
+AFTER INSERT ON candidate_analysis_hypothesis_coverage_subreview_censuses
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_relational_exact_set();
+
+CREATE CONSTRAINT TRIGGER candidate_critic_census_relational_exact_set_guard
+AFTER INSERT ON candidate_analysis_critic_censuses
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_analysis_relational_exact_set();
+
+CREATE FUNCTION enforce_candidate_conflict_component_exact_set()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    h1_id UUID;
+    h1_hash TEXT;
+    canonical_count BIGINT;
+    canonical_set_hash TEXT;
+    canonical_component_hash TEXT;
+    persisted_count BIGINT;
+    mismatch BOOLEAN;
+BEGIN
+    SELECT proposal_census_id,census_hash,proposal_count,proposal_set_hash
+      INTO STRICT h1_id,h1_hash,canonical_count,canonical_set_hash
+      FROM candidate_analysis_proposal_censuses
+     WHERE analysis_attempt_id=NEW.analysis_attempt_id;
+    canonical_component_hash:=tool_truth_sha256(jsonb_build_object(
+        'domain','candidate_conflict_component.v1',
+        'analysis_attempt_id',NEW.analysis_attempt_id,
+        'ordinal',0,
+        'proposal_census_id',h1_id,
+        'proposal_census_hash',h1_hash,
+        'proposal_ids',to_jsonb(ARRAY(
+            SELECT proposal_id
+              FROM candidate_analysis_proposal_census_members
+             WHERE proposal_census_id=h1_id
+               AND analysis_attempt_id=NEW.analysis_attempt_id
+             ORDER BY ordinal,proposal_id
+        )),
+        'proposal_set_hash',canonical_set_hash
+    )::TEXT);
+    SELECT COUNT(*) INTO persisted_count
+      FROM candidate_analysis_conflict_component_members member
+     WHERE member.conflict_component_id=NEW.conflict_component_id
+       AND member.analysis_attempt_id=NEW.analysis_attempt_id;
+    SELECT EXISTS(
+        SELECT 1
+          FROM candidate_analysis_proposal_census_members proposal_member
+          LEFT JOIN candidate_analysis_conflict_component_members conflict_member
+            ON conflict_member.conflict_component_id=NEW.conflict_component_id
+           AND conflict_member.analysis_attempt_id=NEW.analysis_attempt_id
+           AND conflict_member.proposal_id=proposal_member.proposal_id
+         WHERE proposal_member.proposal_census_id=h1_id
+           AND proposal_member.analysis_attempt_id=NEW.analysis_attempt_id
+           AND (
+               conflict_member.conflict_member_id IS NULL
+               OR conflict_member.ordinal<>proposal_member.ordinal
+               OR conflict_member.member_hash<>tool_truth_sha256(jsonb_build_object(
+                   'domain','candidate_conflict_component_member.v1',
+                   'analysis_attempt_id',NEW.analysis_attempt_id,
+                   'conflict_component_id',NEW.conflict_component_id,
+                   'proposal_id',proposal_member.proposal_id,
+                   'proposal_hash',proposal_member.proposal_hash,
+                   'ordinal',proposal_member.ordinal
+               )::TEXT)
+           )
+    ) INTO mismatch;
+    IF canonical_count NOT BETWEEN 1 AND 64
+       OR NEW.ordinal<>0
+       OR NEW.proposal_count<>canonical_count
+       OR NEW.proposal_set_hash<>canonical_set_hash
+       OR NEW.component_hash<>canonical_component_hash
+       OR persisted_count<>canonical_count
+       OR mismatch
+    THEN
+        RAISE EXCEPTION 'CANDIDATE_CONFLICT_COMPONENT_EXACT_SET_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER candidate_conflict_component_exact_set_guard
+AFTER INSERT ON candidate_analysis_conflict_components
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_conflict_component_exact_set();
+
+CREATE FUNCTION enforce_candidate_merge_decision_exact_review()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    component candidate_analysis_conflict_components%ROWTYPE;
+    artifact candidate_analysis_artifacts%ROWTYPE;
+    artifact_count BIGINT;
+    expected_kind TEXT;
+    expected_decision JSONB;
+BEGIN
+    SELECT * INTO STRICT component
+      FROM candidate_analysis_conflict_components
+     WHERE conflict_component_id=NEW.conflict_component_id
+       AND analysis_attempt_id=NEW.analysis_attempt_id;
+    SELECT COUNT(*) INTO artifact_count
+      FROM candidate_analysis_artifacts candidate_artifact
+      JOIN candidate_analysis_work_items work
+        ON work.candidate_work_item_id=candidate_artifact.candidate_work_item_id
+     WHERE work.analysis_attempt_id=NEW.analysis_attempt_id
+       AND work.phase='critic'
+       AND work.capability='proposal_conflict_review'
+       AND work.component_id=NEW.conflict_component_id
+       AND candidate_artifact.artifact_kind='proposal_conflict_review.v1';
+    IF artifact_count<>1 THEN
+        RAISE EXCEPTION 'CANDIDATE_CONFLICT_REVIEW_EXACT_ONE_REQUIRED'
+            USING ERRCODE='23514';
+    END IF;
+    SELECT candidate_artifact.* INTO STRICT artifact
+      FROM candidate_analysis_artifacts candidate_artifact
+      JOIN candidate_analysis_work_items work
+        ON work.candidate_work_item_id=candidate_artifact.candidate_work_item_id
+     WHERE work.analysis_attempt_id=NEW.analysis_attempt_id
+       AND work.phase='critic'
+       AND work.capability='proposal_conflict_review'
+       AND work.component_id=NEW.conflict_component_id
+       AND candidate_artifact.artifact_kind='proposal_conflict_review.v1';
+    IF artifact.artifact_body->>'mode'<>'proposal_conflict'
+       OR NOT artifact.artifact_body ?& ARRAY[
+           'mode','conflict_component_id','decision','related_proposal_ids'
+       ]
+       OR artifact.artifact_body - ARRAY[
+           'mode','conflict_component_id','decision','related_proposal_ids'
+       ] <> '{}'::JSONB
+       OR artifact.artifact_body->>'conflict_component_id'<>NEW.conflict_component_id::TEXT
+       OR jsonb_typeof(artifact.artifact_body->'related_proposal_ids')<>'array'
+       OR EXISTS (
+           SELECT 1
+             FROM jsonb_array_elements_text(artifact.artifact_body->'related_proposal_ids') related(id)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM candidate_analysis_conflict_component_members member
+                 WHERE member.conflict_component_id=NEW.conflict_component_id
+                   AND member.analysis_attempt_id=NEW.analysis_attempt_id
+                   AND member.proposal_id=related.id::UUID
+            )
+       )
+    THEN
+        RAISE EXCEPTION 'CANDIDATE_CONFLICT_REVIEW_INVALID' USING ERRCODE='23514';
+    END IF;
+    expected_kind:=CASE artifact.artifact_body->>'decision'
+        WHEN 'no_conflict' THEN 'keep_distinct'
+        WHEN 'duplicate' THEN 'duplicate'
+        WHEN 'merge' THEN 'merge'
+        WHEN 'split_required' THEN 'split_required'
+        ELSE NULL
+    END;
+    IF expected_kind IS NULL THEN
+        RAISE EXCEPTION 'CANDIDATE_CONFLICT_REVIEW_DECISION_INVALID' USING ERRCODE='23514';
+    END IF;
+    expected_decision:=jsonb_build_object(
+        'domain','candidate_conflict_review_decision.v1',
+        'analysis_attempt_id',NEW.analysis_attempt_id,
+        'conflict_component_id',NEW.conflict_component_id,
+        'component_hash',component.component_hash,
+        'source_proposal_ids',to_jsonb(ARRAY(
+            SELECT proposal_id FROM candidate_analysis_conflict_component_members
+             WHERE conflict_component_id=NEW.conflict_component_id
+               AND analysis_attempt_id=NEW.analysis_attempt_id
+             ORDER BY ordinal,proposal_id
+        )),
+        'source_proposal_set_hash',component.proposal_set_hash,
+        'artifact_id',artifact.artifact_id,
+        'artifact_hash',artifact.artifact_hash,
+        'decision',artifact.artifact_body->>'decision',
+        'decision_kind',expected_kind,
+        'related_proposal_ids',to_jsonb(ARRAY(
+            SELECT related.id::UUID
+              FROM jsonb_array_elements_text(
+                       artifact.artifact_body->'related_proposal_ids'
+                   ) related(id)
+             ORDER BY related.id::UUID
+        ))
+    );
+    IF NEW.decision_kind<>expected_kind
+       OR NEW.source_proposal_set_hash<>component.proposal_set_hash
+       OR NEW.canonical_decision<>expected_decision
+       OR NEW.decision_hash<>tool_truth_sha256(expected_decision::TEXT)
+    THEN
+        RAISE EXCEPTION 'CANDIDATE_CONFLICT_REVIEW_DECISION_DRIFT'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER candidate_merge_decision_exact_review_guard
+AFTER INSERT ON hypothesis_merge_decisions
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_merge_decision_exact_review();
+
+CREATE FUNCTION enforce_candidate_census_member_same_tx()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    parent_created_in_current_tx BOOLEAN:=FALSE;
+BEGIN
+    IF TG_TABLE_NAME='candidate_analysis_proposal_census_members' THEN
+        SELECT census.xmin::TEXT=pg_current_xact_id()::TEXT
+          INTO parent_created_in_current_tx
+          FROM candidate_analysis_proposal_censuses census
+         WHERE census.proposal_census_id=NEW.proposal_census_id
+           AND census.analysis_attempt_id=NEW.analysis_attempt_id;
+    ELSIF TG_TABLE_NAME='candidate_analysis_hypothesis_coverage_subreview_census_members' THEN
+        SELECT census.xmin::TEXT=pg_current_xact_id()::TEXT
+          INTO parent_created_in_current_tx
+          FROM candidate_analysis_hypothesis_coverage_subreview_censuses census
+         WHERE census.subreview_census_id=NEW.subreview_census_id
+           AND census.analysis_attempt_id=NEW.analysis_attempt_id
+           AND census.snapshot_input_id=NEW.snapshot_input_id;
+    ELSIF TG_TABLE_NAME='candidate_analysis_critic_census_members' THEN
+        SELECT census.xmin::TEXT=pg_current_xact_id()::TEXT
+          INTO parent_created_in_current_tx
+          FROM candidate_analysis_critic_censuses census
+         WHERE census.critic_census_id=NEW.critic_census_id
+           AND census.analysis_attempt_id=NEW.analysis_attempt_id;
+    ELSIF TG_TABLE_NAME='candidate_analysis_conflict_component_members' THEN
+        SELECT component.xmin::TEXT=pg_current_xact_id()::TEXT
+          INTO parent_created_in_current_tx
+          FROM candidate_analysis_conflict_components component
+         WHERE component.conflict_component_id=NEW.conflict_component_id
+           AND component.analysis_attempt_id=NEW.analysis_attempt_id;
+    END IF;
+    IF NOT COALESCE(parent_created_in_current_tx,FALSE) THEN
+        RAISE EXCEPTION 'CANDIDATE_CENSUS_MEMBERS_FROZEN'
+            USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER candidate_proposal_census_members_same_tx_guard
+BEFORE INSERT ON candidate_analysis_proposal_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_census_member_same_tx();
+CREATE TRIGGER candidate_subreview_census_members_same_tx_guard
+BEFORE INSERT ON candidate_analysis_hypothesis_coverage_subreview_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_census_member_same_tx();
+CREATE TRIGGER candidate_critic_census_members_same_tx_guard
+BEFORE INSERT ON candidate_analysis_critic_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_census_member_same_tx();
+CREATE TRIGGER candidate_conflict_component_members_same_tx_guard
+BEFORE INSERT ON candidate_analysis_conflict_component_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_census_member_same_tx();
+
+CREATE FUNCTION enforce_candidate_snapshot_child_freeze_insert()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM candidate_analysis_snapshots snapshot
+         WHERE snapshot.snapshot_id=NEW.snapshot_id
+           AND snapshot.xmin::TEXT=pg_current_xact_id()::TEXT
+    ) THEN
+        RAISE EXCEPTION 'CANDIDATE_SNAPSHOT_CHILDREN_FROZEN' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER candidate_snapshot_source_sets_freeze_guard BEFORE INSERT ON candidate_analysis_snapshot_source_sets
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_snapshot_source_members_freeze_guard BEFORE INSERT ON candidate_analysis_snapshot_source_set_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_temporal_censuses_freeze_guard BEFORE INSERT ON candidate_analysis_temporal_validity_censuses
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_temporal_members_freeze_guard BEFORE INSERT ON candidate_analysis_temporal_validity_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_feed_denominators_freeze_guard BEFORE INSERT ON candidate_analysis_knowledge_feed_denominators
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_feed_denominator_members_freeze_guard BEFORE INSERT ON candidate_analysis_knowledge_feed_denominator_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_feed_snapshots_freeze_guard BEFORE INSERT ON candidate_analysis_knowledge_feed_snapshots
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_feed_snapshot_members_freeze_guard BEFORE INSERT ON candidate_analysis_knowledge_feed_snapshot_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_product_censuses_freeze_guard BEFORE INSERT ON candidate_analysis_product_version_censuses
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_product_members_freeze_guard BEFORE INSERT ON candidate_analysis_product_version_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_feed_match_censuses_freeze_guard BEFORE INSERT ON candidate_analysis_feed_match_censuses
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_feed_match_members_freeze_guard BEFORE INSERT ON candidate_analysis_feed_match_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_snapshot_inputs_freeze_guard BEFORE INSERT ON candidate_analysis_snapshot_inputs
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_stale_residuals_freeze_guard BEFORE INSERT ON candidate_analysis_stale_evidence_residuals
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_revalidation_obligations_freeze_guard BEFORE INSERT ON candidate_analysis_revalidation_obligations
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_enrichment_obligations_freeze_guard BEFORE INSERT ON candidate_analysis_enrichment_obligations
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_input_chunk_censuses_freeze_guard BEFORE INSERT ON candidate_analysis_input_chunk_censuses
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();
+CREATE TRIGGER candidate_input_chunk_members_freeze_guard BEFORE INSERT ON candidate_analysis_input_chunk_census_members
+FOR EACH ROW EXECUTE FUNCTION enforce_candidate_snapshot_child_freeze_insert();

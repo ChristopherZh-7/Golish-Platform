@@ -11,6 +11,8 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use golish_core::InvestigationRolloutMode;
+use golish_pentest_domain::tool_truth::ToolTruthContract;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::BTreeMap;
@@ -23,6 +25,9 @@ const MAX_CANDIDATE_TECHNIQUE_BYTES: usize = 128;
 const MAX_CANDIDATE_REASON_CODE_BYTES: usize = 64;
 const MAX_CANDIDATE_DECISION_EVIDENCE_IDS: usize = 64;
 const MAX_CANDIDATE_ACCEPTANCE_BYTES: usize = 256 * 1024;
+
+pub const ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT: &str =
+    "ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT";
 
 /// upsert 一条攻击假设的入参。`hypothesis_hash` 由 [`hypothesis_hash`] 从
 /// `(target, technique, hypothesis)` 确定性派生（MVP 语义去重 deferred，设计 §11
@@ -186,6 +191,10 @@ fn prior_refs_json(refs: &[String]) -> serde_json::Value {
 /// upsert 一条候选（去重键 = operation_id + target + hypothesis_hash），返回稳定
 /// candidate_id（冲突时为既有行的 id）。
 pub async fn upsert_legacy_by_hash(pool: &PgPool, w: &AttackCandidateWrite) -> Result<Uuid> {
+    let operation_id = Uuid::parse_str(&w.operation_id)
+        .map_err(|_| anyhow::anyhow!("legacy Candidate operation_id is not a UUID"))?;
+    let mut tx = pool.begin().await?;
+    lock_and_require_legacy_candidate_mutation(&mut tx, operation_id).await?;
     let hash = hypothesis_hash(&w.target, w.technique.as_deref(), &w.hypothesis);
     let id: Uuid = sqlx::query_scalar(UPSERT_LEGACY_SQL)
         .bind(w.candidate_id)
@@ -202,8 +211,9 @@ pub async fn upsert_legacy_by_hash(pool: &PgPool, w: &AttackCandidateWrite) -> R
         .bind(w.wave)
         .bind(w.parent_finding_id)
         .bind(&w.disposition)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(id)
 }
 
@@ -312,6 +322,76 @@ fn canonical_manifest_item_projection(
     })
 }
 
+fn legacy_candidate_shadow_sources(
+    command: &AcceptCandidateBatch,
+    work_items: &std::collections::HashMap<Uuid, &LockedWorkItem>,
+) -> crate::Result<Vec<super::hypothesis_legacy_projection::LegacyCandidateShadowSourceV1>> {
+    let mut sources =
+        Vec::with_capacity(command.candidates.len() + command.no_candidate_decisions.len());
+    for draft in &command.candidates {
+        let item = work_items
+            .get(&draft.work_item_id)
+            .ok_or_else(|| attack_conflict("candidate shadow source is outside manifest"))?;
+        sources.push(
+            super::hypothesis_legacy_projection::LegacyCandidateShadowSourceV1 {
+                entity_id: draft.candidate_id,
+                entity_version: 1,
+                organization_id: command.organization_id,
+                source_work_item_id: draft.work_item_id,
+                target_type_at_time: item.target_type_at_time.clone(),
+                target_value_at_time: item.target_value_at_time.clone(),
+                target_identity_hash: item.target_identity_hash.clone(),
+                hypothesis_hash: Some(hypothesis_hash(
+                    &item.target_value_at_time,
+                    draft.technique.as_deref(),
+                    &draft.hypothesis,
+                )),
+                technique: draft.technique.clone(),
+                candidate_plan_hash: Some(draft.candidate_plan_hash.clone()),
+                disposition: "proposed".to_owned(),
+            },
+        );
+    }
+    for decision in &command.no_candidate_decisions {
+        let item = work_items
+            .get(&decision.work_item_id)
+            .ok_or_else(|| attack_conflict("no-candidate shadow source is outside manifest"))?;
+        sources.push(
+            super::hypothesis_legacy_projection::LegacyCandidateShadowSourceV1 {
+                entity_id: decision.work_item_id,
+                entity_version: 1,
+                organization_id: command.organization_id,
+                source_work_item_id: decision.work_item_id,
+                target_type_at_time: item.target_type_at_time.clone(),
+                target_value_at_time: item.target_value_at_time.clone(),
+                target_identity_hash: item.target_identity_hash.clone(),
+                hypothesis_hash: None,
+                technique: Some(item.technique.clone()),
+                candidate_plan_hash: None,
+                disposition: "no_candidate".to_owned(),
+            },
+        );
+    }
+    Ok(sources)
+}
+
+async fn legacy_candidate_source_occurred_at(
+    connection: &mut sqlx::PgConnection,
+    operation_id: Uuid,
+    submission_id: Uuid,
+) -> crate::Result<DateTime<Utc>> {
+    sqlx::query_scalar(
+        r#"SELECT submitted_at
+             FROM stage_deliverable_submissions
+            WHERE id=$1 AND operation_id=$2"#,
+    )
+    .bind(submission_id)
+    .bind(operation_id)
+    .fetch_one(connection)
+    .await
+    .map_err(Into::into)
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct ReplayCandidateRow {
     candidate_id: Uuid,
@@ -356,6 +436,79 @@ struct LockedWaveUnit {
 
 fn attack_conflict(message: impl Into<String>) -> crate::DbError {
     crate::DbError::Other(anyhow::anyhow!(message.into()))
+}
+
+fn attack_conflict_code(code: &'static str) -> crate::DbError {
+    attack_conflict(format!(
+        "{code}: operation-frozen investigation contract forbids legacy Candidate mutation"
+    ))
+}
+
+pub fn require_legacy_candidate_mutation(mode: InvestigationRolloutMode) -> crate::Result<()> {
+    if mode.policy().allow_legacy_mutation {
+        Ok(())
+    } else {
+        Err(attack_conflict_code(
+            ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT,
+        ))
+    }
+}
+
+/// Lock and decode the operation-frozen joint contract before any legacy
+/// Candidate mutation. Deployment defaults are intentionally not consulted:
+/// the immutable operation value is the sole authority after creation.
+pub(super) async fn lock_frozen_investigation_rollout_mode(
+    connection: &mut sqlx::PgConnection,
+    operation_id: Uuid,
+) -> crate::Result<InvestigationRolloutMode> {
+    let frozen: Option<(String, String, String)> = sqlx::query_as(
+        r#"SELECT tool_truth_contract,investigation_contract_version,
+                  investigation_rollout_mode
+             FROM operation_state
+            WHERE operation_id=$1
+            FOR UPDATE"#,
+    )
+    .bind(operation_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let (tool_truth, investigation_contract, investigation_mode) =
+        frozen.ok_or_else(|| crate::DbError::NotFound("operation_state".to_string()))?;
+    let tool_truth = ToolTruthContract::try_from(tool_truth.as_str())
+        .map_err(|_| attack_conflict("operation has an unknown frozen Tool Truth contract"))?;
+    let (investigation_contract, investigation_mode) =
+        super::investigation_rollout::parse_frozen_pair(
+            &investigation_contract,
+            &investigation_mode,
+        )?;
+    super::operation_rollout::validate_joint_pair(
+        tool_truth,
+        investigation_contract,
+        investigation_mode,
+    )
+    .map_err(|error| attack_conflict(error.to_string()))?;
+    Ok(investigation_mode)
+}
+
+pub async fn lock_and_require_legacy_candidate_mutation(
+    connection: &mut sqlx::PgConnection,
+    operation_id: Uuid,
+) -> crate::Result<InvestigationRolloutMode> {
+    let mode = lock_frozen_investigation_rollout_mode(connection, operation_id).await?;
+    require_legacy_candidate_mutation(mode)?;
+    Ok(mode)
+}
+
+/// Command-layer early check. Every authoritative writer repeats this check
+/// inside its own transaction, so this helper improves error determinism but
+/// never replaces the DB mutation fence.
+pub async fn precheck_legacy_candidate_mutation(
+    pool: &PgPool,
+    operation_id: Uuid,
+) -> crate::Result<()> {
+    let mut tx = pool.begin().await?;
+    lock_and_require_legacy_candidate_mutation(&mut tx, operation_id).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 fn sorted_unique_ids(ids: &[Uuid]) -> Option<Vec<Uuid>> {
@@ -540,6 +693,9 @@ pub async fn accept_gate_passed_candidate_batch_with_connection(
     if expected.is_empty() {
         return Err(attack_conflict("candidate manifest cannot be empty"));
     }
+
+    let investigation_mode =
+        lock_and_require_legacy_candidate_mutation(connection, command.operation_id).await?;
 
     let contracts: Option<(String, String)> = sqlx::query_as(
         r#"SELECT runtime_memory_contract,attack_execution_contract
@@ -910,6 +1066,21 @@ pub async fn accept_gate_passed_candidate_batch_with_connection(
             }
             no_candidate_ids.push(decision.work_item_id);
         }
+        let source_occurred_at = legacy_candidate_source_occurred_at(
+            connection,
+            command.operation_id,
+            command.decision_deliverable_submission_id,
+        )
+        .await?;
+        super::hypothesis_legacy_projection::append_legacy_candidate_shadow_batch_with_connection(
+            connection,
+            investigation_mode,
+            command.operation_id,
+            command.decision_deliverable_submission_id,
+            source_occurred_at,
+            legacy_candidate_shadow_sources(&command, &by_id)?,
+        )
+        .await?;
         return Ok(AcceptedCandidateBatch {
             candidate_ids,
             no_candidate_work_item_ids: no_candidate_ids,
@@ -1092,6 +1263,21 @@ pub async fn accept_gate_passed_candidate_batch_with_connection(
     if moved.rows_affected() != 1 {
         return Err(attack_conflict("Candidate WaveUnit review transition lost"));
     }
+    let source_occurred_at = legacy_candidate_source_occurred_at(
+        connection,
+        command.operation_id,
+        command.decision_deliverable_submission_id,
+    )
+    .await?;
+    super::hypothesis_legacy_projection::append_legacy_candidate_shadow_batch_with_connection(
+        connection,
+        investigation_mode,
+        command.operation_id,
+        command.decision_deliverable_submission_id,
+        source_occurred_at,
+        legacy_candidate_shadow_sources(&command, &by_id)?,
+    )
+    .await?;
     Ok(AcceptedCandidateBatch {
         candidate_ids,
         no_candidate_work_item_ids: no_candidate_ids,
@@ -1144,13 +1330,18 @@ pub async fn update_disposition(
     organization_id: Option<Uuid>,
     disposition: &str,
 ) -> Result<bool> {
+    let frozen_operation_id = Uuid::parse_str(operation_id)
+        .map_err(|_| anyhow::anyhow!("legacy Candidate operation_id is not a UUID"))?;
+    let mut tx = pool.begin().await?;
+    lock_and_require_legacy_candidate_mutation(&mut tx, frozen_operation_id).await?;
     let res = sqlx::query(UPDATE_DISPOSITION_SQL)
         .bind(candidate_id)
         .bind(operation_id)
         .bind(organization_id)
         .bind(disposition)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(res.rows_affected() > 0)
 }
 
@@ -1311,5 +1502,25 @@ mod tests {
         assert!(!fresh_candidate_batch_fits(8, 3, 10));
         assert!(fresh_candidate_batch_fits(10, 0, 10));
         assert!(!fresh_candidate_batch_fits(i64::MAX, 1, i32::MAX));
+    }
+
+    #[test]
+    fn legacy_candidate_mutation_follows_the_exact_five_mode_policy_matrix() {
+        use InvestigationRolloutMode::{
+            DualReadCompare, LegacyOnly, NewOnly, RegistryAuthoritativeLegacyProjection,
+            ShadowRegistry,
+        };
+
+        for mode in [LegacyOnly, ShadowRegistry, DualReadCompare] {
+            require_legacy_candidate_mutation(mode)
+                .unwrap_or_else(|error| panic!("{mode:?} must permit legacy mutation: {error}"));
+        }
+        for mode in [RegistryAuthoritativeLegacyProjection, NewOnly] {
+            let error = require_legacy_candidate_mutation(mode)
+                .expect_err("registry-authoritative modes must reject legacy mutation");
+            assert!(error
+                .to_string()
+                .starts_with(ATTACK_LEGACY_MUTATION_FORBIDDEN_BY_INVESTIGATION_CONTRACT));
+        }
     }
 }

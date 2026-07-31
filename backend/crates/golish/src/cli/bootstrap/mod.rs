@@ -73,6 +73,10 @@ pub struct CliContext {
     /// CLI-owned Reporting orphan blob GC lifecycle.
     reporting_artifact_gc: crate::reporting_artifact_store::ReportArtifactGcRuntime,
 
+    /// CLI-owned asynchronous Hypothesis Registry read-model projector.
+    investigation_projection_worker:
+        golish_db::repo::investigation_projection::InvestigationProjectionWorker,
+
     /// Owned embedded database handle for ordinary headless CLI mode.
     embedded_db: Option<golish_db::GolishDb>,
     stop_embedded_db: bool,
@@ -108,6 +112,9 @@ impl CliContext {
 
         // Gracefully shutdown sidecar (waits for processor to flush pending events)
         self.sidecar_state.shutdown();
+
+        // Stop the read-model projector before the pool/server can disappear.
+        self.investigation_projection_worker.shutdown().await;
 
         // Stop cleanup claims before stopping the invalidation projectors they
         // depend on, then await the current projector batch.
@@ -259,6 +266,10 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         .await
         .context("embedded PostgreSQL handle disappeared during CLI startup")?;
     let cleanup_pool = db_pool.clone();
+    let investigation_projection_worker =
+        golish_db::repo::investigation_projection::InvestigationProjectionWorker::new(
+            cleanup_pool.clone(),
+        );
     let memory_supervisor =
         golish_agent_app::ai::db_bridge::knowledge_memory::KnowledgeMemoryRuntime::from_settings(
             db_pool, &settings,
@@ -301,6 +312,7 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         Arc::new(crate::reporting_artifact_store::ProjectReportArtifactStoreFactory),
     );
     reporting_artifact_gc.start();
+    investigation_projection_worker.start().await;
 
     // Create event channel
     let (event_tx, event_rx) = mpsc::unbounded_channel::<RuntimeEvent>();
@@ -357,6 +369,7 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
     let (bridge, mcp_manager) = match agent {
         Ok(agent) => agent,
         Err(error) => {
+            investigation_projection_worker.shutdown().await;
             reporting_artifact_gc.shutdown().await;
             let _ = cleanup_closeout.shutdown().await;
             let _ = memory_supervisor.shutdown().await;
@@ -391,6 +404,7 @@ pub async fn initialize(args: &Args) -> Result<CliContext> {
         memory_supervisor,
         cleanup_closeout,
         reporting_artifact_gc,
+        investigation_projection_worker,
         embedded_db: Some(embedded_db),
         stop_embedded_db: !preexisting_pg_on_port,
     })

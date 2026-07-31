@@ -36,6 +36,8 @@ pub enum InvestigationProjectionCatalogError {
     PlanBVerificationPlanRouteInvalid(&'static str),
     #[error("invalid bounded projection record: {0}")]
     InvalidProjectionRecord(&'static str),
+    #[error("invalid investigation timeline record: {0}")]
+    InvalidTimelineRecord(&'static str),
 }
 
 macro_rules! public_ts_catalog {
@@ -44,7 +46,7 @@ macro_rules! public_ts_catalog {
             Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ts_rs::TS,
         )]
         #[serde(rename_all = "snake_case")]
-        #[ts(export_to = "../../../../frontend/lib/generated/")]
+        #[ts(export, export_to = "../../../../frontend/lib/generated/")]
         pub enum $name {
             $( $variant ),+
         }
@@ -279,6 +281,306 @@ public_ts_catalog!(
     UnknownSourceTimeStatus,
     [Known => "known", HistoricalUnknown => "historical_unknown"]
 );
+
+/// Minimal stable reference carried by the internal Timeline contract.
+///
+/// The reference is deliberately identity-only.  Callers must use an
+/// authorized entity read API to obtain details.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectionEntityRefV1 {
+    pub kind: ProjectionEntityKind,
+    pub entity_id: String,
+    pub entity_version: u64,
+}
+
+/// Typed repository DTO for an already-persisted projection change.
+///
+/// This is not an IPC type.  It includes the persisted identity fields needed
+/// to verify `change_hash`; none of those fields are copied into Timeline
+/// output unless they are part of the frozen public shape below.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedProjectionChangeV1 {
+    pub operation_id: uuid::Uuid,
+    pub event_id: uuid::Uuid,
+    pub change_seq: i64,
+    pub batch_id: uuid::Uuid,
+    pub source_batch_seq: i64,
+    pub outbox_member_id: uuid::Uuid,
+    pub entity_kind: ProjectionEntityKind,
+    pub entity_id: String,
+    pub entity_version: u64,
+    pub change_kind: ProjectionChangeKind,
+    pub event_kind: TimelineEventKind,
+    pub organization_id: Option<uuid::Uuid>,
+    pub source_occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub source_time_status: ProjectionSourceTimeStatusV1,
+    pub projected_at: chrono::DateTime<chrono::Utc>,
+    pub invalidation_reason: Option<ProjectionInvalidationReason>,
+    pub source_hash: String,
+    pub projection_hash: String,
+    pub change_hash: String,
+}
+
+/// Typed repository DTO for the entity version joined to a Timeline change.
+///
+/// `change_hash` is selected from the joined change row.  Carrying it on both
+/// halves prevents a repository from accidentally pairing an entity version
+/// with a different change in the same batch.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedProjectionEntityVersionV1 {
+    pub operation_id: uuid::Uuid,
+    pub batch_id: uuid::Uuid,
+    pub change_seq: i64,
+    pub entity_kind: ProjectionEntityKind,
+    pub entity_id: String,
+    pub entity_version: u64,
+    pub source_hash: String,
+    pub projection_hash: String,
+    pub entity: ProjectionEntityV1,
+    pub change_hash: String,
+}
+
+/// Internal typed Timeline event.  Raw source payloads and prose are excluded
+/// by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvestigationTimelineEventV1 {
+    pub event_id: uuid::Uuid,
+    pub change_seq: i64,
+    pub event_kind: TimelineEventKind,
+    pub entity: ProjectionEntityRefV1,
+    pub organization_id: Option<uuid::Uuid>,
+    pub source_occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub source_time_status: ProjectionSourceTimeStatusV1,
+    pub projected_at: chrono::DateTime<chrono::Utc>,
+    pub invalidation_reason: Option<ProjectionInvalidationReason>,
+}
+
+impl InvestigationTimelineEventV1 {
+    /// Construct only from the typed persisted change/entity-version pair.
+    /// The pair is rejected if any identity binding or the canonical persisted
+    /// change hash has drifted.
+    pub fn try_from_persisted(
+        change: PersistedProjectionChangeV1,
+        entity_version: PersistedProjectionEntityVersionV1,
+    ) -> Result<Self, InvestigationProjectionCatalogError> {
+        if change.operation_id.is_nil()
+            || change.event_id.is_nil()
+            || change.batch_id.is_nil()
+            || change.outbox_member_id.is_nil()
+            || change.change_seq <= 0
+            || change.source_batch_seq <= 0
+            || change.entity_version == 0
+            || change.organization_id.is_some_and(|value| value.is_nil())
+            || change.entity_id.trim().is_empty()
+            || change.entity_id.len() > MAX_ENTITY_ID_BYTES
+            || !is_sha256_v1(&change.source_hash)
+            || !is_sha256_v1(&change.projection_hash)
+        {
+            return Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "identity",
+            ));
+        }
+        let expected_change_hash = projection_change_hash_v1(&change)?;
+        if !is_sha256_v1(&change.change_hash) || expected_change_hash != change.change_hash {
+            return Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "change_hash",
+            ));
+        }
+        if change.operation_id != entity_version.operation_id
+            || change.batch_id != entity_version.batch_id
+            || change.change_seq != entity_version.change_seq
+            || change.entity_kind != entity_version.entity_kind
+            || change.entity_id != entity_version.entity_id
+            || change.entity_version != entity_version.entity_version
+            || change.source_hash != entity_version.source_hash
+            || change.projection_hash != entity_version.projection_hash
+            || change.change_hash != entity_version.change_hash
+        {
+            return Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "persisted_pair",
+            ));
+        }
+        let record = entity_version.entity.record();
+        let projection_hash = projection_entity_hash_v1(&entity_version.entity)?;
+        if entity_version.entity.entity_kind() != change.entity_kind
+            || record.entity_id() != change.entity_id
+            || record.entity_version() != change.entity_version
+            || projection_hash != change.projection_hash
+        {
+            return Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "projection_body_identity",
+            ));
+        }
+        let expected_event_id = projection_event_id_v1(&change)?;
+        if expected_event_id != change.event_id {
+            return Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "event_id",
+            ));
+        }
+        if projection_timeline_event_kind(change.entity_kind, change.change_kind)
+            != Some(change.event_kind)
+        {
+            return Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "event_mapping",
+            ));
+        }
+        if (change.source_time_status == ProjectionSourceTimeStatusV1::Known)
+            != change.source_occurred_at.is_some()
+        {
+            return Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "source_time",
+            ));
+        }
+        if (change.change_kind == ProjectionChangeKind::Invalidate)
+            != change.invalidation_reason.is_some()
+        {
+            return Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "invalidation",
+            ));
+        }
+
+        Ok(Self {
+            event_id: change.event_id,
+            change_seq: change.change_seq,
+            event_kind: change.event_kind,
+            entity: ProjectionEntityRefV1 {
+                kind: change.entity_kind,
+                entity_id: change.entity_id,
+                entity_version: change.entity_version,
+            },
+            organization_id: change.organization_id,
+            source_occurred_at: change.source_occurred_at,
+            source_time_status: change.source_time_status,
+            projected_at: change.projected_at,
+            invalidation_reason: change.invalidation_reason,
+        })
+    }
+}
+
+/// Hash the complete typed materialized entity with recursively sorted object
+/// keys. PostgreSQL JSONB does not preserve insertion order, so hashing the
+/// serializer's incidental map order would make a persisted row impossible to
+/// verify after a round trip.
+pub fn projection_entity_hash_v1(
+    entity: &ProjectionEntityV1,
+) -> Result<String, InvestigationProjectionCatalogError> {
+    let value = serde_json::to_value(entity).map_err(|_| {
+        InvestigationProjectionCatalogError::InvalidTimelineRecord("projection_hash_encoding")
+    })?;
+    let canonical = canonicalize_projection_value(value);
+    let bytes = serde_json::to_vec(&canonical).map_err(|_| {
+        InvestigationProjectionCatalogError::InvalidTimelineRecord("projection_hash_encoding")
+    })?;
+    Ok(projection_content_sha256(&bytes))
+}
+
+fn canonicalize_projection_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(canonicalize_projection_value)
+                .collect(),
+        ),
+        serde_json::Value::Object(object) => {
+            let mut entries = object.into_iter().collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            let mut canonical = serde_json::Map::new();
+            for (key, value) in entries {
+                canonical.insert(key, canonicalize_projection_value(value));
+            }
+            serde_json::Value::Object(canonical)
+        }
+        scalar => scalar,
+    }
+}
+
+/// Recompute the immutable change identity from source and materialized
+/// content. Projector clocks and the derived event id are intentionally
+/// excluded, so a deterministic rebuild preserves the hash.
+pub fn projection_change_hash_v1(
+    change: &PersistedProjectionChangeV1,
+) -> Result<String, InvestigationProjectionCatalogError> {
+    if change.operation_id.is_nil()
+        || change.batch_id.is_nil()
+        || change.outbox_member_id.is_nil()
+        || change.change_seq <= 0
+        || change.source_batch_seq <= 0
+        || change.entity_id.trim().is_empty()
+        || change.entity_id.len() > MAX_ENTITY_ID_BYTES
+        || change.entity_version == 0
+        || !is_sha256_v1(&change.source_hash)
+        || !is_sha256_v1(&change.projection_hash)
+    {
+        return Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+            "change_hash_identity",
+        ));
+    }
+    let mut bytes = Vec::new();
+    for part in [
+        b"projection_change_content.v1".as_slice(),
+        change.operation_id.as_bytes(),
+        &change.change_seq.to_be_bytes(),
+        change.batch_id.as_bytes(),
+        &change.source_batch_seq.to_be_bytes(),
+        change.outbox_member_id.as_bytes(),
+        change.entity_kind.as_str().as_bytes(),
+        change.entity_id.as_bytes(),
+        &change.entity_version.to_be_bytes(),
+        change.change_kind.as_str().as_bytes(),
+        change.event_kind.as_str().as_bytes(),
+        change
+            .invalidation_reason
+            .map_or(b"none".as_slice(), |value| value.as_str().as_bytes()),
+        change.source_time_status.as_str().as_bytes(),
+        change.source_hash.as_bytes(),
+        change.projection_hash.as_bytes(),
+    ] {
+        append_length_prefixed(&mut bytes, part)?;
+    }
+    Ok(projection_content_sha256(&bytes))
+}
+
+/// Derive the stable Timeline event id in the operation UUID namespace after
+/// the content hash has been frozen.
+pub fn projection_event_id_v1(
+    change: &PersistedProjectionChangeV1,
+) -> Result<uuid::Uuid, InvestigationProjectionCatalogError> {
+    if !is_sha256_v1(&change.change_hash) {
+        return Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+            "event_change_hash",
+        ));
+    }
+    let mut bytes = Vec::new();
+    for part in [
+        b"projection-change.v1".as_slice(),
+        &change.change_seq.to_be_bytes(),
+        change.entity_kind.as_str().as_bytes(),
+        change.entity_id.as_bytes(),
+        &change.entity_version.to_be_bytes(),
+        change.change_kind.as_str().as_bytes(),
+        change.change_hash.as_bytes(),
+    ] {
+        append_length_prefixed(&mut bytes, part)?;
+    }
+    Ok(uuid::Uuid::new_v5(&change.operation_id, &bytes))
+}
+
+fn append_length_prefixed(
+    target: &mut Vec<u8>,
+    value: &[u8],
+) -> Result<(), InvestigationProjectionCatalogError> {
+    let len = u64::try_from(value.len()).map_err(|_| {
+        InvestigationProjectionCatalogError::InvalidTimelineRecord("identity_length")
+    })?;
+    target.extend_from_slice(&len.to_be_bytes());
+    target.extend_from_slice(value);
+    Ok(())
+}
 
 /// Return the single allowed timeline event for an entity/change pair.
 ///
@@ -1045,6 +1347,53 @@ macro_rules! projection_union {
                     Self::Report(_) => ProjectionEntityKind::Report,
                 }
             }
+
+            pub fn record(&self) -> &BoundedRedactedProjectionRecordV1 {
+                match self {
+                    Self::Generation(value) => value.record(),
+                    Self::Hypothesis(value) => value.record(),
+                    Self::HypothesisVerificationPlan(value) => value.record(),
+                    Self::HypothesisVerificationObjectiveOutcome(value) => value.record(),
+                    Self::HypothesisRevisionAdjudication(value) => value.record(),
+                    Self::HypothesisRevisionTerminalDecision(value) => value.record(),
+                    Self::HypothesisStateEvent(value) => value.record(),
+                    Self::Finding(value) => value.record(),
+                    Self::Refutation(value) => value.record(),
+                    Self::Relation(value) => value.record(),
+                    Self::Residual(value) => value.record(),
+                    Self::CapabilityAssessment(value) => value.record(),
+                    Self::CapabilityAssessmentSet(value) => value.record(),
+                    Self::LegacyCandidateProjection(value) => value.record(),
+                    Self::LegacyAttemptProjection(value) => value.record(),
+                    Self::ShadowComparison(value) => value.record(),
+                    Self::Campaign(value) => value.record(),
+                    Self::CampaignRound(value) => value.record(),
+                    Self::Consult(value) => value.record(),
+                    Self::Strategy(value) => value.record(),
+                    Self::StrategyObligation(value) => value.record(),
+                    Self::PreparedAction(value) => value.record(),
+                    Self::Authorization(value) => value.record(),
+                    Self::ActionExecution(value) => value.record(),
+                    Self::ConflictLease(value) => value.record(),
+                    Self::BudgetLedgerEntry(value) => value.record(),
+                    Self::CleanupObligation(value) => value.record(),
+                    Self::CallbackObligation(value) => value.record(),
+                    Self::Oracle(value) => value.record(),
+                    Self::OracleCensus(value) => value.record(),
+                    Self::Adjudication(value) => value.record(),
+                    Self::CampaignTerminal(value) => value.record(),
+                    Self::FactDelta(value) => value.record(),
+                    Self::FactDeltaConsumption(value) => value.record(),
+                    Self::HypothesisEvolutionProposal(value) => value.record(),
+                    Self::HypothesisEvolutionDecision(value) => value.record(),
+                    Self::Consolidation(value) => value.record(),
+                    Self::FixedPoint(value) => value.record(),
+                    Self::EnrichmentObligation(value) => value.record(),
+                    Self::ApplicationFactRefinementObligation(value) => value.record(),
+                    Self::Coverage(value) => value.record(),
+                    Self::Report(value) => value.record(),
+                }
+            }
         }
     };
 }
@@ -1539,6 +1888,236 @@ mod tests {
         assert_eq!(
             ProjectionSourceTimeStatusV1::decl(&config),
             "type ProjectionSourceTimeStatusV1 = \"known\" | \"historical_unknown\";"
+        );
+    }
+
+    fn timeline_pair() -> (
+        PersistedProjectionChangeV1,
+        PersistedProjectionEntityVersionV1,
+    ) {
+        let operation_id = uuid::Uuid::from_u128(100);
+        let batch_id = uuid::Uuid::from_u128(102);
+        let outbox_member_id = uuid::Uuid::from_u128(103);
+        let entity_id = "hypothesis:timeline:one".to_owned();
+        let projected_at = chrono::DateTime::parse_from_rfc3339("2026-07-29T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let source_occurred_at = chrono::DateTime::parse_from_rfc3339("2026-07-29T09:59:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let entity = ProjectionEntityV1::Hypothesis(
+            HypothesisProjectionRecordV1::try_new(
+                entity_id.clone(),
+                2,
+                1,
+                CanonicalJsonObject::parse_raw("{\"safe\":true}").unwrap(),
+            )
+            .unwrap(),
+        );
+        let source_hash = projection_content_sha256(b"timeline source snapshot");
+        let projection_hash = projection_entity_hash_v1(&entity).unwrap();
+        let mut change = PersistedProjectionChangeV1 {
+            operation_id,
+            event_id: uuid::Uuid::nil(),
+            change_seq: 7,
+            batch_id,
+            source_batch_seq: 3,
+            outbox_member_id,
+            entity_kind: ProjectionEntityKind::Hypothesis,
+            entity_id,
+            entity_version: 2,
+            change_kind: ProjectionChangeKind::Supersede,
+            event_kind: TimelineEventKind::HypothesisSuperseded,
+            organization_id: Some(uuid::Uuid::from_u128(105)),
+            source_occurred_at: Some(source_occurred_at),
+            source_time_status: ProjectionSourceTimeStatusV1::Known,
+            projected_at,
+            invalidation_reason: None,
+            source_hash: source_hash.clone(),
+            projection_hash: projection_hash.clone(),
+            change_hash: String::new(),
+        };
+        change.change_hash = projection_change_hash_v1(&change).unwrap();
+        change.event_id = projection_event_id_v1(&change).unwrap();
+        let entity = PersistedProjectionEntityVersionV1 {
+            operation_id,
+            batch_id,
+            change_seq: 7,
+            entity_kind: ProjectionEntityKind::Hypothesis,
+            entity_id: change.entity_id.clone(),
+            entity_version: 2,
+            source_hash,
+            projection_hash,
+            entity,
+            change_hash: change.change_hash.clone(),
+        };
+        (change, entity)
+    }
+
+    fn refresh_timeline_identities(
+        change: &mut PersistedProjectionChangeV1,
+        entity: &mut PersistedProjectionEntityVersionV1,
+    ) {
+        change.change_hash = projection_change_hash_v1(change).unwrap();
+        change.event_id = projection_event_id_v1(change).unwrap();
+        entity.change_hash.clone_from(&change.change_hash);
+    }
+
+    #[test]
+    fn investigation_timeline_constructs_only_from_an_exact_persisted_pair() {
+        let (change, entity) = timeline_pair();
+        let event = InvestigationTimelineEventV1::try_from_persisted(change, entity)
+            .expect("exact persisted pair");
+
+        assert_eq!(event.change_seq, 7);
+        assert_eq!(event.event_kind, TimelineEventKind::HypothesisSuperseded);
+        assert_eq!(event.entity.kind, ProjectionEntityKind::Hypothesis);
+        assert_eq!(event.entity.entity_version, 2);
+        assert_eq!(
+            event.source_time_status,
+            ProjectionSourceTimeStatusV1::Known
+        );
+
+        let body = serde_json::to_value(event).unwrap();
+        let object = body.as_object().unwrap();
+        assert_eq!(object.len(), 9);
+        assert!(!object.contains_key("rawPayload"));
+        assert!(!object.contains_key("summary"));
+        assert!(!object.contains_key("prose"));
+    }
+
+    #[test]
+    fn investigation_timeline_rejects_mismatched_pair_and_corrupt_change_hash() {
+        let (change, mut entity) = timeline_pair();
+        entity.batch_id = uuid::Uuid::from_u128(999);
+        assert!(matches!(
+            InvestigationTimelineEventV1::try_from_persisted(change.clone(), entity),
+            Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "persisted_pair"
+            ))
+        ));
+
+        let (mut change, entity) = timeline_pair();
+        change.change_hash = format!("sha256:{}", "f".repeat(64));
+        let mut entity = entity;
+        entity.change_hash = change.change_hash.clone();
+        assert!(matches!(
+            InvestigationTimelineEventV1::try_from_persisted(change, entity),
+            Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "change_hash"
+            ))
+        ));
+    }
+
+    #[test]
+    fn projection_change_identity_is_invariant_to_projector_and_source_clocks() {
+        let (mut change, _) = timeline_pair();
+        let original_change_hash = change.change_hash.clone();
+        let original_event_id = change.event_id;
+
+        change.projected_at += chrono::Duration::hours(6);
+        change.source_occurred_at = change
+            .source_occurred_at
+            .map(|value| value + chrono::Duration::minutes(17));
+
+        assert_eq!(
+            projection_change_hash_v1(&change).unwrap(),
+            original_change_hash
+        );
+        assert_eq!(projection_event_id_v1(&change).unwrap(), original_event_id);
+    }
+
+    #[test]
+    fn investigation_timeline_rejects_source_projection_body_and_event_tampering() {
+        let (mut change, entity) = timeline_pair();
+        change.source_hash = format!("sha256:{}", "e".repeat(64));
+        assert!(matches!(
+            InvestigationTimelineEventV1::try_from_persisted(change, entity),
+            Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "change_hash"
+            ))
+        ));
+
+        let (mut change, entity) = timeline_pair();
+        change.projection_hash = format!("sha256:{}", "d".repeat(64));
+        assert!(matches!(
+            InvestigationTimelineEventV1::try_from_persisted(change, entity),
+            Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "change_hash"
+            ))
+        ));
+
+        let (change, mut entity) = timeline_pair();
+        entity.entity = ProjectionEntityV1::Hypothesis(
+            HypothesisProjectionRecordV1::try_new(
+                change.entity_id.clone(),
+                change.entity_version,
+                1,
+                CanonicalJsonObject::parse_raw("{\"safe\":false}").unwrap(),
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            InvestigationTimelineEventV1::try_from_persisted(change, entity),
+            Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "projection_body_identity"
+            ))
+        ));
+
+        let (mut change, entity) = timeline_pair();
+        change.event_id = uuid::Uuid::from_u128(999);
+        assert!(matches!(
+            InvestigationTimelineEventV1::try_from_persisted(change, entity),
+            Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "event_id"
+            ))
+        ));
+    }
+
+    #[test]
+    fn investigation_timeline_enforces_typed_event_time_and_invalidation_semantics() {
+        let (mut change, mut entity) = timeline_pair();
+        change.event_kind = TimelineEventKind::HypothesisClosed;
+        refresh_timeline_identities(&mut change, &mut entity);
+        assert!(matches!(
+            InvestigationTimelineEventV1::try_from_persisted(change, entity),
+            Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "event_mapping"
+            ))
+        ));
+
+        let (mut change, mut entity) = timeline_pair();
+        change.source_occurred_at = None;
+        refresh_timeline_identities(&mut change, &mut entity);
+        assert!(matches!(
+            InvestigationTimelineEventV1::try_from_persisted(change, entity),
+            Err(InvestigationProjectionCatalogError::InvalidTimelineRecord(
+                "source_time"
+            ))
+        ));
+
+        let (mut change, mut entity) = timeline_pair();
+        change.source_occurred_at = None;
+        change.source_time_status = ProjectionSourceTimeStatusV1::HistoricalUnknown;
+        refresh_timeline_identities(&mut change, &mut entity);
+        let event = InvestigationTimelineEventV1::try_from_persisted(change, entity)
+            .expect("historical unknown source time remains explicit");
+        assert_eq!(event.source_occurred_at, None);
+        assert_eq!(
+            event.source_time_status,
+            ProjectionSourceTimeStatusV1::HistoricalUnknown
+        );
+
+        let (mut change, mut entity) = timeline_pair();
+        change.change_kind = ProjectionChangeKind::Invalidate;
+        change.event_kind = TimelineEventKind::HypothesisInvalidated;
+        change.invalidation_reason = Some(ProjectionInvalidationReason::AuthorityStale);
+        refresh_timeline_identities(&mut change, &mut entity);
+        let event = InvestigationTimelineEventV1::try_from_persisted(change, entity)
+            .expect("typed invalidation");
+        assert_eq!(
+            event.invalidation_reason,
+            Some(ProjectionInvalidationReason::AuthorityStale)
         );
     }
 
