@@ -14,7 +14,7 @@
 
 ## 职责
 
-把原巨石 `run_gui` 拆成独立可读/可测的启动阶段。DB-ready 后 exactly once 启动 Memory Supervisor、Cleanup DB-global worker 与 Reporting orphan-artifact GC；退出先停 Cleanup/Reporting workers，再 await projector batch，最后才停 pool。CLI/headless 复用同一生命周期顺序。
+把原巨石 `run_gui` 拆成独立可读/可测的启动阶段。DB-ready 后 exactly once 启动 Memory Supervisor、Investigation projection worker、Cleanup DB-global worker与 Reporting orphan-artifact GC；退出先停各 process-owned worker，再停 runtime/pool。CLI/headless 复用同一生命周期顺序。
 
 ## 公开接口
 
@@ -41,7 +41,8 @@
 ## 注意事项 / 坑
 
 - **组合根逻辑限定**：除 process lifecycle（如 DB-ready Memory Supervisor）外保持 run_gui 的机械拆分；改启动顺序要兼顾 GUI 与 headless/stage-run。
-- Memory Supervisor constructor 可在 AppState 创建时装配，但 `start` 必须等 `DbReadyGate=true`；`bridge_config` 不属于 process lifecycle，禁止在那里 spawn。
+- Memory Supervisor 与 Investigation projection worker constructor 可在 AppState 创建时装配，但 `start` 必须等 `DbReadyGate=true`；projection worker需先建立 LISTEN 再 spawn，`bridge_config` 不属于 process lifecycle，禁止在那里 spawn。
+- projector使用commit-visible NOTIFY + bounded polling补偿；必须exactly once per process，不能由AI tab/session重复启动。shutdown要先cancel/join projector，再关闭runtime/pool。
 - Reporting GC 的 referenced keys 只从 `report_revision_artifacts`/blob repo 读取；GC 文件 I/O 不进入 DB transaction，且 GUI `window_lifecycle` 必须显式 shutdown owner。
 
 ## 测试入口

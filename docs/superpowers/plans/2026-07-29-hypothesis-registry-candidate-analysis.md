@@ -10,6 +10,8 @@
 
 **规格来源：** `docs/design/2026-07-29-tool-truth-hypothesis-verification-loop.md` §5、§6、§10、§12、§14.1、§16 Plan B、§17.2、§17.5。
 
+**实施状态（2026-07-30）：** `passing`。从 Plan A final `1ce1831d1eff797382498e6b99a32bbb9e129bac` 的全新隔离 worktree 完成 Task 1–13；唯一 migration 为 `20260729000006_hypothesis_registry.sql`，未修改 `00005` 或任何既有 migration。production embedded-PG、Gate、projection、IPC、runtime、ts-rs 与前端定向门禁均已闭环；`pnpm typecheck` 只命中 Plan B 范围外既有 `softTimeoutMs` baseline，详见 `agent-progress.md`。Plan B 未提供 rollout promotion，也未实现 Plan C/D authority。
+
 ---
 
 ## 实施前硬边界与授权暂停点
@@ -2331,7 +2333,7 @@ spec 添加：
 
 三个 prompt 明确：closed frozen input、目标内容 `instruction_authority=false`、不得发现/扫描/联网/浏览/feed-refresh/delegate、不得发明 identity/hash、只提交 host schema。signed CVE/CPE/KEV/advisory/rule feed match明确标成`knowledge_signal`：可建议hypothesis，不能声称proof/refutation或绕过产品版本unknown/feed stale residual。
 
-critic由host以closed mode运行：`proposal_conflict_review.v1`、`hypothesis_coverage_subreview.v1`、`hypothesis_coverage_synthesis.v1`。subreview输入只含一个server-issued `(input,checklist-member,chunk-partition)` 的designated immutable chunks、该input全部H1 refs、checklist/feed applicability refs；critic不得声称看过其他partition或改变集合。synthesis node kind闭集为`cross_chunk|cross_input_partition|cross_input_reduce|cross_dimension_reduce|global_semantic_root`；每个node只消费server-sealed child exact set、level/partition/covered-input+checklist/relationship-index refs及transitive descendant-worker set，并寻找组合链/第二第三hypothesis，parent worker不得出现在descendant或primary set。任何node不得用page receipt冒充理解，也不能直接写最终per-input/global coverage review（由host reducer写）。zero-proposal只是一种空H1-ref输入。prompt不得把`adequate`描述为完整安全覆盖，任何context truncation、omission或deterministic sample只允许返回`blocked`/degraded。
+critic由host以closed mode运行：`proposal_conflict_review.v1`、`hypothesis_coverage_subreview.v1`、`hypothesis_coverage_synthesis.v1`。subreview输入只含一个server-issued `(input,checklist-member,chunk-partition)` 的designated immutable chunks、该input全部H1 refs、checklist/feed applicability refs；critic不得声称看过其他partition或改变集合。synthesis node kind闭集为`cross_chunk|cross_input_partition|cross_input_reduce|cross_dimension_reduce|global_semantic_root`；每个node只消费server-sealed child exact set、level/partition/covered-input+checklist/relationship-index refs及transitive descendant-worker set，并寻找组合链/第二第三hypothesis，parent worker不得出现在descendant或primary set。leaf与每级node还必须携带server重验的bounded typed semantic summary：covered input/checklist、observed H1 proposal、typed miss/blocker与最多64条canonical observation逐项等于原始child union；prose、page receipt或hash-only body都不构成理解权威。proposal-conflict critic消费由server从完整H1 proposal body投影的bounded semantic summaries，而不是opaque id/hash。0个proposal形成0 component，1–64个形成一个覆盖完整H1 exact set的deterministic component；超过64落durable blocked residual/event。任何node不得用page receipt冒充理解，也不能直接写最终per-input/global coverage review（由host reducer写）。zero-proposal只是一种空H1-ref输入。prompt不得把`adequate`描述为完整安全覆盖，任何context truncation、omission或deterministic sample只允许返回`blocked`/degraded。
 
 builder definitions 使用：
 
@@ -2484,7 +2486,7 @@ pub struct UntrustedCandidateInputChunkEnvelope {
 
 ### Step 5：实现 phase machine
 
-`PgHypothesisAnalysisStageRuntime` 顺序：server派生multi-root census并在Plan A Checked bundle callback内freeze authority/temporal/managed-feed-denominator/product-match snapshot → 若`blocked_authority_bundle`则persist residual/obligation并停止（runner=0）→ ready snapshot immutable chunk census → server open analysis attempt 0 → Controller dispatch plan → server clamp → deterministic all-input/all-chunk microbatches/cross-index → rolling analyst semaphore → attempt-scoped artifact receipts → attempt-scoped H1 census seal → server逐input proposal disposition → server conflict graph/components + 每input checklist×chunk-partition subreview census/work items → rolling map-critic semaphore → per-input/member cross-chunk nodes → attack-class×boundary bounded cross-input partitions → zero/more cross-input reduction levels → zero/more cross-dimension reduction levels + relationship cross-index → exact-one org/snapshot global semantic root → host reduceglobal review与每input coverage review → seal包含conflict/subreview/full synthesis tree/input-review/global-review的H2 exact census → 若有`missed_hypothesis`则append-only close当前attempt并以CAS创建唯一bounded后继attempt，从Controller dispatch/H1重新开始；否则Controller读取active-attempt canonical cluster pages → host derive claim components → compile VerificationContract + full-component HypothesisVerificationPlan → final typed decision/Gate。Gate前server用DB clock/current epoch heads/current feed trust store同时重验Tool Truth TTL/epoch set与required feed age/signature/key-revocation/denominator exact set；任一失效都block attempt并新建checked bundle/snapshot。response-loss用`predecessor attempt + next ordinal + retry request id`返回同一后继attempt，不能分叉。
+`PgHypothesisAnalysisStageRuntime` 顺序：server派生multi-root census并在Plan A Checked bundle callback内freeze authority/temporal/managed-feed-denominator/product-match snapshot → 若`blocked_authority_bundle`则persist residual/obligation并停止（runner=0）→ ready snapshot immutable chunk census → server open analysis attempt 0 → Controller dispatch plan → server clamp → deterministic all-input/all-chunk microbatches/cross-index → rolling analyst semaphore → attempt-scoped artifact receipts → attempt-scoped H1 census seal → server逐input proposal disposition → server conflict graph/components + 每input checklist×chunk-partition subreview census/work items → rolling map-critic semaphore → per-input/member cross-chunk nodes → attack-class×boundary bounded cross-input partitions → zero/more cross-input reduction levels → zero/more cross-dimension reduction levels + relationship cross-index → exact-one org/snapshot global semantic root → host reduceglobal review与每input coverage review → seal包含conflict/subreview/full synthesis tree/input-review/global-review的H2 exact census → 若有coverage `missed_hypothesis`则append-only close当前attempt并以CAS创建唯一bounded后继attempt，从Controller dispatch/H1重新开始；否则Controller读取active-attempt canonical cluster pages → host derive claim components → compile VerificationContract + full-component HypothesisVerificationPlan → final typed decision/Gate。当前typed retry signal只表达checklist/trust/input miss，不能把proposal-conflict IDs伪装成coverage miss；因此proposal-conflict返回`duplicate|merge_required|split_required`时采用保守、additive、可回滚的durable typed block，禁止H2/compiler。未来只有新增独立`CandidateConflictResolutionSignal`并把其exact set贯穿Controller/Analyst、attempt input hash与DB trigger重算后，才可把该分支改成retry。Gate前server用DB clock/current epoch heads/current feed trust store同时重验Tool Truth TTL/epoch set与required feed age/signature/key-revocation/denominator exact set；任一失效都block attempt并新建checked bundle/snapshot。response-loss用`predecessor attempt + next ordinal + retry request id`返回同一后继attempt，不能分叉；critic batch已提交后的完整runtime重建也必须reload同一work/artifact/decision/H2 receipt，不再插入已冻结denominator或重复调用provider。
 
 lane计算：
 
@@ -2585,7 +2587,7 @@ match persisted_contract.investigation_mode().policy().canonical_writer {
 
 ### Step 5：原子 Gate closeout
 
-`candidate_analysis_gate.rs`仅从repo private constructor加载`CandidateGateMaterial`：必须包含ready Checked bundle exact fields、server Gate-time temporal/epoch reevaluation、signed feed/match authority、coverage subreview/synthesis/final-review seals。它调用core claim-component/VerificationContract/verification-plan compilers与pure Gate，再调用DB CAS apply。每org Controller是唯一final submitter；operation coordinator只计数sealed org units，不读取跨org proposal内容。Candidate finalizer只能调用non-terminal apply；代码依赖图中不得出现Plan C `HypothesisRevisionAdjudicationAuthorityV1`、terminal transition、Campaign或oracle handle。
+`candidate_analysis_gate.rs`仅从repo private constructor在一个`REPEATABLE READ`事务加载首次Gate所需的pre-Gate exact material：必须包含ready Checked bundle exact fields、server Gate-time temporal/epoch reevaluation、signed feed/match authority、coverage subreview/synthesis/final-review seals及host compilation material，但不要求预先存在compiler seal。它先运行无I/O pure Gate，再调用DB CAS apply；apply在自己的短`REPEATABLE READ`事务内重新锁定并重验全部authority，随后创建compiler seal、canonical generation/revision/plan/transition与projection outbox并一次提交。每org Controller是唯一final submitter；operation coordinator只计数sealed org units，不读取跨org proposal内容。Candidate finalizer只能调用non-terminal apply；代码依赖图中不得出现Plan C `HypothesisRevisionAdjudicationAuthorityV1`、terminal transition、Campaign或oracle handle。
 
 新权威mode完成后：
 
@@ -2665,14 +2667,14 @@ command层同样预检以给稳定code，但DB guard才是authority。
 
 - 所有mode共享Plan B唯一whole-batch projector作为`investigation_projection_entity_versions/changes/heads`的唯一writer。source canonical/legacy transaction只插入immutable outbox header/member及outbox-owned source blob；projector按完整batch exact-once消费，在一个短transaction内写全部entity/compatibility/timeline versions、batch receipt并一次推进head。禁止source writer direct materialization/head bump与projector双计sequence。
 - `shadow_registry` / `dual_read_compare`：legacy Candidate/Attempt terminal source事务插入不可变outbox batch；commit后/恢复时deterministic projector消费。source row变化不影响已冻结outbox source hash/body；无法形成complete record时通过唯一`compare_and_record_v1`记录`incomplete`，不阻断旧operation。
-- `dual_read_compare`：比较complete legacy record hash与complete Registry projection hash；任一字段缺失即`incomplete`，禁止混合读取。
+- `dual_read_compare`：比较complete legacy record hash与complete Registry projection hash；任一字段缺失即`incomplete`，禁止混合读取。legacy side由legacy serializer从typed terminal source构造；Registry-shadow side必须由独立`RegistryShadowAdapter`重新解析冻结的raw source并重建typed comparison input，禁止clone legacy record、复用同一serializer或测试专用手工envelope。只允许同一authority basis的两侧进入complete compare；adapter单侧字段故障必须稳定产生whole-record `mismatch`。
 - `registry_authoritative_legacy_projection`：Registry/Campaign source finalizer只在canonical事务写outbox header/member及outbox-owned immutable source blob。projector异步派生Candidate和Attempt两种独立compatibility entity version；只有old-classifier-compatible、old-work-item-backed revision且B-owned plan/claim-component authority完整时可成为Candidate/NoCandidate ready version。Attempt还必须由未来Plan C canonical Campaign/action facts派生；若映射terminal disposition，则必须有current B-owned `HypothesisVerificationPlanV1`、objective+claim-component outcome exact set、`HypothesisRevisionAdjudication`与revision transition receipt完整authority。Campaign terminal/oracle receipts只是objective evidence members，单独存在不能派生terminal Attempt。Plan C未部署或字段不完整时写typed `unsupported/not_available_plan_c` version并让旧consumer fail closed，绝不伪造Attempt、oracle、adjudication或transition receipt。
 - `new_only`：不新增legacy compatibility versions，但现有历史 projection 继续以 read-only `HistoricalReadOnly` 打开；不能把“停止新写入”误实现成“历史不可读”。
 - capability adapter不存在不影响Registry；投影写`unsupported` residual。
 
 compatibility version必须带`projection_authority=derived_compatibility`、source generation/revision/claim-component/verification-plan identity与record hash，以及按适用性带revision adjudication/objective+component outcome set/transition receipt identity；Campaign terminal/oracle仅作为objective evidence member refs，不能占据revision-authority字段。还必须带`projection_schema_version=1`、entity version、batch/change seq、`source_occurred_at/source_time_status/projected_at`与`read_only=true`；禁止伪造Campaign/oracle/adjudication/transition receipt。deterministic unsupported/diverged/derivation-failed是可物化的typed invalidation version，使同batch其余canonical projections仍可原子发布；数据库/serialization/CAS等transient failure则整batch rollback且head不动。两种失败都发生在canonical commit之后，因此都不能回滚或删除canonical truth。
 
-唯一 `comparison_record.v1` 在 `golish-core::investigation_comparison` 冻结 semantic identity、Checked multi-root bundle/temporal/feed authority hashes、generation seal、hypothesis disposition/readiness、claim-component + VerificationContract + verification-plan objective/path exact sets、coverage subreview/synthesis/final-review/checklist set hashes、`candidate_hypothesis_coverage_sampling_degraded` residual membership、future capability assessment、revision adjudication/objective+component outcomes/transition、Campaign/oracle evidence members、Finding/refutation lineage及其余residual/coverage membership。Plan C 尚未存在的capability/adjudication/Campaign字段使用typed `not_available_plan_c`，不能省略/null后在Plan D改V1 hash。canonical serializer排除timestamp/row id/lease/prose，sorted exact set后生成SHA-256；`comparison.rs::compare_and_record_v1`是唯一sample writer。
+唯一 `comparison_record.v1` 在 `golish-core::investigation_comparison` 使用closed `authority_basis` union：`plan_b_checked`冻结Checked multi-root bundle/temporal/feed authority hashes、claim-component + VerificationContract + verification-plan objective/path exact sets、coverage subreview/synthesis/final-review/checklist set hashes与`candidate_hypothesis_coverage_sampling_degraded` residual membership；`grandfathered_legacy`只冻结versioned adapter contract hash、legacy Tool Truth exact set、legacy Candidate plan exact set与legacy coverage exact set，结构上不得携带或伪造任何Plan B bundle/feed/claim/plan/coverage authority hash。两支共同冻结semantic identity、generation seal、hypothesis disposition/readiness、future capability assessment、revision adjudication/objective+component outcomes/transition、Campaign/oracle evidence members、Finding/refutation lineage及其余residual/coverage membership。Plan C 尚未存在的capability/adjudication/Campaign字段使用typed `not_available_plan_c`，不能省略/null后在Plan D改V1 hash。canonical serializer排除timestamp/row id/lease/prose，sorted exact set后生成SHA-256；`comparison.rs::compare_and_record_v1`是唯一sample writer。该additive/reversible分支用于旧source没有Plan B authority的事实场景，避免用fabricated hashes伪装checked authority；未来获得真实Plan B authority时只能切换双方到`plan_b_checked`，不能跨basis宣称complete。
 
 ### Step 5：运行 GREEN
 
@@ -2681,7 +2683,7 @@ just space-guard
 (cd backend && cargo nextest run -p golish-db --test hypothesis_registry -E 'test(legacy_) | test(shadow_) | test(dual_read_) | test(comparison_record_) | test(legacy_candidate_projection_) | test(legacy_attempt_projection_) | test(legacy_terminal_authority_projection_) | test(projection_batch_) | test(projection_failure_preserves_canonical_)')
 ```
 
-Expected：全部`PASS`；matrix test精确验证canonical writer、Gate authority、legacy mutation、registry shadow、Campaign policy、JIT、compare policy与legacy projection八个policy字段；source transaction只写outbox header/member/owned blob；Candidate/Attempt compatibility仅由projector异步生成；typed invalidation或projector rollback都不改变canonical；旧consumer在missing/unsupported/diverged/stale version时稳定HOLD。
+Expected：全部`PASS`；matrix test精确验证canonical writer、Gate authority、legacy mutation、registry shadow、Campaign policy、JIT、compare policy与legacy projection八个policy字段；真实legacy Candidate/Attempt producer经outbox/projector产生同entity、同`grandfathered_legacy` basis的双侧complete record且exact match，独立Registry adapter单侧故障产生mismatch，序列化record结构上不存在Plan B authority字段；source transaction只写outbox header/member/owned blob；Candidate/Attempt compatibility仅由projector异步生成；typed invalidation或projector rollback都不改变canonical；旧consumer在missing/unsupported/diverged/stale version时稳定HOLD。
 
 ### Future Commit
 
@@ -2730,7 +2732,7 @@ git commit -m "feat(investigation): project registry to legacy safely"
 
 ### Step 1：写 authorization/cursor RED
 
-按 Reporting auth fixture写 tests：trusted local desktop可读；wrong channel/provider failure/foreign project/unsealed scope/cross-org selector统一`INVESTIGATION_FORBIDDEN`；malformed operation/revision/organization ID返回`INVESTIGATION_INVALID_ID`；unknown filter value或互斥filter组合返回`INVESTIGATION_INVALID_ARGUMENT`；deleted live target仍返回at-time identity；V2 cursor签名/tamper/resource/filter/operation mismatch及任一`as_of_temporal_cutoff/authority_epoch_set_hash/earliest_effective_valid_until`篡改返回`INVESTIGATION_CURSOR_INVALID`。签名有效但`as_of_change_seq`落后、authority epoch exact set漂移、或DB transaction time已越过`earliest_effective_valid_until`都返回`INVESTIGATION_PROJECTION_STALE`且`restart_required=true`，即使projection head完全未变也绝不能返回另一页。再覆盖V2 canonical round-trip、caller时间被忽略、第一页和后续页envelope/cursor temporal fields exact-equal；V1只允许historical/legacy decoder读取，current Registry multipage收到合法V1也必须要求restart，不能签发或续写V1 next cursor。
+按 Reporting auth fixture写 tests：trusted local desktop + exact operation/Task/chat session + live session bridge workspace + active project + sealed scope可读；wrong channel/provider failure、伪造provider principal、foreign project、cross-session operation/session pair、missing live bridge、retired project、unsealed scope或cross-org selector统一`INVESTIGATION_FORBIDDEN`。同时 active 的两个project不能仅凭operation UUID互读；移除live bridge后同一operation也必须立即fail closed。malformed operation/revision/organization ID返回`INVESTIGATION_INVALID_ID`；unknown filter value或互斥filter组合返回`INVESTIGATION_INVALID_ARGUMENT`；deleted live target仍返回at-time identity；V2 cursor签名/tamper/resource/filter/operation mismatch及任一`as_of_temporal_cutoff/authority_epoch_set_hash/earliest_effective_valid_until`篡改返回`INVESTIGATION_CURSOR_INVALID`。签名有效但`as_of_change_seq`落后、authority epoch exact set漂移、或DB transaction time已越过`earliest_effective_valid_until`都返回`INVESTIGATION_PROJECTION_STALE`且`restart_required=true`，即使projection head完全未变也绝不能返回另一页。再覆盖V2 canonical round-trip、caller时间被忽略、第一页和后续页envelope/cursor temporal fields exact-equal；V1只允许historical/legacy decoder读取，current Registry multipage收到合法V1也必须要求restart，不能签发或续写V1 next cursor。
 
 DB read-model RED另覆盖：所有summary/list/detail只读materialized entity versions；projector在batch commit前暂停时reader仍看到完整旧head，commit后一次看到全部新entity；同一个`REPEATABLE READ READ ONLY` snapshot必须同时捕获projection head、DB clock temporal cutoff、current authority epoch exact-set hash与本次结果依赖authority members的最早effective `valid_until`，不能在事务外补读或信任caller clock。Timeline event kind由typed catalog映射，不把`entity_kind/change_kind`字符串交给UI猜；invalidation必须带typed reason；`source_occurred_at`与`projected_at`分别保留且排序只用`change_seq,event_id`；historical unknown source time保持null+explicit status；unknown kind/payload fail closed。core `projection_ts_decl_golden_`与app `investigation_temporal_snapshot_ts_golden_`/export test还要证明四个generated TS union exact-equal Rust`ALL/as_str` wire values，且`InvestigationTemporalSnapshotView.ts`与`InvestigationProjectionEnvelope.ts` exact包含V2 temporal字段、foreign/mirror enum或自由字符串DTO无法编译/序列化。
 
@@ -2756,6 +2758,8 @@ Expected：commands/module或materialized-only Timeline/read-model实现不存�
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export, export_to = "../../../../../frontend/lib/generated/")]
 pub struct InvestigationHypothesisListRequest {
+    /// 仅用于选择当前live agent session；workspace authority由server-owned bridge派生。
+    pub session_id: String,
     pub operation_id: String,
     pub organization_ids: Vec<String>,
     pub epistemic_states: Vec<String>,
@@ -2772,6 +2776,8 @@ pub struct InvestigationHypothesisListRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export, export_to = "../../../../../frontend/lib/generated/")]
 pub struct InvestigationScopeRequest {
+    /// 仅用于选择当前live agent session；workspace authority由server-owned bridge派生。
+    pub session_id: String,
     pub operation_id: String,
 }
 
@@ -2779,6 +2785,8 @@ pub struct InvestigationScopeRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export, export_to = "../../../../../frontend/lib/generated/")]
 pub struct InvestigationHypothesisGetRequest {
+    /// 仅用于选择当前live agent session；workspace authority由server-owned bridge派生。
+    pub session_id: String,
     pub operation_id: String,
     pub revision_id: String,
 }
@@ -2907,7 +2915,7 @@ pub struct InvestigationHypothesisDetailView {
 }
 ```
 
-summary/list/detail DTO只能包含at-time identity、structured claim摘要、三轴state、readiness、source计数、lineage IDs、objective摘要、residual code和legacy projection status；禁止raw payload、credential、prompt/prose artifact、lease token、checkpoint、cursor salt。
+三个request都以`session_id + operation_id`作为additive selector；`session_id`不是caller提供的workspace或principal authority。handler必须用它exact绑定DB Task/session与仍然live的agent bridge，再从bridge读取server-owned workspace并重算canonical path/hash；request禁止携带workspace path/hash、project scope id或principal id。summary/list/detail response DTO只能包含at-time identity、structured claim摘要、三轴state、readiness、source计数、lineage IDs、objective摘要、residual code和legacy projection status；禁止raw payload、credential、prompt/prose artifact、lease token、checkpoint、cursor salt。
 
 Plan B同时在`golish-core::investigation_projection`冻结、在DB`types.rs/timeline.rs`消费内部typed Timeline contract；`ProjectionEntityKind`、`TimelineEventKind`、`ProjectionSourceTimeStatusV1`、`ProjectionInvalidationReason`必须直接import自该core模块，DB/app不得重定义mirror enum。四个enum本Task生成独立TS bindings供Plan D复用；本Task暂不新增Timeline event DTO IPC，Plan D只能做authorized wrapper与分页展示：
 
@@ -3022,7 +3030,7 @@ pub async fn investigation_get_hypothesis(
 ) -> Result<InvestigationHypothesisDetailView, InvestigationCommandError>;
 ```
 
-授权顺序沿用`authorize_reporting_scope`：principal → operation → active project → sealed scope/root membership → selector scope。`investigation_projection/mod.rs`在一个`REPEATABLE READ READ ONLY`事务中原子固定head/read_at、DB-clock `as_of_temporal_cutoff`、适用authority epoch heads exact-set hash与结果依赖members的`earliest_effective_valid_until`；所有`summary.rs/hypotheses.rs/legacy.rs/timeline.rs`查询只消费`change_seq <= captured head`的materialized entity versions/change rows，禁止join尚未project的canonical新row补齐，也禁止事务外分别读取epoch/TTL而形成混合快照。首个current list page以这四项构造V2 cursor和`InvestigationTemporalSnapshotView`；后续页必须exact复用并在同一DB transaction以current DB clock/current authority epoch set重验，head不变但TTL已过或epoch变化也fail closed并要求restart。`legacy.rs`在冻结legacy mode下读取projector产生或historical-backfill的只读compatibility version，缺失新字段显式`legacy_unavailable`；历史V1 cursor只允许受限decode/single-page或restart，绝不能继续current multipage。Plan D只在此目录新增`version.rs/campaigns.rs`并为既有`timeline.rs`增加authorized IPC wrapper，不搬迁、重写或另建Timeline semantic mapper，也不定义第二套cursor/temporal snapshot contract。
+授权顺序采用更窄的server-derived链：provider local principal exact匹配DB active local principal → operation → Task → DB chat session exact匹配request `session_id` → 同id的live agent bridge → bridge server-owned workspace canonical identity → active project exact path/hash → sealed scope/root membership → selector scope。operation UUID和session字符串都只是selector，任一binding缺失或漂移都收敛为同一`INVESTIGATION_FORBIDDEN`，且所有selector解析/存在性分支与projection read必须在该链之后。`investigation_projection/mod.rs`在一个`REPEATABLE READ READ ONLY`事务中原子固定head/read_at、DB-clock `as_of_temporal_cutoff`、适用authority epoch heads exact-set hash与结果依赖members的`earliest_effective_valid_until`；所有`summary.rs/hypotheses.rs/legacy.rs/timeline.rs`查询只消费`change_seq <= captured head`的materialized entity versions/change rows，禁止join尚未project的canonical新row补齐，也禁止事务外分别读取epoch/TTL而形成混合快照。首个current list page以这四项构造V2 cursor和`InvestigationTemporalSnapshotView`；后续页必须exact复用并在同一DB transaction以current DB clock/current authority epoch set重验，head不变但TTL已过或epoch变化也fail closed并要求restart。`legacy.rs`在冻结legacy mode下读取projector产生或historical-backfill的只读compatibility version，缺失新字段显式`legacy_unavailable`；历史V1 cursor只允许受限decode/single-page或restart，绝不能继续current multipage。Plan D只在此目录新增`version.rs/campaigns.rs`并为既有`timeline.rs`增加authorized IPC wrapper，不搬迁、重写或另建Timeline semantic mapper，也不定义第二套cursor/temporal snapshot contract。
 
 在facade/mod/registry注册三个command；禁止`commands_registry.rs`直接glob app commands。
 

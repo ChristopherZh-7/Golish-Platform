@@ -35,7 +35,7 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 | `StageTeamSchedulerPolicy` | Company Controller-only Stage Team 策略；声明允许的动态 child role/request kind、生命周期预算，以及非零 C/G/K 并发上限 |
 | `attack_execution::*` | Candidate V2 纯领域契约：observation/hash 冻结的 exact manifest decision classifier、immutable execution plan/hash/risk、bounded acceptance、8 态 Attempt 状态机、closed `FactDeltaKind(created|updated|refuted|new_surface)`、terminal result validator，以及 legacy/V2 whole-record shadow read selector |
 | `ReportingGateTruth` / `validate_reporting_gate_truth` | C9 Reporting 的 DB-free Gate contract：current validated revision、完整 source-set、citation/attestation 与 Cleanup closeout |
-| `hypothesis_registry::*` | Plan B host boundary：typed Candidate proposal→core semantic key，operation/org-scoped fixed-order reducer（含split/merge/derive/narrow/collision），四类structured-claim component compiler，host VerificationContract/plan compiler，以及仅消费repository-frozen authority的pure Candidate Gate。Gate按固定顺序关闭Plan A multi-root/temporal、signed feed、attempt/read/coverage、mutation、claim/contract/plan、disposition/relation/transition与唯一final submitter exact sets；输出只含non-terminal Candidate mutation |
+| `hypothesis_registry::*` | Plan B host boundary：typed Candidate proposal→core semantic key，operation/org-scoped fixed-order reducer（含split/merge/derive/narrow/collision），四类structured-claim component compiler，host VerificationContract/plan compiler，以及仅消费repository-frozen opaque snapshot的pure Candidate Gate。Gate按固定顺序关闭Plan A multi-root/temporal、signed feed、attempt/read/coverage（含semantic-summary exactness）、mutation、claim/contract/plan、disposition/relation/transition与唯一final submitter exact sets；输出只含non-terminal Candidate mutation |
 | `StageRuntimeContract` / `RuntimeUnitIdentity` / `RuntimeScopeSource` | `StageSpec.runtime_memory` 的 closed typed contract；当前仅 `target_intel` / `external_attack_surface` / `enumeration` / `vuln_triage` 精确声明 schema v2、`stage_execution_organization`、`frozen_operation_snapshot`、worker lease 与 final-seal handoff |
 | `CanonicalFactKey::TechniqueOutcomeSet` / `technique_outcome_set_identity` | Vuln final-seal-only 集合 authority：对完整排序后的 `(asset, technique, normalized_state)` 生成稳定 count/hash；不采样、不替代底层 row，也不能作为 FactDelta subject |
 | `render_context_pack_data` | 将已授权 ContextPack 渲染为 escaped、data-only、带 provenance/evidence 的 prompt block |
@@ -152,3 +152,9 @@ cd backend && cargo nextest run -p golish-agent-kit harness
 - TargetIntel assessment只接受同 `stage_execution_id + attempt_epoch + denominator_id` 的 current consistent exact receipt set；上一 attempt与 legacy source terminal row不能补齐 current manifest。
 - `task_orchestrator::tool_truth_revalidation` 是唯一 refresh owner seam。默认 manual/held、T2/T3、inactive operation、缺 authority/budget或 bounded exhaustion均零 dispatch；mandatory residual不能 risk-accept。
 - focused入口：`cargo nextest run -p golish-agent-kit -E 'test(tool_truth_revalidation_) | test(tool_truth_shadow_grade_does_not_change_legacy_gate_result)'`。
+
+## Hypothesis Registry pure Gate（Plan B，2026-07-30）
+
+- Gate只接收repository在同一RR snapshot冻结的opaque authority：Plan A四root/temporal/feed、attempt/read receipt、H1/H2/checklist×partition、subreview/synthesis及host-compiled mutation/contract/plan/transition exact sets。它无DB/provider/network能力，不能自行刷新或补齐truth。
+- semantic summary不是自由prose/hash：covered input/checklist、observed H1 proposal、typed missed checklist、blocker codes、outcome与每条subject/input/checklist/proposal observation都必须和leaf/node raw exact sets全等，hash-only或缺项一律BLOCK。
+- `AnalysisArtifactsReady`、Stage Team receipt与Gate PASS都不能产生`verified/refuted`或Plan C终态；canonical mutation只可交给app/DB atomic apply。focused入口：`cargo nextest run -p golish-agent-kit --test hypothesis_registry_gate`。

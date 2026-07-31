@@ -31,7 +31,8 @@
 | `hypothesis_semantic_key::*` | Plan B/C 共用的 canonical JSON、claim polarity、semantic-key SHA-256、Candidate 非终态闭集以及 initial/split/merge/derive/revision UUIDv5 公式 |
 | `verification_contract::*` | 唯一 host-compiled `VerificationContractV1`；四种 combinator、predicate/control/pair/order exact sets 与 persisted replay validator |
 | `hypothesis_verification::*` | revision claim-component/objective/proof-path seal、typed VerificationContract binding、outer truth reducer，以及 Plan C 无环 adjudication/transition authority DTO；完整只读 getters 供 repo 精确持久化 |
-| `investigation_projection::*` | Projection/Timeline closed catalogs、Plan B verification-plan exact-one route、Plan C same-revision terminal exact-five manifest，以及按 entity kind 分型且重算 body hash 的 bounded source/entity records；四个 public enum 是 ts-rs 唯一 Rust 来源 |
+| `investigation_projection::*` | Projection/Timeline closed catalogs、Plan B verification-plan exact-one route、Plan C same-revision terminal exact-five manifest，以及支持 bounded opaque string entity id 的 typed source/entity records；共享 `projection_entity_hash_v1` / `projection_change_hash_v1` / `projection_event_id_v1` 让 projector 与 Timeline reader重算完整 body/source/change identity，四个 public enum 是 ts-rs 唯一 Rust 来源 |
+| `investigation_comparison::*` | `comparison_record.v1` whole-record canonical compiler与 `compare_whole_records_v1`；authority basis只接受 `plan_b_checked` 或 `grandfathered_legacy`，跨 basis、缺任一侧或不完整记录一律 `incomplete`，绝不逐字段混读 |
 | `CandidateAttemptContextRef` / `check_candidate_tool_boundary` | opaque verifier identity 与 dependency-floor closed-tool/foreground guard；不携带 plan/action/budget/scope |
 | HITL：`ApprovalDecision` / `ApprovalPattern` / `RiskLevel` / `ToolApprovalConfig` | 人类在环审批 |
 | `PromptContributor` / `PromptContext` / `PromptSection` | prompt 组装贡献机制 |
@@ -58,7 +59,7 @@
 
 ## 关键文件（单文件模块）
 
-`agent_mode.rs`、`agent_session.rs`、`attack_execution.rs`、`investigation_contract.rs`、`hypothesis_semantic_key.rs`、`verification_contract.rs`、`hypothesis_verification.rs`、`investigation_projection.rs`、`hitl.rs`、`plan.rs`、`prompt.rs`、`runtime.rs`、`session_manager.rs`、`tool.rs`、`tool_args.rs`、`textual_tool_call.rs`、`ready_gate.rs`、`skill_provider.rs`、`pentest_context.rs`、`event_emitter.rs`、`vault.rs`、`web_fetch.rs`、`paths.rs`、`os.rs`、`jsonl.rs`、`time.rs`、`utils.rs`、`message.rs`、`api_request_stats.rs`、`session_kind.rs`。
+`agent_mode.rs`、`agent_session.rs`、`attack_execution.rs`、`investigation_contract.rs`、`hypothesis_semantic_key.rs`、`verification_contract.rs`、`hypothesis_verification.rs`、`investigation_projection.rs`、`investigation_comparison.rs`、`hitl.rs`、`plan.rs`、`prompt.rs`、`runtime.rs`、`session_manager.rs`、`tool.rs`、`tool_args.rs`、`textual_tool_call.rs`、`ready_gate.rs`、`skill_provider.rs`、`pentest_context.rs`、`event_emitter.rs`、`vault.rs`、`web_fetch.rs`、`paths.rs`、`os.rs`、`jsonl.rs`、`time.rs`、`utils.rs`、`message.rs`、`api_request_stats.rs`、`session_kind.rs`。
 
 ## 注意事项 / 坑
 
@@ -68,6 +69,7 @@
 - Hypothesis sealed DTO 的 member/count/set/final hash 只能由 core compiler 或 persisted replay validator 生成；plan objective直接持有并校验sealed `VerificationContractV1`，不能用caller自报contract id/hash替换。`CandidateMutationEpistemicState`不含`verified/refuted/invalid`。Plan C 必须直接复用这里的 VerificationContract、proof-path reducer与 transition hash 顺序。
 - Projection source/entity payload不是自由JSON/type tag：每个 entity kind有独立typed record wrapper，schema固定为V1，canonical redacted body在constructor和deserialize replay时重算SHA-256；Plan C terminal manifest还要求五个member绑定同一revision且source hash互异。
 - Projection enum 在 Task 4 只运行内存 `TS::decl()` golden；实际写入 `frontend/lib/generated/` 只由 Task 11 的授权生成步骤完成，禁止手改。
+- `comparison_record.v1` 对 Plan C 字段使用显式 `not_available_plan_c`，并冻结 wire/residual membership；这只是未来接口形状，不安装 Plan C capability assessment、adjudication或terminal authority。
 - `agent_session.rs` 的 task-local attribution 是 best-effort：只对 inline awaited work 生效，启动后台 job 时要立即 capture，不能等到 spawned task 里再读。`AgentToolContext.operation_id` 来自 runtime 的 active harness operation/stage attempt，不能从模型参数猜；`organization_id` 承载当前 harness org。后台 completion 用这些可信绑定把结构化扫描结果、证据和 coverage outcome 写回正确 run/org。
 - `AgentToolCancellation` 是 sticky task-local取消通道：wrapper/runner在 inline scope捕获 clone，Stop 后所有观察者都能看到同一状态；等待实现必须在注册 `Notify` 前后都重查 flag，避免 cancel 与 waiter注册竞态。它只传递取消，不替代具体工具的 kill/await/landing责任。
 - direct/bridge 工具如果要让前端实时看到“工具现在在看什么”，用 `emit_current_agent_tool_output_chunk` 发 chunk；主 loop / sub-agent executor 会注入 `with_agent_tool_output_sender`。如果工具自己 `tokio::spawn` 读子进程 stderr/stdout，必须先在 inline scope capture `current_agent_tool_context()` 和 `current_agent_tool_output_sender()`，spawn 里不能再读 task-local。

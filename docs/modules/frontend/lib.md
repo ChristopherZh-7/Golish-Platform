@@ -54,6 +54,9 @@
 - `api/attack.ts` 只接受 ts-rs 生成的 operation/wave scope、Candidate id/plan hash/row version/decision/expiry，以及 recovery case/request-id/双 expected versions/closed decision/exact evidence ids；actor/project/org/target/action args/budget/lease/checkpoint 不得进入 mutation DTO。Verification queue read model同样由 ts-rs 生成，可包含只读 pending FactDelta enrichment 的安全 subject/reason/allowed-techniques 元数据，但不得返回 raw request/evidence；`ATTACK_RECOVERY_CONFLICT` 与既有 `ATTACK_*` code 由 `error-codes.ts` 稳定翻译。
 - `api/cleanup.ts` 只消费 ts-rs 生成的 operation/org read scope 与 exact operation/project-scope/snapshot/org/obligation/row-version waiver CAS；request 不含 actor id，可信 local principal 只在后端解析。
 - `api/reporting.ts` 只消费 ts-rs 生成的 operation scope 与 revision/source CAS；`buildReportReadModel`、read/list/artifact/finalize 都走该 wrapper。actor、project root、storage path/content key 不得出现在 request DTO。
+- `api/investigation.ts` 只消费 ts-rs 生成的 `sessionId + operationId`（detail再加revision，list再加closed filters/cursor）selector。`sessionId`由当前 Tool detail pane提供，后端用它解析live bridge workspace并重验operation/task/session/project；request禁止携带workspace path、project id或principal。
+- `api/investigation.ts`公开`getInvestigationSummary` / `listInvestigationHypotheses` / `getInvestigationHypothesis`，对应后端三个readonly command。list cursor是后端签发的opaque v2 token，`expectedChangeSeq`与`InvestigationTemporalSnapshotView`用于拒绝跨head/过期分页；前端不得解析、改写或从本地列表重建cursor。
+- Plan B ts-rs closed enums为`ProjectionEntityKind`、`ProjectionInvalidationReason`、`ProjectionSourceTimeStatusV1`、`TimelineEventKind`；相关request/envelope/view也全部从`generated/`导入。V1 legacy projection仅作历史兼容并显式显示unavailable字段，不能补齐Registry authority。
 - `generated/GeneratedAiEvent.ts` 与 `GeneratedHarnessTraceKind.ts` 的 Candidate V2 terminal/consolidation 分支由 ts-rs 生成：字段只允许 immutable scope/wave/unit/org/candidate/attempt/consolidation ids、terminal status/decision、聚合 counts 与 replay flag；没有 plan/result body/lease/exploit payload，也没有新的 attack command DTO。改 Rust wire 后必须用类型生成流程同步，禁止手改生成文件。
 - `api/temporal-graph.ts` 只消费 ts-rs 生成的 closed scope/request/result；它与手写 legacy `lib/ai/kg.ts` 分离，不能添加 actorId/projectPath authority 字段。
 - `target-panel/org-tree.ts` 是 TargetPanel 左侧组织树投影入口，默认只用于公司层级和计数；`summarizeTargetCounts` 同时给出 own 与 subtree 口径，UI 主数字必须用 own，删除/汇总才用 subtree；`target-panel/asset-groups.ts` 负责右侧 Targets 面板的 IP ⇄ 域名/URL 联合分组，避免大型客户的资产列表遮住子公司层级。IP target 必须按自己的 `value` 成组，即使 `real_ip` 里有 provider 归因值；只有 domain / url 才用 `real_ip` 挂到 IP 组，否则会出现“IP 下面挂 IP”的误导。IP 组的展示列表要把 `www.<apex>` 折叠到 `<apex>`，优先展示 apex，但不要折叠 `m.` / `api.` 等真实子域，底层 `targets` 和计数仍保留原始资产。
@@ -83,3 +86,7 @@ just test-fe    # vitest
 ## Organization deletion blocker translation（2026-07-19）
 
 - `api/error-codes.ts` 把 `ORGANIZATION_DELETE_ACTIVE_STAGE_FORK` 翻译为“仍有活动执行者或未决工具结果，需先停止或恢复”的可操作提示；`i18n/*.json` 的删除确认同步披露 quiescent paused Task会被自动停止。未知 code 仍保留 backend fallback message，不能从字符串解析 blocker 类型。
+
+## Hypothesis Registry readonly client（Plan B，2026-07-30）
+
+- wrapper与generated wire只支持summary/list/detail读取；没有promotion、canonical mutation、Campaign、Prepared Action或Plan C/D command。focused consumer入口为`HypothesisRegistryAudit.test.tsx`与`ToolCallDetailView.candidate.test.tsx`，类型链另由ts-rs drift/typecheck覆盖。

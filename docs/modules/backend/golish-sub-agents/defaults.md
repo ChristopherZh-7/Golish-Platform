@@ -62,5 +62,6 @@ cd backend && cargo nextest run -p golish-sub-agents defaults
 
 ## Hypothesis Candidate Team（Plan B，2026-07-30）
 
-- `hypothesis_controller`、`hypothesis_analyst`、`hypothesis_critic` 是独立于旧 AttackCandidate/Verification 的三个静态角色；均为readonly、无网络/浏览器/扫描/raw shell、无nested delegation，唯一工具是typed `submit_result`。
+- `candidate_hypothesis_controller`、`candidate_hypothesis_analyst`、`merge_conflict_critic` 是独立于旧 AttackCandidate/Verification 的三个精确静态角色ID；均为readonly、无网络/浏览器/扫描/raw shell、无nested delegation，唯一工具是typed `submit_result`。
 - Controller只负责dispatch与最终typed decision；Analyst只读designated snapshot input/chunk；Critic覆盖proposal conflict、checklist×partition subreview及cross-chunk/cross-input/cross-dimension/global synthesis。page receipt只证明bytes交付，不能替代理解/coverage authority。
+- semantic summary必须列出exact covered input/checklist、observed proposal、typed missed checklist、blocker codes与bounded observations；不能以prose或hash-only省略原始集合。2–8只限制live rolling lanes，不限制lifetime work items；Plan C/D与rollout promotion不在默认角色工具面。

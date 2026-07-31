@@ -32,6 +32,7 @@
 | `BoundWorkerChainContext` / `BoundWorkerToolLifecycle` / `StageTeamLeaderBinding` | V2 stage worker 的 server-owned prebound chain、lease/version witness 与 awaited tool fence；只有 exact Company Controller claim 带 trusted leader binding |
 | `STAGE_TEAM_UPDATE_PLAN_TOOL_NAME` / `STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME` / `STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME` | trusted Controller-only 工具；`update_plan` 是本地计划普通工具，后两者才分别形成 durable dispatch 与关闭 request epoch/准备 final turn 的 coordination barrier |
 | `SubmitRepairMode` / `SubmitRepairKind` / `StageCapabilitySuggestion` | StageRefiner 产出的 repair directive 在 executor 内的兼容投影；负责 resume repair lock、capability-first gap action 展示与 allowed/forbidden tools |
+| Plan B static roles | `candidate_hypothesis_controller`、`candidate_hypothesis_analyst`、`merge_conflict_critic`；均readonly、submit-result-only、无网络/扫描/delegation |
 
 ## 依赖
 
@@ -77,6 +78,7 @@
 - `SubmitRepairMode.coverage_gap_actions` 始终全量保留给 allow/deny/target guard；模型文本只看 `total + stable hash + 原序前 20 条 sample + stage_worklist_next`，并受 32 KiB 硬上限约束。StageRefiner 传入的 `directive_message` 若已含该投影，`model_instruction()` 不得二次追加。blocked-tool 结果中的 `coverage_gap_actions` 是最多 20 条的投影对象（含 `total/hash/omitted/next_page_tool`），不是内部全量 vector；整个 blocked payload 有 64 KiB 降级上限。
 - `CoverageGapAction.suggested_capabilities` 是模型可见的优先修复口径；本 crate 保留同形 `StageCapabilitySuggestion` DTO，避免向上依赖 `golish-agent-kit`。`suggested_tools` 继续存在，只作为工具/命令 hint 和旧 repair prompt 兼容字段。
 - doc 注释提到的 `golish-web` / `vtcode-core` 为历史描述；当前 Cargo.toml 实际内部依赖以本卡「依赖」段为准。
+- Plan B Candidate Team只执行closed artifact schemas。small input允许1个live lane，其余2–8；该数字是live concurrency，不是总WorkItem限制。artifact receipt/page receipt只证明持久化/bytes交付，不是semantic coverage、Gate或canonical truth；Plan C/D不在本crate。
 
 ## 测试入口
 

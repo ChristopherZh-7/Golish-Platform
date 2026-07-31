@@ -24,7 +24,7 @@
 | AI 对话 | `AIChatPanel` / `AgentChat` / `StreamingOutput` / `SubAgentCard` / `SubAgentTreeView` / `SubAgentDetailView` / `SystemHooksCard` |
 | 终端 | `GridTerminal` / `LiveTerminalBlock` / `CommandBlock` / `Ansi` |
 | pentest UI | `TargetPanel` / `FindingsPanel` / `MethodologyPanel` / `DashboardPanel` / `AuditLogPanel` / `QuickNotes` |
-| Candidate review / verification | `Engagement/AttackCandidateReview`（DB-backed exact-plan approve/reject/resume）+ `Engagement/CandidateAttemptRows`（DB-backed Attempt/evidence-role/terminal read model） |
+| Candidate review / verification | `Engagement/AttackCandidateReview`（DB-backed exact-plan approve/reject/resume）+ `Engagement/CandidateAttemptRows`（DB-backed Attempt/evidence-role/terminal read model）+ `Engagement/HypothesisRegistryAudit`（session/project-authorized只读 Registry audit） |
 | 布局/导航 | `PaneContainer` / `TabBar` / `ActivityBar` / `HomeView` / `DetachedView` / `CommandPalette` / `QuickOpenDialog` |
 | 渲染/弹窗 | `Markdown` / `MarkdownEditor` / `DiffView` / `ImageModal` / `*Popup`（FileCommand/Path/Slash/History） |
 | 其它 | `Settings` / `Sidecar` / `SessionBrowser` / `FileEditorSidebar` / `NotificationWidget` / `ErrorBoundary` |
@@ -122,6 +122,8 @@ Target 左侧 org tree 的 chevron 只表示“有可展开内容”：有子公
 - 跨 IPC 类型 import 自 `lib/generated/`（ts-rs），别手写。
 - Cleanup `stage_run` 的标准 Tool detail 会按 authoritative trace 中的 operation/org identity 挂载 `CleanupObligationList`；组件仍经 trusted IPC 重验 scope，trace 只负责定位和刷新，不能成为 waiver/Gate truth。Waiver draft 按 obligation 隔离；首次点击只冻结 exact operation/project/snapshot/org、row-version、residual/evidence 请求并展示复核，第二次确认才提交。复核后输入漂移不能改变已冻结 payload，刷新/identity/CAS 漂移会取消确认。
 - `Engagement/ReportReadModelView` 显式呈现 loading/error/empty，空态由用户触发 DB-authoritative build；已有 revision 可按完整 DB source set rebuild。claim 只展示 structured value + canonical source version + evidence audit id。Final publish 必须二次确认：首次点击冻结 exact `operationId + revisionId + sourceSetHash + rowVersion` 并清晰展示待确认状态，第二次点击只能提交该 frozen payload；refresh/rebuild/operation identity 或 current revision CAS 漂移必须先取消/拒绝确认，不能用新 read model 偷换 payload。组件不能传 actor/project path/storage key，也不能自动 publish。真实可达入口在 `AIChatPanel` 消息区：Reporting gate/deliverable trace 只提供 operation + refresh pointer，组件仍通过 IPC 重读 DB truth；切换 operation 时用新 identity remount。`ToolCallDetailView` 另保留兼容入口，但只在 selected `stage_run` 的 args/result 明确为 `reporting` 且 operation identity 无冲突时挂载；双边 identity 冲突必须 fail closed。
+- `Engagement/HypothesisRegistryAudit` 必须同时接收当前 `ToolCallDetailView.sessionId` 与 exact Candidate operation id；三条 read request 都透传这对 selector，由后端把 session绑定到live bridge workspace与operation project。组件缓存/loading/error/detail状态按 `sessionId + operationId` 双轴隔离，切 tab/session 时不得短暂展示上一 workspace 的 Registry 数据。组件不传 workspace path、project id或principal。
+- `HypothesisRegistryAudit` 分别呈现summary/list/detail的loading/error/empty，refresh保留旧数据但显式标`stale`；显示冻结rollout mode、residual codes、at-time subject、legacy projection状态与`legacy_unavailable`字段。cursor/change sequence/temporal snapshot只用于readonly一致性，trace仅触发refresh，绝不成为Gate或projection truth。
 - 组件多，改前先定位功能域目录；大组件（AIChatPanel/HomeView/GridTerminal）已内部拆分，遵循其既有拆分。
 
 ## 测试入口
@@ -179,3 +181,7 @@ just test-fe    # vitest（含组件快照/交互测试）
 
 - `TargetGroupedView` 的删除确认明确说明：没有活动执行者的 paused stage Task会被自动停止；仍在执行或结果待确认的 Task继续阻止删除。
 - typed `ApiError` 继续使用 canonical error-code translation；active stage-fork blocker 直接留在确认框并停止删除轮询/Target reload，避免把 admission rejection误报成后台 cleanup 超时。
+
+## Hypothesis Registry audit UI（Plan B，2026-07-30）
+
+- UI只审计Plan B projection，不提供rollout promotion、timeline authoring、Campaign/Prepared Action、queue-centric执行或Plan C/D操作。focused入口：`frontend/components/Engagement/HypothesisRegistryAudit.test.tsx`与`frontend/components/ToolCallDetailView/ToolCallDetailView.candidate.test.tsx`。

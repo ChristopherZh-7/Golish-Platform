@@ -33,6 +33,8 @@ agent 服务的命令面与运行时状态宿主。`AiState` 持有 per-session 
 | `harness_dev_reset_stage_checkpoint` / `HarnessDevStageCheckpointResetResult` | dev-only checkpoint command 与 ts-rs receipt；full in-place reset只接受四个Company stage，active external tool会在mutation前拒绝，成功后才把frozen-scope compound commit的cursor/graph/fact/direct-count投影给前端 |
 | `StageForkTaskOperationLaunch` | CLI/GUI 共用 TaskOperation 创建入口的 typed 阶段分叉投影；只携带 source/scope/slice lineage，实际执行仍进入共享 orchestrator |
 | operation joint-contract bridge | create/resume统一把Tool Truth + Investigation contract/mode严格解析进`OperationStateView`；stage-fork adoption保持typed DTO直达同一DB transaction，不在app层拼rank/hash/receipt |
+| Plan B Candidate runtime composition | `bridge_config` 装配 `PgHypothesisRegistryRepository`、`PgCandidateGateSnapshotSource`、`AtomicCandidateFinalizer`、submit-only runner与`CandidateAnalysisStageRuntime`，再以closed Arc注入bridge；Registry mode无legacy fallback |
+| `investigation_get_summary` / `investigation_list_hypotheses` / `investigation_get_hypothesis` | readonly Hypothesis Registry IPC；统一在selector/read前验证local principal + exact operation/task/session/live bridge workspace/project/sealed scope |
 | `GolishDbRepoProvider::park_stage_team_finalizer_after_failure` | sqlx-free runtime port 到 exact DB closeout retry 事务的桥；保留同一 finalizer/message chain，不在 app 层拼 SQL或重写 submission |
 | `ai_session_not_initialized_error` | 会话未初始化错误构造 |
 | `ai`（`commands/` `db_bridge/` `tracking_bridge/`） | command handlers + AppState-free 桥接 |
@@ -77,6 +79,7 @@ agent 服务的命令面与运行时状态宿主。`AiState` 持有 per-session 
 - `bridge_config.rs` 的 ContextPack provider 必须来自当前 `DbState` pool；request/model 不传 actor、project path 或 trusted context。检索失败不得接 legacy global fallback。
 - background completion listener必须先读取process manager保存的typed reconciliation。`skip_generic_persistence=true`时只投影typed evidence trace/note/UI terminal并最后ack，禁止generic structured/evidence/outcome hook重复落库；`submit_stage_deliverable`只做短观察并把live job activity交还AI，观察窗口绝不是process deadline。
 - Vuln no-purge compatibility adoption由`db_bridge/runtime_memory`透传exact Controller fence到单一DB事务；evidence materialization保留`scheme://host:port` exact-origin identity，禁止host-only折叠。
+- Plan B production runtime已安装：finalizer从同一RR pre-Gate snapshot构造opaque authority，pure Gate后由DB apply transaction创建compiler seal并原子提交canonical generation/outbox。app只做closed DTO转换和composition，不拥有DB truth；Plan C/D与rollout promotion仍未实现。
 
 ## 测试入口
 

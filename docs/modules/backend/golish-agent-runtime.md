@@ -32,6 +32,7 @@
 | `McpToolExecutor` / `OutputClassifier` / `PostShellHook` / `TerminalErrorEmitted` | 工具执行/分类/钩子 |
 | `StageRunReentryGuard` | 顶层 Task 请求内的 stage-run retry-exhaustion 断路器；新用户请求重置 |
 | V2 worker runtime | frozen-scope seed、exact claim/prebound chain、10s/30s heartbeat、tool/chain fencing；PASS 只允许 final-seal seam 发布 |
+| Hypothesis Registry dispatch | `AgenticLoopContext.hypothesis_analysis_runtime`接收bridge注入的closed Arc；AttackCandidate只按operation-frozen `policy().canonical_writer`选择Legacy/Registry，Registry走两波submit-only runtime且无legacy fallback |
 | sub-agent persistence identity wiring | 事件 `session_id` 与 `DbTracker::session_uuid()` 分离；后者用于 message-chain create/resume |
 | `eval_support` / `test_utils`（feature `test-utils`） | 评测 harness / 共享 mock |
 
@@ -93,3 +94,9 @@
 ```bash
 cd backend && cargo nextest run -p golish-agent-runtime
 ```
+
+## Hypothesis Registry runtime（Plan B，2026-07-30）
+
+- production app已注入`HypothesisAnalysisStageRuntime`；runtime只持operation-scoped Arc与server-owned identity，不创建repo/provider或按profile/default选择Registry authority。missing/foreign/wrong-stage runtime仍在provider dispatch前稳定fail closed。
+- Registry路径执行Controller→rolling Analysts→H1→phased Critics/map-reduce→H2→final Controller；small input可为1 lane，其余2–8 live lanes，lifetime item不受8限制。artifact receipt与`AnalysisArtifactsReady`只表示control-plane持久化，不是Gate/canonical truth。
+- 最终权威由app/DB完成`RR pre-Gate → pure Gate → apply事务内compiler seal/canonical/outbox`。runtime不拥有Plan C/D、rollout promotion、Campaign或Prepared Action。

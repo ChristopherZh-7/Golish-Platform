@@ -27,6 +27,7 @@
 | `BridgeBackends` | bridge 后端装配束 |
 | `set_tracker_session_uuid` | Task/stage 执行前把 durable `sessions.id` 绑定到共享 `DbTracker` identity；已存在的 tracker clones 同步可见 |
 | `set_runtime_memory_repository` | 安装 V2 compound runtime-memory backend，并透传到 agentic loop |
+| `set_hypothesis_analysis_runtime` | 安装Plan B closed `HypothesisAnalysisStageRuntime` Arc并逐turn快照透传；bridge不构造repo/provider、不选择rollout authority |
 | `set_knowledge_memory` / `knowledge_memory` | 注入/读取 process-shared canonical Memory Fabric UoW；只传 handle，不拥有 supervisor worker |
 | `set_knowledge_context` / `knowledge_context` | 注入/读取 scoped ContextPack provider；per-turn 只 clone Arc，不缓存跨 operation pack |
 | `bridge_executor` | 依赖 `AgentBridge` 的编排器实现 |
@@ -63,6 +64,7 @@
 - `BridgeAgentExecutor` 必须把共享 `StageRunReentryGuard` 的 exhausted 状态通过 `AgentExecutor::stage_run_retry_budget_exhausted` 暴露给 TaskOrchestrator；同一 top-level request 的 reflector 不能只看到工具级 `reentry_blocked` 后继续自动重启。只有新的 `TopLevelRequestLease` 首次初始化 Task 才 reset guard，所以显式用户 continuation 仍获得 fresh bounded budget，nested/automatic pass 不得重置。
 - `BridgeServices.knowledge_memory` 只是 transaction port。任何 constructor/session replacement/configure 调用都不能在 bridge crate 启 projector；process owner 只在 desktop/CLI DB-ready composition root。
 - `BridgeServices.knowledge_context` 只是依赖注入 capability；不能接收 caller-forged trusted authorization，也不能在 provider 缺失时回退 legacy global knowledge。
+- Plan B production composition由`golish-agent-app`完成；bridge只保存/传播同一个closed runtime Arc。Arc缺失时Registry dispatch fail closed，存在时也不能按profile/default改写operation-frozen canonical writer；Stage Team control-plane、Gate/canonical truth与Plan C/D authority保持分离。
 
 ## 测试入口
 

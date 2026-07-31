@@ -24,6 +24,7 @@
 | `DbRepoProvider` | legacy/通用仓库操作与 deterministic harness truth seams（含 Candidate review/Verification truth/Wave consolidation/Reporting） |
 | `RuntimeMemoryRepository` | typed runtime-memory 边界：project scope 注册/rename CAS、Task+operation/stage execution 原子创建与轮转、trusted submission/scope freeze、Unit/Worker seed/claim/prebound-chain/checkpoint/heartbeat/tool fence/terminal mutation，以及 Candidate Wave authority、Attempt terminalization、VerificationUnit close；错误保持 `RuntimeMemoryError`，不藏进 `anyhow` |
 | `OperationStateView` / `StageForkCreate` | SQLx-free完整operation合同视图：runtime、Tool Truth、Investigation contract/mode三轴严格解析；stage fork可携带typed `OperationContractForkAdoption`，普通fork固定为`None`并由repo继承source pair |
+| `HypothesisRegistryRepository` | Plan B唯一SQLx-free persistence port：snapshot/page/chunk、artifact、H1/H2 census/subreview/synthesis/reducer、Gate material与atomic apply；请求仅携带server-owned fence |
 | `DbTrackingBackend` | fire-and-forget 记录 + memory 存/搜 |
 | `DbReadinessGate` | PG 启动就绪门 |
 | `TextEmbedder` | 语义记忆文本嵌入 |
@@ -87,4 +88,5 @@ cd backend && cargo nextest run -p golish-agent-kit db_traits
 
 - `HypothesisRegistryRepository` 是 Candidate runtime 唯一 persistence port，覆盖 snapshot freeze/page、artifact、H1/H2 coverage census/reducer、final-submitter-only host compilation seal、Gate material与 atomic apply。
 - request DTO 只携带 server-owned operation/scope/org/team/worker/attempt/version fence；没有 bundle root清单、fresh token、caller timestamp、feed signer或任意 canonical JSON write口。
-- `CandidateGateMaterial` 保留 frozen authority、DB-clock temporal/feed reevaluation hashes及pre-apply compiler seal，供 pure Gate exact比较；canonical mutation transport显式携带 generation transition/mutation hash，但终态 state和Plan C adjudication不在此port。
+- production首次Gate使用app-owned opaque snapshot source从DB `load_candidate_pre_gate_material_on`读取同一RR exact closure；pure Gate后才调用`apply_candidate_gate_pass`，后者在DB apply transaction内创建compiler seal并原子写canonical/outbox。`seal_candidate_compilation` / `load_candidate_gate_material`仍是typed compatibility/post-seal API，不代表production pre-seal顺序。
+- semantic summary必须是raw closure的exact typed投影，不能只信hash：input/checklist/proposal/missed refs、blocker codes和bounded observations均由repository重验。canonical mutation transport显式携带generation transition/mutation hash，但Campaign/Prepared Action、Plan C adjudication与terminal state不在此port。

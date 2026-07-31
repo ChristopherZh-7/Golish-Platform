@@ -21,7 +21,7 @@
 
 | 符号 | 说明 |
 |---|---|
-| `AppState`（+ `extract_agent_state()`） | 巨石全局状态 + process-global Memory Supervisor lifecycle + 派生窄 AgentState/UoW handle |
+| `AppState`（+ `extract_agent_state()`） | 巨石全局状态 + process-global Memory Supervisor/Investigation projection worker lifecycle + 派生窄 AgentState/UoW handle |
 | `DbState` / `McpManaged` / `PtyState` / `SidecarManaged` / `TelemetryState` | per-domain 窄子状态 |
 
 ## 关键文件
@@ -39,7 +39,8 @@
 
 - **新命令取窄子状态**（`DbState` 等），别取 `AppState`（巨石，难解耦）——这是 crate-per-service 的核心约束。
 - `AgentState` 现在 golish-agent-app；golish 经 `extract_agent_state()` 构造，不再 re-export 该类型。
-- `AppState.memory_supervisor` 持有 cancellation/join owner；`extract_agent_state()` 只下发同 adapter 的 `KnowledgeUnitOfWork`，避免每 tab 重复 worker。
+- `AppState.memory_supervisor` 与 `investigation_projection_worker` 持有 cancellation/join owner；`extract_agent_state()` 只下发同 adapter 的 `KnowledgeUnitOfWork`，避免每 tab 重复 worker/projector。
+- `investigation_projection_worker` 是process lifecycle owner，不进入`AgentState`/per-session bridge；其LISTEN/poll loop在DB ready后启动并在pool前join，避免duplicate projector与shutdown race。
 
 ## 测试入口
 

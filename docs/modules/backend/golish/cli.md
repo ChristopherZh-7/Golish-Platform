@@ -15,7 +15,7 @@
 
 ## 职责
 
-提供与 GUI 共享服务的命令行入口。普通 CLI 在 DB-ready 后启动同一 Memory Supervisor + Cleanup DB-global worker + Reporting orphan-artifact GC；shutdown 顺序为 Cleanup/Reporting → Memory → runtime → embedded PG，避免 worker 在 pool 停止后继续 claim 或扫文件。
+提供与 GUI 共享服务的命令行入口。普通 CLI 在 DB-ready 后启动同一 Memory Supervisor + Investigation projection worker + Cleanup DB-global worker + Reporting orphan-artifact GC；shutdown 先停这些 process-owned worker，再停 runtime与 embedded PG，避免 worker 在 pool 停止后继续 claim、投影或扫文件。
 
 ## 公开接口
 
@@ -42,6 +42,7 @@
 - **与 GUI 共享逻辑**：经 `GolishRuntime` 抽象，别为 CLI 复制一套 agent 逻辑。
 - Provider route 必须先解析为 `AiProvider`/`ProviderConfig`，再走 app shared normalizer；未知/拼错 provider fail closed，禁止 fallback 成 OpenRouter。CLI flag 的 provider/model/API key 优先级保留，但 endpoint/reasoning/web-search/preferences/location/thoughts/Ollama base/model override/context config 不得在 CLI 另写一份 settings 规则。
 - `--stage-run` 由 `stage_run` 模块承载；CLI 只 dispatch。
+- CLI不调用Tauri `investigation_*` read commands；headless Candidate lifecycle继续使用显式验证后的bridge workspace与共享production runtime。它不提供rollout promotion或Plan C/D入口。
 - hidden `--stage-run-test-database` 仅用于已有 shared-DB operation 的隔离验收，可与 exact resume 或 immutable-source fork 同用；值只接受小写 `golish_gatefix_*`、安全字符且不超过 63 字节。它不会自动创建/复制数据库，也不能选择默认 production 库。
 - `--stage-run-fork <operation|session|chat-key>` 只 dispatch 到 `stage_run`。它必须配 `--only` 或完整 `--from/--to`，拒绝 Scoping、ephemeral DB 与 profile/org/target/subsidiary 覆盖；默认数据库因此与 GUI 相同。
 - `--approve-phase-boundaries` 是兼容参数：当前内置 flow 的常规人工确认只在 Scoping，post-Scoping 不再产生 generic phase confirmation。该 flag 即使与 `--auto-approve` 同用也不授权 target scope、Candidate plan 或高风险 tool call。
@@ -57,7 +58,7 @@
   expected identity、固定 marker、operation advisory claim 和 CAS 全匹配时恢复，
   普通 failed task 永不复活。
 - `runner::execute_once` 在启动 terminal-event receiver 前获取 bridge universal top-level lease；busy 请求不会发 `Completed/Error`，若先启动 receiver 再 acquire 会让 CLI 永久等待。执行结束仍持 lease 做 async request-state cleanup。
-- `CliContext::shutdown` 顺序固定为 agent/MCP/sidecar → Cleanup/Reporting workers → Memory Supervisor graceful join → runtime → owned embedded PG；不能先停 pool 再等 worker/projector。
+- `CliContext::shutdown` 顺序固定为 agent/MCP/sidecar → Investigation/Cleanup/Reporting workers → Memory Supervisor graceful join → runtime → owned embedded PG；不能先停 pool 再等 worker/projector。
 
 ## 测试入口
 

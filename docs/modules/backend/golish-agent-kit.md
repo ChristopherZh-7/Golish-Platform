@@ -32,6 +32,8 @@
 | `db_traits` / `db_tracking` / `db_shim` / `memory_*` | repo/tracking 抽象 + 长期记忆；runtime-aware tool start 固定 exact operation task owner；org-bound evidence append显式携带 trusted organization witness；RuntimeMemory trait暴露 Stage Team plan/claim/output/barrier/repair/operator recovery、Candidate TerminalIntent/barrier/recovery，以及 immutable `StageForkCreate` exact-lineage contract |
 | `OperationStateView` / `OperationContractForkAdoption` | SQLx-free冻结合同视图保留runtime、Tool Truth与Investigation三轴；stage-fork adoption携带typed相邻target和expected hashes，rank/receipt仍由DB host裁决 |
 | `harness::hypothesis_registry::*` | Candidate四态artifact、semantic/root adapter、scope-bound全operator reducer、四类claim component与sealed-contract plan compiler，以及private-field Plan A opaque Checked bundle fail-closed adapter |
+| `db_traits::HypothesisRegistryRepository` | SQLx-free Candidate snapshot/page/artifact/census/subreview/synthesis/reducer/pre-Gate/apply port；request只携带server-owned fence，不暴露pool、root清单、时间戳或canonical JSON写口 |
+| `task_orchestrator::hypothesis_analysis::*` | Controller/Analyst/Critic closed schemas、bounded semantic summaries、`HypothesisAnalysisAgentRunner` / `HypothesisAnalysisRuntimeRepository` / `HypothesisAnalysisStageRuntime` ports与显式non-PASS `AnalysisArtifactsReady` |
 
 `RuntimeMemoryRepository::park_stage_team_finalizer_after_failure` 是 closed Company Controller 的 closeout retry seam：只携带 exact Worker fence、plan/item、durable submission、barrier manifest 与 server checkpoint；生产 bridge 必须原子清租约并排回同一 WorkerRun/message chain，不能把 final-seal failure 当 producer retry。
 
@@ -82,6 +84,7 @@ Company Controller StageSpec 的 C/G/K 是真实并发权威；历史 `max_dynam
 - `SessionCaptureBackend` 是 bridge-owned session truth；新增实现必须实现 legacy match + resume，full restore 不能绕过 trait 操作另一个全局实例。
 - `V2Only` 与已整源选择 V2 的 `DualWriteV2Preferred` 都以 relational runtime 为恢复源。metalcraft graph 起点只能从 persisted `current_stage` 构造为空默认状态，不能读取、修复或回写 legacy `state_blob`；preferred legacy fallback 必须显式标成 `LegacyFallback`。
 - legacy Vuln terminal adoption只通过`RuntimeMemoryRepository`的server-owned Controller fence seam暴露；kit不选择旧execution/evidence，也不根据adoption返回值直接判Gate PASS。
+- Plan B Stage Team只提供durable control-plane与artifact receipts；receipt、agent prose或semantic-summary hash都不是epistemic truth。canonical Candidate truth必须经过repository exact closure、pure Gate与atomic apply；本crate不安装Plan C execution/terminal authority。
 
 ## 测试入口
 

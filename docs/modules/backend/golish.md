@@ -24,8 +24,8 @@
 |---|---|
 | `run_gui()` | Tauri GUI 入口（bootstrap → configure_builder → install_handlers → run） |
 | `install_handlers`（来自 `commands_registry.rs`，`include!`-d） | `tauri::generate_handler![...]` ~300 命令 |
-| `commands_facade::<domain>`（ai/pentest/vuln_intel/vault/workspace…18 个） | 各域**权威命令面** re-export（glob `__cmd__$name`） |
-| `app`（`bootstrap` / `tauri_app` / `window_lifecycle` / `menu` / `mcp_bootstrap` / `sidecar_bootstrap`） | 进程级 setup + DB-ready Memory Supervisor + builder/退出生命周期 |
+| `commands_facade::<domain>`（ai/investigation/pentest/vuln_intel/vault/workspace…） | 各域**权威命令面** re-export（glob `__cmd__$name`）；`investigation`只暴露summary/list/detail三个readonly命令 |
+| `app`（`bootstrap` / `tauri_app` / `window_lifecycle` / `menu` / `mcp_bootstrap` / `sidecar_bootstrap`） | 进程级 setup + DB-ready Memory Supervisor/Investigation projector worker + builder/退出生命周期 |
 | `cli`（`args` / `bootstrap` / `repl` / `runner`） | headless CLI / REPL 模式（clap） |
 | `state`（`db` / `pty` / `mcp` / `sidecar` / `telemetry`） | 全局 `AppState` 各子状态 |
 | `tools` / `pentest_tool_factory` / `stage_run` / `runtime` | 工具装配 / pentest 工具工厂 / stage 运行 / runtime 适配；`stage_run` 支持从共享应用 DB 的既有 operation 创建 post-Scoping 不可变阶段分叉 |
@@ -46,7 +46,7 @@
 |---|---|---|
 | `app/` | bootstrap + Tauri builder + 生命周期 | [→](golish/app.md) |
 | `commands/` | golish-staying 命令（fs/proc/project/ui） | [→](golish/commands.md) |
-| `commands_facade/` | 18 个域的权威命令面 re-export | [→](golish/commands_facade.md) |
+| `commands_facade/` | 各域权威命令面 re-export（含Plan B readonly investigation） | [→](golish/commands_facade.md) |
 | `cli/` | headless CLI / REPL | [→](golish/cli.md) |
 | `stage_run/` | headless 单/区间阶段实跑器 | [→](golish/stage_run.md) |
 | `state/` | 全局 `AppState` + 窄子状态 | [→](golish/state.md) |
@@ -72,7 +72,8 @@
 - **不变量 I5**：跨 IPC 类型用 ts-rs 同步，别手写两份。
 - `commands_registry.rs` 是 `include!` 进 `lib.rs` 的，因为 `#[tauri::command]` 的 `__cmd__$name` 宏 `#[macro_export]` 到 crate 根。
 - `AppState` 故意留在本 crate（聚合内部子系统）；app crate 取窄 `DbState`。
-- Memory Supervisor 只由 GUI/CLI composition root 启停；AppState 持有 cancel/join owner，`AgentState`/`AgentBridge` 只拿同 adapter 的 UoW Arc。
+- Memory Supervisor 与 Investigation projection worker 只由 GUI/CLI composition root 启停；AppState 持有各自 cancel/join owner，必须在 embedded PG/pool 前 shutdown；`AgentState`/`AgentBridge` 只拿同 adapter 的 UoW Arc。
+- Plan B只注册readonly Registry projection IPC与process-owned projector；不注册rollout promotion、Campaign/Prepared Action或Plan C/D mutation command。三个read command仍在agent-app完成principal/session/workspace/project/sealed-scope授权。
 - `--stage-run-fork` 默认必须使用与 GUI 相同的应用 DB，并创建新 task/operation；它采用 source 的 sealed Scoping、当前 Target 快照和 strict-prefix final seals，绝不能续写或重置 source operation。
 - 测试专用 `--stage-run-test-database` 只允许显式 `golish_gatefix_*` 克隆库，可与 exact resume 或 immutable-source fork 同用；它不创建、不删除数据库，也不能指向默认 production 库。
 - Reporting artifact store factory 只在 composition root 解析 canonical project root；IPC/model 不得传路径或 content key。`ProjectReportArtifactStore::promote` 把底层 `ReservedReportArtifact` 包成 `ArtifactPublicationReservation`，让 `ReportFinalizer` 持 per-content lock 到 DB attach 提交。GUI/CLI 都在 DB ready 后启动同一 GC 语义，退出时必须在 pool 前 shutdown。Orphan GC 必须先按 `canonical_project_path` 分组，union 同一路径全部 active/retired `project_scope_id` 的 DB referenced content keys 后只扫物理目录一次，不能让 sibling scope 的局部 reference set 互删 retained blob；底层 file-storage 在 Unix 对 symlink/binding swap、在 Windows 对 symlink/reparse/junction/handle replacement 统一 fail closed，并在同一 content lock 后重查 grace。

@@ -32,6 +32,7 @@
 | `stage_refiner` | Stage-aware deterministic repair owner：submit/gate 失败后生成 capability-first `RepairDirective`，并转换为 sub-agent `SubmitRepairMode` |
 | `runtime_supervisor` | PentAGI-style in-run strategy supervisor：重复/停滞工具触发后解析 LLM JSON，按 stage/tool policy 裁剪成 `StrategyDirective` |
 | `two_level_phase_gate` | graph-flow 流转闸：先执行 Candidate V2 review 与 TargetIntel→EAS exact target-scope barrier；其它 post-Scoping stage 在 Gate PASS 后自动推进，不再打开 generic phase confirmation |
+| `hypothesis_analysis::{HypothesisAnalysisAgentRunner,HypothesisAnalysisRuntimeRepository,HypothesisAnalysisStageRuntime}` | Plan B submit-only model runner、durable repository与两波stage runtime ports；closed DTO含semantic summary，`AnalysisArtifactsReady`明确不是PASS |
 | `types`（planning DTO / token usage / 执行上下文） | 编排类型 |
 | `prompts` | 各阶段 prompt 模板 |
 
@@ -115,4 +116,6 @@ cd backend && cargo nextest run -p golish-agent-kit task_orchestrator
 ## Hypothesis Analysis runtime contract（Plan B，2026-07-30）
 
 - `hypothesis_analysis` 定义Controller/Analyst/Critic closed input/output schemas、bounded payload digest、server binding、artifact receipt与runtime/repository/runner ports。它不持有数据库、provider client、Gate或Plan C authority。
-- runtime末态 `AnalysisArtifactsReady` 只表示两波artifact与Controller final receipt已持久化；它不是stage PASS。只有Task 9 finalizer得到canonical generation seal后才可 closeout/advance。
+- runtime顺序固定为Controller dispatch → rolling Analyst → H1 seal → phased Critic map/reduce → H2/review → final Controller；small input可用1 lane，其余保持2–8个live lane，8是live concurrency而非lifetime item cap。Stage Team只记录control-plane与artifact receipt，不能把receipt/agent prose当truth。
+- runtime末态 `AnalysisArtifactsReady` 只表示两波artifact与Controller final receipt已持久化；它不是stage PASS。production finalizer已安装，后续必须完成同一RR pre-Gate material → pure Gate → apply事务内compiler seal/canonical generation/outbox，得到`CandidateGenerationSealOutcome`后才可closeout/advance。
+- semantic summary必须携带exact covered input/checklist、observed H1 proposal、typed missed checklist、blocker codes与bounded observations；Plan C/D终态、Campaign、Prepared Action和promotion均不在此模块。

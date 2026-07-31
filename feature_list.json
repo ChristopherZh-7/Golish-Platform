@@ -2853,7 +2853,7 @@
       "area": "golish-core investigation contract + Hypothesis Registry persistence + Candidate Analysis Team + minimal audit UI",
       "title": "把 Candidate 队列重构为 Hypothesis Registry 与只读多 Agent 分析阶段",
       "user_visible_behavior": "Candidate 阶段不再以 FIFO 队列作为产品模型，而由一个 company-scoped Controller 协调 2–8 个只读 analyst/critic lane，生成可追溯、可修订、可合并和可审计的假设；旧 Candidate 只作为冻结 operation 的兼容权威或 Registry 投影。",
-      "status": "in_progress",
+      "status": "passing",
       "design": "docs/design/2026-07-29-tool-truth-hypothesis-verification-loop.md",
       "plan": "docs/superpowers/plans/2026-07-29-hypothesis-registry-candidate-analysis.md",
       "verification": [
@@ -2867,7 +2867,7 @@
         "pnpm typecheck"
       ],
       "notes": "依赖 Plan A passing。唯一预留 migration 为 20260729000006_hypothesis_registry.sql；开始 schema/migration 与 generated IPC 前必须重新取得用户明确授权。五态 rollout 初始值保持 legacy_candidate_v1 + legacy_only，Plan B 不提供 promotion；两个新权威 mode 在 Plan C 未实现前只能记录 plan_c_verification_unavailable residual 并转 Reporting。",
-      "evidence": "IN PROGRESS 2026-07-30. 从 Plan A final SHA 1ce1831d1eff797382498e6b99a32bbb9e129bac 创建隔离 worktree /private/tmp/golish-plan-b-v2.h9tNiG 与分支 codex/hypothesis-registry-plan-b-20260730-v2；前置 Plan A/00005/opaque checked+all-fresh callback 均已确认稳定。Task 1-3 commits：1ddc7432、1ed13b38、502b4855、4f555250。Task 4 fresh evidence：core semantic/contract/plan/projection 21/21 run 12cf9571-7e5b-4ecf-9c5d-b08648e940e5；agent-kit reducer/host adapter 14/14 run 86c59bbc-e0f2-4bf5-bf27-b204c4da14f4；golish-db hypothesis_registry 24/24 run 92ba3fb5-1dd7-4122-933b-b6c8b87954ea；golish-core、golish-agent-kit all-target与golish-db hypothesis test Clippy -D warnings均exit 0。唯一00006已冻结append-only revision+head CAS、Candidate Gate creating authority、VerificationContract/Plan exact sets和projection catalogs；00005 baseline diff为空。未访问Test1/生产/现存数据库，未运行真实扫描/provider/API；按AGENTS §0.1未运行未授权全仓门禁。Task 5-13仍待执行。"
+      "evidence": "PASSING 2026-07-30. 基线/隔离：从 Plan A final 1ce1831d1eff797382498e6b99a32bbb9e129bac 创建 /private/tmp/golish-plan-b-v2.h9tNiG 和 codex/hypothesis-registry-plan-b-20260730-v2；HEAD、Plan A passing、00005 与 multi-root checked/all-fresh callback 开工前确认稳定。定向测试：core 41/41；agent-kit Gate 32/32；DB hypothesis_registry 38/38、projection/read 16/16、raw exact closure 1/1、migration actual apply 1/1；app runtime 24/24、production embedded-PG runtime 10/10；IPC 6/6；runtime 6/6；sub-agents 4/4；ts-rs export exit 0；frontend Vitest 18/18、Biome exit 0。Rust 8 个受影响 package fmt check通过，逐 package all-target Clippy -D warnings 全部 exit 0；git diff --check、JSON、唯一00006及00005零diff检查通过。pnpm typecheck exit 2 仅命中任务外既有 frontend/store/slices/workflow/sub-agent.ts(46,5) TS2353 softTimeoutMs，未出现 Plan B 诊断；以 ts-rs export、focused Vitest、affected Biome 作为本功能类型/UI定向证据，不越界修改 baseline。production PG generation seal/replay、restart/recovery、conflict durable block均通过；独立安全复核 P0/P1/P2=0。没有访问Test1/生产/现存DB，没有真实扫描/provider/API，没有rollout promotion或Plan C/D实现；按AGENTS §0.1未运行未授权 ./init.sh、just precommit、全workspace test/check。commits: 1ddc7432,1ed13b38,502b4855,4f555250,653c5408,1fcdff2,2fabb094,babaec42,fc9ea655,316e562a,df0a94a6,86998eb8，加最终 docs evidence commit。"
     },
     {
       "id": "verification-campaign-prepared-action-oracle-2026-07-29",

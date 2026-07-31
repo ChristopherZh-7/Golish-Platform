@@ -76,7 +76,8 @@
 - `background:true` 工具若同步失败，也会提示不要把它当成运行中的后台 job。
 - prebound Candidate worker 在 `BoundWorkerChainContext` 携带 opaque attempt ref；regular tool dispatch 在 generic tool lifecycle 前执行 core closed-tool guard，并把 ref 复制到 `AgentToolContext`，防止 raw/background/identity override 绕过。
 - Candidate executor 的 authority 到 opaque Attempt 为止：它不接收 Wave generation/consolidation command，也不能接受或消费 FactDelta。`submit_candidate_attempt` 只是 terminal business submission；Attempt terminalization、VerificationUnit close 与 global Wave consolidation都由 executor 返回后的 runtime/orchestrator + DB compound seams完成，因此 agent text/tool success 不能替代这些终态。
-- Hypothesis Candidate Team使用独立的submit-result-only guard：三个Plan B角色的tool definition、prompt assembly、stream parser与dispatch都拒绝任意非barrier工具、network/browser/feed refresh、raw runner或delegation；模型只能返回各角色closed JSON schema，artifact receipt不是epistemic truth。
+- Hypothesis Candidate Team使用独立的submit-result-only guard：`candidate_hypothesis_controller`、`candidate_hypothesis_analyst`、`merge_conflict_critic`的tool definition、prompt assembly、stream parser与dispatch都拒绝任意非barrier工具、network/browser/feed refresh、raw runner或delegation；模型只能返回各角色closed JSON schema，artifact receipt不是epistemic truth。
+- executor只验证角色/binding/schema并提交artifact；semantic summary必须携带raw exact refs而非hash-only，Stage Team receipt/trace/prose不能成为Gate或canonical Candidate truth。finalization、Plan C/D和rollout promotion都不属于executor。
 
 ## 测试入口
 

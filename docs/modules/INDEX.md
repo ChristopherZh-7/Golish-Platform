@@ -24,7 +24,7 @@
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
 | golish-platform | 跨平台抽象层，全仓库唯一允许写 cfg(target_os) 的地方 | [→](backend/golish-platform.md) | ✅ |
-| golish-core | 最底层基础类型与 trait（Tool/会话/HITL/operation rollout + Investigation 五态 contract/policy + opaque Candidate context + safe terminal/consolidation trace wire） | [→](backend/golish-core.md) | ✅ |
+| golish-core | 最底层基础类型与 trait（Investigation五态policy、Hypothesis identity/verification/projection与whole-record comparison；Plan C字段仅冻结形状） | [→](backend/golish-core.md) | ✅ |
 | golish-settings | 集中式 TOML 配置（env 插值/原子写/类型安全 schema） | [→](backend/golish-settings.md) | ✅ |
 | golish-events | AI 事件协调 + transcript/op_trace（含 Candidate Attempt terminal / Wave consolidation 安全摘要） | [→](backend/golish-events.md) | ✅ |
 | golish-models | LLM 模型注册表与能力定义（metadata 取代字符串猜） | [→](backend/golish-models.md) | ✅ |
@@ -37,7 +37,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-db | PostgreSQL 持久化层（含 Tool Truth multi-root authority；Investigation freeze；Hypothesis Registry/Candidate exact-set/projection schema） | [→](backend/golish-db.md) | ✅ |
+| golish-db | PostgreSQL持久化层（Tool Truth multi-root；Investigation freeze；Hypothesis Registry exact closure、atomic apply、projection/read worker；唯一00006） | [→](backend/golish-db.md) | ✅ |
 | golish-graphiti | legacy GraphClient + scoped temporal node/edge Assertion-lineage graph（attested generation rebuild，旧 API 兼容） | [→](backend/golish-graphiti.md) | ✅ |
 | golish-indexer | 代码索引基座（IndexerBackend + vtcode 后端 + git 工具） | [→](backend/golish-indexer.md) | ✅ |
 | golish-artifacts | 自动维护项目文档提案（README/CLAUDE，未集成） | [→](backend/golish-artifacts.md) | ✅ |
@@ -90,10 +90,10 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish-agent-kit | agent runtime 底层构件（typed stage/runtime/stage-fork joint contracts + Vuln gate + org-bound evidence + runtime tool owner fence + Candidate/whole-source resume selector） | [→](backend/golish-agent-kit.md) | ✅ |
-| golish-agent-runtime | 高层 agent runtime（流式 loop + source-pinned restore + shared stage-fork Candidate Wave + 每公司持久 Company Controller滚动补位/claim锁收敛/queued续跑 + exact-gap repair/continuation） | [→](backend/golish-agent-runtime.md) | ✅ |
-| golish-agent-bridge | app↔runtime 桥接层（stable request owner + request-local resume source + trusted lease/runtime-memory/UoW/ContextPack 注入） | [→](backend/golish-agent-bridge.md) | ✅ |
-| golish-sub-agents | sub-agent 系统（source-pinned V2 lifecycle + trusted Company Controller plan/dispatch controls + foreground Nuclei specialist + Wave-read-only analyst + opaque Attempt verifier） | [→](backend/golish-sub-agents.md) | ✅ |
+| golish-agent-kit | agent runtime底层构件（Plan B pure Candidate Gate、semantic-summary exactness、SQLx-free Registry/runtime ports；Stage Team receipt非truth） | [→](backend/golish-agent-kit.md) | ✅ |
+| golish-agent-runtime | 高层agent runtime（operation-frozen Legacy/Registry dispatch、submit-only两波分析、2–8 rolling live lanes、无legacy fallback） | [→](backend/golish-agent-runtime.md) | ✅ |
+| golish-agent-bridge | app↔runtime桥接层（stable request owner + closed HypothesisAnalysisStageRuntime Arc透传；不拥有rollout/Gate/canonical authority） | [→](backend/golish-agent-bridge.md) | ✅ |
+| golish-sub-agents | sub-agent系统（Plan B exact Controller/Analyst/Critic IDs、readonly submit-result-only guard；receipt/prose非truth） | [→](backend/golish-sub-agents.md) | ✅ |
 
 ### App 层（Tauri command facades）
 
@@ -101,7 +101,7 @@
 |---|---|---|---|
 | golish-app-core | 应用边界共享类型（L5：GolishError/DbState/scoping/runtime + opaque trusted operator + exact trusted-target promotion + generation-guarded recon ports） | [→](backend/golish-app-core.md) | ✅ |
 | golish-cleanup-app | Cleanup P7b exact terminal truth、backoff/fair DB-global worker、Gate/residual 与可恢复两阶段组织删除 | [→](backend/golish-cleanup-app.md) | ✅ |
-| golish-agent-app | agent 服务命令面（GUI/CLI shared task-operation/stage-fork joint-contract bridge + Enumeration-manifest Vuln coverage + Stage Team/Candidate/Memory/Cleanup/Reporting authority） | [→](backend/golish-agent-app.md) | ✅ |
+| golish-agent-app | agent服务命令面（Plan B production runtime/finalizer composition + readonly Investigation IPC exact auth；并含既有Stage Team/Candidate/Memory/Cleanup/Reporting） | [→](backend/golish-agent-app.md) | ✅ |
 | golish-pentest-app | pentest 服务命令面（operation-bound Enumeration producers + parameter-aware Nuclei DAST + 7-day adysec freshness/operation-pinned N-day proof + guarded EAS/Vuln producers + typed evidence landing） | [→](backend/golish-pentest-app.md) | ✅ |
 | golish-recon-app | recon 服务命令面（含 TargetIntel fixed-endpoint pinned transport与 opaque raw-witness handoff；不拥有 canonical receipt DB） | [→](backend/golish-recon-app.md) | ✅ |
 | golish-vuln-app | vuln-intel 服务命令面（feed/搜索/匹配/PoC·Nuclei 富化 + wiki） | [→](backend/golish-vuln-app.md) | ✅ |
@@ -114,7 +114,7 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| golish | 组合根 + Tauri 桌面应用（DB-ready lifecycle + AppState + ~300 命令 + typed-provider/typed-HITL CLI） | [→](backend/golish.md) | ✅ |
+| golish | 组合根 + Tauri桌面应用（DB-ready process-owned Investigation projector + readonly command facade + AppState/CLI lifecycle） | [→](backend/golish.md) | ✅ |
 | golish / stage_run | headless 单/区间实跑 + shared-DB immutable-source stage fork + whole-source exact recovery + Company Controller/runtime/attack diagnostics | [→](backend/golish/stage_run.md) | ✅ |
 | rig-anthropic-vertex | rig fork：Claude on Vertex AI（CompletionModel + GCP 认证 + server tools） | [→](backend/rig-anthropic-vertex.md) | ✅ |
 | rig-gemini-vertex | rig fork：Gemini on Vertex AI（CompletionModel + GCP 认证 + 流式） | [→](backend/rig-gemini-vertex.md) | ✅ |
@@ -125,9 +125,9 @@
 
 | 模块 | 一句话职责 | 卡片 | 状态 |
 |---|---|---|---|
-| components | React UI 组件（fail-closed Task/Profile commit + DB-backed Stage Team/Candidate recovery + 关窗后可达的 exact 中断恢复 + Vuln扫描分片/证据覆盖 + evidence-backed Target origin status；trace 仅触发 exact refresh） | [→](frontend/components.md) | ✅ |
+| components | React UI组件（含Hypothesis Registry summary/list/detail只读审计、双轴隔离、stale/loading/error/empty与legacy/residual边界；trace仅refresh） | [→](frontend/components.md) | ✅ |
 | hooks | React hooks（Tauri 事件订阅/终端/补全/主题/键盘等） | [→](frontend/hooks.md) | ✅ |
-| lib | 非-UI 基础设施（typed Stage Team + Candidate Verification/recovery/pending-enrichment API + generated safe wire） | [→](frontend/lib.md) | ✅ |
+| lib | 非-UI基础设施（readonly Investigation wrappers、opaque v2 cursor/temporal envelope与ts-rs generated closed wire） | [→](frontend/lib.md) | ✅ |
 | pages | 独立页面（ComponentTestbed；主 shell 在 App.tsx） | [→](frontend/pages.md) | ✅ |
 | services | 事件服务（ai-events 注册表 + Candidate review/Attempt/Wave consolidation refresh-only trace + terminal-events） | [→](frontend/services.md) | ✅ |
 | store | Zustand 全局 store（12 slice + selectors + types；Candidate/Reporting refresh hint + backend-first atomic conversation clear） | [→](frontend/store.md) | ✅ |
@@ -218,9 +218,8 @@
 - `golish-agent-runtime` and `golish-agent-runtime/agentic_loop` are current as of 2026-07-21 for rolling-refill lock convergence: child completions remain pollable while the single durable refill claim waits on the same operation row lock, `None` pauses until child progress, and all existing concurrency, cancellation landing, evidence and Gate boundaries remain unchanged. Statuses remain ✅.
 - `golish-agent-runtime` and `golish-agent-runtime/agentic_loop` are current as of 2026-07-21 for parked-Controller queued continuation: unfinished required producer WorkItems enter the rolling drain even when no WorkerRun exists yet, so restart resume can claim durable queued shards instead of misreporting `NoRunnableChild`; operator recovery priority and claim authority remain unchanged. Statuses remain ✅.
 - `golish-pentest-domain`, `golish-db`, `golish-db/repo`, `golish-pentest-app/pentest_bridge`, `golish-agent-kit/harness`, `golish-agent-kit/db_traits`, `golish-agent-app/ai`, `golish-agent-runtime/agentic_loop`, and `golish-recon-app` are current as of 2026-07-30 for Tool Truth Plan A: operation-frozen legacy-safe rollout, server-derived denominators, immutable exact receipts/raw lineage, closed TI/EAS/Enum/Vuln root taxonomy, target-state epoch + temporal policy authority, same-transaction multi-root checked/all-fresh guards, shadow-only Gate grades, current-attempt TargetIntel pinned transport, and held-by-default bounded revalidation obligations. Statuses remain ✅; promotion and Plans C/D are not implemented.
-- `golish-core` and `golish-agent-kit/harness` are current as of 2026-07-30 for Plan B deterministic hypothesis identity: canonical semantic keys/UUIDv5 roots, four-state Candidate boundary, host-only VerificationContract and revision proof-path authority, Plan A Checked-bundle fail-closed adaptation, and closed projection/Timeline catalogs. Statuses remain ✅; DB apply/runtime/UI continue in later Plan B tasks.
-- `golish-db`, `golish-db/repo`, `golish-agent-kit/db_traits`, and `golish-agent-app/ai` are current as of 2026-07-30 for the Plan B repository kernel: same-transaction Plan A snapshot binding, explicit fail-closed managed-feed census, DB-clock Gate reevaluation, final-submitter-only pre-apply host compilation seals, atomic canonical generation/outbox writes, and whole-batch projection replay/rebuild. Statuses remain ✅ for this repository slice; runtime/IPC/UI rollout remains disabled until later Plan B tasks.
-- `golish-agent-kit/harness` is current as of 2026-07-30 for the Plan B pure Candidate Gate: frozen multi-root/temporal/feed/attempt/read/coverage and host-compiled mutation/claim/contract/plan/transition exact sets are validated in a closed order; proof/refutation authority and Candidate terminal/server-only states fail closed. Status remains ✅ for this Gate slice.
-- `golish-agent-kit/harness`, `golish-sub-agents/defaults`, and `golish-sub-agents/executor` are current as of 2026-07-30 for the Plan B Candidate Team policy and three submit-only agents: one Controller, readonly Analysts/Critics, 1-small-input or 2–8 rolling live lanes, fixed Plan A root families, closed chunk/checklist/feed contracts, and no scanner/network/delegation surface. Statuses remain ✅ for this policy slice.
-- `golish-agent-kit/task_orchestrator`, `golish-agent-runtime/agentic_loop`, and `golish-agent-app/ai` are current as of 2026-07-30 for the Plan B typed two-wave runtime: immutable bounded input projection, submit-only runner, rolling lanes, H1/H2/recursive coverage ordering, contiguous retry attempts, response-loss receipt replay, and an explicit `AnalysisArtifactsReady` non-PASS outcome. Statuses remain ✅ for this runtime slice; Task 9 owns Gate/apply/closeout.
-- `golish-agent-app/ai`, `golish-agent-runtime/agentic_loop`, `golish-agent-bridge/agent_bridge`, and `golish-agent-bridge/bridge_executor` are current as of 2026-07-30 for Plan B Candidate dispatch/finalization: persisted operation policy selects Legacy vs Registry before any provider path, Registry never falls through legacy, bridge carries only an optional closed runtime Arc, and the atomic finalizer requires a repository-owned opaque Gate snapshot plus post-seal authority revalidation before canonical CAS apply. Production remains intentionally fail closed until the complete managed-feed/runtime adapter is installed; no rollout promotion is provided. Statuses remain ✅ for this no-fallback seam.
+- `golish-core`, `golish-agent-kit/harness`, `golish-db`, and `golish-db/repo` are current as of 2026-07-30 for Plan B identity and exact authority: canonical semantic/revision/comparison records, `plan_b_checked|grandfathered_legacy` whole-record basis, Plan A four-root/temporal/feed binding, H1/H2/checklist×partition closure, and raw semantic-summary exactness. Hash-only/prose authority and cross-basis comparison fail closed. Statuses remain ✅.
+- `golish-agent-kit/task_orchestrator`, `golish-sub-agents`, `golish-sub-agents/defaults`, `golish-sub-agents/executor`, `golish-agent-runtime`, and `golish-agent-runtime/agentic_loop` are current as of 2026-07-30 for the typed two-wave Candidate Team: exact role ids `candidate_hypothesis_controller` / `candidate_hypothesis_analyst` / `merge_conflict_critic`, readonly submit-result-only execution, small-input 1 or otherwise 2–8 rolling live lanes, H1/H2 recursive ordering, and explicit non-PASS `AnalysisArtifactsReady`. Stage Team receipts remain control-plane only. Statuses remain ✅.
+- `golish-agent-app`, `golish-agent-app/ai`, `golish-agent-bridge`, and `golish-agent-bridge/bridge_executor` are current as of 2026-07-30 for production dispatch/finalization: the app composition root installs the closed runtime Arc; operation-frozen policy selects Legacy/Registry before providers with no fallback; finalization is `same-RR pre-Gate material → pure Gate → apply transaction compiler seal + canonical generation + projection outbox`. Missing managed-feed authority still fails closed, but the runtime adapter is installed. Statuses remain ✅.
+- `golish-core`, `golish-db`, `golish-db/repo`, `golish-agent-app/ai`, `golish`, `golish/app`, `golish/state`, `golish/cli`, `frontend/lib`, and `frontend/components` are current as of 2026-07-30 for projection/read closure: bounded opaque ids, canonical source/entity/change/event hashes, whole-batch replay, commit-visible NOTIFY + bounded polling process worker, exact principal/session/live-workspace/project/sealed-scope authorization, three readonly IPC wrappers, opaque v2 cursor/temporal consistency, and summary/list/detail UI loading/error/empty/stale/legacy-unavailable/residual states. Statuses remain ✅.
+- Plan B provides no rollout promotion. Campaign/Prepared Action, capability assessment, revision adjudication/terminal authority, timeline authoring, and queue-centric Plan C/D UI remain unimplemented and out of scope.
